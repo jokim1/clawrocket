@@ -25,4 +25,9 @@
   - `npm run build` ✅
   - `npm run format:check` ✅
 - Manual smoke checks:
-  - Not executed in this sandbox due missing local channel credentials/container runtime. Run Phase E2 smoke checks on the target machine after branch promotion.
+  - Startup smoke on this host: `npm start` ❌
+    - Failure: container runtime missing (`docker: command not found`), so boot fails in `ensureContainerRuntimeRunning()` before channel/web loops.
+  - Channel routing smoke on this host: blocked.
+    - `src/channels/index.ts` has no active channel imports in this checkout, so registry is empty until channels are explicitly enabled.
+  - Scheduler/container-runner end-to-end smoke: blocked by missing Docker runtime.
+  - ClawRocket web auth/talk/event manual smoke: blocked because process exits during startup runtime preflight.
