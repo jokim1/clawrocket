@@ -32,18 +32,23 @@ export type Talk = {
   version: number;
   createdAt: string;
   updatedAt: string;
-  accessRole: string;
+  accessRole: 'owner' | 'admin' | 'editor' | 'viewer';
 };
 
 export type TalkMessage = {
   id: string;
-  talkId: string;
-  role: string;
+  role: 'user' | 'assistant' | 'system' | 'tool';
   content: string;
-  runId: string | null;
-  userId: string | null;
-  metadataJson: string | null;
+  createdBy: string | null;
   createdAt: string;
+  runId: string | null;
+};
+
+export type TalkRun = {
+  id: string;
+  status: 'queued' | 'running' | 'cancelled' | 'completed' | 'failed';
+  createdAt: string;
+  startedAt: string | null;
 };
 
 type ApiEnvelope<T> =
@@ -108,6 +113,15 @@ export async function listTalks(): Promise<Talk[]> {
   return envelope.talks;
 }
 
+export async function createTalk(title: string): Promise<Talk> {
+  const envelope = await apiRequest<{ talk: Talk }>('/api/v1/talks', {
+    method: 'POST',
+    headers: buildMutationHeaders({ includeJson: true }),
+    body: JSON.stringify({ title }),
+  });
+  return envelope.talk;
+}
+
 export async function getTalk(talkId: string): Promise<Talk> {
   const envelope = await apiRequest<{ talk: Talk }>(
     `/api/v1/talks/${encodeURIComponent(talkId)}`,
@@ -122,6 +136,32 @@ export async function listTalkMessages(talkId: string): Promise<TalkMessage[]> {
     page: { limit: number; count: number; beforeCreatedAt: string | null };
   }>(`/api/v1/talks/${encodeURIComponent(talkId)}/messages`);
   return envelope.messages;
+}
+
+export async function sendTalkMessage(input: {
+  talkId: string;
+  content: string;
+}): Promise<{ talkId: string; message: TalkMessage; run: TalkRun }> {
+  return apiRequest<{ talkId: string; message: TalkMessage; run: TalkRun }>(
+    `/api/v1/talks/${encodeURIComponent(input.talkId)}/chat`,
+    {
+      method: 'POST',
+      headers: buildMutationHeaders({ includeJson: true }),
+      body: JSON.stringify({ content: input.content }),
+    },
+  );
+}
+
+export async function cancelTalkRuns(
+  talkId: string,
+): Promise<{ talkId: string; cancelledRuns: number }> {
+  return apiRequest<{ talkId: string; cancelledRuns: number }>(
+    `/api/v1/talks/${encodeURIComponent(talkId)}/chat/cancel`,
+    {
+      method: 'POST',
+      headers: buildMutationHeaders({ includeJson: false }),
+    },
+  );
 }
 
 async function apiRequest<T>(
@@ -151,4 +191,41 @@ async function apiRequest<T>(
     throw new ApiError(message, response.status, code);
   }
   return payload.data;
+}
+
+function buildMutationHeaders(input: { includeJson: boolean }): HeadersInit {
+  const headers: Record<string, string> = {
+    'x-csrf-token': getCsrfTokenFromCookie() || '',
+    'idempotency-key': buildIdempotencyKey(),
+  };
+  if (input.includeJson) {
+    headers['content-type'] = 'application/json';
+  }
+  return headers;
+}
+
+function getCsrfTokenFromCookie(): string | null {
+  if (!globalThis.document?.cookie) return null;
+  const tokenPair = document.cookie
+    .split(';')
+    .map((entry) => entry.trim())
+    .find((entry) => entry.startsWith('cr_csrf_token='));
+  if (!tokenPair) return null;
+
+  const [, value = ''] = tokenPair.split('=', 2);
+  if (!value) return null;
+
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
+function buildIdempotencyKey(): string {
+  const randomUUID = globalThis.crypto?.randomUUID;
+  if (typeof randomUUID === 'function') {
+    return randomUUID.call(globalThis.crypto);
+  }
+  return `idem-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }

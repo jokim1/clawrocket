@@ -60,14 +60,30 @@ a {
   margin-top: 0;
 }
 
-.primary-btn {
+.primary-btn,
+.secondary-btn {
   border: 0;
   border-radius: 10px;
-  padding: 0.75rem 1rem;
+  padding: 0.65rem 0.95rem;
   font-size: 0.95rem;
+  cursor: pointer;
+}
+
+.primary-btn {
   background: #1556c7;
   color: #fff;
-  cursor: pointer;
+}
+
+.secondary-btn {
+  background: #eff4ff;
+  color: #163c78;
+  border: 1px solid #c5d7f5;
+}
+
+.primary-btn:disabled,
+.secondary-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.7;
 }
 
 .dev-form {
@@ -106,7 +122,7 @@ a {
 }
 
 .page-shell {
-  max-width: 960px;
+  max-width: 980px;
   margin: 0 auto;
   background: #fff;
   border: 1px solid #d8dfec;
@@ -114,12 +130,17 @@ a {
   padding: 1rem;
 }
 
+.talk-detail-shell {
+  display: grid;
+  gap: 0.75rem;
+}
+
 .page-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 1rem;
-  margin-bottom: 1rem;
+  margin-bottom: 0.35rem;
 }
 
 .page-header h1 {
@@ -131,9 +152,64 @@ a {
   color: #4b5978;
 }
 
+.talk-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.55rem;
+}
+
+.stream-badge {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 0.15rem 0.55rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  border: 1px solid transparent;
+}
+
+.stream-connecting {
+  background: #eef4ff;
+  color: #2c4f94;
+  border-color: #c6d9ff;
+}
+
+.stream-live {
+  background: #ecfff3;
+  color: #1f713f;
+  border-color: #bae6cb;
+}
+
+.stream-reconnecting {
+  background: #fff7e8;
+  color: #8a591d;
+  border-color: #f4d39a;
+}
+
+.stream-offline {
+  background: #f4f5f7;
+  color: #5f6673;
+  border-color: #d8dbe1;
+}
+
 .page-state {
   padding: 1.25rem;
   text-align: center;
+}
+
+.talk-create {
+  display: flex;
+  gap: 0.6rem;
+  align-items: center;
+  margin-bottom: 0.75rem;
+}
+
+.talk-create input {
+  flex: 1;
+  border: 1px solid #c8d3e9;
+  border-radius: 9px;
+  padding: 0.62rem 0.72rem;
+  font-size: 0.95rem;
 }
 
 .talk-list {
@@ -162,7 +238,54 @@ a {
   white-space: nowrap;
 }
 
+.run-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.run-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  border-radius: 999px;
+  padding: 0.2rem 0.65rem;
+  border: 1px solid #d0d8e7;
+  background: #f8faff;
+  font-size: 0.78rem;
+}
+
+.run-chip span {
+  color: #596582;
+}
+
+.run-chip-running {
+  border-color: #bae6cb;
+  background: #ecfff3;
+}
+
+.run-chip-queued {
+  border-color: #d8dff0;
+  background: #f6f8ff;
+}
+
+.run-chip-completed {
+  border-color: #c4d4f7;
+  background: #eff5ff;
+}
+
+.run-chip-failed {
+  border-color: #f3c0c0;
+  background: #fff1f1;
+}
+
+.run-chip-cancelled {
+  border-color: #e0d5c5;
+  background: #f9f3ea;
+}
+
 .timeline {
+  position: relative;
   min-height: 280px;
   max-height: 65vh;
   overflow-y: auto;
@@ -203,4 +326,94 @@ a {
 .message-user {
   border-color: #d8ead8;
   background: #f7fff7;
+}
+
+.timeline-new-indicator {
+  position: sticky;
+  bottom: 0.25rem;
+  justify-self: center;
+  border: 1px solid #bcd0f3;
+  border-radius: 999px;
+  background: #ffffff;
+  color: #1a4fa6;
+  padding: 0.35rem 0.75rem;
+  font-size: 0.82rem;
+  cursor: pointer;
+  box-shadow: 0 4px 14px rgba(21, 86, 199, 0.16);
+}
+
+.composer {
+  display: grid;
+  gap: 0.55rem;
+}
+
+.composer textarea {
+  width: 100%;
+  border: 1px solid #c8d3e9;
+  border-radius: 10px;
+  padding: 0.7rem;
+  font-size: 0.95rem;
+  resize: vertical;
+  min-height: 84px;
+}
+
+.composer-controls {
+  display: flex;
+  gap: 0.55rem;
+  align-items: center;
+  justify-content: flex-end;
+}
+
+.composer-count {
+  margin-right: auto;
+  color: #6a7692;
+  font-size: 0.82rem;
+}
+
+.inline-banner {
+  display: flex;
+  gap: 0.55rem;
+  align-items: center;
+  justify-content: space-between;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  padding: 0.45rem 0.65rem;
+  font-size: 0.88rem;
+}
+
+.inline-banner button {
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+.inline-banner-error {
+  border-color: #f1c1c1;
+  background: #fff4f4;
+  color: #8d1f1f;
+}
+
+.inline-banner-success {
+  border-color: #c4e8d0;
+  background: #f3fff8;
+  color: #1f6e3e;
+}
+
+@media (max-width: 720px) {
+  .page-header {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .talk-create {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .composer-controls {
+    flex-wrap: wrap;
+    justify-content: flex-start;
+  }
 }
