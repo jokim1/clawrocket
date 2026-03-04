@@ -14,8 +14,10 @@ export interface DeepStatus {
   };
 }
 
-export async function healthResponse(): Promise<ApiEnvelope<{ status: 'ok' }>> {
-  const dbHealthy = isDatabaseHealthy();
+export async function healthResponse(
+  dbHealthyCheck: () => boolean = isDatabaseHealthy,
+): Promise<ApiEnvelope<{ status: 'ok' }>> {
+  const dbHealthy = dbHealthyCheck();
   if (!dbHealthy) {
     return {
       ok: false,

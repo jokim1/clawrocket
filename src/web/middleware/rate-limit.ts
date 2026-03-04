@@ -25,6 +25,8 @@ const LIMITS: Record<RateLimitBucket, number> = {
   read: 300,
 };
 
+// Phase 0 limitation: rate-limit state is process-local memory.
+// Restarting the process resets counters.
 const state = new Map<string, CounterState>();
 
 export function checkRateLimit(input: RateLimitCheckInput): RateLimitResult {

@@ -22,10 +22,14 @@ export function sendSse(
   payload: string,
   statusCode = 200,
 ): void {
+  // Phase 0 behavior: snapshot-style SSE payload that closes immediately.
+  // Phase 1+ should upgrade to long-lived streaming endpoints.
   res.writeHead(statusCode, {
     'content-type': 'text/event-stream; charset=utf-8',
     'cache-control': 'no-cache',
     connection: 'keep-alive',
+    'x-clawrocket-sse-mode': 'snapshot',
   });
+  res.write('retry: 3000\n');
   res.end(payload);
 }

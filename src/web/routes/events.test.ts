@@ -13,7 +13,7 @@ import { TalkRunQueue } from '../../talks/run-queue.js';
 import { createWebServer, WebServerHandle } from '../server.js';
 
 describe('events routes', () => {
-  let server: WebServerHandle;
+  let server: WebServerHandle | undefined;
   let baseUrl = '';
 
   beforeEach(async () => {
@@ -75,7 +75,9 @@ describe('events routes', () => {
   });
 
   afterEach(async () => {
+    if (!server) return;
     await server.stop();
+    server = undefined;
   });
 
   it('returns talk-scoped stream only for authorized users', async () => {

@@ -36,9 +36,17 @@ Added Phase 0 tables:
 
 ## Concurrency and Delivery Guarantees
 1. One active run per talk; extra runs are queued FIFO.
-2. Mutating endpoints require `Idempotency-Key`.
+2. Mutating endpoints accept optional `Idempotency-Key`. If present, replay protection is enforced.
 3. SSE replay uses monotonic `event_id` and `Last-Event-ID`.
 4. Replay gap emits `replay_gap` event when resume point is outside retention.
+
+## Security Notes
+1. Session token hashes are SHA-256 over opaque high-entropy tokens (minimum 128-bit entropy requirement).
+2. Request body hashes stay plain SHA-256 for deterministic idempotency comparisons.
+3. Rate limits are process-local in Phase 0 (reset on process restart).
+
+## SSE Mode
+Phase 0 event endpoints are snapshot-style SSE responses that close after emitting buffered events. Full long-lived streaming is deferred to Phase 1+.
 
 ## Deferred to Phase 1+
 1. Full OAuth/device flow UX.

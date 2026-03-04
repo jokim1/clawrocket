@@ -18,6 +18,8 @@ import { cancelTalkChat } from './routes/talks.js';
 import { KeychainBridge, noopKeychainBridge } from '../secrets/keychain.js';
 import { TalkRunQueue } from '../talks/run-queue.js';
 
+const MAX_REQUEST_BODY_BYTES = 10 * 1024 * 1024; // 10 MB
+
 export interface WebServerOptions {
   host: string;
   port: number;
@@ -34,6 +36,7 @@ export interface WebServerHandle {
 export function createWebServer(
   input?: Partial<WebServerOptions>,
 ): WebServerHandle {
+  // TODO(phase1): migrate this manual router to Hono before route surface expands.
   const opts: WebServerOptions = {
     host: input?.host ?? '127.0.0.1',
     port: input?.port ?? 3210,
@@ -128,7 +131,29 @@ async function handleRequest(
     return;
   }
 
-  const bodyText = await readBody(req);
+  let bodyText = '';
+  try {
+    bodyText = await readBody(req, MAX_REQUEST_BODY_BYTES);
+  } catch (err) {
+    if (err instanceof RequestBodyTooLargeError) {
+      sendJson(res, 413, {
+        ok: false,
+        error: {
+          code: 'payload_too_large',
+          message: `Request body exceeds ${MAX_REQUEST_BODY_BYTES} bytes`,
+        },
+      });
+      return;
+    }
+    sendJson(res, 400, {
+      ok: false,
+      error: {
+        code: 'invalid_request_body',
+        message: 'Unable to read request body',
+      },
+    });
+    return;
+  }
 
   if (isMutating(method)) {
     const csrfResult = validateCsrfToken({
@@ -189,7 +214,7 @@ async function handleRequest(
         const serialized = JSON.stringify(result.body);
         saveIdempotencyResult({
           userId: auth.userId,
-          idempotencyKey: stringHeader(req.headers['idempotency-key']) || '',
+          idempotencyKey: stringHeader(req.headers['idempotency-key']) || null,
           method,
           path,
           requestHash: precheck.requestHash,
@@ -278,7 +303,9 @@ function selectRateBucket(
   path: string,
 ): 'chat_write' | 'write' | 'read' {
   if (!isMutating(method)) return 'read';
-  if (path.includes('/chat')) return 'chat_write';
+  if (/^\/api\/v1\/talks\/[^/]+\/chat(?:\/|$)/.test(path)) {
+    return 'chat_write';
+  }
   return 'write';
 }
 
@@ -286,10 +313,25 @@ function isMutating(method: string): boolean {
   return ['POST', 'PATCH', 'PUT', 'DELETE'].includes(method.toUpperCase());
 }
 
-async function readBody(req: IncomingMessage): Promise<string> {
+class RequestBodyTooLargeError extends Error {
+  constructor(limitBytes: number) {
+    super(`Request body exceeds ${limitBytes} bytes`);
+  }
+}
+
+async function readBody(
+  req: IncomingMessage,
+  maxBytes: number,
+): Promise<string> {
   const chunks: Buffer[] = [];
+  let totalBytes = 0;
   for await (const chunk of req) {
-    chunks.push(Buffer.from(chunk));
+    const part = Buffer.from(chunk);
+    totalBytes += part.length;
+    if (totalBytes > maxBytes) {
+      throw new RequestBodyTooLargeError(maxBytes);
+    }
+    chunks.push(part);
   }
   return Buffer.concat(chunks).toString('utf-8');
 }

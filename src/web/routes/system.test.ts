@@ -5,9 +5,10 @@ import { hashSessionToken } from '../../identity/session.js';
 import { noopKeychainBridge } from '../../secrets/keychain.js';
 import { TalkRunQueue } from '../../talks/run-queue.js';
 import { createWebServer, WebServerHandle } from '../server.js';
+import { healthResponse } from './system.js';
 
 describe('system routes', () => {
-  let server: WebServerHandle;
+  let server: WebServerHandle | undefined;
   let baseUrl = '';
 
   beforeEach(async () => {
@@ -39,7 +40,9 @@ describe('system routes', () => {
   });
 
   afterEach(async () => {
+    if (!server) return;
     await server.stop();
+    server = undefined;
   });
 
   it('serves shallow health without auth', async () => {
@@ -62,5 +65,13 @@ describe('system routes', () => {
     expect(body.ok).toBe(true);
     expect(body.data.db).toBe('ok');
     expect(body.data.keychain).toBe('ok');
+  });
+
+  it('returns db_unavailable when health check fails', async () => {
+    const failed = await healthResponse(() => false);
+    expect(failed.ok).toBe(false);
+    if (!failed.ok) {
+      expect(failed.error.code).toBe('db_unavailable');
+    }
   });
 });

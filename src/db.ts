@@ -900,7 +900,6 @@ export function upsertTalk(input: {
     INSERT INTO talks (id, owner_id, topic_title, status, version, created_at, updated_at)
     VALUES (?, ?, ?, ?, 1, ?, ?)
     ON CONFLICT(id) DO UPDATE SET
-      owner_id = excluded.owner_id,
       topic_title = excluded.topic_title,
       status = excluded.status,
       updated_at = excluded.updated_at,

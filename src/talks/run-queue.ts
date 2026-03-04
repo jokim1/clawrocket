@@ -6,19 +6,8 @@ import {
   getRunningTalkRun,
   markTalkRunStatus,
 } from '../db.js';
+import type { TalkRunRecord } from '../db.js';
 import { TalkRunStatus } from '../types.js';
-
-export interface TalkRunRecord {
-  id: string;
-  talk_id: string;
-  requested_by: string;
-  status: TalkRunStatus;
-  idempotency_key: string | null;
-  created_at: string;
-  started_at: string | null;
-  ended_at: string | null;
-  cancel_reason: string | null;
-}
 
 export interface EnqueueTalkRunInput {
   runId: string;
@@ -61,11 +50,11 @@ export class TalkRunQueue {
   }
 
   complete(runId: string): void {
-    const now = new Date().toISOString();
-    markTalkRunStatus(runId, 'completed', now, null);
-
     const run = this.findByRunIdAcrossQueues(runId);
     if (!run) return;
+
+    const now = new Date().toISOString();
+    markTalkRunStatus(runId, 'completed', now, null);
 
     appendOutboxEvent({
       topic: `talk:${run.talk_id}`,

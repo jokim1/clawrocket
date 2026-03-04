@@ -48,6 +48,21 @@ describe('web middleware', () => {
     expect(cookieAuth?.authType).toBe('cookie');
   });
 
+  it('rejects expired sessions', () => {
+    upsertWebSession({
+      id: 's-expired',
+      userId: 'u1',
+      accessTokenHash: hashSessionToken('expired-token'),
+      refreshTokenHash: hashSessionToken('expired-refresh'),
+      expiresAt: new Date(Date.now() - 60_000).toISOString(),
+    });
+
+    const auth = authenticateRequest({
+      authorization: 'Bearer expired-token',
+    });
+    expect(auth).toBeNull();
+  });
+
   it('blocks csrf mismatch for cookie-authenticated mutating calls', () => {
     const bad = validateCsrfToken({
       method: 'POST',
@@ -91,6 +106,45 @@ describe('web middleware', () => {
     expect(replay.response?.statusCode).toBe(200);
   });
 
+  it('rejects idempotency key reused with different request body', () => {
+    saveIdempotencyCache({
+      idempotency_key: 'idem-mismatch',
+      user_id: 'u1',
+      method: 'POST',
+      path: '/api/v1/talks/t1/chat/cancel',
+      request_hash: hashRequestBody('{"a":1}'),
+      status_code: 200,
+      response_body: '{"ok":true}',
+      created_at: new Date().toISOString(),
+      expires_at: new Date(Date.now() + 3600_000).toISOString(),
+    });
+
+    const mismatch = idempotencyPrecheck({
+      userId: 'u1',
+      idempotencyKey: 'idem-mismatch',
+      method: 'POST',
+      path: '/api/v1/talks/t1/chat/cancel',
+      bodyText: '{"a":2}',
+    });
+
+    expect(mismatch.replay).toBe(false);
+    expect(mismatch.error).toContain('different request body');
+  });
+
+  it('allows mutating request precheck with no idempotency key', () => {
+    const result = idempotencyPrecheck({
+      userId: 'u1',
+      idempotencyKey: null,
+      method: 'POST',
+      path: '/api/v1/talks/t1/chat/cancel',
+      bodyText: '{}',
+    });
+
+    expect(result.hasKey).toBe(false);
+    expect(result.replay).toBe(false);
+    expect(result.error).toBeUndefined();
+  });
+
   it('enforces per-user rate limits', () => {
     for (let i = 0; i < 20; i += 1) {
       const result = checkRateLimit({ userId: 'u1', bucket: 'chat_write' });
@@ -100,5 +154,30 @@ describe('web middleware', () => {
     const blocked = checkRateLimit({ userId: 'u1', bucket: 'chat_write' });
     expect(blocked.allowed).toBe(false);
     expect(blocked.retryAfterSec).toBeGreaterThan(0);
+  });
+
+  it('resets rate limits after the window elapses', () => {
+    const nowMs = Date.now();
+    for (let i = 0; i < 20; i += 1) {
+      checkRateLimit({
+        userId: 'u1',
+        bucket: 'chat_write',
+        nowMs,
+      });
+    }
+
+    const blocked = checkRateLimit({
+      userId: 'u1',
+      bucket: 'chat_write',
+      nowMs: nowMs + 10_000,
+    });
+    expect(blocked.allowed).toBe(false);
+
+    const afterReset = checkRateLimit({
+      userId: 'u1',
+      bucket: 'chat_write',
+      nowMs: nowMs + 61_000,
+    });
+    expect(afterReset.allowed).toBe(true);
   });
 });

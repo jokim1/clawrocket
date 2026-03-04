@@ -11,7 +11,7 @@ import { TalkRunQueue } from '../../talks/run-queue.js';
 import { createWebServer, WebServerHandle } from '../server.js';
 
 describe('talk routes', () => {
-  let server: WebServerHandle;
+  let server: WebServerHandle | undefined;
   let runQueue: TalkRunQueue;
   let baseUrl = '';
 
@@ -55,7 +55,23 @@ describe('talk routes', () => {
   });
 
   afterEach(async () => {
+    if (!server) return;
     await server.stop();
+    server = undefined;
+  });
+
+  it('allows cancel without Idempotency-Key header', async () => {
+    const res = await fetch(`${baseUrl}/api/v1/talks/talk-1/chat/cancel`, {
+      method: 'POST',
+      headers: {
+        Authorization: 'Bearer owner-token',
+      },
+    });
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get('x-idempotent-replay')).toBeNull();
+    const body = (await res.json()) as any;
+    expect(body.ok).toBe(true);
   });
 
   it('cancels active talk run and supports idempotent replay', async () => {
@@ -97,5 +113,21 @@ describe('talk routes', () => {
     const body = (await res.json()) as any;
     expect(body.ok).toBe(false);
     expect(body.error.code).toBe('csrf_failed');
+  });
+
+  it('rejects oversized request bodies', async () => {
+    const hugeBody = 'x'.repeat(10 * 1024 * 1024 + 1);
+    const res = await fetch(`${baseUrl}/api/v1/talks/talk-1/chat/cancel`, {
+      method: 'POST',
+      headers: {
+        Authorization: 'Bearer owner-token',
+      },
+      body: hugeBody,
+    });
+
+    expect(res.status).toBe(413);
+    const body = (await res.json()) as any;
+    expect(body.ok).toBe(false);
+    expect(body.error.code).toBe('payload_too_large');
   });
 });
