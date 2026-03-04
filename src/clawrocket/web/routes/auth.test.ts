@@ -74,7 +74,8 @@ describe('auth routes (phase 1)', () => {
       )}&email=owner@example.com&name=Owner`,
       {
         headers: {
-          Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          Accept:
+            'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
         },
       },
     );
@@ -106,7 +107,7 @@ describe('auth routes (phase 1)', () => {
       method: 'POST',
     });
     const startBody = (await startRes.json()) as any;
-  const blockedRes = await server.request(
+    const blockedRes = await server.request(
       `/api/v1/auth/google/callback?state=${encodeURIComponent(
         startBody.data.state,
       )}&email=member@example.com&name=Member`,
