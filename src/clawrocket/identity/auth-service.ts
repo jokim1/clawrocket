@@ -29,7 +29,7 @@ import {
   UserRecord,
 } from '../db/index.js';
 import { hashOpaqueToken } from '../security/hash.js';
-import { UserRole } from '../../types.js';
+import { UserRole } from '../types.js';
 
 export interface SessionMaterial {
   sessionId: string;

@@ -4,7 +4,7 @@ import {
   TalkMessageRole,
   TalkRunStatus,
   UserRole,
-} from '../../types.js';
+} from '../types.js';
 
 // --- Identity and web session accessors ---
 

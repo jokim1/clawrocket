@@ -7,7 +7,7 @@ import {
   markTalkRunStatus,
 } from '../db/index.js';
 import type { TalkRunRecord } from '../db/index.js';
-import { TalkRunStatus } from '../../types.js';
+import { TalkRunStatus } from '../types.js';
 
 export interface EnqueueTalkRunInput {
   runId: string;
