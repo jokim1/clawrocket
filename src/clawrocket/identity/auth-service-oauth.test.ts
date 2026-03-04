@@ -19,7 +19,7 @@ describe('auth service google oauth code flow', () => {
       'http://127.0.0.1:3210/api/v1/auth/google/callback',
     );
 
-    const db = await import('../db.js');
+    const db = await import('../db/index.js');
     const authService = await import('./auth-service.js');
     db._initTestDatabase();
 
@@ -82,7 +82,7 @@ describe('auth service google oauth code flow', () => {
       'http://127.0.0.1:3210/api/v1/auth/google/callback',
     );
 
-    const db = await import('../db.js');
+    const db = await import('../db/index.js');
     const authService = await import('./auth-service.js');
     db._initTestDatabase();
 
@@ -136,7 +136,7 @@ describe('auth service google oauth code flow', () => {
       'http://127.0.0.1:3210/api/v1/auth/google/callback',
     );
 
-    const db = await import('../db.js');
+    const db = await import('../db/index.js');
     const authService = await import('./auth-service.js');
     db._initTestDatabase();
 
@@ -193,7 +193,7 @@ describe('auth service google oauth code flow', () => {
       'http://127.0.0.1:3210/api/v1/auth/google/callback',
     );
 
-    const db = await import('../db.js');
+    const db = await import('../db/index.js');
     const authService = await import('./auth-service.js');
     db._initTestDatabase();
 
