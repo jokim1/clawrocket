@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 
 import {
   _initTestDatabase,
@@ -13,8 +13,7 @@ import { TalkRunQueue } from '../../talks/run-queue.js';
 import { createWebServer, WebServerHandle } from '../server.js';
 
 describe('events routes', () => {
-  let server: WebServerHandle | undefined;
-  let baseUrl = '';
+  let server: WebServerHandle;
 
   beforeEach(async () => {
     _initTestDatabase();
@@ -70,18 +69,10 @@ describe('events routes', () => {
       port: 0,
       runQueue: new TalkRunQueue(),
     });
-    const bound = await server.start();
-    baseUrl = `http://${bound.host}:${bound.port}`;
-  });
-
-  afterEach(async () => {
-    if (!server) return;
-    await server.stop();
-    server = undefined;
   });
 
   it('returns talk-scoped stream only for authorized users', async () => {
-    const ownerRes = await fetch(`${baseUrl}/api/v1/talks/talk-1/events`, {
+    const ownerRes = await server.request('/api/v1/talks/talk-1/events', {
       headers: {
         Authorization: 'Bearer owner-token',
       },
@@ -90,8 +81,8 @@ describe('events routes', () => {
     const ownerStream = await ownerRes.text();
     expect(ownerStream).toContain('event: message_appended');
 
-    const memberRes = await fetch(
-      `${baseUrl}/api/v1/talks/unknown-talk/events`,
+    const memberRes = await server.request(
+      '/api/v1/talks/unknown-talk/events',
       {
         headers: {
           Authorization: 'Bearer member-token',
@@ -102,7 +93,7 @@ describe('events routes', () => {
   });
 
   it('supports Last-Event-ID replay semantics on user stream', async () => {
-    const res = await fetch(`${baseUrl}/api/v1/events`, {
+    const res = await server.request('/api/v1/events', {
       headers: {
         Authorization: 'Bearer owner-token',
         'Last-Event-ID': '0',
@@ -115,7 +106,7 @@ describe('events routes', () => {
   });
 
   it('rejects malformed percent-encoding in talk id', async () => {
-    const res = await fetch(`${baseUrl}/api/v1/talks/%ZZ/events`, {
+    const res = await server.request('/api/v1/talks/%ZZ/events', {
       headers: {
         Authorization: 'Bearer owner-token',
       },

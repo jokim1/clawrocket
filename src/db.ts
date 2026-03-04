@@ -96,6 +96,19 @@ function createSchema(database: Database.Database): void {
       created_at TEXT NOT NULL,
       last_login_at TEXT
     );
+    CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
+
+    CREATE TABLE IF NOT EXISTS user_invites (
+      id TEXT PRIMARY KEY,
+      email TEXT NOT NULL,
+      role TEXT NOT NULL CHECK(role IN ('admin', 'member')),
+      invited_by TEXT NOT NULL REFERENCES users(id),
+      accepted INTEGER DEFAULT 0,
+      created_at TEXT NOT NULL,
+      expires_at TEXT NOT NULL,
+      accepted_at TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_user_invites_email ON user_invites(email);
 
     CREATE TABLE IF NOT EXISTS talks (
       id TEXT PRIMARY KEY,
@@ -122,6 +135,7 @@ function createSchema(database: Database.Database): void {
       user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
       access_token_hash TEXT NOT NULL UNIQUE,
       refresh_token_hash TEXT NOT NULL UNIQUE,
+      access_expires_at TEXT NOT NULL,
       expires_at TEXT NOT NULL,
       revoked_at TEXT,
       rotated_from TEXT REFERENCES web_sessions(id),
@@ -145,6 +159,20 @@ function createSchema(database: Database.Database): void {
       used_at TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_oauth_state_expires_at ON oauth_state(expires_at);
+
+    CREATE TABLE IF NOT EXISTS device_auth_codes (
+      id TEXT PRIMARY KEY,
+      device_code_hash TEXT NOT NULL UNIQUE,
+      user_code_hash TEXT NOT NULL UNIQUE,
+      status TEXT NOT NULL DEFAULT 'pending'
+        CHECK(status IN ('pending', 'completed', 'expired')),
+      user_id TEXT REFERENCES users(id),
+      created_at TEXT NOT NULL,
+      expires_at TEXT NOT NULL,
+      completed_at TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_device_auth_status_expires
+      ON device_auth_codes(status, expires_at);
 
     CREATE TABLE IF NOT EXISTS event_outbox (
       event_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -270,6 +298,16 @@ function createSchema(database: Database.Database): void {
     );
   } catch {
     /* columns already exist */
+  }
+
+  // Add access_expires_at column if it doesn't exist (migration for existing DBs)
+  try {
+    database.exec(`ALTER TABLE web_sessions ADD COLUMN access_expires_at TEXT`);
+    database.exec(
+      `UPDATE web_sessions SET access_expires_at = expires_at WHERE access_expires_at IS NULL`,
+    );
+  } catch {
+    /* column already exists */
   }
 }
 
@@ -803,11 +841,33 @@ export function getUserById(userId: string): UserRecord | undefined {
     | undefined;
 }
 
+export function getUserByEmail(email: string): UserRecord | undefined {
+  return db
+    .prepare('SELECT * FROM users WHERE email = ? COLLATE NOCASE')
+    .get(email) as UserRecord | undefined;
+}
+
+export function getOwnerUser(): UserRecord | undefined {
+  return db
+    .prepare(
+      `SELECT * FROM users WHERE role = 'owner' AND is_active = 1 ORDER BY created_at ASC LIMIT 1`,
+    )
+    .get() as UserRecord | undefined;
+}
+
+export function hasAnyUsers(): boolean {
+  const row = db
+    .prepare('SELECT COUNT(*) as count FROM users WHERE is_active = 1')
+    .get() as { count: number };
+  return row.count > 0;
+}
+
 export interface WebSessionRecord {
   id: string;
   user_id: string;
   access_token_hash: string;
   refresh_token_hash: string;
+  access_expires_at: string;
   expires_at: string;
   revoked_at: string | null;
   rotated_from: string | null;
@@ -822,6 +882,7 @@ export function upsertWebSession(input: {
   userId: string;
   accessTokenHash: string;
   refreshTokenHash: string;
+  accessExpiresAt?: string;
   expiresAt: string;
   revokedAt?: string | null;
   rotatedFrom?: string | null;
@@ -832,13 +893,14 @@ export function upsertWebSession(input: {
   db.prepare(
     `
     INSERT INTO web_sessions (
-      id, user_id, access_token_hash, refresh_token_hash, expires_at, revoked_at,
+      id, user_id, access_token_hash, refresh_token_hash, access_expires_at, expires_at, revoked_at,
       rotated_from, device_id, created_at, ip_address, user_agent
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET
       access_token_hash = excluded.access_token_hash,
       refresh_token_hash = excluded.refresh_token_hash,
+      access_expires_at = excluded.access_expires_at,
       expires_at = excluded.expires_at,
       revoked_at = excluded.revoked_at,
       rotated_from = excluded.rotated_from,
@@ -851,6 +913,7 @@ export function upsertWebSession(input: {
     input.userId,
     input.accessTokenHash,
     input.refreshTokenHash,
+    input.accessExpiresAt || input.expiresAt,
     input.expiresAt,
     input.revokedAt || null,
     input.rotatedFrom || null,
@@ -868,12 +931,255 @@ export function getWebSessionByAccessTokenHash(
     .prepare(
       `
       SELECT * FROM web_sessions
-      WHERE access_token_hash = ? AND revoked_at IS NULL
+      WHERE access_token_hash = ?
+        AND revoked_at IS NULL
+        AND COALESCE(access_expires_at, expires_at) > ?
       ORDER BY created_at DESC
       LIMIT 1
     `,
     )
-    .get(accessTokenHash) as WebSessionRecord | undefined;
+    .get(accessTokenHash, new Date().toISOString()) as
+    | WebSessionRecord
+    | undefined;
+}
+
+export function getWebSessionByRefreshTokenHash(
+  refreshTokenHash: string,
+): WebSessionRecord | undefined {
+  return db
+    .prepare(
+      `
+      SELECT * FROM web_sessions
+      WHERE refresh_token_hash = ?
+        AND revoked_at IS NULL
+        AND expires_at > ?
+      ORDER BY created_at DESC
+      LIMIT 1
+    `,
+    )
+    .get(refreshTokenHash, new Date().toISOString()) as
+    | WebSessionRecord
+    | undefined;
+}
+
+export function revokeWebSession(sessionId: string, revokedAt?: string): void {
+  db.prepare(`UPDATE web_sessions SET revoked_at = ? WHERE id = ?`).run(
+    revokedAt || new Date().toISOString(),
+    sessionId,
+  );
+}
+
+export function revokeWebSessionChain(rootSessionId: string): void {
+  const now = new Date().toISOString();
+  const pending = [rootSessionId];
+  const seen = new Set<string>();
+
+  while (pending.length > 0) {
+    const next = pending.pop()!;
+    if (seen.has(next)) continue;
+    seen.add(next);
+    revokeWebSession(next, now);
+    const children = db
+      .prepare(`SELECT id FROM web_sessions WHERE rotated_from = ?`)
+      .all(next) as Array<{ id: string }>;
+    for (const child of children) pending.push(child.id);
+  }
+}
+
+// --- Invite accessors ---
+
+export interface UserInviteRecord {
+  id: string;
+  email: string;
+  role: 'admin' | 'member';
+  invited_by: string;
+  accepted: number;
+  created_at: string;
+  expires_at: string;
+  accepted_at: string | null;
+}
+
+export function createUserInvite(input: {
+  id: string;
+  email: string;
+  role: 'admin' | 'member';
+  invitedBy: string;
+  expiresAt: string;
+}): void {
+  db.prepare(
+    `
+    INSERT INTO user_invites (
+      id, email, role, invited_by, accepted, created_at, expires_at, accepted_at
+    ) VALUES (?, ?, ?, ?, 0, ?, ?, NULL)
+  `,
+  ).run(
+    input.id,
+    input.email.toLowerCase(),
+    input.role,
+    input.invitedBy,
+    new Date().toISOString(),
+    input.expiresAt,
+  );
+}
+
+export function getActiveInviteByEmail(
+  email: string,
+): UserInviteRecord | undefined {
+  return db
+    .prepare(
+      `
+      SELECT *
+      FROM user_invites
+      WHERE email = ? COLLATE NOCASE
+        AND accepted = 0
+        AND expires_at > ?
+      ORDER BY created_at DESC
+      LIMIT 1
+    `,
+    )
+    .get(email, new Date().toISOString()) as UserInviteRecord | undefined;
+}
+
+export function markInviteAccepted(inviteId: string): void {
+  db.prepare(
+    `
+    UPDATE user_invites
+    SET accepted = 1, accepted_at = ?
+    WHERE id = ?
+  `,
+  ).run(new Date().toISOString(), inviteId);
+}
+
+// --- OAuth state accessors ---
+
+export interface OAuthStateRecord {
+  id: string;
+  provider: string;
+  state_hash: string;
+  nonce_hash: string;
+  code_verifier_hash: string;
+  redirect_uri: string;
+  created_at: string;
+  expires_at: string;
+  used_at: string | null;
+}
+
+export function createOAuthState(input: {
+  id: string;
+  provider: string;
+  stateHash: string;
+  nonceHash: string;
+  codeVerifierHash: string;
+  redirectUri: string;
+  expiresAt: string;
+}): void {
+  db.prepare(
+    `
+    INSERT INTO oauth_state (
+      id, provider, state_hash, nonce_hash, code_verifier_hash, redirect_uri,
+      created_at, expires_at, used_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)
+  `,
+  ).run(
+    input.id,
+    input.provider,
+    input.stateHash,
+    input.nonceHash,
+    input.codeVerifierHash,
+    input.redirectUri,
+    new Date().toISOString(),
+    input.expiresAt,
+  );
+}
+
+export function consumeOAuthStateByHash(
+  stateHash: string,
+): OAuthStateRecord | undefined {
+  const now = new Date().toISOString();
+  const row = db
+    .prepare(
+      `
+      SELECT *
+      FROM oauth_state
+      WHERE state_hash = ?
+        AND used_at IS NULL
+        AND expires_at > ?
+      LIMIT 1
+    `,
+    )
+    .get(stateHash, now) as OAuthStateRecord | undefined;
+  if (!row) return undefined;
+  db.prepare(`UPDATE oauth_state SET used_at = ? WHERE id = ?`).run(
+    now,
+    row.id,
+  );
+  return { ...row, used_at: now };
+}
+
+// --- Device auth code accessors ---
+
+export interface DeviceAuthCodeRecord {
+  id: string;
+  device_code_hash: string;
+  user_code_hash: string;
+  status: 'pending' | 'completed' | 'expired';
+  user_id: string | null;
+  created_at: string;
+  expires_at: string;
+  completed_at: string | null;
+}
+
+export function createDeviceAuthCode(input: {
+  id: string;
+  deviceCodeHash: string;
+  userCodeHash: string;
+  expiresAt: string;
+}): void {
+  db.prepare(
+    `
+    INSERT INTO device_auth_codes (
+      id, device_code_hash, user_code_hash, status, user_id, created_at, expires_at, completed_at
+    ) VALUES (?, ?, ?, 'pending', NULL, ?, ?, NULL)
+  `,
+  ).run(
+    input.id,
+    input.deviceCodeHash,
+    input.userCodeHash,
+    new Date().toISOString(),
+    input.expiresAt,
+  );
+}
+
+export function getPendingDeviceAuthCodeByDeviceHash(
+  deviceCodeHash: string,
+): DeviceAuthCodeRecord | undefined {
+  return db
+    .prepare(
+      `
+      SELECT *
+      FROM device_auth_codes
+      WHERE device_code_hash = ?
+        AND status = 'pending'
+        AND expires_at > ?
+      LIMIT 1
+    `,
+    )
+    .get(deviceCodeHash, new Date().toISOString()) as
+    | DeviceAuthCodeRecord
+    | undefined;
+}
+
+export function markDeviceAuthCodeCompleted(input: {
+  id: string;
+  userId: string;
+}): void {
+  db.prepare(
+    `
+    UPDATE device_auth_codes
+    SET status = 'completed', user_id = ?, completed_at = ?
+    WHERE id = ?
+  `,
+  ).run(input.userId, new Date().toISOString(), input.id);
 }
 
 // --- Talk ACL accessors ---

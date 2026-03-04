@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 
 import { _initTestDatabase, upsertUser, upsertWebSession } from '../../db.js';
 import { hashSessionToken } from '../../identity/session.js';
@@ -8,8 +8,7 @@ import { createWebServer, WebServerHandle } from '../server.js';
 import { healthResponse } from './system.js';
 
 describe('system routes', () => {
-  let server: WebServerHandle | undefined;
-  let baseUrl = '';
+  let server: WebServerHandle;
 
   beforeEach(async () => {
     _initTestDatabase();
@@ -34,19 +33,10 @@ describe('system routes', () => {
       keychain: noopKeychainBridge,
       runQueue: new TalkRunQueue(),
     });
-
-    const bound = await server.start();
-    baseUrl = `http://${bound.host}:${bound.port}`;
-  });
-
-  afterEach(async () => {
-    if (!server) return;
-    await server.stop();
-    server = undefined;
   });
 
   it('serves shallow health without auth', async () => {
-    const res = await fetch(`${baseUrl}/api/v1/health`);
+    const res = await server.request('/api/v1/health');
     expect(res.status).toBe(200);
     const body = (await res.json()) as any;
     expect(body.ok).toBe(true);
@@ -54,7 +44,7 @@ describe('system routes', () => {
   });
 
   it('serves deep status with auth', async () => {
-    const res = await fetch(`${baseUrl}/api/v1/status`, {
+    const res = await server.request('/api/v1/status', {
       headers: {
         Authorization: 'Bearer token-owner-1',
       },

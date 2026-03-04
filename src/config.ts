@@ -6,7 +6,21 @@ import { readEnvFile } from './env.js';
 // Read config values from .env (falls back to process.env).
 // Secrets are NOT read here — they stay on disk and are loaded only
 // where needed (container-runner.ts) to avoid leaking to child processes.
-const envConfig = readEnvFile(['ASSISTANT_NAME', 'ASSISTANT_HAS_OWN_NUMBER']);
+const envConfig = readEnvFile([
+  'ASSISTANT_NAME',
+  'ASSISTANT_HAS_OWN_NUMBER',
+  'WEB_ENABLED',
+  'WEB_HOST',
+  'WEB_PORT',
+  'WEB_SECURE_COOKIES',
+  'AUTH_DEV_MODE',
+  'GOOGLE_OAUTH_CLIENT_ID',
+  'GOOGLE_OAUTH_CLIENT_SECRET',
+  'GOOGLE_OAUTH_REDIRECT_URI',
+  'ACCESS_TOKEN_TTL_SEC',
+  'REFRESH_TOKEN_TTL_SEC',
+  'DEVICE_CODE_TTL_SEC',
+]);
 
 export const ASSISTANT_NAME =
   process.env.ASSISTANT_NAME || envConfig.ASSISTANT_NAME || 'Andy';
@@ -15,9 +29,44 @@ export const ASSISTANT_HAS_OWN_NUMBER =
     envConfig.ASSISTANT_HAS_OWN_NUMBER) === 'true';
 export const POLL_INTERVAL = 2000;
 export const SCHEDULER_POLL_INTERVAL = 60000;
-export const WEB_ENABLED = (process.env.WEB_ENABLED || 'true') === 'true';
-export const WEB_HOST = process.env.WEB_HOST || '127.0.0.1';
-export const WEB_PORT = parseInt(process.env.WEB_PORT || '3210', 10);
+export const WEB_ENABLED =
+  (process.env.WEB_ENABLED || envConfig.WEB_ENABLED || 'true') === 'true';
+export const WEB_HOST =
+  process.env.WEB_HOST || envConfig.WEB_HOST || '127.0.0.1';
+export const WEB_PORT = parseInt(
+  process.env.WEB_PORT || envConfig.WEB_PORT || '3210',
+  10,
+);
+export const WEB_SECURE_COOKIES =
+  (process.env.WEB_SECURE_COOKIES ||
+    envConfig.WEB_SECURE_COOKIES ||
+    'false') === 'true';
+export const AUTH_DEV_MODE =
+  (process.env.AUTH_DEV_MODE || envConfig.AUTH_DEV_MODE || 'true') === 'true';
+export const GOOGLE_OAUTH_CLIENT_ID =
+  process.env.GOOGLE_OAUTH_CLIENT_ID || envConfig.GOOGLE_OAUTH_CLIENT_ID || '';
+export const GOOGLE_OAUTH_CLIENT_SECRET =
+  process.env.GOOGLE_OAUTH_CLIENT_SECRET ||
+  envConfig.GOOGLE_OAUTH_CLIENT_SECRET ||
+  '';
+export const GOOGLE_OAUTH_REDIRECT_URI =
+  process.env.GOOGLE_OAUTH_REDIRECT_URI ||
+  envConfig.GOOGLE_OAUTH_REDIRECT_URI ||
+  '';
+export const ACCESS_TOKEN_TTL_SEC = parseInt(
+  process.env.ACCESS_TOKEN_TTL_SEC || envConfig.ACCESS_TOKEN_TTL_SEC || '3600',
+  10,
+);
+export const REFRESH_TOKEN_TTL_SEC = parseInt(
+  process.env.REFRESH_TOKEN_TTL_SEC ||
+    envConfig.REFRESH_TOKEN_TTL_SEC ||
+    `${30 * 24 * 60 * 60}`,
+  10,
+);
+export const DEVICE_CODE_TTL_SEC = parseInt(
+  process.env.DEVICE_CODE_TTL_SEC || envConfig.DEVICE_CODE_TTL_SEC || '600',
+  10,
+);
 
 // Absolute paths needed for container mounts
 const PROJECT_ROOT = process.cwd();

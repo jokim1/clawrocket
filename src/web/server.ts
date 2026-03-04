@@ -1,22 +1,45 @@
-import http, { IncomingMessage, Server, ServerResponse } from 'http';
+import { serve } from '@hono/node-server';
+import { bodyLimit } from 'hono/body-limit';
+import { deleteCookie, getCookie, setCookie } from 'hono/cookie';
+import { Context, Hono } from 'hono';
 
-import { canAccessTalk } from './middleware/acl.js';
-import { authenticateRequest } from './middleware/auth.js';
+import {
+  ACCESS_TOKEN_TTL_SEC,
+  REFRESH_TOKEN_TTL_SEC,
+  WEB_SECURE_COOKIES,
+} from '../config.js';
+import { canUserAccessTalk, getUserById } from '../db.js';
+import {
+  completeDeviceAuthFlow,
+  completeGoogleOAuthCallback,
+  createInvite,
+  AuthError,
+  logoutSession,
+  refreshSession,
+  startDeviceAuthFlow,
+  startGoogleOAuth,
+} from '../identity/auth-service.js';
+import {
+  ACCESS_TOKEN_COOKIE,
+  CSRF_TOKEN_COOKIE,
+  REFRESH_TOKEN_COOKIE,
+} from '../identity/session.js';
+import { KeychainBridge, noopKeychainBridge } from '../secrets/keychain.js';
+import { TalkRunQueue } from '../talks/run-queue.js';
 import { validateCsrfToken } from './middleware/csrf.js';
 import {
   idempotencyPrecheck,
   saveIdempotencyResult,
 } from './middleware/idempotency.js';
 import { checkRateLimit } from './middleware/rate-limit.js';
-import { sendJson, sendSse } from './response.js';
 import {
   buildTalkScopedSseStream,
   buildUserScopedSseStream,
 } from './routes/events.js';
 import { healthResponse, statusResponse } from './routes/system.js';
 import { cancelTalkChat } from './routes/talks.js';
-import { KeychainBridge, noopKeychainBridge } from '../secrets/keychain.js';
-import { TalkRunQueue } from '../talks/run-queue.js';
+import { authenticateRequest } from './middleware/auth.js';
+import { AuthContext } from './types.js';
 
 const MAX_REQUEST_BODY_BYTES = 10 * 1024 * 1024; // 10 MB
 
@@ -30,13 +53,13 @@ export interface WebServerOptions {
 export interface WebServerHandle {
   start: () => Promise<{ host: string; port: number }>;
   stop: () => Promise<void>;
-  server: Server;
+  request: (path: string, init?: RequestInit) => Promise<Response>;
+  server: ReturnType<typeof serve> | null;
 }
 
 export function createWebServer(
   input?: Partial<WebServerOptions>,
 ): WebServerHandle {
-  // TODO(phase1): migrate this manual router to Hono before route surface expands.
   const opts: WebServerOptions = {
     host: input?.host ?? '127.0.0.1',
     port: input?.port ?? 3210,
@@ -44,107 +67,63 @@ export function createWebServer(
     runQueue: input?.runQueue || new TalkRunQueue(),
   };
 
-  const server = http.createServer((req, res) => {
-    void handleRequest(req, res, opts);
-  });
+  const app = buildApp(opts);
+  let server: ReturnType<typeof serve> | null = null;
 
   return {
-    server,
-    start: () =>
-      new Promise((resolve, reject) => {
-        server.once('error', reject);
-        server.listen(opts.port, opts.host, () => {
-          const address = server.address();
-          const resolvedPort =
-            address && typeof address === 'object' ? address.port : opts.port;
-          resolve({ host: opts.host, port: resolvedPort });
-        });
-      }),
-    stop: () =>
-      new Promise((resolve, reject) => {
-        server.close((err) => {
+    get server() {
+      return server;
+    },
+    request: async (path: string, init?: RequestInit) => {
+      const normalizedPath = path.startsWith('/') ? path : `/${path}`;
+      const url =
+        path.startsWith('http://') || path.startsWith('https://')
+          ? path
+          : `http://localhost${normalizedPath}`;
+      return app.request(url, init);
+    },
+    start: async () => {
+      if (server) {
+        const address = server.address();
+        const resolvedPort =
+          address && typeof address === 'object' ? address.port : opts.port;
+        return { host: opts.host, port: resolvedPort };
+      }
+
+      server = serve({
+        fetch: app.fetch,
+        hostname: opts.host,
+        port: opts.port,
+      });
+
+      const address = server.address();
+      const resolvedPort =
+        address && typeof address === 'object' ? address.port : opts.port;
+      return { host: opts.host, port: resolvedPort };
+    },
+    stop: async () => {
+      if (!server) return;
+      await new Promise<void>((resolve, reject) => {
+        server!.close((err) => {
           if (err) reject(err);
           else resolve();
         });
-      }),
+      });
+      server = null;
+    },
   };
 }
 
-async function handleRequest(
-  req: IncomingMessage,
-  res: ServerResponse,
-  opts: WebServerOptions,
-): Promise<void> {
-  const method = (req.method || 'GET').toUpperCase();
-  const url = new URL(
-    req.url || '/',
-    `http://${req.headers.host || 'localhost'}`,
-  );
-  const path = url.pathname;
+function buildApp(opts: WebServerOptions): Hono {
+  const app = new Hono();
 
-  if (method === 'GET' && path === '/api/v1/health') {
-    const health = await healthResponse();
-    if (!health.ok) {
-      sendJson(res, 503, health);
-      return;
-    }
-    sendJson(res, 200, health);
-    return;
-  }
-
-  const auth = authenticateRequest({
-    authorization: stringHeader(req.headers.authorization),
-    cookie: stringHeader(req.headers.cookie),
-  });
-  if (!auth) {
-    sendJson(res, 401, {
-      ok: false,
-      error: {
-        code: 'unauthorized',
-        message: 'Authentication is required',
-      },
-    });
-    return;
-  }
-
-  const rateBucket = selectRateBucket(method, path);
-  const rate = checkRateLimit({ userId: auth.userId, bucket: rateBucket });
-  if (!rate.allowed) {
-    sendJson(
-      res,
-      429,
-      {
-        ok: false,
-        error: {
-          code: 'rate_limited',
-          message: 'Rate limit exceeded',
-          details: {
-            limit: rate.limit,
-            retryAfterSec: rate.retryAfterSec,
-          },
-        },
-      },
-      {
-        'retry-after': String(rate.retryAfterSec),
-      },
-    );
-    return;
-  }
-
-  if (isMutating(method)) {
-    let bodyText = '';
-    try {
-      bodyText = await readBody(req, MAX_REQUEST_BODY_BYTES);
-    } catch (err) {
-      if (err instanceof RequestBodyTooLargeError) {
-        // Close the connection after emitting 413 so oversized uploads
-        // cannot keep the socket open.
-        res.once('finish', () => {
-          if (!req.destroyed) req.destroy();
-        });
-        sendJson(
-          res,
-          413,
+  app.use(
+    '/api/v1/*',
+    bodyLimit({
+      maxSize: MAX_REQUEST_BODY_BYTES,
+      onError: (c) => {
+        c.header('Connection', 'close');
+        return c.json(
           {
             ok: false,
             error: {
@@ -152,176 +131,546 @@ async function handleRequest(
               message: `Request body exceeds ${MAX_REQUEST_BODY_BYTES} bytes`,
             },
           },
-          { connection: 'close' },
+          413,
         );
-        return;
-      }
-      sendJson(res, 400, {
-        ok: false,
-        error: {
-          code: 'invalid_request_body',
-          message: 'Unable to read request body',
-        },
-      });
-      return;
-    }
-
-    const csrfResult = validateCsrfToken({
-      method,
-      authType: auth.authType,
-      cookieHeader: stringHeader(req.headers.cookie),
-      csrfHeader: stringHeader(req.headers['x-csrf-token']),
-    });
-    if (!csrfResult.ok) {
-      sendJson(res, 403, {
-        ok: false,
-        error: {
-          code: 'csrf_failed',
-          message: csrfResult.reason,
-        },
-      });
-      return;
-    }
-
-    const precheck = idempotencyPrecheck({
-      userId: auth.userId,
-      idempotencyKey: stringHeader(req.headers['idempotency-key']) || null,
-      method,
-      path,
-      bodyText,
-    });
-    if (precheck.error) {
-      sendJson(res, 400, {
-        ok: false,
-        error: {
-          code: 'idempotency_error',
-          message: precheck.error,
-        },
-      });
-      return;
-    }
-
-    if (precheck.replay && precheck.response) {
-      res.setHeader('x-idempotent-replay', 'true');
-      res.writeHead(precheck.response.statusCode, {
-        'content-type': 'application/json; charset=utf-8',
-      });
-      res.end(precheck.response.responseBody);
-      return;
-    }
-
-    if (method === 'POST') {
-      const cancelMatch = path.match(
-        /^\/api\/v1\/talks\/([^/]+)\/chat\/cancel$/,
-      );
-      if (cancelMatch) {
-        const talkId = safeDecodePathSegment(cancelMatch[1]);
-        if (!talkId) {
-          sendJson(res, 400, {
-            ok: false,
-            error: {
-              code: 'invalid_talk_id',
-              message: 'Talk ID path segment is not valid URL encoding',
-            },
-          });
-          return;
-        }
-
-        const result = cancelTalkChat({
-          talkId,
-          auth,
-          runQueue: opts.runQueue,
-        });
-        const serialized = JSON.stringify(result.body);
-        saveIdempotencyResult({
-          userId: auth.userId,
-          idempotencyKey: stringHeader(req.headers['idempotency-key']) || null,
-          method,
-          path,
-          requestHash: precheck.requestHash,
-          statusCode: result.statusCode,
-          responseBody: serialized,
-        });
-        sendJson(res, result.statusCode, result.body);
-        return;
-      }
-    }
-
-    sendJson(res, 404, {
-      ok: false,
-      error: {
-        code: 'not_found',
-        message: 'Route not found',
       },
+    }),
+  );
+
+  app.get('/api/v1/health', async (c) => {
+    const health = await healthResponse();
+    return c.json(health, health.ok ? 200 : 503);
+  });
+
+  app.post('/api/v1/auth/google/start', async (c) => {
+    try {
+      const payload = startGoogleOAuth();
+      return c.json({ ok: true, data: payload }, 200);
+    } catch (err) {
+      return authErrorResponse(c, err);
+    }
+  });
+
+  app.get('/api/v1/auth/google/callback', async (c) => {
+    try {
+      const state = c.req.query('state') || '';
+      const email = c.req.query('email') || undefined;
+      const displayName = c.req.query('name') || undefined;
+      const result = completeGoogleOAuthCallback({
+        state,
+        email,
+        displayName,
+        ipAddress: getClientIp(c.req.header('x-forwarded-for')),
+        userAgent: c.req.header('user-agent'),
+      });
+      setSessionCookies(c, result.session);
+      return c.json(
+        {
+          ok: true,
+          data: {
+            user: normalizeUser(result.user),
+            accessExpiresAt: result.session.accessExpiresAt,
+            refreshExpiresAt: result.session.refreshExpiresAt,
+          },
+        },
+        200,
+      );
+    } catch (err) {
+      return authErrorResponse(c, err);
+    }
+  });
+
+  app.post('/api/v1/auth/refresh', async (c) => {
+    try {
+      const refreshToken =
+        getCookie(c, REFRESH_TOKEN_COOKIE) ||
+        c.req.header('x-refresh-token') ||
+        '';
+      const result = refreshSession(refreshToken);
+      setSessionCookies(c, result.session);
+      return c.json(
+        {
+          ok: true,
+          data: {
+            user: normalizeUser(result.user),
+            accessExpiresAt: result.session.accessExpiresAt,
+            refreshExpiresAt: result.session.refreshExpiresAt,
+          },
+        },
+        200,
+      );
+    } catch (err) {
+      return authErrorResponse(c, err);
+    }
+  });
+
+  app.post('/api/v1/auth/device/start', async (c) => {
+    try {
+      const payload = startDeviceAuthFlow();
+      return c.json({ ok: true, data: payload }, 200);
+    } catch (err) {
+      return authErrorResponse(c, err);
+    }
+  });
+
+  app.post('/api/v1/auth/device/complete', async (c) => {
+    try {
+      const body = (await c.req.json().catch(() => ({}))) as {
+        deviceCode?: string;
+        email?: string;
+        displayName?: string;
+      };
+      const result = completeDeviceAuthFlow({
+        deviceCode: body.deviceCode || '',
+        email: body.email || '',
+        displayName: body.displayName,
+        ipAddress: getClientIp(c.req.header('x-forwarded-for')),
+        userAgent: c.req.header('user-agent'),
+      });
+
+      return c.json(
+        {
+          ok: true,
+          data: {
+            accessToken: result.session.accessToken,
+            refreshToken: result.session.refreshToken,
+            expiresInSec: ACCESS_TOKEN_TTL_SEC,
+            user: normalizeUser(result.user),
+          },
+        },
+        200,
+      );
+    } catch (err) {
+      return authErrorResponse(c, err);
+    }
+  });
+
+  app.post('/api/v1/auth/logout', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+
+    logoutSession(auth.sessionId);
+    clearSessionCookies(c);
+    return c.json({ ok: true, data: { loggedOut: true } }, 200);
+  });
+
+  app.get('/api/v1/session/me', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+
+    const user = getUserById(auth.userId);
+    if (!user || user.is_active !== 1) return unauthorized(c);
+
+    return c.json({ ok: true, data: { user: normalizeUser(user) } }, 200);
+  });
+
+  app.post('/api/v1/settings/users/invite', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+
+    if (auth.role !== 'owner' && auth.role !== 'admin') {
+      return c.json(
+        {
+          ok: false,
+          error: {
+            code: 'forbidden',
+            message: 'Owner or admin role required',
+          },
+        },
+        403,
+      );
+    }
+
+    const csrf = validateCsrfToken({
+      method: c.req.method,
+      authType: auth.authType,
+      cookieHeader: c.req.header('cookie'),
+      csrfHeader: c.req.header('x-csrf-token'),
     });
-    return;
-  }
+    if (!csrf.ok) {
+      return c.json(
+        {
+          ok: false,
+          error: {
+            code: 'csrf_failed',
+            message: csrf.reason,
+          },
+        },
+        403,
+      );
+    }
 
-  if (method === 'GET' && path === '/api/v1/status') {
-    const payload = await statusResponse(opts.keychain);
-    sendJson(res, 200, payload);
-    return;
-  }
+    const body = (await c.req.json().catch(() => ({}))) as {
+      email?: string;
+      role?: 'admin' | 'member';
+    };
+    const email = (body.email || '').trim().toLowerCase();
+    if (!email) {
+      return c.json(
+        {
+          ok: false,
+          error: { code: 'email_required', message: 'email is required' },
+        },
+        400,
+      );
+    }
 
-  if (method === 'GET' && path === '/api/v1/events') {
-    const lastEventId = parseLastEventId(
-      stringHeader(req.headers['last-event-id']),
+    const invite = createInvite({
+      inviterUserId: auth.userId,
+      email,
+      role: body.role === 'admin' ? 'admin' : 'member',
+    });
+
+    return c.json(
+      {
+        ok: true,
+        data: {
+          inviteId: invite.inviteId,
+          email,
+          role: body.role === 'admin' ? 'admin' : 'member',
+          expiresAt: invite.expiresAt,
+        },
+      },
+      200,
     );
+  });
+
+  app.get('/api/v1/status', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+
+    const rateResult = checkRateLimit({ userId: auth.userId, bucket: 'read' });
+    if (!rateResult.allowed) {
+      return c.json(
+        {
+          ok: false,
+          error: {
+            code: 'rate_limited',
+            message: 'Rate limit exceeded',
+            details: {
+              limit: rateResult.limit,
+              retryAfterSec: rateResult.retryAfterSec,
+            },
+          },
+        },
+        429,
+        {
+          'retry-after': String(rateResult.retryAfterSec),
+        },
+      );
+    }
+
+    const payload = await statusResponse(opts.keychain);
+    return c.json(payload, 200);
+  });
+
+  app.get('/api/v1/events', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+
+    const rateResult = checkRateLimit({ userId: auth.userId, bucket: 'read' });
+    if (!rateResult.allowed) {
+      return c.json(
+        {
+          ok: false,
+          error: {
+            code: 'rate_limited',
+            message: 'Rate limit exceeded',
+            details: {
+              limit: rateResult.limit,
+              retryAfterSec: rateResult.retryAfterSec,
+            },
+          },
+        },
+        429,
+      );
+    }
+
+    const lastEventId = parseLastEventId(c.req.header('last-event-id'));
     const stream = buildUserScopedSseStream({
       userId: auth.userId,
       lastEventId,
     });
-    sendSse(res, stream);
-    return;
-  }
 
-  const talkEventMatch = path.match(/^\/api\/v1\/talks\/([^/]+)\/events$/);
-  if (method === 'GET' && talkEventMatch) {
-    const talkId = safeDecodePathSegment(talkEventMatch[1]);
+    return c.body(`retry: 3000\n${stream}`, 200, {
+      'content-type': 'text/event-stream; charset=utf-8',
+      'cache-control': 'no-cache',
+      connection: 'keep-alive',
+      'x-clawrocket-sse-mode': 'snapshot',
+    });
+  });
+
+  app.get('/api/v1/talks/:talkId/events', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+
+    const encodedTalkId = c.req.param('talkId');
+    const talkId = safeDecodePathSegment(encodedTalkId);
     if (!talkId) {
-      sendJson(res, 400, {
-        ok: false,
-        error: {
-          code: 'invalid_talk_id',
-          message: 'Talk ID path segment is not valid URL encoding',
+      return c.json(
+        {
+          ok: false,
+          error: {
+            code: 'invalid_talk_id',
+            message: 'Talk ID path segment is not valid URL encoding',
+          },
         },
-      });
-      return;
+        400,
+      );
     }
 
-    if (!canAccessTalk(talkId, auth.userId)) {
-      sendJson(res, 404, {
-        ok: false,
-        error: {
-          code: 'talk_not_found',
-          message: 'Talk not found',
+    if (!canUserAccessTalk(talkId, auth.userId)) {
+      return c.json(
+        {
+          ok: false,
+          error: {
+            code: 'talk_not_found',
+            message: 'Talk not found',
+          },
         },
-      });
-      return;
+        404,
+      );
     }
 
-    const lastEventId = parseLastEventId(
-      stringHeader(req.headers['last-event-id']),
-    );
+    const rateResult = checkRateLimit({ userId: auth.userId, bucket: 'read' });
+    if (!rateResult.allowed) {
+      return c.json(
+        {
+          ok: false,
+          error: {
+            code: 'rate_limited',
+            message: 'Rate limit exceeded',
+            details: {
+              limit: rateResult.limit,
+              retryAfterSec: rateResult.retryAfterSec,
+            },
+          },
+        },
+        429,
+      );
+    }
+
+    const lastEventId = parseLastEventId(c.req.header('last-event-id'));
     const stream = buildTalkScopedSseStream({ talkId, lastEventId });
-    sendSse(res, stream);
-    return;
-  }
 
-  sendJson(res, 404, {
-    ok: false,
-    error: {
-      code: 'not_found',
-      message: 'Route not found',
-    },
+    return c.body(`retry: 3000\n${stream}`, 200, {
+      'content-type': 'text/event-stream; charset=utf-8',
+      'cache-control': 'no-cache',
+      connection: 'keep-alive',
+      'x-clawrocket-sse-mode': 'snapshot',
+    });
+  });
+
+  app.post('/api/v1/talks/:talkId/chat/cancel', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+
+    const rateResult = checkRateLimit({
+      userId: auth.userId,
+      bucket: 'chat_write',
+    });
+    if (!rateResult.allowed) {
+      return c.json(
+        {
+          ok: false,
+          error: {
+            code: 'rate_limited',
+            message: 'Rate limit exceeded',
+            details: {
+              limit: rateResult.limit,
+              retryAfterSec: rateResult.retryAfterSec,
+            },
+          },
+        },
+        429,
+        {
+          'retry-after': String(rateResult.retryAfterSec),
+        },
+      );
+    }
+
+    const csrf = validateCsrfToken({
+      method: c.req.method,
+      authType: auth.authType,
+      cookieHeader: c.req.header('cookie'),
+      csrfHeader: c.req.header('x-csrf-token'),
+    });
+    if (!csrf.ok) {
+      return c.json(
+        {
+          ok: false,
+          error: {
+            code: 'csrf_failed',
+            message: csrf.reason,
+          },
+        },
+        403,
+      );
+    }
+
+    const bodyText = await c.req.text();
+    const idempotencyKey = c.req.header('idempotency-key') || null;
+    const precheck = idempotencyPrecheck({
+      userId: auth.userId,
+      idempotencyKey,
+      method: c.req.method,
+      path: c.req.path,
+      bodyText,
+    });
+    if (precheck.error) {
+      return c.json(
+        {
+          ok: false,
+          error: {
+            code: 'idempotency_error',
+            message: precheck.error,
+          },
+        },
+        400,
+      );
+    }
+
+    if (precheck.replay && precheck.response) {
+      return new Response(precheck.response.responseBody, {
+        status: precheck.response.statusCode,
+        headers: {
+          'content-type': 'application/json; charset=utf-8',
+          'x-idempotent-replay': 'true',
+        },
+      });
+    }
+
+    const encodedTalkId = c.req.param('talkId');
+    const talkId = safeDecodePathSegment(encodedTalkId);
+    if (!talkId) {
+      return c.json(
+        {
+          ok: false,
+          error: {
+            code: 'invalid_talk_id',
+            message: 'Talk ID path segment is not valid URL encoding',
+          },
+        },
+        400,
+      );
+    }
+
+    const result = cancelTalkChat({
+      talkId,
+      auth,
+      runQueue: opts.runQueue,
+    });
+
+    const serialized = JSON.stringify(result.body);
+    saveIdempotencyResult({
+      userId: auth.userId,
+      idempotencyKey,
+      method: c.req.method,
+      path: c.req.path,
+      requestHash: precheck.requestHash,
+      statusCode: result.statusCode,
+      responseBody: serialized,
+    });
+
+    return new Response(JSON.stringify(result.body), {
+      status: result.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
+  });
+
+  app.all('/api/v1/*', (c) => {
+    return c.json(
+      {
+        ok: false,
+        error: {
+          code: 'not_found',
+          message: 'Route not found',
+        },
+      },
+      404,
+    );
+  });
+
+  return app;
+}
+
+function requireAuth(c: Context): AuthContext | null {
+  return authenticateRequest({
+    authorization: c.req.header('authorization'),
+    cookie: c.req.header('cookie'),
   });
 }
 
-function stringHeader(
-  value: string | string[] | undefined,
-): string | undefined {
-  if (Array.isArray(value)) return value[0];
-  return value;
+function unauthorized(c: Context) {
+  return c.json(
+    {
+      ok: false,
+      error: {
+        code: 'unauthorized',
+        message: 'Authentication is required',
+      },
+    },
+    401,
+  );
+}
+
+function authErrorResponse(c: Context, err: unknown) {
+  if (err instanceof AuthError) {
+    return new Response(
+      JSON.stringify({
+        ok: false,
+        error: {
+          code: err.code,
+          message: err.message,
+        },
+      }),
+      {
+        status: err.status,
+        headers: { 'content-type': 'application/json; charset=utf-8' },
+      },
+    );
+  }
+
+  return c.json(
+    {
+      ok: false,
+      error: {
+        code: 'internal_error',
+        message: err instanceof Error ? err.message : 'Unknown error',
+      },
+    },
+    500,
+  );
+}
+
+function setSessionCookies(c: Context, session: SessionCookieInput): void {
+  setCookie(c, ACCESS_TOKEN_COOKIE, session.accessToken, {
+    httpOnly: true,
+    secure: WEB_SECURE_COOKIES,
+    sameSite: 'Lax',
+    path: '/',
+    maxAge: ACCESS_TOKEN_TTL_SEC,
+  });
+  setCookie(c, REFRESH_TOKEN_COOKIE, session.refreshToken, {
+    httpOnly: true,
+    secure: WEB_SECURE_COOKIES,
+    sameSite: 'Lax',
+    path: '/',
+    maxAge: REFRESH_TOKEN_TTL_SEC,
+  });
+  setCookie(c, CSRF_TOKEN_COOKIE, session.csrfToken, {
+    httpOnly: false,
+    secure: WEB_SECURE_COOKIES,
+    sameSite: 'Lax',
+    path: '/',
+    maxAge: ACCESS_TOKEN_TTL_SEC,
+  });
+}
+
+function clearSessionCookies(c: Context): void {
+  deleteCookie(c, ACCESS_TOKEN_COOKIE, { path: '/' });
+  deleteCookie(c, REFRESH_TOKEN_COOKIE, { path: '/' });
+  deleteCookie(c, CSRF_TOKEN_COOKIE, { path: '/' });
 }
 
 function parseLastEventId(value: string | undefined): number {
@@ -338,41 +687,30 @@ function safeDecodePathSegment(value: string): string | null {
   }
 }
 
-function selectRateBucket(
-  method: string,
-  path: string,
-): 'chat_write' | 'write' | 'read' {
-  if (!isMutating(method)) return 'read';
-  if (/^\/api\/v1\/talks\/[^/]+\/chat(?:\/|$)/.test(path)) {
-    return 'chat_write';
-  }
-  return 'write';
+function normalizeUser(user: UserLike) {
+  return {
+    id: user.id,
+    email: user.email,
+    displayName: user.display_name,
+    role: user.role,
+  };
 }
 
-function isMutating(method: string): boolean {
-  return ['POST', 'PATCH', 'PUT', 'DELETE'].includes(method.toUpperCase());
+function getClientIp(xForwardedFor: string | undefined): string | undefined {
+  if (!xForwardedFor) return undefined;
+  const first = xForwardedFor.split(',')[0]?.trim();
+  return first || undefined;
 }
 
-class RequestBodyTooLargeError extends Error {
-  constructor(limitBytes: number) {
-    super(`Request body exceeds ${limitBytes} bytes`);
-  }
-}
+type SessionCookieInput = {
+  accessToken: string;
+  refreshToken: string;
+  csrfToken: string;
+};
 
-async function readBody(
-  req: IncomingMessage,
-  maxBytes: number,
-): Promise<string> {
-  const chunks: Buffer[] = [];
-  let totalBytes = 0;
-  for await (const chunk of req) {
-    const part = Buffer.from(chunk);
-    totalBytes += part.length;
-    if (totalBytes > maxBytes) {
-      req.pause();
-      throw new RequestBodyTooLargeError(maxBytes);
-    }
-    chunks.push(part);
-  }
-  return Buffer.concat(chunks).toString('utf-8');
-}
+type UserLike = {
+  id: string;
+  email: string;
+  display_name: string;
+  role: string;
+};

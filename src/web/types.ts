@@ -19,6 +19,7 @@ export interface ApiFailure {
 export type ApiEnvelope<T> = ApiSuccess<T> | ApiFailure;
 
 export interface AuthContext {
+  sessionId: string;
   userId: string;
   role: UserRole;
   authType: 'cookie' | 'bearer';

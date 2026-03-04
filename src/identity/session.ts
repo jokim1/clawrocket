@@ -1,6 +1,7 @@
 import { hashOpaqueToken } from '../security/hash.js';
 
 export const ACCESS_TOKEN_COOKIE = 'cr_access_token';
+export const REFRESH_TOKEN_COOKIE = 'cr_refresh_token';
 export const CSRF_TOKEN_COOKIE = 'cr_csrf_token';
 
 export function hashSessionToken(token: string): string {

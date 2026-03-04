@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 
 import {
   _initTestDatabase,
@@ -11,9 +11,8 @@ import { TalkRunQueue } from '../../talks/run-queue.js';
 import { createWebServer, WebServerHandle } from '../server.js';
 
 describe('talk routes', () => {
-  let server: WebServerHandle | undefined;
+  let server: WebServerHandle;
   let runQueue: TalkRunQueue;
-  let baseUrl = '';
 
   beforeEach(async () => {
     _initTestDatabase();
@@ -50,18 +49,10 @@ describe('talk routes', () => {
       port: 0,
       runQueue,
     });
-    const bound = await server.start();
-    baseUrl = `http://${bound.host}:${bound.port}`;
-  });
-
-  afterEach(async () => {
-    if (!server) return;
-    await server.stop();
-    server = undefined;
   });
 
   it('allows cancel without Idempotency-Key header', async () => {
-    const res = await fetch(`${baseUrl}/api/v1/talks/talk-1/chat/cancel`, {
+    const res = await server.request('/api/v1/talks/talk-1/chat/cancel', {
       method: 'POST',
       headers: {
         Authorization: 'Bearer owner-token',
@@ -75,7 +66,7 @@ describe('talk routes', () => {
   });
 
   it('cancels active talk run and supports idempotent replay', async () => {
-    const first = await fetch(`${baseUrl}/api/v1/talks/talk-1/chat/cancel`, {
+    const first = await server.request('/api/v1/talks/talk-1/chat/cancel', {
       method: 'POST',
       headers: {
         Authorization: 'Bearer owner-token',
@@ -88,7 +79,7 @@ describe('talk routes', () => {
     expect(firstBody.ok).toBe(true);
     expect(firstBody.data.cancelledRuns).toBe(1);
 
-    const replay = await fetch(`${baseUrl}/api/v1/talks/talk-1/chat/cancel`, {
+    const replay = await server.request('/api/v1/talks/talk-1/chat/cancel', {
       method: 'POST',
       headers: {
         Authorization: 'Bearer owner-token',
@@ -101,7 +92,7 @@ describe('talk routes', () => {
   });
 
   it('requires csrf for cookie-authenticated writes', async () => {
-    const res = await fetch(`${baseUrl}/api/v1/talks/talk-1/chat/cancel`, {
+    const res = await server.request('/api/v1/talks/talk-1/chat/cancel', {
       method: 'POST',
       headers: {
         Cookie: 'cr_access_token=owner-token; cr_csrf_token=csrf-a',
@@ -117,7 +108,7 @@ describe('talk routes', () => {
 
   it('rejects oversized request bodies', async () => {
     const hugeBody = 'x'.repeat(10 * 1024 * 1024 + 1);
-    const res = await fetch(`${baseUrl}/api/v1/talks/talk-1/chat/cancel`, {
+    const res = await server.request('/api/v1/talks/talk-1/chat/cancel', {
       method: 'POST',
       headers: {
         Authorization: 'Bearer owner-token',
@@ -132,7 +123,7 @@ describe('talk routes', () => {
   });
 
   it('rejects malformed percent-encoding in talk id', async () => {
-    const res = await fetch(`${baseUrl}/api/v1/talks/%ZZ/chat/cancel`, {
+    const res = await server.request('/api/v1/talks/%ZZ/chat/cancel', {
       method: 'POST',
       headers: {
         Authorization: 'Bearer owner-token',

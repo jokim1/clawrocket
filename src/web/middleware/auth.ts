@@ -45,6 +45,7 @@ function resolveToken(
   if (!user || !user.is_active) return null;
 
   return {
+    sessionId: session.id,
     userId: user.id,
     role: user.role,
     authType,
