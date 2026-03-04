@@ -1,3 +1,7 @@
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
+
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import {
@@ -67,5 +71,69 @@ describe('system routes', () => {
     if (!failed.ok) {
       expect(failed.error.code).toBe('db_unavailable');
     }
+  });
+
+  it('serves SPA index fallback with CSP from configured dist directory', async () => {
+    const distDir = fs.mkdtempSync(path.join(os.tmpdir(), 'clawrocket-web-'));
+    try {
+      fs.writeFileSync(
+        path.join(distDir, 'index.html'),
+        '<!doctype html><html><body><div id="root"></div></body></html>',
+      );
+      fs.mkdirSync(path.join(distDir, 'assets'), { recursive: true });
+      fs.writeFileSync(
+        path.join(distDir, 'assets', 'app-abc123.js'),
+        'console.log(1);',
+      );
+      fs.writeFileSync(path.join(distDir, 'robots.txt'), 'User-agent: *');
+
+      const webServer = createWebServer({
+        host: '127.0.0.1',
+        port: 0,
+        keychain: noopKeychainBridge,
+        webAppDistDir: distDir,
+      });
+
+      const routeRes = await webServer.request('/app/talks');
+      expect(routeRes.status).toBe(200);
+      expect(routeRes.headers.get('content-type')).toContain('text/html');
+      expect(routeRes.headers.get('cache-control')).toBe('no-cache');
+      expect(routeRes.headers.get('content-security-policy')).toContain(
+        "default-src 'self'",
+      );
+
+      const assetRes = await webServer.request('/assets/app-abc123.js');
+      expect(assetRes.status).toBe(200);
+      expect(assetRes.headers.get('content-type')).toContain(
+        'application/javascript',
+      );
+      expect(assetRes.headers.get('cache-control')).toBe(
+        'public, max-age=31536000, immutable',
+      );
+
+      const plainStaticRes = await webServer.request('/robots.txt');
+      expect(plainStaticRes.status).toBe(200);
+      expect(plainStaticRes.headers.get('cache-control')).toBe(
+        'public, max-age=3600',
+      );
+    } finally {
+      fs.rmSync(distDir, { recursive: true, force: true });
+    }
+  });
+
+  it('returns 404 for SPA routes when dist directory is unavailable', async () => {
+    const missingDir = path.join(
+      os.tmpdir(),
+      `clawrocket-web-missing-${Date.now()}`,
+    );
+    const webServer = createWebServer({
+      host: '127.0.0.1',
+      port: 0,
+      keychain: noopKeychainBridge,
+      webAppDistDir: missingDir,
+    });
+
+    const res = await webServer.request('/app/talks');
+    expect(res.status).toBe(404);
   });
 });
