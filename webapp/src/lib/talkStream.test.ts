@@ -148,4 +148,33 @@ describe('openTalkStream', () => {
     expect(first.close).toHaveBeenCalledTimes(1);
     expect(FakeEventSource.instances).toHaveLength(2);
   });
+
+  it('closes externally and prevents further reconnect attempts', async () => {
+    const handle = openTalkStream({
+      talkId: 'talk-1',
+      onUnauthorized: vi.fn(),
+      onReplayGap: vi.fn(),
+      onMessageAppended: vi.fn(),
+      onRunStarted: vi.fn(),
+      onRunQueued: vi.fn(),
+      onRunCompleted: vi.fn(),
+      onRunFailed: vi.fn(),
+      onRunCancelled: vi.fn(),
+      createEventSource: (url) => new FakeEventSource(url),
+      probeSession: vi.fn(async () => true),
+      jitterMs: () => 0,
+    });
+
+    expect(FakeEventSource.instances).toHaveLength(1);
+    const first = FakeEventSource.instances[0];
+
+    handle.close();
+    expect(first.close).toHaveBeenCalledTimes(1);
+
+    first.emitError();
+    await vi.runAllTicks();
+    await vi.advanceTimersByTimeAsync(10_000);
+
+    expect(FakeEventSource.instances).toHaveLength(1);
+  });
 });

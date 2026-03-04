@@ -346,6 +346,11 @@ export function TalkDetailPage({
   const timelineRef = useRef<HTMLDivElement | null>(null);
   const endRef = useRef<HTMLDivElement | null>(null);
   const autoStickToBottomRef = useRef(false);
+  const onUnauthorizedRef = useRef(onUnauthorized);
+
+  useEffect(() => {
+    onUnauthorizedRef.current = onUnauthorized;
+  }, [onUnauthorized]);
 
   const streamBadgeLabel = useMemo(() => {
     switch (state.streamState) {
@@ -384,12 +389,16 @@ export function TalkDetailPage({
       autoStickToBottomRef.current = true;
     } catch (err) {
       if (err instanceof UnauthorizedError) {
-        onUnauthorized();
+        onUnauthorizedRef.current();
         return;
       }
       // Ignore transient sync failures; next stream reconnect/replay can recover.
     }
-  }, [onUnauthorized, talkId]);
+  }, [talkId]);
+
+  const handleUnauthorized = useCallback(() => {
+    onUnauthorizedRef.current();
+  }, []);
 
   const handleMessageAppended = useCallback(
     (event: MessageAppendedEvent) => {
@@ -498,7 +507,7 @@ export function TalkDetailPage({
         }
       } catch (err) {
         if (err instanceof UnauthorizedError) {
-          onUnauthorized();
+          handleUnauthorized();
           return;
         }
         if (err instanceof ApiError && err.status === 404) {
@@ -526,14 +535,14 @@ export function TalkDetailPage({
     return () => {
       cancelled = true;
     };
-  }, [onUnauthorized, talkId]);
+  }, [handleUnauthorized, talkId]);
 
   useEffect(() => {
     if (state.kind !== 'ready') return;
 
     const stream = openTalkStream({
       talkId,
-      onUnauthorized,
+      onUnauthorized: handleUnauthorized,
       onMessageAppended: handleMessageAppended,
       onRunStarted: handleRunStarted,
       onRunQueued: handleRunQueued,
@@ -574,7 +583,7 @@ export function TalkDetailPage({
     handleRunFailed,
     handleRunQueued,
     handleRunStarted,
-    onUnauthorized,
+    handleUnauthorized,
     resyncMessages,
     state.kind,
     talkId,
@@ -636,7 +645,7 @@ export function TalkDetailPage({
       dispatch({ type: 'SEND_CLEARED' });
     } catch (err) {
       if (err instanceof UnauthorizedError) {
-        onUnauthorized();
+        handleUnauthorized();
         return;
       }
 
@@ -662,7 +671,7 @@ export function TalkDetailPage({
       });
     } catch (err) {
       if (err instanceof UnauthorizedError) {
-        onUnauthorized();
+        handleUnauthorized();
         return;
       }
 
