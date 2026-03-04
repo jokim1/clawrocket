@@ -1,4 +1,10 @@
-type RateLimitBucket = 'chat_write' | 'write' | 'read';
+type RateLimitBucket =
+  | 'chat_write'
+  | 'write'
+  | 'read'
+  | 'auth_start'
+  | 'auth_callback'
+  | 'auth_sensitive';
 
 interface CounterState {
   count: number;
@@ -6,7 +12,8 @@ interface CounterState {
 }
 
 interface RateLimitCheckInput {
-  userId: string;
+  userId?: string;
+  principalId?: string;
   bucket: RateLimitBucket;
   nowMs?: number;
 }
@@ -23,6 +30,9 @@ const LIMITS: Record<RateLimitBucket, number> = {
   chat_write: 20,
   write: 60,
   read: 300,
+  auth_start: 30,
+  auth_callback: 30,
+  auth_sensitive: 10,
 };
 
 // Phase 0 limitation: rate-limit state is process-local memory.
@@ -32,7 +42,8 @@ const state = new Map<string, CounterState>();
 export function checkRateLimit(input: RateLimitCheckInput): RateLimitResult {
   const nowMs = input.nowMs ?? Date.now();
   const limit = LIMITS[input.bucket];
-  const key = `${input.userId}:${input.bucket}`;
+  const principalId = input.principalId || input.userId || 'anonymous';
+  const key = `${principalId}:${input.bucket}`;
 
   const existing = state.get(key);
   if (!existing || nowMs - existing.windowStartMs >= WINDOW_MS) {

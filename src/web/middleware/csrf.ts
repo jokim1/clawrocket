@@ -18,6 +18,9 @@ export function validateCsrfToken(input: {
   if (!requiresCsrfValidation(input.method)) return { ok: true };
   if (input.authType !== 'cookie') return { ok: true };
 
+  // Double-submit CSRF is intentionally stateless: token equality between
+  // non-httpOnly cookie and X-CSRF-Token header is the validation rule.
+  // There is no server-side CSRF token store in this model.
   const cookies = parseCookieHeader(input.cookieHeader);
   const cookieToken = cookies[CSRF_TOKEN_COOKIE];
   if (!cookieToken) {

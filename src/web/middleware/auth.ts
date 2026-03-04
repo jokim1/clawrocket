@@ -39,7 +39,8 @@ function resolveToken(
   const tokenHash = hashSessionToken(rawToken);
   const session = getWebSessionByAccessTokenHash(tokenHash);
   if (!session || session.revoked_at) return null;
-  if (new Date(session.expires_at).getTime() <= Date.now()) return null;
+  const accessExpiry = session.access_expires_at || session.expires_at;
+  if (new Date(accessExpiry).getTime() <= Date.now()) return null;
 
   const user = getUserById(session.user_id);
   if (!user || !user.is_active) return null;

@@ -1,4 +1,5 @@
 import { serve } from '@hono/node-server';
+import { getConnInfo } from '@hono/node-server/conninfo';
 import { bodyLimit } from 'hono/body-limit';
 import { deleteCookie, getCookie, setCookie } from 'hono/cookie';
 import { Context, Hono } from 'hono';
@@ -31,7 +32,10 @@ import {
   idempotencyPrecheck,
   saveIdempotencyResult,
 } from './middleware/idempotency.js';
-import { checkRateLimit } from './middleware/rate-limit.js';
+import {
+  checkRateLimit,
+  type RateLimitResult,
+} from './middleware/rate-limit.js';
 import {
   buildTalkScopedSseStream,
   buildUserScopedSseStream,
@@ -143,6 +147,12 @@ function buildApp(opts: WebServerOptions): Hono {
   });
 
   app.post('/api/v1/auth/google/start', async (c) => {
+    const rateResult = checkRateLimit({
+      principalId: getRequestRateLimitPrincipal(c),
+      bucket: 'auth_start',
+    });
+    if (!rateResult.allowed) return rateLimitedResponse(c, rateResult);
+
     try {
       const payload = startGoogleOAuth();
       return c.json({ ok: true, data: payload }, 200);
@@ -152,6 +162,12 @@ function buildApp(opts: WebServerOptions): Hono {
   });
 
   app.get('/api/v1/auth/google/callback', async (c) => {
+    const rateResult = checkRateLimit({
+      principalId: getRequestRateLimitPrincipal(c),
+      bucket: 'auth_callback',
+    });
+    if (!rateResult.allowed) return rateLimitedResponse(c, rateResult);
+
     try {
       const state = c.req.query('state') || '';
       const email = c.req.query('email') || undefined;
@@ -181,6 +197,12 @@ function buildApp(opts: WebServerOptions): Hono {
   });
 
   app.post('/api/v1/auth/refresh', async (c) => {
+    const rateResult = checkRateLimit({
+      principalId: getRequestRateLimitPrincipal(c),
+      bucket: 'auth_sensitive',
+    });
+    if (!rateResult.allowed) return rateLimitedResponse(c, rateResult);
+
     try {
       const refreshToken =
         getCookie(c, REFRESH_TOKEN_COOKIE) ||
@@ -205,6 +227,12 @@ function buildApp(opts: WebServerOptions): Hono {
   });
 
   app.post('/api/v1/auth/device/start', async (c) => {
+    const rateResult = checkRateLimit({
+      principalId: getRequestRateLimitPrincipal(c),
+      bucket: 'auth_start',
+    });
+    if (!rateResult.allowed) return rateLimitedResponse(c, rateResult);
+
     try {
       const payload = startDeviceAuthFlow();
       return c.json({ ok: true, data: payload }, 200);
@@ -214,6 +242,12 @@ function buildApp(opts: WebServerOptions): Hono {
   });
 
   app.post('/api/v1/auth/device/complete', async (c) => {
+    const rateResult = checkRateLimit({
+      principalId: getRequestRateLimitPrincipal(c),
+      bucket: 'auth_sensitive',
+    });
+    if (!rateResult.allowed) return rateLimitedResponse(c, rateResult);
+
     try {
       const body = (await c.req.json().catch(() => ({}))) as {
         deviceCode?: string;
@@ -341,23 +375,7 @@ function buildApp(opts: WebServerOptions): Hono {
 
     const rateResult = checkRateLimit({ userId: auth.userId, bucket: 'read' });
     if (!rateResult.allowed) {
-      return c.json(
-        {
-          ok: false,
-          error: {
-            code: 'rate_limited',
-            message: 'Rate limit exceeded',
-            details: {
-              limit: rateResult.limit,
-              retryAfterSec: rateResult.retryAfterSec,
-            },
-          },
-        },
-        429,
-        {
-          'retry-after': String(rateResult.retryAfterSec),
-        },
-      );
+      return rateLimitedResponse(c, rateResult);
     }
 
     const payload = await statusResponse(opts.keychain);
@@ -370,20 +388,7 @@ function buildApp(opts: WebServerOptions): Hono {
 
     const rateResult = checkRateLimit({ userId: auth.userId, bucket: 'read' });
     if (!rateResult.allowed) {
-      return c.json(
-        {
-          ok: false,
-          error: {
-            code: 'rate_limited',
-            message: 'Rate limit exceeded',
-            details: {
-              limit: rateResult.limit,
-              retryAfterSec: rateResult.retryAfterSec,
-            },
-          },
-        },
-        429,
-      );
+      return rateLimitedResponse(c, rateResult);
     }
 
     const lastEventId = parseLastEventId(c.req.header('last-event-id'));
@@ -434,20 +439,7 @@ function buildApp(opts: WebServerOptions): Hono {
 
     const rateResult = checkRateLimit({ userId: auth.userId, bucket: 'read' });
     if (!rateResult.allowed) {
-      return c.json(
-        {
-          ok: false,
-          error: {
-            code: 'rate_limited',
-            message: 'Rate limit exceeded',
-            details: {
-              limit: rateResult.limit,
-              retryAfterSec: rateResult.retryAfterSec,
-            },
-          },
-        },
-        429,
-      );
+      return rateLimitedResponse(c, rateResult);
     }
 
     const lastEventId = parseLastEventId(c.req.header('last-event-id'));
@@ -470,23 +462,7 @@ function buildApp(opts: WebServerOptions): Hono {
       bucket: 'chat_write',
     });
     if (!rateResult.allowed) {
-      return c.json(
-        {
-          ok: false,
-          error: {
-            code: 'rate_limited',
-            message: 'Rate limit exceeded',
-            details: {
-              limit: rateResult.limit,
-              retryAfterSec: rateResult.retryAfterSec,
-            },
-          },
-        },
-        429,
-        {
-          'retry-after': String(rateResult.retryAfterSec),
-        },
-      );
+      return rateLimitedResponse(c, rateResult);
     }
 
     const csrf = validateCsrfToken({
@@ -700,6 +676,44 @@ function getClientIp(xForwardedFor: string | undefined): string | undefined {
   if (!xForwardedFor) return undefined;
   const first = xForwardedFor.split(',')[0]?.trim();
   return first || undefined;
+}
+
+function getRequestRateLimitPrincipal(c: Context): string {
+  const forwarded = getClientIp(c.req.header('x-forwarded-for'));
+  if (forwarded) return `ip:${forwarded}`;
+
+  try {
+    const connInfo = getConnInfo(c);
+    const remoteAddress = connInfo.remote.address?.trim();
+    if (remoteAddress) return `ip:${remoteAddress}`;
+  } catch {
+    // app.request() tests and non-node runtimes may not expose conninfo
+  }
+
+  return 'ip:unknown';
+}
+
+function rateLimitedResponse(
+  c: Context,
+  rateResult: RateLimitResult,
+): Response {
+  return c.json(
+    {
+      ok: false,
+      error: {
+        code: 'rate_limited',
+        message: 'Rate limit exceeded',
+        details: {
+          limit: rateResult.limit,
+          retryAfterSec: rateResult.retryAfterSec,
+        },
+      },
+    },
+    429,
+    {
+      'retry-after': String(rateResult.retryAfterSec),
+    },
+  );
 }
 
 type SessionCookieInput = {

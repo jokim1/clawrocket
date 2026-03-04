@@ -48,13 +48,14 @@ describe('web middleware', () => {
     expect(cookieAuth?.authType).toBe('cookie');
   });
 
-  it('rejects expired sessions', () => {
+  it('rejects sessions with expired access token even if refresh is still valid', () => {
     upsertWebSession({
       id: 's-expired',
       userId: 'u1',
       accessTokenHash: hashSessionToken('expired-token'),
       refreshTokenHash: hashSessionToken('expired-refresh'),
-      expiresAt: new Date(Date.now() - 60_000).toISOString(),
+      accessExpiresAt: new Date(Date.now() - 60_000).toISOString(),
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
     });
 
     const auth = authenticateRequest({

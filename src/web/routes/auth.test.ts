@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import { _initTestDatabase } from '../../db.js';
+import { _resetRateLimitStateForTests } from '../middleware/rate-limit.js';
 import { createWebServer, WebServerHandle } from '../server.js';
 
 describe('auth routes (phase 1)', () => {
@@ -8,6 +9,7 @@ describe('auth routes (phase 1)', () => {
 
   beforeEach(async () => {
     _initTestDatabase();
+    _resetRateLimitStateForTests();
     server = createWebServer({
       host: '127.0.0.1',
       port: 0,
@@ -147,6 +149,60 @@ describe('auth routes (phase 1)', () => {
     const completeBody = (await completeRes.json()) as any;
     expect(completeBody.data.accessToken).toBeTruthy();
     expect(completeBody.data.user.email).toBe('owner@example.com');
+  });
+
+  it('rate limits refresh attempts and returns retry-after', async () => {
+    for (let i = 0; i < 10; i += 1) {
+      const res = await server.request('/api/v1/auth/refresh', {
+        method: 'POST',
+        headers: {
+          'X-Forwarded-For': '1.2.3.4',
+          'X-Refresh-Token': `invalid-refresh-${i}`,
+        },
+      });
+      expect(res.status).toBe(401);
+    }
+
+    const limited = await server.request('/api/v1/auth/refresh', {
+      method: 'POST',
+      headers: {
+        'X-Forwarded-For': '1.2.3.4',
+        'X-Refresh-Token': 'invalid-refresh-over-limit',
+      },
+    });
+    expect(limited.status).toBe(429);
+    expect(limited.headers.get('retry-after')).toBeTruthy();
+  });
+
+  it('rate limits device completion attempts and returns retry-after', async () => {
+    for (let i = 0; i < 10; i += 1) {
+      const res = await server.request('/api/v1/auth/device/complete', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Forwarded-For': '5.6.7.8',
+        },
+        body: JSON.stringify({
+          deviceCode: `invalid-device-${i}`,
+          email: 'owner@example.com',
+        }),
+      });
+      expect(res.status).toBe(401);
+    }
+
+    const limited = await server.request('/api/v1/auth/device/complete', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Forwarded-For': '5.6.7.8',
+      },
+      body: JSON.stringify({
+        deviceCode: 'invalid-device-over-limit',
+        email: 'owner@example.com',
+      }),
+    });
+    expect(limited.status).toBe(429);
+    expect(limited.headers.get('retry-after')).toBeTruthy();
   });
 });
 

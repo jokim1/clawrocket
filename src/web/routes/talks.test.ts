@@ -8,6 +8,7 @@ import {
 } from '../../db.js';
 import { hashSessionToken } from '../../identity/session.js';
 import { TalkRunQueue } from '../../talks/run-queue.js';
+import { _resetRateLimitStateForTests } from '../middleware/rate-limit.js';
 import { createWebServer, WebServerHandle } from '../server.js';
 
 describe('talk routes', () => {
@@ -16,6 +17,7 @@ describe('talk routes', () => {
 
   beforeEach(async () => {
     _initTestDatabase();
+    _resetRateLimitStateForTests();
 
     upsertUser({
       id: 'owner-1',

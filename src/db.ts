@@ -1096,24 +1096,43 @@ export function consumeOAuthStateByHash(
   stateHash: string,
 ): OAuthStateRecord | undefined {
   const now = new Date().toISOString();
-  const row = db
-    .prepare(
-      `
-      SELECT *
-      FROM oauth_state
-      WHERE state_hash = ?
-        AND used_at IS NULL
-        AND expires_at > ?
-      LIMIT 1
-    `,
-    )
-    .get(stateHash, now) as OAuthStateRecord | undefined;
-  if (!row) return undefined;
-  db.prepare(`UPDATE oauth_state SET used_at = ? WHERE id = ?`).run(
-    now,
-    row.id,
+  const tx = db.transaction(
+    (
+      hashedState: string,
+      currentTime: string,
+    ): OAuthStateRecord | undefined => {
+      const row = db
+        .prepare(
+          `
+          SELECT *
+          FROM oauth_state
+          WHERE state_hash = ?
+            AND used_at IS NULL
+            AND expires_at > ?
+          LIMIT 1
+        `,
+        )
+        .get(hashedState, currentTime) as OAuthStateRecord | undefined;
+      if (!row) return undefined;
+
+      const updated = db
+        .prepare(
+          `
+          UPDATE oauth_state
+          SET used_at = ?
+          WHERE id = ?
+            AND used_at IS NULL
+            AND expires_at > ?
+        `,
+        )
+        .run(currentTime, row.id, currentTime);
+      if (updated.changes !== 1) return undefined;
+
+      return { ...row, used_at: currentTime };
+    },
   );
-  return { ...row, used_at: now };
+
+  return tx(stateHash, now);
 }
 
 // --- Device auth code accessors ---

@@ -3,7 +3,10 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import {
   _initTestDatabase,
   appendOutboxEvent,
+  canUserEditTalk,
+  consumeOAuthStateByHash,
   createTask,
+  createOAuthState,
   deleteTask,
   getIdempotencyCache,
   getOutboxEventsForTopics,
@@ -493,6 +496,46 @@ describe('phase 0 schema and reliability tables', () => {
     const events = getOutboxEventsForTopics(['talk:talk-1'], 0);
     expect(events).toHaveLength(1);
     expect(events[0].event_type).toBe('message_appended');
+  });
+
+  it('consumes oauth state only once', () => {
+    createOAuthState({
+      id: 'oauth-1',
+      provider: 'google',
+      stateHash: 'state-hash-1',
+      nonceHash: 'nonce-hash-1',
+      codeVerifierHash: 'verifier-hash-1',
+      redirectUri: 'http://127.0.0.1:3210/api/v1/auth/google/callback',
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+    });
+
+    const first = consumeOAuthStateByHash('state-hash-1');
+    expect(first?.id).toBe('oauth-1');
+    expect(first?.used_at).toBeTruthy();
+
+    const second = consumeOAuthStateByHash('state-hash-1');
+    expect(second).toBeUndefined();
+  });
+
+  it('does not change talk owner when upserting existing talk id', () => {
+    upsertUser({
+      id: 'owner-2',
+      email: 'owner2@example.com',
+      displayName: 'Owner 2',
+      role: 'member',
+    });
+
+    expect(canUserEditTalk('talk-1', 'owner-1')).toBe(true);
+    expect(canUserEditTalk('talk-1', 'owner-2')).toBe(false);
+
+    upsertTalk({
+      id: 'talk-1',
+      ownerId: 'owner-2',
+      topicTitle: 'Updated title',
+    });
+
+    expect(canUserEditTalk('talk-1', 'owner-1')).toBe(true);
+    expect(canUserEditTalk('talk-1', 'owner-2')).toBe(false);
   });
 
   it('prunes old idempotency cache records', () => {

@@ -4,6 +4,7 @@ import { _initTestDatabase, upsertUser, upsertWebSession } from '../../db.js';
 import { hashSessionToken } from '../../identity/session.js';
 import { noopKeychainBridge } from '../../secrets/keychain.js';
 import { TalkRunQueue } from '../../talks/run-queue.js';
+import { _resetRateLimitStateForTests } from '../middleware/rate-limit.js';
 import { createWebServer, WebServerHandle } from '../server.js';
 import { healthResponse } from './system.js';
 
@@ -12,6 +13,7 @@ describe('system routes', () => {
 
   beforeEach(async () => {
     _initTestDatabase();
+    _resetRateLimitStateForTests();
 
     upsertUser({
       id: 'owner-1',

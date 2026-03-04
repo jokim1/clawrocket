@@ -319,6 +319,9 @@ function resolveUserForLogin(input: {
 
   const owner = getOwnerUser();
   if (!owner) {
+    // Single-process runtime with synchronous better-sqlite3 keeps this
+    // owner-claim path effectively serialized. Multi-instance hardening
+    // (DB-level uniqueness/locking) is intentionally deferred.
     const userId = crypto.randomUUID();
     upsertUser({
       id: userId,
