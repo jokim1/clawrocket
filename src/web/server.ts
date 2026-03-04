@@ -678,7 +678,6 @@ function buildApp(opts: WebServerOptions): Hono {
       talkId,
       auth,
       content: payload.data.content || '',
-      runQueue: opts.runQueue,
       idempotencyKey,
     });
 

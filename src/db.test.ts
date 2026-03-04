@@ -10,6 +10,7 @@ import {
   createTask,
   createOAuthState,
   deleteTask,
+  enqueueTalkTurnAtomic,
   getTalkById,
   getTalkForUser,
   getIdempotencyCache,
@@ -597,6 +598,69 @@ describe('phase 0 schema and reliability tables', () => {
       beforeCreatedAt: '2024-01-01T00:00:01.000Z',
     });
     expect(before.map((message) => message.id)).toEqual(['tm-1']);
+  });
+
+  it('atomically enqueues talk turn with message, run, and outbox events', () => {
+    const result = enqueueTalkTurnAtomic({
+      talkId: 'talk-1',
+      userId: 'owner-1',
+      content: 'atomic hello',
+      messageId: 'msg-atomic-1',
+      runId: 'run-atomic-1',
+      idempotencyKey: 'idem-atomic-1',
+      now: '2024-01-01T00:00:10.000Z',
+    });
+
+    expect(result.message.id).toBe('msg-atomic-1');
+    expect(result.message.created_at).toBe('2024-01-01T00:00:10.000Z');
+    expect(result.run.id).toBe('run-atomic-1');
+    expect(result.run.status).toBe('running');
+
+    const messages = listTalkMessages({ talkId: 'talk-1', limit: 10 });
+    expect(messages.map((message) => message.id)).toContain('msg-atomic-1');
+
+    const run = getTalkRunById('run-atomic-1');
+    expect(run?.status).toBe('running');
+
+    const events = getOutboxEventsForTopics(['talk:talk-1'], 0, 10);
+    expect(
+      events.some((event) => event.event_type === 'message_appended'),
+    ).toBe(true);
+    expect(
+      events.some((event) => event.event_type === 'talk_run_started'),
+    ).toBe(true);
+  });
+
+  it('rolls back message writes when run insert fails inside atomic enqueue', () => {
+    enqueueTalkTurnAtomic({
+      talkId: 'talk-1',
+      userId: 'owner-1',
+      content: 'first',
+      messageId: 'msg-atomic-2a',
+      runId: 'run-atomic-2',
+      now: '2024-01-01T00:00:20.000Z',
+    });
+
+    expect(() =>
+      enqueueTalkTurnAtomic({
+        talkId: 'talk-1',
+        userId: 'owner-1',
+        content: 'second should rollback',
+        messageId: 'msg-atomic-2b',
+        runId: 'run-atomic-2', // duplicate PK to force failure
+        now: '2024-01-01T00:00:21.000Z',
+      }),
+    ).toThrow();
+
+    const messages = listTalkMessages({ talkId: 'talk-1', limit: 20 });
+    expect(
+      messages.some((message) => message.id === 'msg-atomic-2b'),
+    ).toBeFalsy();
+
+    const events = getOutboxEventsForTopics(['talk:talk-1'], 0, 50);
+    expect(
+      events.some((event) => event.payload.includes('msg-atomic-2b')),
+    ).toBeFalsy();
   });
 
   it('normalizes talk list pagination consistently', () => {

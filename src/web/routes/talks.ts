@@ -3,12 +3,11 @@ import { randomUUID } from 'crypto';
 import {
   appendOutboxEvent,
   createTalk,
-  createTalkMessage,
+  enqueueTalkTurnAtomic,
   getTalkForUser,
   listTalkMessages,
   listTalksForUser,
   normalizeTalkListPage,
-  touchTalkUpdatedAt,
   type TalkMessageRecord,
   type TalkWithAccessRecord,
 } from '../../db.js';
@@ -250,7 +249,6 @@ export function enqueueTalkChat(input: {
   talkId: string;
   auth: AuthContext;
   content: string;
-  runQueue: TalkRunQueue;
   idempotencyKey?: string | null;
 }): {
   statusCode: number;
@@ -320,36 +318,13 @@ export function enqueueTalkChat(input: {
 
   const messageId = `msg_${randomUUID()}`;
   const runId = `run_${randomUUID()}`;
-  const now = new Date().toISOString();
-
-  // Phase 1.3: message+run writes are intentionally non-transactional.
-  // If this system moves to multi-instance or higher throughput, wrap this
-  // sequence in a single DB transaction to enforce all-or-nothing behavior.
-  createTalkMessage({
-    id: messageId,
+  const persisted = enqueueTalkTurnAtomic({
     talkId: input.talkId,
-    role: 'user',
+    userId: input.auth.userId,
     content,
-    createdBy: input.auth.userId,
-    createdAt: now,
-  });
-  touchTalkUpdatedAt(input.talkId, now);
-  appendOutboxEvent({
-    topic: `talk:${input.talkId}`,
-    eventType: 'message_appended',
-    payload: JSON.stringify({
-      talkId: input.talkId,
-      messageId,
-      role: 'user',
-      createdBy: input.auth.userId,
-    }),
-  });
-
-  const run = input.runQueue.enqueue({
+    messageId,
     runId,
-    talkId: input.talkId,
-    requestedBy: input.auth.userId,
-    idempotencyKey: input.idempotencyKey || undefined,
+    idempotencyKey: input.idempotencyKey,
   });
 
   return {
@@ -359,18 +334,18 @@ export function enqueueTalkChat(input: {
       data: {
         talkId: input.talkId,
         message: {
-          id: messageId,
-          role: 'user',
-          content,
-          createdBy: input.auth.userId,
-          createdAt: now,
-          runId: null,
+          id: persisted.message.id,
+          role: persisted.message.role,
+          content: persisted.message.content,
+          createdBy: persisted.message.created_by,
+          createdAt: persisted.message.created_at,
+          runId: persisted.message.run_id,
         },
         run: {
-          id: run.id,
-          status: run.status,
-          createdAt: run.created_at,
-          startedAt: run.started_at,
+          id: persisted.run.id,
+          status: persisted.run.status,
+          createdAt: persisted.run.created_at,
+          startedAt: persisted.run.started_at,
         },
       },
     },

@@ -1586,6 +1586,112 @@ export function listTalkMessages(input: {
   return rows;
 }
 
+export function enqueueTalkTurnAtomic(input: {
+  talkId: string;
+  userId: string;
+  content: string;
+  messageId: string;
+  runId: string;
+  idempotencyKey?: string | null;
+  now?: string;
+}): { message: TalkMessageRecord; run: TalkRunRecord } {
+  const tx = db.transaction(
+    (
+      txInput: typeof input,
+    ): {
+      message: TalkMessageRecord;
+      run: TalkRunRecord;
+    } => {
+      const now = txInput.now || new Date().toISOString();
+      const running = db
+        .prepare(
+          `
+          SELECT id
+          FROM talk_runs
+          WHERE talk_id = ? AND status = 'running'
+          ORDER BY created_at ASC
+          LIMIT 1
+        `,
+        )
+        .get(txInput.talkId) as { id: string } | undefined;
+      const status: TalkRunStatus = running ? 'queued' : 'running';
+
+      const message: TalkMessageRecord = {
+        id: txInput.messageId,
+        talk_id: txInput.talkId,
+        role: 'user',
+        content: txInput.content,
+        created_by: txInput.userId,
+        created_at: now,
+        run_id: null,
+        metadata_json: null,
+      };
+
+      createTalkMessage({
+        id: message.id,
+        talkId: message.talk_id,
+        role: message.role,
+        content: message.content,
+        createdBy: message.created_by,
+        createdAt: message.created_at,
+      });
+
+      touchTalkUpdatedAt(txInput.talkId, now);
+
+      db.prepare(
+        `
+        INSERT INTO event_outbox (topic, event_type, payload, created_at)
+        VALUES (?, ?, ?, ?)
+      `,
+      ).run(
+        `talk:${txInput.talkId}`,
+        'message_appended',
+        JSON.stringify({
+          talkId: txInput.talkId,
+          messageId: txInput.messageId,
+          role: 'user',
+          createdBy: txInput.userId,
+        }),
+        now,
+      );
+
+      const run: TalkRunRecord = {
+        id: txInput.runId,
+        talk_id: txInput.talkId,
+        requested_by: txInput.userId,
+        status,
+        idempotency_key: txInput.idempotencyKey || null,
+        created_at: now,
+        started_at: status === 'running' ? now : null,
+        ended_at: null,
+        cancel_reason: null,
+      };
+
+      createTalkRun(run);
+
+      db.prepare(
+        `
+        INSERT INTO event_outbox (topic, event_type, payload, created_at)
+        VALUES (?, ?, ?, ?)
+      `,
+      ).run(
+        `talk:${txInput.talkId}`,
+        status === 'running' ? 'talk_run_started' : 'talk_run_queued',
+        JSON.stringify({
+          talkId: txInput.talkId,
+          runId: txInput.runId,
+          status,
+        }),
+        now,
+      );
+
+      return { message, run };
+    },
+  );
+
+  return tx(input);
+}
+
 // --- Event outbox ---
 
 export interface OutboxEvent {
