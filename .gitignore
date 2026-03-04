@@ -1,8 +1,10 @@
 # Dependencies
 node_modules/
 .npm-cache/
+webapp/node_modules/
 # Build output
 dist/
+webapp/dist/
 
 # Local data & auth
 store/
