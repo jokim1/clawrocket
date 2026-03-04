@@ -41,7 +41,14 @@ import {
   buildUserScopedSseStream,
 } from './routes/events.js';
 import { healthResponse, statusResponse } from './routes/system.js';
-import { cancelTalkChat } from './routes/talks.js';
+import {
+  cancelTalkChat,
+  createTalkRoute,
+  enqueueTalkChat,
+  getTalkRoute,
+  listTalkMessagesRoute,
+  listTalksRoute,
+} from './routes/talks.js';
 import { authenticateRequest } from './middleware/auth.js';
 import { AuthContext } from './types.js';
 
@@ -384,6 +391,314 @@ function buildApp(opts: WebServerOptions): Hono {
     return c.json(payload, 200);
   });
 
+  app.get('/api/v1/talks', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+
+    const rateResult = checkRateLimit({ userId: auth.userId, bucket: 'read' });
+    if (!rateResult.allowed) {
+      return rateLimitedResponse(c, rateResult);
+    }
+
+    const limit = parsePositiveInt(c.req.query('limit'));
+    const offset = parseNonNegativeInt(c.req.query('offset'));
+
+    const result = listTalksRoute({
+      auth,
+      limit: limit ?? undefined,
+      offset: offset ?? undefined,
+    });
+    return new Response(JSON.stringify(result.body), {
+      status: result.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
+  });
+
+  app.post('/api/v1/talks', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+
+    const rateResult = checkRateLimit({ userId: auth.userId, bucket: 'write' });
+    if (!rateResult.allowed) {
+      return rateLimitedResponse(c, rateResult);
+    }
+
+    const csrf = validateCsrfToken({
+      method: c.req.method,
+      authType: auth.authType,
+      cookieHeader: c.req.header('cookie'),
+      csrfHeader: c.req.header('x-csrf-token'),
+    });
+    if (!csrf.ok) {
+      return c.json(
+        {
+          ok: false,
+          error: {
+            code: 'csrf_failed',
+            message: csrf.reason,
+          },
+        },
+        403,
+      );
+    }
+
+    const bodyText = await c.req.text();
+    const idempotencyKey = c.req.header('idempotency-key') || null;
+    const precheck = idempotencyPrecheck({
+      userId: auth.userId,
+      idempotencyKey,
+      method: c.req.method,
+      path: c.req.path,
+      bodyText,
+    });
+    if (precheck.error) {
+      return c.json(
+        {
+          ok: false,
+          error: {
+            code: 'idempotency_error',
+            message: precheck.error,
+          },
+        },
+        400,
+      );
+    }
+
+    if (precheck.replay && precheck.response) {
+      return new Response(precheck.response.responseBody, {
+        status: precheck.response.statusCode,
+        headers: {
+          'content-type': 'application/json; charset=utf-8',
+          'x-idempotent-replay': 'true',
+        },
+      });
+    }
+
+    const payload = parseJsonPayload<{ title?: string }>(bodyText);
+    if (!payload.ok) {
+      return c.json(
+        {
+          ok: false,
+          error: {
+            code: 'invalid_json',
+            message: payload.error,
+          },
+        },
+        400,
+      );
+    }
+
+    const result = createTalkRoute({
+      auth,
+      title: payload.data.title,
+    });
+
+    const serialized = JSON.stringify(result.body);
+    saveIdempotencyResult({
+      userId: auth.userId,
+      idempotencyKey,
+      method: c.req.method,
+      path: c.req.path,
+      requestHash: precheck.requestHash,
+      statusCode: result.statusCode,
+      responseBody: serialized,
+    });
+
+    return new Response(serialized, {
+      status: result.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
+  });
+
+  app.get('/api/v1/talks/:talkId', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+
+    const rateResult = checkRateLimit({ userId: auth.userId, bucket: 'read' });
+    if (!rateResult.allowed) {
+      return rateLimitedResponse(c, rateResult);
+    }
+
+    const encodedTalkId = c.req.param('talkId');
+    const talkId = safeDecodePathSegment(encodedTalkId);
+    if (!talkId) {
+      return c.json(
+        {
+          ok: false,
+          error: {
+            code: 'invalid_talk_id',
+            message: 'Talk ID path segment is not valid URL encoding',
+          },
+        },
+        400,
+      );
+    }
+
+    const result = getTalkRoute({
+      talkId,
+      auth,
+    });
+    return new Response(JSON.stringify(result.body), {
+      status: result.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
+  });
+
+  app.get('/api/v1/talks/:talkId/messages', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+
+    const rateResult = checkRateLimit({ userId: auth.userId, bucket: 'read' });
+    if (!rateResult.allowed) {
+      return rateLimitedResponse(c, rateResult);
+    }
+
+    const encodedTalkId = c.req.param('talkId');
+    const talkId = safeDecodePathSegment(encodedTalkId);
+    if (!talkId) {
+      return c.json(
+        {
+          ok: false,
+          error: {
+            code: 'invalid_talk_id',
+            message: 'Talk ID path segment is not valid URL encoding',
+          },
+        },
+        400,
+      );
+    }
+
+    const limit = parsePositiveInt(c.req.query('limit'));
+    const beforeCreatedAt = c.req.query('before') || undefined;
+    const result = listTalkMessagesRoute({
+      talkId,
+      auth,
+      limit: limit ?? undefined,
+      beforeCreatedAt,
+    });
+    return new Response(JSON.stringify(result.body), {
+      status: result.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
+  });
+
+  app.post('/api/v1/talks/:talkId/chat', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+
+    const rateResult = checkRateLimit({
+      userId: auth.userId,
+      bucket: 'chat_write',
+    });
+    if (!rateResult.allowed) {
+      return rateLimitedResponse(c, rateResult);
+    }
+
+    const csrf = validateCsrfToken({
+      method: c.req.method,
+      authType: auth.authType,
+      cookieHeader: c.req.header('cookie'),
+      csrfHeader: c.req.header('x-csrf-token'),
+    });
+    if (!csrf.ok) {
+      return c.json(
+        {
+          ok: false,
+          error: {
+            code: 'csrf_failed',
+            message: csrf.reason,
+          },
+        },
+        403,
+      );
+    }
+
+    const bodyText = await c.req.text();
+    const idempotencyKey = c.req.header('idempotency-key') || null;
+    const precheck = idempotencyPrecheck({
+      userId: auth.userId,
+      idempotencyKey,
+      method: c.req.method,
+      path: c.req.path,
+      bodyText,
+    });
+    if (precheck.error) {
+      return c.json(
+        {
+          ok: false,
+          error: {
+            code: 'idempotency_error',
+            message: precheck.error,
+          },
+        },
+        400,
+      );
+    }
+
+    if (precheck.replay && precheck.response) {
+      return new Response(precheck.response.responseBody, {
+        status: precheck.response.statusCode,
+        headers: {
+          'content-type': 'application/json; charset=utf-8',
+          'x-idempotent-replay': 'true',
+        },
+      });
+    }
+
+    const encodedTalkId = c.req.param('talkId');
+    const talkId = safeDecodePathSegment(encodedTalkId);
+    if (!talkId) {
+      return c.json(
+        {
+          ok: false,
+          error: {
+            code: 'invalid_talk_id',
+            message: 'Talk ID path segment is not valid URL encoding',
+          },
+        },
+        400,
+      );
+    }
+
+    const payload = parseJsonPayload<{ content?: string }>(bodyText);
+    if (!payload.ok) {
+      return c.json(
+        {
+          ok: false,
+          error: {
+            code: 'invalid_json',
+            message: payload.error,
+          },
+        },
+        400,
+      );
+    }
+
+    const result = enqueueTalkChat({
+      talkId,
+      auth,
+      content: payload.data.content || '',
+      runQueue: opts.runQueue,
+      idempotencyKey,
+    });
+
+    const serialized = JSON.stringify(result.body);
+    saveIdempotencyResult({
+      userId: auth.userId,
+      idempotencyKey,
+      method: c.req.method,
+      path: c.req.path,
+      requestHash: precheck.requestHash,
+      statusCode: result.statusCode,
+      responseBody: serialized,
+    });
+
+    return new Response(serialized, {
+      status: result.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
+  });
+
   app.get('/api/v1/events', async (c) => {
     const auth = requireAuth(c);
     if (!auth) return unauthorized(c);
@@ -655,6 +970,33 @@ function parseLastEventId(value: string | undefined): number {
   const parsed = value ? parseInt(value, 10) : 0;
   if (!Number.isFinite(parsed) || parsed < 0) return 0;
   return parsed;
+}
+
+function parsePositiveInt(value: string | undefined): number | null {
+  if (!value) return null;
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) return null;
+  return parsed;
+}
+
+function parseNonNegativeInt(value: string | undefined): number | null {
+  if (!value) return null;
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed) || parsed < 0) return null;
+  return parsed;
+}
+
+function parseJsonPayload<T>(
+  bodyText: string,
+): { ok: true; data: T } | { ok: false; error: string } {
+  if (!bodyText.trim()) {
+    return { ok: true, data: {} as T };
+  }
+  try {
+    return { ok: true, data: JSON.parse(bodyText) as T };
+  } catch {
+    return { ok: false, error: 'Request body is not valid JSON' };
+  }
 }
 
 function safeDecodePathSegment(value: string): string | null {

@@ -10,6 +10,7 @@ import {
   RegisteredGroup,
   ScheduledTask,
   TalkAccessRole,
+  TalkMessageRole,
   TalkRunStatus,
   TaskRunLog,
   UserRole,
@@ -227,6 +228,20 @@ function createSchema(database: Database.Database): void {
     );
     CREATE INDEX IF NOT EXISTS idx_talk_runs_talk_id_status
       ON talk_runs(talk_id, status, created_at);
+
+    CREATE TABLE IF NOT EXISTS talk_messages (
+      id TEXT PRIMARY KEY,
+      talk_id TEXT NOT NULL REFERENCES talks(id) ON DELETE CASCADE,
+      role TEXT NOT NULL
+        CHECK(role IN ('user', 'assistant', 'system', 'tool')),
+      content TEXT NOT NULL,
+      created_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+      created_at TEXT NOT NULL,
+      run_id TEXT REFERENCES talk_runs(id) ON DELETE SET NULL,
+      metadata_json TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_talk_messages_talk_created_at
+      ON talk_messages(talk_id, created_at);
 
     CREATE TABLE IF NOT EXISTS talk_llm_policies (
       talk_id TEXT PRIMARY KEY REFERENCES talks(id) ON DELETE CASCADE,
@@ -1224,6 +1239,161 @@ export interface TalkRecord {
   updated_at: string;
 }
 
+export type TalkAccessLevel = 'owner' | 'admin' | 'editor' | 'viewer';
+
+export interface TalkWithAccessRecord extends TalkRecord {
+  access_role: TalkAccessLevel;
+}
+
+export function createTalk(input: {
+  id: string;
+  ownerId: string;
+  topicTitle?: string;
+  status?: 'active' | 'paused' | 'archived';
+}): void {
+  const now = new Date().toISOString();
+  db.prepare(
+    `
+    INSERT INTO talks (id, owner_id, topic_title, status, version, created_at, updated_at)
+    VALUES (?, ?, ?, ?, 1, ?, ?)
+  `,
+  ).run(
+    input.id,
+    input.ownerId,
+    input.topicTitle || null,
+    input.status || 'active',
+    now,
+    now,
+  );
+}
+
+export function getTalkById(talkId: string): TalkRecord | undefined {
+  return db.prepare('SELECT * FROM talks WHERE id = ?').get(talkId) as
+    | TalkRecord
+    | undefined;
+}
+
+export function touchTalkUpdatedAt(talkId: string, updatedAt?: string): void {
+  db.prepare('UPDATE talks SET updated_at = ? WHERE id = ?').run(
+    updatedAt || new Date().toISOString(),
+    talkId,
+  );
+}
+
+export function listTalksForUser(input: {
+  userId: string;
+  limit?: number;
+  offset?: number;
+}): TalkWithAccessRecord[] {
+  const user = getUserById(input.userId);
+  if (!user || user.is_active !== 1) return [];
+
+  const limit =
+    typeof input.limit === 'number'
+      ? Math.min(200, Math.max(1, Math.floor(input.limit)))
+      : 50;
+  const offset =
+    typeof input.offset === 'number'
+      ? Math.max(0, Math.floor(input.offset))
+      : 0;
+
+  if (user.role === 'owner' || user.role === 'admin') {
+    const accessRole = user.role === 'owner' ? 'owner' : 'admin';
+    return db
+      .prepare(
+        `
+        SELECT id, owner_id, topic_title, status, version, created_at, updated_at,
+               CASE WHEN owner_id = ? THEN 'owner' ELSE ? END AS access_role
+        FROM talks
+        ORDER BY updated_at DESC, created_at DESC
+        LIMIT ? OFFSET ?
+      `,
+      )
+      .all(input.userId, accessRole, limit, offset) as TalkWithAccessRecord[];
+  }
+
+  return db
+    .prepare(
+      `
+      SELECT DISTINCT
+        t.id,
+        t.owner_id,
+        t.topic_title,
+        t.status,
+        t.version,
+        t.created_at,
+        t.updated_at,
+        CASE WHEN t.owner_id = ? THEN 'owner' ELSE tm.role END AS access_role
+      FROM talks t
+      LEFT JOIN talk_members tm
+        ON tm.talk_id = t.id
+       AND tm.user_id = ?
+      WHERE t.owner_id = ? OR tm.user_id = ?
+      ORDER BY t.updated_at DESC, t.created_at DESC
+      LIMIT ? OFFSET ?
+    `,
+    )
+    .all(
+      input.userId,
+      input.userId,
+      input.userId,
+      input.userId,
+      limit,
+      offset,
+    ) as TalkWithAccessRecord[];
+}
+
+export function getTalkForUser(
+  talkId: string,
+  userId: string,
+): TalkWithAccessRecord | undefined {
+  const user = getUserById(userId);
+  if (!user || user.is_active !== 1) return undefined;
+
+  if (user.role === 'owner' || user.role === 'admin') {
+    const row = db
+      .prepare(
+        `
+        SELECT id, owner_id, topic_title, status, version, created_at, updated_at,
+               CASE WHEN owner_id = ? THEN 'owner' ELSE ? END AS access_role
+        FROM talks
+        WHERE id = ?
+        LIMIT 1
+      `,
+      )
+      .get(userId, user.role === 'owner' ? 'owner' : 'admin', talkId) as
+      | TalkWithAccessRecord
+      | undefined;
+    return row;
+  }
+
+  const row = db
+    .prepare(
+      `
+      SELECT
+        t.id,
+        t.owner_id,
+        t.topic_title,
+        t.status,
+        t.version,
+        t.created_at,
+        t.updated_at,
+        CASE WHEN t.owner_id = ? THEN 'owner' ELSE tm.role END AS access_role
+      FROM talks t
+      LEFT JOIN talk_members tm
+        ON tm.talk_id = t.id
+       AND tm.user_id = ?
+      WHERE t.id = ?
+        AND (t.owner_id = ? OR tm.user_id = ?)
+      LIMIT 1
+    `,
+    )
+    .get(userId, userId, talkId, userId, userId) as
+    | TalkWithAccessRecord
+    | undefined;
+  return row;
+}
+
 export function upsertTalk(input: {
   id: string;
   ownerId: string;
@@ -1325,6 +1495,73 @@ export function getTalkIdsAccessibleByUser(userId: string): string[] {
     )
     .all(userId, userId) as Array<{ id: string }>;
   return rows.map((row) => row.id);
+}
+
+export interface TalkMessageRecord {
+  id: string;
+  talk_id: string;
+  role: TalkMessageRole;
+  content: string;
+  created_by: string | null;
+  created_at: string;
+  run_id: string | null;
+  metadata_json: string | null;
+}
+
+export function createTalkMessage(input: {
+  id: string;
+  talkId: string;
+  role: TalkMessageRole;
+  content: string;
+  createdBy?: string | null;
+  runId?: string | null;
+  metadataJson?: string | null;
+  createdAt?: string;
+}): void {
+  db.prepare(
+    `
+    INSERT INTO talk_messages (
+      id, talk_id, role, content, created_by, created_at, run_id, metadata_json
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `,
+  ).run(
+    input.id,
+    input.talkId,
+    input.role,
+    input.content,
+    input.createdBy || null,
+    input.createdAt || new Date().toISOString(),
+    input.runId || null,
+    input.metadataJson || null,
+  );
+}
+
+export function listTalkMessages(input: {
+  talkId: string;
+  limit?: number;
+  beforeCreatedAt?: string;
+}): TalkMessageRecord[] {
+  const limit =
+    typeof input.limit === 'number'
+      ? Math.min(200, Math.max(1, Math.floor(input.limit)))
+      : 100;
+  const before = input.beforeCreatedAt || null;
+
+  const rows = db
+    .prepare(
+      `
+      SELECT id, talk_id, role, content, created_by, created_at, run_id, metadata_json
+      FROM talk_messages
+      WHERE talk_id = ?
+        AND (? IS NULL OR created_at < ?)
+      ORDER BY created_at DESC
+      LIMIT ?
+    `,
+    )
+    .all(input.talkId, before, before, limit) as TalkMessageRecord[];
+
+  rows.reverse();
+  return rows;
 }
 
 // --- Event outbox ---

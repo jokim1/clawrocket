@@ -4,16 +4,22 @@ import {
   _initTestDatabase,
   appendOutboxEvent,
   canUserEditTalk,
+  createTalk,
+  createTalkMessage,
   consumeOAuthStateByHash,
   createTask,
   createOAuthState,
   deleteTask,
+  getTalkById,
+  getTalkForUser,
   getIdempotencyCache,
   getOutboxEventsForTopics,
   getQueuedTalkRuns,
   getRunningTalkRun,
   getAllChats,
   getAllRegisteredGroups,
+  listTalkMessages,
+  listTalksForUser,
   getMessagesSince,
   getNewMessages,
   getTaskById,
@@ -536,6 +542,60 @@ describe('phase 0 schema and reliability tables', () => {
 
     expect(canUserEditTalk('talk-1', 'owner-1')).toBe(true);
     expect(canUserEditTalk('talk-1', 'owner-2')).toBe(false);
+  });
+
+  it('creates talk rows and resolves talk access for shared members', () => {
+    createTalk({
+      id: 'talk-2',
+      ownerId: 'owner-1',
+      topicTitle: 'Shared',
+    });
+    upsertTalkMember({
+      talkId: 'talk-2',
+      userId: 'member-1',
+      role: 'viewer',
+    });
+
+    const talk = getTalkById('talk-2');
+    expect(talk?.topic_title).toBe('Shared');
+
+    const ownerView = getTalkForUser('talk-2', 'owner-1');
+    expect(ownerView?.access_role).toBe('owner');
+
+    const memberView = getTalkForUser('talk-2', 'member-1');
+    expect(memberView?.access_role).toBe('viewer');
+
+    const memberList = listTalksForUser({ userId: 'member-1' });
+    expect(memberList.some((entry) => entry.id === 'talk-2')).toBe(true);
+  });
+
+  it('stores and paginates talk messages', () => {
+    createTalkMessage({
+      id: 'tm-1',
+      talkId: 'talk-1',
+      role: 'user',
+      content: 'hello',
+      createdBy: 'owner-1',
+      createdAt: '2024-01-01T00:00:00.000Z',
+    });
+    createTalkMessage({
+      id: 'tm-2',
+      talkId: 'talk-1',
+      role: 'assistant',
+      content: 'world',
+      createdBy: null,
+      createdAt: '2024-01-01T00:00:01.000Z',
+    });
+
+    const all = listTalkMessages({ talkId: 'talk-1', limit: 10 });
+    expect(all.map((message) => message.id)).toEqual(['tm-1', 'tm-2']);
+
+    const before = listTalkMessages({
+      talkId: 'talk-1',
+      limit: 10,
+      beforeCreatedAt: '2024-01-01T00:00:01.000Z',
+    });
+    expect(before.map((message) => message.id)).toEqual(['tm-1']);
   });
 
   it('prunes old idempotency cache records', () => {
