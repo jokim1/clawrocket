@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { Navigate, Route, Routes } from 'react-router-dom';
 
 import { SignInView } from './components/SignInView';
@@ -14,7 +14,7 @@ type AuthState =
 export function App() {
   const [auth, setAuth] = useState<AuthState>({ status: 'loading' });
 
-  const refreshSession = async () => {
+  const refreshSession = useCallback(async () => {
     try {
       const user = await getSessionMe();
       setAuth({ status: 'authenticated', user });
@@ -25,11 +25,15 @@ export function App() {
       }
       setAuth({ status: 'unauthenticated' });
     }
-  };
+  }, []);
+
+  const handleUnauthorized = useCallback(() => {
+    setAuth({ status: 'unauthenticated' });
+  }, []);
 
   useEffect(() => {
     void refreshSession();
-  }, []);
+  }, [refreshSession]);
 
   if (auth.status === 'loading') {
     return <main className="page-state">Checking session…</main>;
@@ -51,17 +55,11 @@ export function App() {
         <Route path="/" element={<Navigate to="/app/talks" replace />} />
         <Route
           path="/app/talks"
-          element={
-            <TalkListPage onUnauthorized={() => setAuth({ status: 'unauthenticated' })} />
-          }
+          element={<TalkListPage onUnauthorized={handleUnauthorized} />}
         />
         <Route
           path="/app/talks/:talkId"
-          element={
-            <TalkDetailPage
-              onUnauthorized={() => setAuth({ status: 'unauthenticated' })}
-            />
-          }
+          element={<TalkDetailPage onUnauthorized={handleUnauthorized} />}
         />
         <Route path="*" element={<Navigate to="/app/talks" replace />} />
       </Routes>

@@ -3,7 +3,9 @@ import { Link } from 'react-router-dom';
 
 import { listTalks, Talk, UnauthorizedError } from '../lib/api';
 
-export function TalkListPage(props: {
+export function TalkListPage({
+  onUnauthorized,
+}: {
   onUnauthorized: () => void;
 }): JSX.Element {
   const [talks, setTalks] = useState<Talk[]>([]);
@@ -22,7 +24,7 @@ export function TalkListPage(props: {
         }
       } catch (err) {
         if (err instanceof UnauthorizedError) {
-          props.onUnauthorized();
+          onUnauthorized();
           return;
         }
         if (!cancelled) {
@@ -37,7 +39,7 @@ export function TalkListPage(props: {
     return () => {
       cancelled = true;
     };
-  }, [props]);
+  }, [onUnauthorized]);
 
   if (loading) {
     return <p className="page-state">Loading talks…</p>;

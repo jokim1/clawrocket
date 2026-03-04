@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -6,19 +6,46 @@ import { App } from './App';
 
 describe('App', () => {
   afterEach(() => {
+    cleanup();
     vi.unstubAllGlobals();
   });
 
-  it('shows sign-in when initial session is unauthorized', async () => {
+  it('shows sign-in and hides dev quick login when dev mode is disabled', async () => {
     mockFetch([
       jsonResponse(401, {
         ok: false,
         error: { code: 'unauthorized', message: 'Authentication is required' },
       }),
+      jsonResponse(200, {
+        ok: true,
+        data: { devMode: false },
+      }),
     ]);
 
     renderWithRouter('/app/talks');
     await screen.findByRole('heading', { name: 'ClawRocket' });
+    await waitFor(() =>
+      expect(
+        screen.queryByRole('heading', { name: 'Developer Quick Login' }),
+      ).toBeNull(),
+    );
+  });
+
+  it('shows dev quick login when dev mode is enabled', async () => {
+    mockFetch([
+      jsonResponse(401, {
+        ok: false,
+        error: { code: 'unauthorized', message: 'Authentication is required' },
+      }),
+      jsonResponse(200, {
+        ok: true,
+        data: { devMode: true },
+      }),
+    ]);
+
+    renderWithRouter('/app/talks');
+    await screen.findByRole('heading', { name: 'ClawRocket' });
+    await screen.findByRole('heading', { name: 'Developer Quick Login' });
   });
 
   it('renders talks list when session is authenticated', async () => {
@@ -75,6 +102,10 @@ describe('App', () => {
       jsonResponse(401, {
         ok: false,
         error: { code: 'unauthorized', message: 'Authentication is required' },
+      }),
+      jsonResponse(200, {
+        ok: true,
+        data: { devMode: false },
       }),
     ]);
 

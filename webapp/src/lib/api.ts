@@ -65,6 +65,14 @@ export type StartAuthPayload = {
   expiresInSec: number;
 };
 
+export type AuthConfigPayload = {
+  devMode: boolean;
+};
+
+export async function getAuthConfig(): Promise<AuthConfigPayload> {
+  return apiRequest<AuthConfigPayload>('/api/v1/auth/config');
+}
+
 export async function getSessionMe(): Promise<SessionUser> {
   const envelope = await apiRequest<{ user: SessionUser }>('/api/v1/session/me');
   return envelope.user;

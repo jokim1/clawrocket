@@ -1,6 +1,10 @@
-import { FormEvent, useState } from 'react';
+import { FormEvent, useEffect, useState } from 'react';
 
-import { completeDevCallback, startGoogleAuth } from '../lib/api';
+import {
+  completeDevCallback,
+  getAuthConfig,
+  startGoogleAuth,
+} from '../lib/api';
 
 export function SignInView(props: {
   onSignedIn: () => Promise<void> | void;
@@ -9,6 +13,25 @@ export function SignInView(props: {
   const [name, setName] = useState('Owner');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [showDevLogin, setShowDevLogin] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadConfig = async () => {
+      try {
+        const config = await getAuthConfig();
+        if (!cancelled) setShowDevLogin(config.devMode);
+      } catch {
+        if (!cancelled) setShowDevLogin(false);
+      }
+    };
+
+    void loadConfig();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const signInWithRedirect = async () => {
     setBusy(true);
@@ -54,30 +77,32 @@ export function SignInView(props: {
           Continue With Google
         </button>
 
-        <form onSubmit={completeDevLogin} className="dev-form">
-          <h2>Developer Quick Login</h2>
-          <label>
-            Email
-            <input
-              value={email}
-              onChange={(event) => setEmail(event.target.value)}
-              type="email"
-              required
-            />
-          </label>
-          <label>
-            Display Name
-            <input
-              value={name}
-              onChange={(event) => setName(event.target.value)}
-              type="text"
-              required
-            />
-          </label>
-          <button type="submit" disabled={busy}>
-            Dev Login
-          </button>
-        </form>
+        {showDevLogin ? (
+          <form onSubmit={completeDevLogin} className="dev-form">
+            <h2>Developer Quick Login</h2>
+            <label>
+              Email
+              <input
+                value={email}
+                onChange={(event) => setEmail(event.target.value)}
+                type="email"
+                required
+              />
+            </label>
+            <label>
+              Display Name
+              <input
+                value={name}
+                onChange={(event) => setName(event.target.value)}
+                type="text"
+                required
+              />
+            </label>
+            <button type="submit" disabled={busy}>
+              Dev Login
+            </button>
+          </form>
+        ) : null}
 
         {error ? <p role="alert">{error}</p> : null}
       </section>

@@ -16,7 +16,9 @@ type DetailState =
   | { kind: 'unavailable' }
   | { kind: 'error'; message: string };
 
-export function TalkDetailPage(props: {
+export function TalkDetailPage({
+  onUnauthorized,
+}: {
   onUnauthorized: () => void;
 }): JSX.Element {
   const { talkId = '' } = useParams<{ talkId: string }>();
@@ -38,7 +40,7 @@ export function TalkDetailPage(props: {
         }
       } catch (err) {
         if (err instanceof UnauthorizedError) {
-          props.onUnauthorized();
+          onUnauthorized();
           return;
         }
         if (err instanceof ApiError && err.status === 404) {
@@ -58,7 +60,7 @@ export function TalkDetailPage(props: {
     return () => {
       cancelled = true;
     };
-  }, [props, talkId]);
+  }, [onUnauthorized, talkId]);
 
   useEffect(() => {
     if (state.kind !== 'ready') return;
