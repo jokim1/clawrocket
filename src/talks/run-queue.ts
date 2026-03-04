@@ -1,0 +1,128 @@
+import {
+  appendOutboxEvent,
+  createTalkRun,
+  getTalkRunById,
+  getQueuedTalkRuns,
+  getRunningTalkRun,
+  markTalkRunStatus,
+} from '../db.js';
+import { TalkRunStatus } from '../types.js';
+
+export interface TalkRunRecord {
+  id: string;
+  talk_id: string;
+  requested_by: string;
+  status: TalkRunStatus;
+  idempotency_key: string | null;
+  created_at: string;
+  started_at: string | null;
+  ended_at: string | null;
+  cancel_reason: string | null;
+}
+
+export interface EnqueueTalkRunInput {
+  runId: string;
+  talkId: string;
+  requestedBy: string;
+  idempotencyKey?: string;
+}
+
+export class TalkRunQueue {
+  enqueue(input: EnqueueTalkRunInput): TalkRunRecord {
+    const running = getRunningTalkRun(input.talkId);
+    const status: TalkRunStatus = running ? 'queued' : 'running';
+    const now = new Date().toISOString();
+
+    const record: TalkRunRecord = {
+      id: input.runId,
+      talk_id: input.talkId,
+      requested_by: input.requestedBy,
+      status,
+      idempotency_key: input.idempotencyKey || null,
+      created_at: now,
+      started_at: status === 'running' ? now : null,
+      ended_at: null,
+      cancel_reason: null,
+    };
+
+    createTalkRun(record);
+
+    appendOutboxEvent({
+      topic: `talk:${input.talkId}`,
+      eventType: status === 'running' ? 'talk_run_started' : 'talk_run_queued',
+      payload: JSON.stringify({
+        talkId: input.talkId,
+        runId: input.runId,
+        status,
+      }),
+    });
+
+    return record;
+  }
+
+  complete(runId: string): void {
+    const now = new Date().toISOString();
+    markTalkRunStatus(runId, 'completed', now, null);
+
+    const run = this.findByRunIdAcrossQueues(runId);
+    if (!run) return;
+
+    appendOutboxEvent({
+      topic: `talk:${run.talk_id}`,
+      eventType: 'talk_run_completed',
+      payload: JSON.stringify({
+        talkId: run.talk_id,
+        runId,
+      }),
+    });
+
+    const nextQueued = getQueuedTalkRuns(run.talk_id, 1)[0];
+    if (!nextQueued) return;
+
+    markTalkRunStatus(nextQueued.id, 'running', null, null, now);
+    appendOutboxEvent({
+      topic: `talk:${run.talk_id}`,
+      eventType: 'talk_run_started',
+      payload: JSON.stringify({
+        talkId: run.talk_id,
+        runId: nextQueued.id,
+        status: 'running',
+      }),
+    });
+  }
+
+  cancelTalkRuns(talkId: string, cancelledBy: string): number {
+    const running = getRunningTalkRun(talkId);
+    const queued = getQueuedTalkRuns(talkId);
+    const targetRuns = [...(running ? [running] : []), ...queued];
+    if (targetRuns.length === 0) {
+      return 0;
+    }
+
+    const now = new Date().toISOString();
+    for (const run of targetRuns) {
+      markTalkRunStatus(
+        run.id,
+        'cancelled',
+        now,
+        `Cancelled by ${cancelledBy}`,
+      );
+    }
+
+    appendOutboxEvent({
+      topic: `talk:${talkId}`,
+      eventType: 'talk_run_cancelled',
+      payload: JSON.stringify({
+        talkId,
+        cancelledBy,
+        runIds: targetRuns.map((run) => run.id),
+      }),
+    });
+
+    return targetRuns.length;
+  }
+
+  private findByRunIdAcrossQueues(runId: string): TalkRunRecord | null {
+    return getTalkRunById(runId);
+  }
+}
