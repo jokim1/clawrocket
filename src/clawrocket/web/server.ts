@@ -1,3 +1,6 @@
+import fs from 'fs';
+import path from 'path';
+
 import { serve } from '@hono/node-server';
 import { getConnInfo } from '@hono/node-server/conninfo';
 import { bodyLimit } from 'hono/body-limit';
@@ -9,7 +12,12 @@ import {
   REFRESH_TOKEN_TTL_SEC,
   WEB_SECURE_COOKIES,
 } from '../config.js';
-import { canUserAccessTalk, getUserById } from '../db/index.js';
+import {
+  canUserAccessTalk,
+  getOutboxEventsForTopics,
+  getOutboxMinEventIdForTopics,
+  getUserById,
+} from '../db/index.js';
 import {
   completeDeviceAuthFlow,
   completeGoogleOAuthCallback,
@@ -39,6 +47,9 @@ import {
 import {
   buildTalkScopedSseStream,
   buildUserScopedSseStream,
+  formatOutboxEventAsSse,
+  getTalkScopedEventTopics,
+  getUserScopedEventTopics,
 } from './routes/events.js';
 import { healthResponse, statusResponse } from './routes/system.js';
 import {
@@ -53,12 +64,20 @@ import { authenticateRequest } from './middleware/auth.js';
 import { AuthContext } from './types.js';
 
 const MAX_REQUEST_BODY_BYTES = 10 * 1024 * 1024; // 10 MB
+const SSE_RETRY_MS = 3000;
+const SSE_STREAM_POLL_MS = 250;
+const SSE_STREAM_HEARTBEAT_MS = 15_000;
+const SSE_STREAM_BATCH_LIMIT = 100;
+const SSE_STREAM_RETRY_AFTER_SEC = 5;
+const MAX_LIVE_SSE_CONNECTIONS_PER_USER = 3;
+const DEFAULT_WEB_APP_DIST_DIR = path.resolve(process.cwd(), 'webapp', 'dist');
 
 export interface WebServerOptions {
   host: string;
   port: number;
   keychain: KeychainBridge;
   runWorker: TalkRunWorkerControl;
+  webAppDistDir: string;
 }
 
 export interface WebServerHandle {
@@ -85,6 +104,7 @@ export function createWebServer(
     port: input?.port ?? 3210,
     keychain: input?.keychain || noopKeychainBridge,
     runWorker: input?.runWorker || noopRunWorker,
+    webAppDistDir: input?.webAppDistDir ?? DEFAULT_WEB_APP_DIST_DIR,
   };
 
   const app = buildApp(opts);
@@ -136,6 +156,23 @@ export function createWebServer(
 
 function buildApp(opts: WebServerOptions): Hono {
   const app = new Hono();
+  const liveSseConnectionsByUser = new Map<string, number>();
+
+  const tryAcquireLiveSseConnection = (userId: string): boolean => {
+    const active = liveSseConnectionsByUser.get(userId) || 0;
+    if (active >= MAX_LIVE_SSE_CONNECTIONS_PER_USER) return false;
+    liveSseConnectionsByUser.set(userId, active + 1);
+    return true;
+  };
+
+  const releaseLiveSseConnection = (userId: string): void => {
+    const active = liveSseConnectionsByUser.get(userId) || 0;
+    if (active <= 1) {
+      liveSseConnectionsByUser.delete(userId);
+      return;
+    }
+    liveSseConnectionsByUser.set(userId, active - 1);
+  };
 
   app.use(
     '/api/v1/*',
@@ -720,17 +757,38 @@ function buildApp(opts: WebServerOptions): Hono {
     }
 
     const lastEventId = parseLastEventId(c.req.header('last-event-id'));
+    if (isLiveSseMode(c.req.query('stream'))) {
+      if (!tryAcquireLiveSseConnection(auth.userId)) {
+        c.header('retry-after', String(SSE_STREAM_RETRY_AFTER_SEC));
+        return c.json(
+          {
+            ok: false,
+            error: {
+              code: 'too_many_stream_connections',
+              message: `Maximum ${MAX_LIVE_SSE_CONNECTIONS_PER_USER} live event streams per user`,
+            },
+          },
+          429,
+        );
+      }
+      return createLiveSseResponse({
+        topics: getUserScopedEventTopics(auth.userId),
+        lastEventId,
+        requestSignal: c.req.raw.signal,
+        onClose: () => releaseLiveSseConnection(auth.userId),
+      });
+    }
+
     const stream = buildUserScopedSseStream({
       userId: auth.userId,
       lastEventId,
     });
 
-    return c.body(`retry: 3000\n${stream}`, 200, {
-      'content-type': 'text/event-stream; charset=utf-8',
-      'cache-control': 'no-cache',
-      connection: 'keep-alive',
-      'x-clawrocket-sse-mode': 'snapshot',
-    });
+    return c.body(
+      `retry: ${SSE_RETRY_MS}\n\n${stream}`,
+      200,
+      sseHeaders('snapshot'),
+    );
   });
 
   app.get('/api/v1/talks/:talkId/events', async (c) => {
@@ -771,14 +829,35 @@ function buildApp(opts: WebServerOptions): Hono {
     }
 
     const lastEventId = parseLastEventId(c.req.header('last-event-id'));
+    if (isLiveSseMode(c.req.query('stream'))) {
+      if (!tryAcquireLiveSseConnection(auth.userId)) {
+        c.header('retry-after', String(SSE_STREAM_RETRY_AFTER_SEC));
+        return c.json(
+          {
+            ok: false,
+            error: {
+              code: 'too_many_stream_connections',
+              message: `Maximum ${MAX_LIVE_SSE_CONNECTIONS_PER_USER} live event streams per user`,
+            },
+          },
+          429,
+        );
+      }
+      return createLiveSseResponse({
+        topics: getTalkScopedEventTopics(talkId),
+        lastEventId,
+        requestSignal: c.req.raw.signal,
+        onClose: () => releaseLiveSseConnection(auth.userId),
+      });
+    }
+
     const stream = buildTalkScopedSseStream({ talkId, lastEventId });
 
-    return c.body(`retry: 3000\n${stream}`, 200, {
-      'content-type': 'text/event-stream; charset=utf-8',
-      'cache-control': 'no-cache',
-      connection: 'keep-alive',
-      'x-clawrocket-sse-mode': 'snapshot',
-    });
+    return c.body(
+      `retry: ${SSE_RETRY_MS}\n\n${stream}`,
+      200,
+      sseHeaders('snapshot'),
+    );
   });
 
   app.post('/api/v1/talks/:talkId/chat/cancel', async (c) => {
@@ -901,6 +980,12 @@ function buildApp(opts: WebServerOptions): Hono {
     );
   });
 
+  // Serve SPA assets in production from webapp/dist.
+  app.get('*', (c) => {
+    const response = serveWebAppRequest(c.req.path, opts.webAppDistDir);
+    return response || c.text('Not Found', 404);
+  });
+
   return app;
 }
 
@@ -1001,6 +1086,221 @@ function parseNonNegativeInt(value: string | undefined): number | null {
   const parsed = Number.parseInt(value, 10);
   if (!Number.isFinite(parsed) || parsed < 0) return null;
   return parsed;
+}
+
+function isLiveSseMode(value: string | undefined): boolean {
+  return value === '1' || value === 'true';
+}
+
+function sseHeaders(mode: 'snapshot' | 'stream'): Record<string, string> {
+  return {
+    'content-type': 'text/event-stream; charset=utf-8',
+    'cache-control': 'no-cache',
+    connection: 'keep-alive',
+    'x-clawrocket-sse-mode': mode,
+  };
+}
+
+function createLiveSseResponse(input: {
+  topics: string[];
+  lastEventId: number;
+  requestSignal: AbortSignal;
+  onClose?: () => void;
+}): Response {
+  const encoder = new TextEncoder();
+  let cancelled = false;
+  let finalized = false;
+
+  const finalize = () => {
+    if (finalized) return;
+    finalized = true;
+    input.onClose?.();
+  };
+
+  const stream = new ReadableStream<Uint8Array>({
+    start: async (controller) => {
+      const write = (chunk: string) => {
+        if (cancelled) return;
+        controller.enqueue(encoder.encode(chunk));
+      };
+      const close = () => {
+        if (!cancelled) {
+          cancelled = true;
+        }
+        try {
+          controller.close();
+        } catch {
+          // ignored; stream may already be closed
+        } finally {
+          finalize();
+        }
+      };
+
+      const onAbort = () => close();
+      input.requestSignal.addEventListener('abort', onAbort, { once: true });
+
+      try {
+        write(`retry: ${SSE_RETRY_MS}\n\n`);
+
+        let cursor = input.lastEventId;
+        let lastHeartbeatMs = Date.now();
+
+        while (!cancelled && !input.requestSignal.aborted) {
+          const minId = getOutboxMinEventIdForTopics(input.topics);
+          if (cursor > 0 && minId !== null && cursor < minId - 1) {
+            write(
+              'event: replay_gap\ndata: {"message":"Requested replay position is outside retention window"}\n\n',
+            );
+            // Resume from earliest retained event to avoid repeated replay_gap spam.
+            cursor = minId - 1;
+          }
+
+          const events = getOutboxEventsForTopics(
+            input.topics,
+            cursor,
+            SSE_STREAM_BATCH_LIMIT,
+          );
+          for (const event of events) {
+            write(formatOutboxEventAsSse(event));
+            cursor = event.event_id;
+          }
+
+          const nowMs = Date.now();
+          if (nowMs - lastHeartbeatMs >= SSE_STREAM_HEARTBEAT_MS) {
+            write(': keepalive\n\n');
+            lastHeartbeatMs = nowMs;
+          }
+
+          await sleepWithAbort(SSE_STREAM_POLL_MS, input.requestSignal);
+        }
+      } finally {
+        input.requestSignal.removeEventListener('abort', onAbort);
+        close();
+      }
+    },
+    cancel: () => {
+      cancelled = true;
+      finalize();
+    },
+  });
+
+  return new Response(stream, {
+    status: 200,
+    headers: sseHeaders('stream'),
+  });
+}
+
+async function sleepWithAbort(ms: number, signal: AbortSignal): Promise<void> {
+  if (ms <= 0 || signal.aborted) return;
+
+  await new Promise<void>((resolve) => {
+    const onAbort = () => {
+      clearTimeout(timer);
+      signal.removeEventListener('abort', onAbort);
+      resolve();
+    };
+    const timer = setTimeout(() => {
+      signal.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    signal.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
+function serveWebAppRequest(
+  requestPath: string,
+  webAppDistDir: string,
+): Response | null {
+  const distDir = path.resolve(webAppDistDir);
+  const indexPath = path.join(distDir, 'index.html');
+  if (!fs.existsSync(indexPath)) return null;
+
+  // Asset requests (with extension) map directly to files under dist/.
+  const extension = path.extname(requestPath);
+  if (extension) {
+    const assetPath = resolveSafeDistPath(distDir, requestPath);
+    if (
+      !assetPath ||
+      !fs.existsSync(assetPath) ||
+      !fs.statSync(assetPath).isFile()
+    ) {
+      return null;
+    }
+    return serveStaticFile(assetPath, false);
+  }
+
+  // Route paths fallback to SPA index.
+  return serveStaticFile(indexPath, true);
+}
+
+function resolveSafeDistPath(
+  distDir: string,
+  requestPath: string,
+): string | null {
+  const relativePath = requestPath.startsWith('/')
+    ? requestPath.slice(1)
+    : requestPath;
+  const normalizedRelative = path.normalize(relativePath);
+  if (
+    !normalizedRelative ||
+    normalizedRelative.startsWith('..') ||
+    path.isAbsolute(normalizedRelative)
+  ) {
+    return null;
+  }
+
+  const fullPath = path.resolve(distDir, normalizedRelative);
+  if (fullPath === distDir || !fullPath.startsWith(`${distDir}${path.sep}`)) {
+    return null;
+  }
+
+  return fullPath;
+}
+
+function serveStaticFile(filePath: string, isHtml: boolean): Response {
+  const body = fs.readFileSync(filePath);
+  const headers: Record<string, string> = {
+    'content-type': contentTypeForPath(filePath),
+  };
+  if (isHtml) {
+    headers['content-security-policy'] =
+      "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; font-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'";
+  }
+  return new Response(body, { status: 200, headers });
+}
+
+function contentTypeForPath(filePath: string): string {
+  const ext = path.extname(filePath).toLowerCase();
+  switch (ext) {
+    case '.html':
+      return 'text/html; charset=utf-8';
+    case '.js':
+    case '.mjs':
+      return 'application/javascript; charset=utf-8';
+    case '.css':
+      return 'text/css; charset=utf-8';
+    case '.json':
+      return 'application/json; charset=utf-8';
+    case '.svg':
+      return 'image/svg+xml';
+    case '.png':
+      return 'image/png';
+    case '.jpg':
+    case '.jpeg':
+      return 'image/jpeg';
+    case '.gif':
+      return 'image/gif';
+    case '.ico':
+      return 'image/x-icon';
+    case '.map':
+      return 'application/json; charset=utf-8';
+    case '.woff':
+      return 'font/woff';
+    case '.woff2':
+      return 'font/woff2';
+    default:
+      return 'application/octet-stream';
+  }
 }
 
 function parseJsonPayload<T>(
