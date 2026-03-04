@@ -170,10 +170,12 @@ function buildApp(opts: WebServerOptions): Hono {
 
     try {
       const state = c.req.query('state') || '';
+      const code = c.req.query('code') || undefined;
       const email = c.req.query('email') || undefined;
       const displayName = c.req.query('name') || undefined;
-      const result = completeGoogleOAuthCallback({
+      const result = await completeGoogleOAuthCallback({
         state,
+        code,
         email,
         displayName,
         ipAddress: getClientIp(c.req.header('x-forwarded-for')),

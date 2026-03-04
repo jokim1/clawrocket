@@ -5,6 +5,7 @@ import {
   AUTH_DEV_MODE,
   DEVICE_CODE_TTL_SEC,
   GOOGLE_OAUTH_CLIENT_ID,
+  GOOGLE_OAUTH_CLIENT_SECRET,
   GOOGLE_OAUTH_REDIRECT_URI,
   REFRESH_TOKEN_TTL_SEC,
 } from '../config.js';
@@ -70,6 +71,13 @@ export class AuthError extends Error {
 }
 
 const OAUTH_STATE_TTL_SEC = 600;
+const CLOCK_SKEW_SEC = 300;
+const GOOGLE_TOKEN_ENDPOINT = 'https://oauth2.googleapis.com/token';
+const GOOGLE_TOKEN_INFO_ENDPOINT = 'https://oauth2.googleapis.com/tokeninfo';
+const GOOGLE_ISSUERS = new Set([
+  'accounts.google.com',
+  'https://accounts.google.com',
+]);
 
 export function startGoogleOAuth(): OAuthStartResult {
   const state = randomOpaque(24);
@@ -92,6 +100,7 @@ export function startGoogleOAuth(): OAuthStartResult {
     stateHash,
     nonceHash,
     codeVerifierHash,
+    codeVerifier,
     redirectUri,
     expiresAt,
   });
@@ -131,13 +140,14 @@ export function startGoogleOAuth(): OAuthStartResult {
   };
 }
 
-export function completeGoogleOAuthCallback(input: {
+export async function completeGoogleOAuthCallback(input: {
   state: string;
+  code?: string;
   email?: string;
   displayName?: string;
   ipAddress?: string;
   userAgent?: string;
-}): LoginResult {
+}): Promise<LoginResult> {
   if (!input.state) {
     throw new AuthError('invalid_state', 'Missing OAuth state', 400);
   }
@@ -151,24 +161,35 @@ export function completeGoogleOAuthCallback(input: {
     );
   }
 
-  const email = (input.email || '').trim().toLowerCase();
-  if (!email) {
-    if (!AUTH_DEV_MODE) {
+  let email = '';
+  let displayName = '';
+
+  if (input.code) {
+    const identity = await exchangeGoogleCodeForIdentity({
+      code: input.code,
+      consumed,
+    });
+    email = identity.email;
+    displayName = identity.displayName;
+  } else {
+    email = (input.email || '').trim().toLowerCase();
+    if (!email) {
+      if (!AUTH_DEV_MODE) {
+        throw new AuthError(
+          'authorization_code_required',
+          'Missing authorization code',
+          400,
+        );
+      }
       throw new AuthError(
-        'google_exchange_not_implemented',
-        'Google code exchange is not implemented yet in this phase',
-        501,
+        'email_required',
+        'Dev mode callback requires email query parameter',
+        400,
       );
     }
-    throw new AuthError(
-      'email_required',
-      'Dev mode callback requires email query parameter',
-      400,
-    );
-  }
 
-  const displayName =
-    input.displayName?.trim() || email.split('@')[0] || 'User';
+    displayName = input.displayName?.trim() || email.split('@')[0] || 'User';
+  }
 
   const user = resolveUserForLogin({ email, displayName });
   const session = createSessionForUser(user.id, {
@@ -415,10 +436,20 @@ function createSessionForUser(
   };
 }
 
-function consumeOAuthState(state: string): { id: string } | null {
+function consumeOAuthState(state: string): {
+  id: string;
+  nonceHash: string;
+  codeVerifier: string | null;
+  redirectUri: string;
+} | null {
   const row = consumeOAuthStateByHash(hashOpaqueToken(state));
   if (!row) return null;
-  return { id: row.id };
+  return {
+    id: row.id,
+    nonceHash: row.nonce_hash,
+    codeVerifier: row.code_verifier,
+    redirectUri: row.redirect_uri,
+  };
 }
 
 function randomOpaque(bytes: number): string {
@@ -434,4 +465,185 @@ function randomUserCode(): string {
 
 function toCodeChallenge(codeVerifier: string): string {
   return crypto.createHash('sha256').update(codeVerifier).digest('base64url');
+}
+
+async function exchangeGoogleCodeForIdentity(input: {
+  code: string;
+  consumed: {
+    id: string;
+    nonceHash: string;
+    codeVerifier: string | null;
+    redirectUri: string;
+  };
+}): Promise<{ email: string; displayName: string }> {
+  if (!GOOGLE_OAUTH_CLIENT_ID || !GOOGLE_OAUTH_CLIENT_SECRET) {
+    throw new AuthError(
+      'google_oauth_not_configured',
+      'Google OAuth is not configured',
+      503,
+    );
+  }
+  if (!input.consumed.codeVerifier) {
+    throw new AuthError(
+      'invalid_state',
+      'OAuth state is missing PKCE verifier',
+      400,
+    );
+  }
+
+  const tokenParams = new URLSearchParams({
+    code: input.code,
+    client_id: GOOGLE_OAUTH_CLIENT_ID,
+    client_secret: GOOGLE_OAUTH_CLIENT_SECRET,
+    redirect_uri: input.consumed.redirectUri,
+    grant_type: 'authorization_code',
+    code_verifier: input.consumed.codeVerifier,
+  });
+
+  const tokenRes = await fetch(GOOGLE_TOKEN_ENDPOINT, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/x-www-form-urlencoded',
+    },
+    body: tokenParams,
+  });
+  if (!tokenRes.ok) {
+    throw new AuthError(
+      'google_token_exchange_failed',
+      'Failed to exchange Google authorization code',
+      401,
+    );
+  }
+
+  const tokenBody = (await tokenRes.json()) as {
+    id_token?: string;
+  };
+  const idToken = tokenBody.id_token;
+  if (!idToken) {
+    throw new AuthError(
+      'google_token_exchange_failed',
+      'Google token response did not include id_token',
+      401,
+    );
+  }
+
+  const claims = decodeJwtPayload(idToken);
+  const nonceClaim = readStringClaim(claims, 'nonce');
+  if (!nonceClaim || hashOpaqueToken(nonceClaim) !== input.consumed.nonceHash) {
+    throw new AuthError(
+      'google_nonce_mismatch',
+      'Google ID token nonce mismatch',
+      401,
+    );
+  }
+
+  const tokenInfoRes = await fetch(
+    `${GOOGLE_TOKEN_INFO_ENDPOINT}?id_token=${encodeURIComponent(idToken)}`,
+  );
+  if (!tokenInfoRes.ok) {
+    throw new AuthError(
+      'google_id_token_invalid',
+      'Google ID token validation failed',
+      401,
+    );
+  }
+  const tokenInfo = (await tokenInfoRes.json()) as {
+    iss?: string;
+    aud?: string;
+    exp?: string;
+    email?: string;
+    email_verified?: string | boolean;
+    name?: string;
+  };
+
+  const issuer = tokenInfo.iss || readStringClaim(claims, 'iss');
+  if (!issuer || !GOOGLE_ISSUERS.has(issuer)) {
+    throw new AuthError(
+      'google_id_token_invalid',
+      'Google ID token issuer is invalid',
+      401,
+    );
+  }
+
+  const aud = tokenInfo.aud || readStringClaim(claims, 'aud');
+  if (!aud || aud !== GOOGLE_OAUTH_CLIENT_ID) {
+    throw new AuthError(
+      'google_id_token_invalid',
+      'Google ID token audience is invalid',
+      401,
+    );
+  }
+
+  const expRaw = tokenInfo.exp || readStringClaim(claims, 'exp');
+  const expSeconds = expRaw ? parseInt(expRaw, 10) : Number.NaN;
+  if (
+    !Number.isFinite(expSeconds) ||
+    expSeconds + CLOCK_SKEW_SEC <= Math.floor(Date.now() / 1000)
+  ) {
+    throw new AuthError(
+      'google_id_token_expired',
+      'Google ID token has expired',
+      401,
+    );
+  }
+
+  const email = (tokenInfo.email || readStringClaim(claims, 'email') || '')
+    .trim()
+    .toLowerCase();
+  if (!email) {
+    throw new AuthError(
+      'google_id_token_invalid',
+      'Google ID token does not include email',
+      401,
+    );
+  }
+
+  const emailVerified = tokenInfo.email_verified ?? claims.email_verified;
+  if (!(emailVerified === true || emailVerified === 'true')) {
+    throw new AuthError(
+      'google_email_not_verified',
+      'Google account email is not verified',
+      403,
+    );
+  }
+
+  const displayName = (
+    tokenInfo.name ||
+    readStringClaim(claims, 'name') ||
+    email.split('@')[0] ||
+    'User'
+  ).trim();
+
+  return { email, displayName };
+}
+
+function decodeJwtPayload(token: string): Record<string, unknown> {
+  const parts = token.split('.');
+  if (parts.length !== 3) {
+    throw new AuthError(
+      'google_id_token_invalid',
+      'Google ID token is malformed',
+      401,
+    );
+  }
+
+  try {
+    return JSON.parse(
+      Buffer.from(parts[1], 'base64url').toString('utf8'),
+    ) as Record<string, unknown>;
+  } catch {
+    throw new AuthError(
+      'google_id_token_invalid',
+      'Google ID token is malformed',
+      401,
+    );
+  }
+}
+
+function readStringClaim(
+  claims: Record<string, unknown>,
+  key: string,
+): string | undefined {
+  const value = claims[key];
+  return typeof value === 'string' ? value : undefined;
 }

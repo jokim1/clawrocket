@@ -153,6 +153,7 @@ function createSchema(database: Database.Database): void {
       state_hash TEXT NOT NULL UNIQUE,
       nonce_hash TEXT NOT NULL,
       code_verifier_hash TEXT NOT NULL,
+      code_verifier TEXT,
       redirect_uri TEXT NOT NULL,
       created_at TEXT NOT NULL,
       expires_at TEXT NOT NULL,
@@ -306,6 +307,13 @@ function createSchema(database: Database.Database): void {
     database.exec(
       `UPDATE web_sessions SET access_expires_at = expires_at WHERE access_expires_at IS NULL`,
     );
+  } catch {
+    /* column already exists */
+  }
+
+  // Add code_verifier column if it doesn't exist (migration for existing DBs)
+  try {
+    database.exec(`ALTER TABLE oauth_state ADD COLUMN code_verifier TEXT`);
   } catch {
     /* column already exists */
   }
@@ -1058,6 +1066,7 @@ export interface OAuthStateRecord {
   state_hash: string;
   nonce_hash: string;
   code_verifier_hash: string;
+  code_verifier: string | null;
   redirect_uri: string;
   created_at: string;
   expires_at: string;
@@ -1070,15 +1079,16 @@ export function createOAuthState(input: {
   stateHash: string;
   nonceHash: string;
   codeVerifierHash: string;
+  codeVerifier?: string;
   redirectUri: string;
   expiresAt: string;
 }): void {
   db.prepare(
     `
     INSERT INTO oauth_state (
-      id, provider, state_hash, nonce_hash, code_verifier_hash, redirect_uri,
+      id, provider, state_hash, nonce_hash, code_verifier_hash, code_verifier, redirect_uri,
       created_at, expires_at, used_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
   `,
   ).run(
     input.id,
@@ -1086,6 +1096,7 @@ export function createOAuthState(input: {
     input.stateHash,
     input.nonceHash,
     input.codeVerifierHash,
+    input.codeVerifier || null,
     input.redirectUri,
     new Date().toISOString(),
     input.expiresAt,
