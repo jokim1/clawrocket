@@ -9,7 +9,7 @@ import {
   REFRESH_TOKEN_TTL_SEC,
   WEB_SECURE_COOKIES,
 } from '../config.js';
-import { canUserAccessTalk, getUserById } from '../db.js';
+import { canUserAccessTalk, getUserById } from '../db/index.js';
 import {
   completeDeviceAuthFlow,
   completeGoogleOAuthCallback,

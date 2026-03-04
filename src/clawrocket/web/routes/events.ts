@@ -2,7 +2,7 @@ import {
   getOutboxEventsForTopics,
   getOutboxMinEventIdForTopics,
   getTalkIdsAccessibleByUser,
-} from '../../db.js';
+} from '../../db/index.js';
 
 function formatEvent(event: {
   event_id: number;

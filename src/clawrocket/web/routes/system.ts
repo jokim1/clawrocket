@@ -1,5 +1,5 @@
-import { getRegisteredChannelNames } from '../../channels/registry.js';
-import { isDatabaseHealthy } from '../../db.js';
+import { getRegisteredChannelNames } from '../../../channels/registry.js';
+import { isDatabaseHealthy } from '../../db/index.js';
 import { KeychainBridge } from '../../secrets/keychain.js';
 import { ApiEnvelope } from '../types.js';
 

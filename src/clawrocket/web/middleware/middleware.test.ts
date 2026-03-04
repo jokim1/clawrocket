@@ -5,7 +5,7 @@ import {
   saveIdempotencyCache,
   upsertUser,
   upsertWebSession,
-} from '../../db.js';
+} from '../../db/index.js';
 import { hashSessionToken } from '../../identity/session.js';
 import { hashRequestBody } from '../../security/hash.js';
 import { authenticateRequest } from './auth.js';

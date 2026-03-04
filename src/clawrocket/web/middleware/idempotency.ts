@@ -1,4 +1,4 @@
-import { getIdempotencyCache, saveIdempotencyCache } from '../../db.js';
+import { getIdempotencyCache, saveIdempotencyCache } from '../../db/index.js';
 import { hashRequestBody } from '../../security/hash.js';
 
 export interface IdempotencyPrecheck {

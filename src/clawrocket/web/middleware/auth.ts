@@ -1,4 +1,4 @@
-import { getWebSessionByAccessTokenHash, getUserById } from '../../db.js';
+import { getWebSessionByAccessTokenHash, getUserById } from '../../db/index.js';
 import {
   ACCESS_TOKEN_COOKIE,
   hashSessionToken,

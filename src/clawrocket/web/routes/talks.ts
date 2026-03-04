@@ -11,7 +11,7 @@ import {
   normalizeTalkListPage,
   type TalkMessageRecord,
   type TalkWithAccessRecord,
-} from '../../db.js';
+} from '../../db/index.js';
 import { canEditTalk } from '../middleware/acl.js';
 import { AuthContext, ApiEnvelope } from '../types.js';
 

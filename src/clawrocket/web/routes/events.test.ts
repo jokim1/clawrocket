@@ -7,7 +7,7 @@ import {
   upsertTalkMember,
   upsertUser,
   upsertWebSession,
-} from '../../db.js';
+} from '../../db/index.js';
 import { hashSessionToken } from '../../identity/session.js';
 import { _resetRateLimitStateForTests } from '../middleware/rate-limit.js';
 import { createWebServer, WebServerHandle } from '../server.js';

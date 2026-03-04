@@ -1,4 +1,4 @@
-import { logger } from '../logger.js';
+import { logger } from '../../logger.js';
 import {
   TALK_RUN_MAX_CONCURRENCY,
   TALK_RUN_POLL_MS,

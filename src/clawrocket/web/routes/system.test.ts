@@ -1,6 +1,10 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 
-import { _initTestDatabase, upsertUser, upsertWebSession } from '../../db.js';
+import {
+  _initTestDatabase,
+  upsertUser,
+  upsertWebSession,
+} from '../../db/index.js';
 import { hashSessionToken } from '../../identity/session.js';
 import { noopKeychainBridge } from '../../secrets/keychain.js';
 import { _resetRateLimitStateForTests } from '../middleware/rate-limit.js';
