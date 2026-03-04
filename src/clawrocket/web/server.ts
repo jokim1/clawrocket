@@ -248,6 +248,11 @@ function buildApp(opts: WebServerOptions): Hono {
         userAgent: c.req.header('user-agent'),
       });
       setSessionCookies(c, result.session);
+      const accept = (c.req.header('accept') || '').toLowerCase();
+      if (accept.includes('text/html')) {
+        c.header('cache-control', 'no-store');
+        return c.redirect('/app/talks', 302);
+      }
       return c.json(
         {
           ok: true,
