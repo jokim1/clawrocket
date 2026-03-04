@@ -16,6 +16,15 @@ describe('auth routes (phase 1)', () => {
     });
   });
 
+  it('returns frontend-safe auth config without authentication', async () => {
+    const res = await server.request('/api/v1/auth/config');
+    expect(res.status).toBe(200);
+
+    const body = (await res.json()) as any;
+    expect(body.ok).toBe(true);
+    expect(typeof body.data.devMode).toBe('boolean');
+  });
+
   it('supports owner-claim on first OAuth callback and /session/me', async () => {
     const startRes = await server.request('/api/v1/auth/google/start', {
       method: 'POST',

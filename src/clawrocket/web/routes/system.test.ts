@@ -82,9 +82,10 @@ describe('system routes', () => {
       );
       fs.mkdirSync(path.join(distDir, 'assets'), { recursive: true });
       fs.writeFileSync(
-        path.join(distDir, 'assets', 'app.js'),
+        path.join(distDir, 'assets', 'app-abc123.js'),
         'console.log(1);',
       );
+      fs.writeFileSync(path.join(distDir, 'robots.txt'), 'User-agent: *');
 
       const webServer = createWebServer({
         host: '127.0.0.1',
@@ -96,14 +97,24 @@ describe('system routes', () => {
       const routeRes = await webServer.request('/app/talks');
       expect(routeRes.status).toBe(200);
       expect(routeRes.headers.get('content-type')).toContain('text/html');
+      expect(routeRes.headers.get('cache-control')).toBe('no-cache');
       expect(routeRes.headers.get('content-security-policy')).toContain(
         "default-src 'self'",
       );
 
-      const assetRes = await webServer.request('/assets/app.js');
+      const assetRes = await webServer.request('/assets/app-abc123.js');
       expect(assetRes.status).toBe(200);
       expect(assetRes.headers.get('content-type')).toContain(
         'application/javascript',
+      );
+      expect(assetRes.headers.get('cache-control')).toBe(
+        'public, max-age=31536000, immutable',
+      );
+
+      const plainStaticRes = await webServer.request('/robots.txt');
+      expect(plainStaticRes.status).toBe(200);
+      expect(plainStaticRes.headers.get('cache-control')).toBe(
+        'public, max-age=3600',
       );
     } finally {
       fs.rmSync(distDir, { recursive: true, force: true });

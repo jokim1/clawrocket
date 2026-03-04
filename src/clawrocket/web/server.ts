@@ -9,6 +9,7 @@ import { Context, Hono } from 'hono';
 
 import {
   ACCESS_TOKEN_TTL_SEC,
+  AUTH_DEV_MODE,
   REFRESH_TOKEN_TTL_SEC,
   WEB_SECURE_COOKIES,
 } from '../config.js';
@@ -197,6 +198,18 @@ function buildApp(opts: WebServerOptions): Hono {
   app.get('/api/v1/health', async (c) => {
     const health = await healthResponse();
     return c.json(health, health.ok ? 200 : 503);
+  });
+
+  app.get('/api/v1/auth/config', async (c) => {
+    return c.json(
+      {
+        ok: true,
+        data: {
+          devMode: AUTH_DEV_MODE,
+        },
+      },
+      200,
+    );
   });
 
   app.post('/api/v1/auth/google/start', async (c) => {
@@ -1226,11 +1239,11 @@ function serveWebAppRequest(
     ) {
       return null;
     }
-    return serveStaticFile(assetPath, false);
+    return serveStaticFile(assetPath, false, requestPath);
   }
 
   // Route paths fallback to SPA index.
-  return serveStaticFile(indexPath, true);
+  return serveStaticFile(indexPath, true, requestPath);
 }
 
 function resolveSafeDistPath(
@@ -1257,14 +1270,23 @@ function resolveSafeDistPath(
   return fullPath;
 }
 
-function serveStaticFile(filePath: string, isHtml: boolean): Response {
+function serveStaticFile(
+  filePath: string,
+  isHtml: boolean,
+  requestPath: string,
+): Response {
   const body = fs.readFileSync(filePath);
   const headers: Record<string, string> = {
     'content-type': contentTypeForPath(filePath),
   };
   if (isHtml) {
+    headers['cache-control'] = 'no-cache';
     headers['content-security-policy'] =
       "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; font-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'";
+  } else if (requestPath.startsWith('/assets/')) {
+    headers['cache-control'] = 'public, max-age=31536000, immutable';
+  } else {
+    headers['cache-control'] = 'public, max-age=3600';
   }
   return new Response(body, { status: 200, headers });
 }

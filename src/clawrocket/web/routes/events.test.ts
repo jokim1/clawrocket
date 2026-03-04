@@ -261,7 +261,7 @@ async function readSseUntil(
   }
 
   const decoder = new TextDecoder();
-  const deadline = Date.now() + 2_000;
+  const deadline = Date.now() + 5_000;
   let text = '';
   while (Date.now() < deadline) {
     const { value, done } = await reader.read();
