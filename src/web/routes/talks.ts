@@ -1,5 +1,3 @@
-import { randomUUID } from 'crypto';
-
 import { TalkRunQueue } from '../../talks/run-queue.js';
 import { canEditTalk } from '../middleware/acl.js';
 import { AuthContext, ApiEnvelope } from '../types.js';
@@ -53,8 +51,4 @@ export function cancelTalkChat(input: {
       },
     },
   };
-}
-
-export function buildRunId(): string {
-  return randomUUID();
 }

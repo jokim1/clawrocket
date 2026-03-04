@@ -130,4 +130,18 @@ describe('talk routes', () => {
     expect(body.ok).toBe(false);
     expect(body.error.code).toBe('payload_too_large');
   });
+
+  it('rejects malformed percent-encoding in talk id', async () => {
+    const res = await fetch(`${baseUrl}/api/v1/talks/%ZZ/chat/cancel`, {
+      method: 'POST',
+      headers: {
+        Authorization: 'Bearer owner-token',
+      },
+    });
+
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as any;
+    expect(body.ok).toBe(false);
+    expect(body.error.code).toBe('invalid_talk_id');
+  });
 });

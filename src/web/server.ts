@@ -131,31 +131,41 @@ async function handleRequest(
     return;
   }
 
-  let bodyText = '';
-  try {
-    bodyText = await readBody(req, MAX_REQUEST_BODY_BYTES);
-  } catch (err) {
-    if (err instanceof RequestBodyTooLargeError) {
-      sendJson(res, 413, {
+  if (isMutating(method)) {
+    let bodyText = '';
+    try {
+      bodyText = await readBody(req, MAX_REQUEST_BODY_BYTES);
+    } catch (err) {
+      if (err instanceof RequestBodyTooLargeError) {
+        // Close the connection after emitting 413 so oversized uploads
+        // cannot keep the socket open.
+        res.once('finish', () => {
+          if (!req.destroyed) req.destroy();
+        });
+        sendJson(
+          res,
+          413,
+          {
+            ok: false,
+            error: {
+              code: 'payload_too_large',
+              message: `Request body exceeds ${MAX_REQUEST_BODY_BYTES} bytes`,
+            },
+          },
+          { connection: 'close' },
+        );
+        return;
+      }
+      sendJson(res, 400, {
         ok: false,
         error: {
-          code: 'payload_too_large',
-          message: `Request body exceeds ${MAX_REQUEST_BODY_BYTES} bytes`,
+          code: 'invalid_request_body',
+          message: 'Unable to read request body',
         },
       });
       return;
     }
-    sendJson(res, 400, {
-      ok: false,
-      error: {
-        code: 'invalid_request_body',
-        message: 'Unable to read request body',
-      },
-    });
-    return;
-  }
 
-  if (isMutating(method)) {
     const csrfResult = validateCsrfToken({
       method,
       authType: auth.authType,
@@ -205,7 +215,18 @@ async function handleRequest(
         /^\/api\/v1\/talks\/([^/]+)\/chat\/cancel$/,
       );
       if (cancelMatch) {
-        const talkId = decodeURIComponent(cancelMatch[1]);
+        const talkId = safeDecodePathSegment(cancelMatch[1]);
+        if (!talkId) {
+          sendJson(res, 400, {
+            ok: false,
+            error: {
+              code: 'invalid_talk_id',
+              message: 'Talk ID path segment is not valid URL encoding',
+            },
+          });
+          return;
+        }
+
         const result = cancelTalkChat({
           talkId,
           auth,
@@ -256,7 +277,18 @@ async function handleRequest(
 
   const talkEventMatch = path.match(/^\/api\/v1\/talks\/([^/]+)\/events$/);
   if (method === 'GET' && talkEventMatch) {
-    const talkId = decodeURIComponent(talkEventMatch[1]);
+    const talkId = safeDecodePathSegment(talkEventMatch[1]);
+    if (!talkId) {
+      sendJson(res, 400, {
+        ok: false,
+        error: {
+          code: 'invalid_talk_id',
+          message: 'Talk ID path segment is not valid URL encoding',
+        },
+      });
+      return;
+    }
+
     if (!canAccessTalk(talkId, auth.userId)) {
       sendJson(res, 404, {
         ok: false,
@@ -298,6 +330,14 @@ function parseLastEventId(value: string | undefined): number {
   return parsed;
 }
 
+function safeDecodePathSegment(value: string): string | null {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return null;
+  }
+}
+
 function selectRateBucket(
   method: string,
   path: string,
@@ -329,6 +369,7 @@ async function readBody(
     const part = Buffer.from(chunk);
     totalBytes += part.length;
     if (totalBytes > maxBytes) {
+      req.pause();
       throw new RequestBodyTooLargeError(maxBytes);
     }
     chunks.push(part);
