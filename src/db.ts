@@ -1245,6 +1245,26 @@ export interface TalkWithAccessRecord extends TalkRecord {
   access_role: TalkAccessLevel;
 }
 
+export interface TalkListPage {
+  limit: number;
+  offset: number;
+}
+
+export function normalizeTalkListPage(input?: {
+  limit?: number;
+  offset?: number;
+}): TalkListPage {
+  const limit =
+    typeof input?.limit === 'number'
+      ? Math.min(200, Math.max(1, Math.floor(input.limit)))
+      : 50;
+  const offset =
+    typeof input?.offset === 'number'
+      ? Math.max(0, Math.floor(input.offset))
+      : 0;
+  return { limit, offset };
+}
+
 export function createTalk(input: {
   id: string;
   ownerId: string;
@@ -1287,17 +1307,13 @@ export function listTalksForUser(input: {
 }): TalkWithAccessRecord[] {
   const user = getUserById(input.userId);
   if (!user || user.is_active !== 1) return [];
-
-  const limit =
-    typeof input.limit === 'number'
-      ? Math.min(200, Math.max(1, Math.floor(input.limit)))
-      : 50;
-  const offset =
-    typeof input.offset === 'number'
-      ? Math.max(0, Math.floor(input.offset))
-      : 0;
+  const page = normalizeTalkListPage({
+    limit: input.limit,
+    offset: input.offset,
+  });
 
   if (user.role === 'owner' || user.role === 'admin') {
+    // Global admin/owner role is authoritative here; membership role is not surfaced.
     const accessRole = user.role === 'owner' ? 'owner' : 'admin';
     return db
       .prepare(
@@ -1309,7 +1325,12 @@ export function listTalksForUser(input: {
         LIMIT ? OFFSET ?
       `,
       )
-      .all(input.userId, accessRole, limit, offset) as TalkWithAccessRecord[];
+      .all(
+        input.userId,
+        accessRole,
+        page.limit,
+        page.offset,
+      ) as TalkWithAccessRecord[];
   }
 
   return db
@@ -1338,8 +1359,8 @@ export function listTalksForUser(input: {
       input.userId,
       input.userId,
       input.userId,
-      limit,
-      offset,
+      page.limit,
+      page.offset,
     ) as TalkWithAccessRecord[];
 }
 
@@ -1351,6 +1372,7 @@ export function getTalkForUser(
   if (!user || user.is_active !== 1) return undefined;
 
   if (user.role === 'owner' || user.role === 'admin') {
+    // Global admin/owner role is authoritative here; membership role is not surfaced.
     const row = db
       .prepare(
         `

@@ -27,6 +27,7 @@ import {
   getUserById,
   isDatabaseHealthy,
   markTalkRunStatus,
+  normalizeTalkListPage,
   pruneEventOutbox,
   pruneIdempotencyCache,
   saveIdempotencyCache,
@@ -596,6 +597,21 @@ describe('phase 0 schema and reliability tables', () => {
       beforeCreatedAt: '2024-01-01T00:00:01.000Z',
     });
     expect(before.map((message) => message.id)).toEqual(['tm-1']);
+  });
+
+  it('normalizes talk list pagination consistently', () => {
+    expect(normalizeTalkListPage({ limit: 500, offset: -10 })).toEqual({
+      limit: 200,
+      offset: 0,
+    });
+    expect(normalizeTalkListPage({ limit: 0, offset: 3.7 })).toEqual({
+      limit: 1,
+      offset: 3,
+    });
+    expect(normalizeTalkListPage()).toEqual({
+      limit: 50,
+      offset: 0,
+    });
   });
 
   it('prunes old idempotency cache records', () => {

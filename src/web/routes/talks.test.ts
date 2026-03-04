@@ -135,6 +135,20 @@ describe('talk routes', () => {
     expect(ownerBody.data.talks).toHaveLength(3);
   });
 
+  it('normalizes talk list pagination in query and response metadata', async () => {
+    const res = await server.request('/api/v1/talks?limit=500&offset=1', {
+      headers: {
+        Authorization: 'Bearer owner-token',
+      },
+    });
+    expect(res.status).toBe(200);
+
+    const body = (await res.json()) as any;
+    expect(body.data.page.limit).toBe(200);
+    expect(body.data.page.offset).toBe(1);
+    expect(body.data.page.count).toBe(2);
+  });
+
   it('creates a talk and supports idempotent replay', async () => {
     const first = await server.request('/api/v1/talks', {
       method: 'POST',

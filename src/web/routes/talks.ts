@@ -7,6 +7,7 @@ import {
   getTalkForUser,
   listTalkMessages,
   listTalksForUser,
+  normalizeTalkListPage,
   touchTalkUpdatedAt,
   type TalkMessageRecord,
   type TalkWithAccessRecord,
@@ -72,19 +73,15 @@ export function listTalksRoute(input: {
     page: { limit: number; offset: number; count: number };
   }>;
 } {
-  const talks = listTalksForUser({
-    userId: input.auth.userId,
+  const page = normalizeTalkListPage({
     limit: input.limit,
     offset: input.offset,
   });
-  const limit =
-    typeof input.limit === 'number'
-      ? Math.min(200, Math.max(1, Math.floor(input.limit)))
-      : 50;
-  const offset =
-    typeof input.offset === 'number'
-      ? Math.max(0, Math.floor(input.offset))
-      : 0;
+  const talks = listTalksForUser({
+    userId: input.auth.userId,
+    limit: page.limit,
+    offset: page.offset,
+  });
 
   return {
     statusCode: 200,
@@ -93,8 +90,8 @@ export function listTalksRoute(input: {
       data: {
         talks: talks.map(toTalkApiRecord),
         page: {
-          limit,
-          offset,
+          limit: page.limit,
+          offset: page.offset,
           count: talks.length,
         },
       },
@@ -325,6 +322,9 @@ export function enqueueTalkChat(input: {
   const runId = `run_${randomUUID()}`;
   const now = new Date().toISOString();
 
+  // Phase 1.3: message+run writes are intentionally non-transactional.
+  // If this system moves to multi-instance or higher throughput, wrap this
+  // sequence in a single DB transaction to enforce all-or-nothing behavior.
   createTalkMessage({
     id: messageId,
     talkId: input.talkId,
