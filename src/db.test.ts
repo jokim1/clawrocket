@@ -9,14 +9,50 @@ import {
   getMessagesSince,
   getNewMessages,
   getTaskById,
+  isDatabaseHealthy,
   setRegisteredGroup,
   storeChatMetadata,
   storeMessage,
   updateTask,
 } from './db.js';
+import {
+  _initClawrocketTestSchema,
+  appendOutboxEvent,
+  canUserEditTalk,
+  cancelTalkRunsAtomic,
+  completeRunAndPromoteNextAtomic,
+  consumeOAuthStateByHash,
+  createOAuthState,
+  createTalk,
+  createTalkMessage,
+  createTalkRun,
+  enqueueTalkTurnAtomic,
+  failInterruptedRunsOnStartup,
+  failRunAndPromoteNextAtomic,
+  getIdempotencyCache,
+  getOutboxEventsForTopics,
+  getQueuedTalkRuns,
+  getRunningTalkRun,
+  getTalkById,
+  getTalkForUser,
+  getTalkRunById,
+  getUserById,
+  listTalkMessages,
+  listTalksForUser,
+  markTalkRunStatus,
+  normalizeTalkListPage,
+  pruneEventOutbox,
+  pruneIdempotencyCache,
+  saveIdempotencyCache,
+  upsertTalk,
+  upsertTalkMember,
+  upsertUser,
+  upsertWebSession,
+} from './clawrocket/db/index.js';
 
 beforeEach(() => {
   _initTestDatabase();
+  _initClawrocketTestSchema();
 });
 
 // Helper to store a message using the normalized NewMessage interface
@@ -422,5 +458,460 @@ describe('registered group isMain', () => {
     const group = groups['group@g.us'];
     expect(group).toBeDefined();
     expect(group.isMain).toBeUndefined();
+  });
+});
+
+describe('phase 0 schema and reliability tables', () => {
+  beforeEach(() => {
+    upsertUser({
+      id: 'owner-1',
+      email: 'owner@example.com',
+      displayName: 'Owner',
+      role: 'owner',
+    });
+    upsertUser({
+      id: 'member-1',
+      email: 'member@example.com',
+      displayName: 'Member',
+      role: 'member',
+    });
+    upsertTalk({
+      id: 'talk-1',
+      ownerId: 'owner-1',
+      topicTitle: 'Test Talk',
+    });
+    upsertTalkMember({
+      talkId: 'talk-1',
+      userId: 'member-1',
+      role: 'editor',
+    });
+  });
+
+  it('creates and reads users and sessions', () => {
+    upsertWebSession({
+      id: 'session-1',
+      userId: 'owner-1',
+      accessTokenHash: 'hash-a',
+      refreshTokenHash: 'hash-r',
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+    });
+
+    const owner = getUserById('owner-1');
+    expect(owner?.role).toBe('owner');
+    expect(isDatabaseHealthy()).toBe(true);
+  });
+
+  it('stores and replays outbox events', () => {
+    const eventId = appendOutboxEvent({
+      topic: 'talk:talk-1',
+      eventType: 'message_appended',
+      payload: JSON.stringify({ messageId: 'm1' }),
+    });
+    expect(eventId).toBeGreaterThan(0);
+
+    const events = getOutboxEventsForTopics(['talk:talk-1'], 0);
+    expect(events).toHaveLength(1);
+    expect(events[0].event_type).toBe('message_appended');
+  });
+
+  it('consumes oauth state only once', () => {
+    createOAuthState({
+      id: 'oauth-1',
+      provider: 'google',
+      stateHash: 'state-hash-1',
+      nonceHash: 'nonce-hash-1',
+      codeVerifierHash: 'verifier-hash-1',
+      redirectUri: 'http://127.0.0.1:3210/api/v1/auth/google/callback',
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+    });
+
+    const first = consumeOAuthStateByHash('state-hash-1');
+    expect(first?.id).toBe('oauth-1');
+    expect(first?.used_at).toBeTruthy();
+
+    const second = consumeOAuthStateByHash('state-hash-1');
+    expect(second).toBeUndefined();
+  });
+
+  it('does not change talk owner when upserting existing talk id', () => {
+    upsertUser({
+      id: 'owner-2',
+      email: 'owner2@example.com',
+      displayName: 'Owner 2',
+      role: 'member',
+    });
+
+    expect(canUserEditTalk('talk-1', 'owner-1')).toBe(true);
+    expect(canUserEditTalk('talk-1', 'owner-2')).toBe(false);
+
+    upsertTalk({
+      id: 'talk-1',
+      ownerId: 'owner-2',
+      topicTitle: 'Updated title',
+    });
+
+    expect(canUserEditTalk('talk-1', 'owner-1')).toBe(true);
+    expect(canUserEditTalk('talk-1', 'owner-2')).toBe(false);
+  });
+
+  it('creates talk rows and resolves talk access for shared members', () => {
+    createTalk({
+      id: 'talk-2',
+      ownerId: 'owner-1',
+      topicTitle: 'Shared',
+    });
+    upsertTalkMember({
+      talkId: 'talk-2',
+      userId: 'member-1',
+      role: 'viewer',
+    });
+
+    const talk = getTalkById('talk-2');
+    expect(talk?.topic_title).toBe('Shared');
+
+    const ownerView = getTalkForUser('talk-2', 'owner-1');
+    expect(ownerView?.access_role).toBe('owner');
+
+    const memberView = getTalkForUser('talk-2', 'member-1');
+    expect(memberView?.access_role).toBe('viewer');
+
+    const memberList = listTalksForUser({ userId: 'member-1' });
+    expect(memberList.some((entry) => entry.id === 'talk-2')).toBe(true);
+  });
+
+  it('stores and paginates talk messages', () => {
+    createTalkMessage({
+      id: 'tm-1',
+      talkId: 'talk-1',
+      role: 'user',
+      content: 'hello',
+      createdBy: 'owner-1',
+      createdAt: '2024-01-01T00:00:00.000Z',
+    });
+    createTalkMessage({
+      id: 'tm-2',
+      talkId: 'talk-1',
+      role: 'assistant',
+      content: 'world',
+      createdBy: null,
+      createdAt: '2024-01-01T00:00:01.000Z',
+    });
+
+    const all = listTalkMessages({ talkId: 'talk-1', limit: 10 });
+    expect(all.map((message) => message.id)).toEqual(['tm-1', 'tm-2']);
+
+    const before = listTalkMessages({
+      talkId: 'talk-1',
+      limit: 10,
+      beforeCreatedAt: '2024-01-01T00:00:01.000Z',
+    });
+    expect(before.map((message) => message.id)).toEqual(['tm-1']);
+  });
+
+  it('atomically enqueues talk turn with message, run, and outbox events', () => {
+    const result = enqueueTalkTurnAtomic({
+      talkId: 'talk-1',
+      userId: 'owner-1',
+      content: 'atomic hello',
+      messageId: 'msg-atomic-1',
+      runId: 'run-atomic-1',
+      idempotencyKey: 'idem-atomic-1',
+      now: '2024-01-01T00:00:10.000Z',
+    });
+
+    expect(result.message.id).toBe('msg-atomic-1');
+    expect(result.message.created_at).toBe('2024-01-01T00:00:10.000Z');
+    expect(result.run.id).toBe('run-atomic-1');
+    expect(result.run.status).toBe('running');
+
+    const messages = listTalkMessages({ talkId: 'talk-1', limit: 10 });
+    expect(messages.map((message) => message.id)).toContain('msg-atomic-1');
+
+    const run = getTalkRunById('run-atomic-1');
+    expect(run?.status).toBe('running');
+
+    const events = getOutboxEventsForTopics(['talk:talk-1'], 0, 10);
+    const messageEvent = events.find(
+      (event) => event.event_type === 'message_appended',
+    );
+    const runEvent = events.find(
+      (event) => event.event_type === 'talk_run_started',
+    );
+
+    expect(messageEvent).toBeDefined();
+    expect(runEvent).toBeDefined();
+
+    const messagePayload = JSON.parse(messageEvent!.payload) as {
+      talkId: string;
+      messageId: string;
+      runId: string;
+    };
+    const runPayload = JSON.parse(runEvent!.payload) as {
+      talkId: string;
+      runId: string;
+      triggerMessageId: string;
+      status: string;
+    };
+
+    expect(messagePayload).toMatchObject({
+      talkId: 'talk-1',
+      messageId: 'msg-atomic-1',
+      runId: 'run-atomic-1',
+    });
+    expect(runPayload).toMatchObject({
+      talkId: 'talk-1',
+      runId: 'run-atomic-1',
+      triggerMessageId: 'msg-atomic-1',
+      status: 'running',
+    });
+  });
+
+  it('rolls back message writes when run insert fails inside atomic enqueue', () => {
+    enqueueTalkTurnAtomic({
+      talkId: 'talk-1',
+      userId: 'owner-1',
+      content: 'first',
+      messageId: 'msg-atomic-2a',
+      runId: 'run-atomic-2',
+      now: '2024-01-01T00:00:20.000Z',
+    });
+
+    expect(() =>
+      enqueueTalkTurnAtomic({
+        talkId: 'talk-1',
+        userId: 'owner-1',
+        content: 'second should rollback',
+        messageId: 'msg-atomic-2b',
+        runId: 'run-atomic-2', // duplicate PK to force failure
+        now: '2024-01-01T00:00:21.000Z',
+      }),
+    ).toThrow();
+
+    const messages = listTalkMessages({ talkId: 'talk-1', limit: 20 });
+    expect(
+      messages.some((message) => message.id === 'msg-atomic-2b'),
+    ).toBeFalsy();
+
+    const events = getOutboxEventsForTopics(['talk:talk-1'], 0, 50);
+    expect(
+      events.some((event) => event.payload.includes('msg-atomic-2b')),
+    ).toBeFalsy();
+  });
+
+  it('completes a running run, appends assistant message, and promotes one queued run', () => {
+    enqueueTalkTurnAtomic({
+      talkId: 'talk-1',
+      userId: 'owner-1',
+      content: 'run one',
+      messageId: 'msg-atomic-3a',
+      runId: 'run-atomic-3a',
+      now: '2024-01-01T00:00:30.000Z',
+    });
+    enqueueTalkTurnAtomic({
+      talkId: 'talk-1',
+      userId: 'owner-1',
+      content: 'run two',
+      messageId: 'msg-atomic-3b',
+      runId: 'run-atomic-3b',
+      now: '2024-01-01T00:00:31.000Z',
+    });
+
+    const completion = completeRunAndPromoteNextAtomic({
+      runId: 'run-atomic-3a',
+      responseMessageId: 'msg-atomic-3r',
+      responseContent: 'assistant reply',
+      now: '2024-01-01T00:00:32.000Z',
+    });
+
+    expect(completion.applied).toBe(true);
+    expect(completion.talkId).toBe('talk-1');
+    expect(completion.promotedRunId).toBe('run-atomic-3b');
+
+    expect(getTalkRunById('run-atomic-3a')?.status).toBe('completed');
+    expect(getTalkRunById('run-atomic-3b')?.status).toBe('running');
+
+    const messages = listTalkMessages({ talkId: 'talk-1', limit: 20 });
+    const responseMessage = messages.find(
+      (message) => message.id === 'msg-atomic-3r',
+    );
+    expect(responseMessage?.role).toBe('assistant');
+    expect(responseMessage?.run_id).toBe('run-atomic-3a');
+
+    const events = getOutboxEventsForTopics(['talk:talk-1'], 0, 50);
+    const completed = events.find(
+      (event) =>
+        event.event_type === 'talk_run_completed' &&
+        event.payload.includes('\"runId\":\"run-atomic-3a\"'),
+    );
+    const promoted = events.find(
+      (event) =>
+        event.event_type === 'talk_run_started' &&
+        event.payload.includes('\"runId\":\"run-atomic-3b\"'),
+    );
+    expect(completed).toBeDefined();
+    expect(promoted).toBeDefined();
+    expect(promoted?.payload).toContain(
+      '\"triggerMessageId\":\"msg-atomic-3b\"',
+    );
+  });
+
+  it('enforces first-writer-wins between cancel and fail transitions', () => {
+    enqueueTalkTurnAtomic({
+      talkId: 'talk-1',
+      userId: 'owner-1',
+      content: 'cancel vs fail',
+      messageId: 'msg-atomic-4',
+      runId: 'run-atomic-4',
+      now: '2024-01-01T00:00:40.000Z',
+    });
+
+    const cancelled = cancelTalkRunsAtomic({
+      talkId: 'talk-1',
+      cancelledBy: 'owner-1',
+      now: '2024-01-01T00:00:41.000Z',
+    });
+    expect(cancelled.cancelledRuns).toBe(1);
+
+    const failed = failRunAndPromoteNextAtomic({
+      runId: 'run-atomic-4',
+      errorCode: 'execution_failed',
+      errorMessage: 'should not override cancellation',
+      now: '2024-01-01T00:00:42.000Z',
+    });
+    expect(failed.applied).toBe(false);
+
+    expect(getTalkRunById('run-atomic-4')?.status).toBe('cancelled');
+    const events = getOutboxEventsForTopics(['talk:talk-1'], 0, 50);
+    expect(
+      events.some(
+        (event) =>
+          event.event_type === 'talk_run_failed' &&
+          event.payload.includes('\"runId\":\"run-atomic-4\"'),
+      ),
+    ).toBe(false);
+  });
+
+  it('fails interrupted running runs on startup and promotes queued runs', () => {
+    enqueueTalkTurnAtomic({
+      talkId: 'talk-1',
+      userId: 'owner-1',
+      content: 'stale running',
+      messageId: 'msg-atomic-5a',
+      runId: 'run-atomic-5a',
+      now: '2024-01-01T00:00:50.000Z',
+    });
+    enqueueTalkTurnAtomic({
+      talkId: 'talk-1',
+      userId: 'owner-1',
+      content: 'queued stale',
+      messageId: 'msg-atomic-5b',
+      runId: 'run-atomic-5b',
+      now: '2024-01-01T00:00:51.000Z',
+    });
+
+    const recovered = failInterruptedRunsOnStartup('2024-01-01T00:00:52.000Z');
+    expect(recovered.failedRunIds).toEqual(['run-atomic-5a']);
+    expect(recovered.promotedRunIds).toEqual(['run-atomic-5b']);
+
+    expect(getTalkRunById('run-atomic-5a')?.status).toBe('failed');
+    expect(getTalkRunById('run-atomic-5a')?.cancel_reason).toBe(
+      'interrupted_by_restart',
+    );
+    expect(getTalkRunById('run-atomic-5b')?.status).toBe('running');
+  });
+
+  it('normalizes talk list pagination consistently', () => {
+    expect(normalizeTalkListPage({ limit: 500, offset: -10 })).toEqual({
+      limit: 200,
+      offset: 0,
+    });
+    expect(normalizeTalkListPage({ limit: 0, offset: 3.7 })).toEqual({
+      limit: 1,
+      offset: 3,
+    });
+    expect(normalizeTalkListPage()).toEqual({
+      limit: 50,
+      offset: 0,
+    });
+  });
+
+  it('prunes old idempotency cache records', () => {
+    const createdAt = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000);
+    const expiresAt = new Date(createdAt.getTime() + 24 * 60 * 60 * 1000);
+    saveIdempotencyCache({
+      idempotency_key: 'idem-old',
+      user_id: 'owner-1',
+      method: 'POST',
+      path: '/api/v1/talks/talk-1/chat/cancel',
+      request_hash: 'abc',
+      status_code: 200,
+      response_body: '{}',
+      created_at: createdAt.toISOString(),
+      expires_at: expiresAt.toISOString(),
+    });
+
+    const pruned = pruneIdempotencyCache();
+    expect(pruned).toBe(1);
+
+    const existing = getIdempotencyCache({
+      userId: 'owner-1',
+      idempotencyKey: 'idem-old',
+      method: 'POST',
+      path: '/api/v1/talks/talk-1/chat/cancel',
+    });
+    expect(existing).toBeUndefined();
+  });
+
+  it('maintains one running talk run and queued follow-ups', () => {
+    createTalkRun({
+      id: 'run-1',
+      talk_id: 'talk-1',
+      requested_by: 'owner-1',
+      status: 'running',
+      trigger_message_id: null,
+      idempotency_key: null,
+      created_at: new Date().toISOString(),
+      started_at: new Date().toISOString(),
+      ended_at: null,
+      cancel_reason: null,
+    });
+    createTalkRun({
+      id: 'run-2',
+      talk_id: 'talk-1',
+      requested_by: 'owner-1',
+      status: 'queued',
+      trigger_message_id: null,
+      idempotency_key: null,
+      created_at: new Date().toISOString(),
+      started_at: null,
+      ended_at: null,
+      cancel_reason: null,
+    });
+
+    expect(getRunningTalkRun('talk-1')?.id).toBe('run-1');
+    expect(getQueuedTalkRuns('talk-1').map((row) => row.id)).toEqual(['run-2']);
+
+    markTalkRunStatus(
+      'run-1',
+      'completed',
+      new Date().toISOString(),
+      null,
+      new Date().toISOString(),
+    );
+    expect(getTalkRunById('run-1')?.status).toBe('completed');
+  });
+
+  it('preserves hot events while pruning old outbox rows', () => {
+    appendOutboxEvent({
+      topic: 'talk:talk-1',
+      eventType: 'keep',
+      payload: '{}',
+    });
+    const deleted = pruneEventOutbox({
+      nowMs: Date.now() + 1000,
+      retentionHours: 0,
+      keepRecentPerTopic: 1,
+    });
+    expect(deleted).toBe(0);
   });
 });
