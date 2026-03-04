@@ -2,35 +2,43 @@ import { describe, it, expect, beforeEach } from 'vitest';
 
 import {
   _initTestDatabase,
+  createTask,
+  deleteTask,
+  getAllChats,
+  getAllRegisteredGroups,
+  getMessagesSince,
+  getNewMessages,
+  getTaskById,
+  isDatabaseHealthy,
+  setRegisteredGroup,
+  storeChatMetadata,
+  storeMessage,
+  updateTask,
+} from './db.js';
+import {
+  _initClawrocketTestSchema,
   appendOutboxEvent,
   canUserEditTalk,
   cancelTalkRunsAtomic,
   completeRunAndPromoteNextAtomic,
+  consumeOAuthStateByHash,
+  createOAuthState,
   createTalk,
   createTalkMessage,
-  consumeOAuthStateByHash,
-  createTask,
-  createOAuthState,
-  deleteTask,
+  createTalkRun,
   enqueueTalkTurnAtomic,
   failInterruptedRunsOnStartup,
   failRunAndPromoteNextAtomic,
-  getTalkById,
-  getTalkForUser,
   getIdempotencyCache,
   getOutboxEventsForTopics,
   getQueuedTalkRuns,
   getRunningTalkRun,
-  getAllChats,
-  getAllRegisteredGroups,
-  listTalkMessages,
-  listTalksForUser,
-  getMessagesSince,
-  getNewMessages,
-  getTaskById,
+  getTalkById,
+  getTalkForUser,
   getTalkRunById,
   getUserById,
-  isDatabaseHealthy,
+  listTalkMessages,
+  listTalksForUser,
   markTalkRunStatus,
   normalizeTalkListPage,
   pruneEventOutbox,
@@ -40,15 +48,11 @@ import {
   upsertTalkMember,
   upsertUser,
   upsertWebSession,
-  createTalkRun,
-  setRegisteredGroup,
-  storeChatMetadata,
-  storeMessage,
-  updateTask,
-} from './db.js';
+} from './clawrocket/db/index.js';
 
 beforeEach(() => {
   _initTestDatabase();
+  _initClawrocketTestSchema();
 });
 
 // Helper to store a message using the normalized NewMessage interface
