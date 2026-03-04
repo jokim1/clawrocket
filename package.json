@@ -15,6 +15,9 @@
     "prepare": "husky",
     "setup": "tsx setup/index.ts",
     "auth": "tsx src/whatsapp-auth.ts",
+    "dev:web": "npm --prefix webapp run dev",
+    "build:web": "npm --prefix webapp run build",
+    "test:web": "npm --prefix webapp run test",
     "test": "vitest run",
     "test:watch": "vitest"
   },

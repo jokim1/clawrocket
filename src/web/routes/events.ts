@@ -4,7 +4,7 @@ import {
   getTalkIdsAccessibleByUser,
 } from '../../db.js';
 
-function formatEvent(event: {
+export function formatOutboxEventAsSse(event: {
   event_id: number;
   event_type: string;
   payload: string;
@@ -12,12 +12,20 @@ function formatEvent(event: {
   return `id: ${event.event_id}\nevent: ${event.event_type}\ndata: ${event.payload}\n\n`;
 }
 
+export function getUserScopedEventTopics(userId: string): string[] {
+  const talkIds = getTalkIdsAccessibleByUser(userId);
+  return [`user:${userId}`, ...talkIds.map((id) => `talk:${id}`)];
+}
+
+export function getTalkScopedEventTopics(talkId: string): string[] {
+  return [`talk:${talkId}`];
+}
+
 export function buildUserScopedSseStream(input: {
   userId: string;
   lastEventId: number;
 }): string {
-  const talkIds = getTalkIdsAccessibleByUser(input.userId);
-  const topics = [`user:${input.userId}`, ...talkIds.map((id) => `talk:${id}`)];
+  const topics = getUserScopedEventTopics(input.userId);
   return buildSseStreamForTopics(topics, input.lastEventId);
 }
 
@@ -25,7 +33,10 @@ export function buildTalkScopedSseStream(input: {
   talkId: string;
   lastEventId: number;
 }): string {
-  return buildSseStreamForTopics([`talk:${input.talkId}`], input.lastEventId);
+  return buildSseStreamForTopics(
+    getTalkScopedEventTopics(input.talkId),
+    input.lastEventId,
+  );
 }
 
 function buildSseStreamForTopics(
@@ -42,7 +53,7 @@ function buildSseStreamForTopics(
 
   const events = getOutboxEventsForTopics(topics, lastEventId);
   for (const event of events) {
-    output += formatEvent(event);
+    output += formatOutboxEventAsSse(event);
   }
 
   if (!output) {
