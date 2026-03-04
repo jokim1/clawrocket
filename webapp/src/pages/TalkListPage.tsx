@@ -1,16 +1,20 @@
-import { useEffect, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { FormEvent, useEffect, useState } from 'react';
+import { Link, useNavigate } from 'react-router-dom';
 
-import { listTalks, Talk, UnauthorizedError } from '../lib/api';
+import { createTalk, listTalks, Talk, UnauthorizedError } from '../lib/api';
 
 export function TalkListPage({
   onUnauthorized,
 }: {
   onUnauthorized: () => void;
 }): JSX.Element {
+  const navigate = useNavigate();
   const [talks, setTalks] = useState<Talk[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [newTitle, setNewTitle] = useState('');
+  const [createBusy, setCreateBusy] = useState(false);
+  const [createError, setCreateError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -41,6 +45,30 @@ export function TalkListPage({
     };
   }, [onUnauthorized]);
 
+  const handleCreateTalk = async (event: FormEvent) => {
+    event.preventDefault();
+    const title = newTitle.trim();
+    if (!title) {
+      setCreateError('Talk title is required.');
+      return;
+    }
+
+    setCreateBusy(true);
+    setCreateError(null);
+    try {
+      const talk = await createTalk(title);
+      navigate(`/app/talks/${talk.id}`);
+    } catch (err) {
+      if (err instanceof UnauthorizedError) {
+        onUnauthorized();
+        return;
+      }
+      setCreateError(err instanceof Error ? err.message : 'Failed to create talk');
+    } finally {
+      setCreateBusy(false);
+    }
+  };
+
   if (loading) {
     return <p className="page-state">Loading talks…</p>;
   }
@@ -59,6 +87,30 @@ export function TalkListPage({
       <header className="page-header">
         <h1>Talks</h1>
       </header>
+
+      <form className="talk-create" onSubmit={handleCreateTalk}>
+        <input
+          type="text"
+          value={newTitle}
+          onChange={(event) => {
+            setNewTitle(event.target.value);
+            if (createError) setCreateError(null);
+          }}
+          placeholder="New Talk title"
+          maxLength={160}
+          disabled={createBusy}
+        />
+        <button type="submit" className="primary-btn" disabled={createBusy}>
+          {createBusy ? 'Creating…' : 'New Talk'}
+        </button>
+      </form>
+
+      {createError ? (
+        <div className="inline-banner inline-banner-error" role="alert">
+          {createError}
+        </div>
+      ) : null}
+
       {talks.length === 0 ? (
         <p className="page-state">No talks yet.</p>
       ) : (
