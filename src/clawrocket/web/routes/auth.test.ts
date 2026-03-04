@@ -37,6 +37,11 @@ describe('auth routes (phase 1)', () => {
       `/api/v1/auth/google/callback?state=${encodeURIComponent(
         state,
       )}&email=owner@example.com&name=Owner`,
+      {
+        headers: {
+          Accept: 'application/json',
+        },
+      },
     );
     expect(callbackRes.status).toBe(200);
     const callbackBody = (await callbackRes.json()) as any;
@@ -55,6 +60,42 @@ describe('auth routes (phase 1)', () => {
     expect(meBody.data.user.email).toBe('owner@example.com');
   });
 
+  it('redirects browser callback requests to /app/talks after setting cookies', async () => {
+    const startRes = await server.request('/api/v1/auth/google/start', {
+      method: 'POST',
+    });
+    expect(startRes.status).toBe(200);
+    const startBody = (await startRes.json()) as any;
+    const state = startBody.data.state as string;
+
+    const callbackRes = await server.request(
+      `/api/v1/auth/google/callback?state=${encodeURIComponent(
+        state,
+      )}&email=owner@example.com&name=Owner`,
+      {
+        headers: {
+          Accept:
+            'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        },
+      },
+    );
+    expect(callbackRes.status).toBe(302);
+    expect(callbackRes.headers.get('location')).toBe('/app/talks');
+    expect(callbackRes.headers.get('cache-control')).toBe('no-store');
+
+    const cookies = getCookieHeader(callbackRes);
+    expect(cookies).toContain('cr_access_token=');
+    expect(cookies).toContain('cr_refresh_token=');
+    expect(cookies).toContain('cr_csrf_token=');
+
+    const meRes = await server.request('/api/v1/session/me', {
+      headers: {
+        Cookie: cookies,
+      },
+    });
+    expect(meRes.status).toBe(200);
+  });
+
   it('requires invite for second account and allows login after invite', async () => {
     const ownerCtx = await loginViaDevCallback(
       server,
@@ -70,6 +111,11 @@ describe('auth routes (phase 1)', () => {
       `/api/v1/auth/google/callback?state=${encodeURIComponent(
         startBody.data.state,
       )}&email=member@example.com&name=Member`,
+      {
+        headers: {
+          Accept: 'application/json',
+        },
+      },
     );
     expect(blockedRes.status).toBe(403);
 
@@ -92,6 +138,11 @@ describe('auth routes (phase 1)', () => {
       `/api/v1/auth/google/callback?state=${encodeURIComponent(
         startBody2.data.state,
       )}&email=member@example.com&name=Member`,
+      {
+        headers: {
+          Accept: 'application/json',
+        },
+      },
     );
     expect(allowedRes.status).toBe(200);
     const allowedBody = (await allowedRes.json()) as any;
@@ -230,6 +281,11 @@ async function loginViaDevCallback(
     `/api/v1/auth/google/callback?state=${encodeURIComponent(
       state,
     )}&email=${encodeURIComponent(email)}&name=${encodeURIComponent(name)}`,
+    {
+      headers: {
+        Accept: 'application/json',
+      },
+    },
   );
   if (callbackRes.status !== 200) {
     throw new Error(`Login failed: ${callbackRes.status}`);
