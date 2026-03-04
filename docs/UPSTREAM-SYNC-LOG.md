@@ -9,6 +9,24 @@
 
 ## Sync Entries
 
+### 2026-03-04 - Cutover Mechanics Execution (Maintainer Clone)
+
+- Repository: `jokim1/clawrocket`
+- Completed:
+  - Created and pushed canonical branch `main` from `codex/realign-upstream-v1.2.0`.
+  - Repointed local maintainer clone to track `origin/main`.
+  - Materialized legacy Step 1.6 stash safely in pre-realign context:
+    - Created `codex/stash-port-source` from `pre-realign-baseline`.
+    - Ran `git stash branch codex/phase1.6-legacy-port stash@{0}`.
+    - Verified stash was auto-dropped on success.
+  - Preserved legacy reference as remote branch:
+    - `origin/codex/phase1.6-legacy-port`
+- Pending admin-only actions (not executable from current CLI auth):
+  - Switch GitHub default branch from `codex/realign-upstream-v1.2.0` to `main`.
+  - Apply branch protection rule on `main` (PR required, 0 approvals, no force-push/deletion).
+- Notes:
+  - Current `gh` auth token has `READ` permission on `jokim1/clawrocket`, so repository settings changes must be done by repo admin in UI.
+
 ### 2026-03-04 - Post-Cutover Server Smoke Validation
 
 - Upstream range/tag: `v1.2.0` baseline (running default branch `codex/realign-upstream-v1.2.0`)
