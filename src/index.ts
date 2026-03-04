@@ -6,8 +6,8 @@ import {
   IDLE_TIMEOUT,
   POLL_INTERVAL,
   TRIGGER_PATTERN,
-  WEB_ENABLED,
 } from './config.js';
+import { WEB_ENABLED } from './clawrocket/config.js';
 import './channels/index.js';
 import {
   getChannelFactory,
@@ -38,13 +38,15 @@ import {
   storeChatMetadata,
   storeMessage,
 } from './db.js';
+import { initClawrocketSchema } from './clawrocket/db/index.js';
+import { registerClawrocketSchedulerMaintenanceHook } from './clawrocket/scheduler-maintenance.js';
 import { GroupQueue } from './group-queue.js';
 import { resolveGroupFolderPath } from './group-folder.js';
 import { startIpcWatcher } from './ipc.js';
 import { findChannel, formatMessages, formatOutbound } from './router.js';
 import { startSchedulerLoop } from './task-scheduler.js';
 import { Channel, NewMessage, RegisteredGroup } from './types.js';
-import { startWebServer } from './web/index.js';
+import { startWebServer } from './clawrocket/web/index.js';
 import { logger } from './logger.js';
 
 // Re-export for backwards compatibility during refactor
@@ -452,6 +454,10 @@ function ensureContainerSystemRunning(): void {
 async function main(): Promise<void> {
   ensureContainerSystemRunning();
   initDatabase();
+  // ClawRocket integration seam: initialize ClawRocket schema in shared DB.
+  initClawrocketSchema();
+  // ClawRocket integration seam: register scheduler maintenance callbacks.
+  registerClawrocketSchedulerMaintenanceHook();
   logger.info('Database initialized');
   loadState();
 
