@@ -32,6 +32,16 @@ claude
 
 Then run `/setup`. Claude Code handles everything: dependencies, authentication, container setup and service configuration.
 
+### Local Install (Manual)
+
+```bash
+npm install
+npm run install:webapp
+```
+
+If webapp dependencies are missing, `dev:web`, `build:web`, and `test:web` will print:
+`Webapp dependencies missing. Run npm run install:webapp or npm run install:all first.`
+
 > **Note:** Commands prefixed with `/` (like `/setup`, `/add-whatsapp`) are [Claude Code skills](https://code.claude.com/docs/en/skills). Type them inside the `claude` CLI prompt, not in your regular terminal.
 
 ## Philosophy
