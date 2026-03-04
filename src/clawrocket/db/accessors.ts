@@ -871,6 +871,8 @@ export function enqueueTalkTurnAtomic(input: {
             runId: txInput.runId,
             role: 'user',
             createdBy: txInput.userId,
+            content: txInput.content,
+            createdAt: now,
           }),
           now,
         );
@@ -1301,6 +1303,8 @@ export function appendAssistantMessageWithOutbox(input: {
           runId: txInput.runId,
           role: 'assistant',
           createdBy: null,
+          content: txInput.content,
+          createdAt,
         }),
         createdAt,
       );

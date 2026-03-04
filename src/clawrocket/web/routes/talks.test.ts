@@ -342,6 +342,23 @@ describe('talk routes', () => {
     expect(wakeCalls).toBe(1);
   });
 
+  it('rejects oversized chat content with message_too_large', async () => {
+    const oversized = 'x'.repeat(20_001);
+    const res = await server.request('/api/v1/talks/talk-owner/chat', {
+      method: 'POST',
+      headers: {
+        Authorization: 'Bearer owner-token',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ content: oversized }),
+    });
+
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as any;
+    expect(body.ok).toBe(false);
+    expect(body.error.code).toBe('message_too_large');
+  });
+
   it('supports cancel on existing talk and validates talk id encoding', async () => {
     const queued = await server.request('/api/v1/talks/talk-owner/chat', {
       method: 'POST',
