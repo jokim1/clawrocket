@@ -1649,6 +1649,7 @@ export function enqueueTalkTurnAtomic(input: {
         JSON.stringify({
           talkId: txInput.talkId,
           messageId: txInput.messageId,
+          runId: txInput.runId,
           role: 'user',
           createdBy: txInput.userId,
         }),
@@ -1680,6 +1681,7 @@ export function enqueueTalkTurnAtomic(input: {
         JSON.stringify({
           talkId: txInput.talkId,
           runId: txInput.runId,
+          triggerMessageId: txInput.messageId,
           status,
         }),
         now,

@@ -623,12 +623,39 @@ describe('phase 0 schema and reliability tables', () => {
     expect(run?.status).toBe('running');
 
     const events = getOutboxEventsForTopics(['talk:talk-1'], 0, 10);
-    expect(
-      events.some((event) => event.event_type === 'message_appended'),
-    ).toBe(true);
-    expect(
-      events.some((event) => event.event_type === 'talk_run_started'),
-    ).toBe(true);
+    const messageEvent = events.find(
+      (event) => event.event_type === 'message_appended',
+    );
+    const runEvent = events.find(
+      (event) => event.event_type === 'talk_run_started',
+    );
+
+    expect(messageEvent).toBeDefined();
+    expect(runEvent).toBeDefined();
+
+    const messagePayload = JSON.parse(messageEvent!.payload) as {
+      talkId: string;
+      messageId: string;
+      runId: string;
+    };
+    const runPayload = JSON.parse(runEvent!.payload) as {
+      talkId: string;
+      runId: string;
+      triggerMessageId: string;
+      status: string;
+    };
+
+    expect(messagePayload).toMatchObject({
+      talkId: 'talk-1',
+      messageId: 'msg-atomic-1',
+      runId: 'run-atomic-1',
+    });
+    expect(runPayload).toMatchObject({
+      talkId: 'talk-1',
+      runId: 'run-atomic-1',
+      triggerMessageId: 'msg-atomic-1',
+      status: 'running',
+    });
   });
 
   it('rolls back message writes when run insert fails inside atomic enqueue', () => {
