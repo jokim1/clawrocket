@@ -34,6 +34,16 @@ export interface SchedulerDependencies {
   sendMessage: (jid: string, text: string) => Promise<void>;
 }
 
+type SchedulerMaintenanceHook = () => void | Promise<void>;
+const maintenanceHooks: SchedulerMaintenanceHook[] = [];
+
+// ClawRocket integration seam: optional maintenance callbacks registered by extensions.
+export function registerSchedulerMaintenanceHook(
+  hook: SchedulerMaintenanceHook,
+): void {
+  maintenanceHooks.push(hook);
+}
+
 async function runTask(
   task: ScheduledTask,
   deps: SchedulerDependencies,
@@ -219,6 +229,14 @@ export function startSchedulerLoop(deps: SchedulerDependencies): void {
 
   const loop = async () => {
     try {
+      for (const hook of maintenanceHooks) {
+        try {
+          await hook();
+        } catch (err) {
+          logger.error({ err }, 'Scheduler maintenance hook failed');
+        }
+      }
+
       const dueTasks = getDueTasks();
       if (dueTasks.length > 0) {
         logger.info({ count: dueTasks.length }, 'Found due tasks');
@@ -248,4 +266,9 @@ export function startSchedulerLoop(deps: SchedulerDependencies): void {
 /** @internal - for tests only. */
 export function _resetSchedulerLoopForTests(): void {
   schedulerRunning = false;
+}
+
+/** @internal - for tests only. */
+export function _resetSchedulerMaintenanceHooksForTests(): void {
+  maintenanceHooks.length = 0;
 }

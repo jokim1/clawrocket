@@ -7,6 +7,7 @@ import {
   POLL_INTERVAL,
   TRIGGER_PATTERN,
 } from './config.js';
+import { WEB_ENABLED } from './clawrocket/config.js';
 import './channels/index.js';
 import {
   getChannelFactory,
@@ -37,12 +38,15 @@ import {
   storeChatMetadata,
   storeMessage,
 } from './db.js';
+import { initClawrocketSchema } from './clawrocket/db/index.js';
+import { registerClawrocketSchedulerMaintenanceHook } from './clawrocket/scheduler-maintenance.js';
 import { GroupQueue } from './group-queue.js';
 import { resolveGroupFolderPath } from './group-folder.js';
 import { startIpcWatcher } from './ipc.js';
 import { findChannel, formatMessages, formatOutbound } from './router.js';
 import { startSchedulerLoop } from './task-scheduler.js';
 import { Channel, NewMessage, RegisteredGroup } from './types.js';
+import { startWebServer } from './clawrocket/web/index.js';
 import { logger } from './logger.js';
 
 // Re-export for backwards compatibility during refactor
@@ -450,13 +454,31 @@ function ensureContainerSystemRunning(): void {
 async function main(): Promise<void> {
   ensureContainerSystemRunning();
   initDatabase();
+  // ClawRocket integration seam: initialize ClawRocket schema in shared DB.
+  initClawrocketSchema();
+  // ClawRocket integration seam: register scheduler maintenance callbacks.
+  registerClawrocketSchedulerMaintenanceHook();
   logger.info('Database initialized');
   loadState();
+
+  let webServer:
+    | {
+        stop: () => Promise<void>;
+      }
+    | undefined;
+  if (WEB_ENABLED) {
+    webServer = await startWebServer();
+  } else {
+    logger.info('Web API server is disabled (WEB_ENABLED=false)');
+  }
 
   // Graceful shutdown handlers
   const shutdown = async (signal: string) => {
     logger.info({ signal }, 'Shutdown signal received');
     await queue.shutdown(10000);
+    if (webServer) {
+      await webServer.stop();
+    }
     for (const ch of channels) await ch.disconnect();
     process.exit(0);
   };
