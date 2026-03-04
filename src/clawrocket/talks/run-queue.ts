@@ -5,9 +5,9 @@ import {
   getQueuedTalkRuns,
   getRunningTalkRun,
   markTalkRunStatus,
-} from '../db.js';
-import type { TalkRunRecord } from '../db.js';
-import { TalkRunStatus } from '../types.js';
+} from '../db/index.js';
+import type { TalkRunRecord } from '../db/index.js';
+import { TalkRunStatus } from '../../types.js';
 
 export interface EnqueueTalkRunInput {
   runId: string;

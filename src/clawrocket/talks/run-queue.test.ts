@@ -8,7 +8,7 @@ import {
   getTalkRunById,
   upsertTalk,
   upsertUser,
-} from '../db.js';
+} from '../db/index.js';
 import { TalkRunQueue } from './run-queue.js';
 
 describe('TalkRunQueue', () => {

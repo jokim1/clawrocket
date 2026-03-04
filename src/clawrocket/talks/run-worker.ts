@@ -9,8 +9,8 @@ import {
   getTalkRunById,
   listRunningTalkRuns,
   type TalkRunRecord,
-} from '../db.js';
-import { logger } from '../logger.js';
+} from '../db/index.js';
+import { logger } from '../../logger.js';
 
 import type { TalkExecutor } from './executor.js';
 import { MockTalkExecutor } from './mock-executor.js';

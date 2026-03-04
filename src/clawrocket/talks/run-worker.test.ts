@@ -9,7 +9,7 @@ import {
   getTalkRunById,
   listTalkMessages,
   upsertUser,
-} from '../db.js';
+} from '../db/index.js';
 
 import type {
   TalkExecutor,
