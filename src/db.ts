@@ -14,6 +14,14 @@ import {
 
 let db: Database.Database;
 
+// ClawRocket integration seam: shared DB handle accessor for clawrocket modules.
+export function getDb(): Database.Database {
+  if (!db) {
+    throw new Error('Database not initialized');
+  }
+  return db;
+}
+
 function createSchema(database: Database.Database): void {
   database.exec(`
     CREATE TABLE IF NOT EXISTS chats (
@@ -156,6 +164,15 @@ export function initDatabase(): void {
 export function _initTestDatabase(): void {
   db = new Database(':memory:');
   createSchema(db);
+}
+
+export function isDatabaseHealthy(): boolean {
+  try {
+    const row = getDb().prepare('SELECT 1 AS ok').get() as { ok: number };
+    return row.ok === 1;
+  } catch {
+    return false;
+  }
 }
 
 /**
