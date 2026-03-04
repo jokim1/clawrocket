@@ -10,13 +10,13 @@ import {
   upsertWebSession,
 } from '../../db.js';
 import { hashSessionToken } from '../../identity/session.js';
-import { TalkRunQueue } from '../../talks/run-queue.js';
 import { _resetRateLimitStateForTests } from '../middleware/rate-limit.js';
 import { createWebServer, WebServerHandle } from '../server.js';
 
 describe('talk routes', () => {
   let server: WebServerHandle;
-  let runQueue: TalkRunQueue;
+  let wakeCalls = 0;
+  let abortCalls: string[] = [];
 
   beforeEach(async () => {
     _initTestDatabase();
@@ -103,11 +103,19 @@ describe('talk routes', () => {
       expiresAt: new Date(Date.now() + 60_000).toISOString(),
     });
 
-    runQueue = new TalkRunQueue();
+    wakeCalls = 0;
+    abortCalls = [];
     server = createWebServer({
       host: '127.0.0.1',
       port: 0,
-      runQueue,
+      runWorker: {
+        wake: () => {
+          wakeCalls += 1;
+        },
+        abortTalk: (talkId: string) => {
+          abortCalls.push(talkId);
+        },
+      },
     });
   });
 
@@ -265,6 +273,7 @@ describe('talk routes', () => {
     expect(getQueuedTalkRuns('talk-owner').map((row) => row.id)).toEqual([
       secondBody.data.run.id,
     ]);
+    expect(wakeCalls).toBe(2);
   });
 
   it('requires editor permission to enqueue chat', async () => {
@@ -330,6 +339,7 @@ describe('talk routes', () => {
         (message: any) => message.content === 'Hello idempotent world',
       ),
     ).toHaveLength(1);
+    expect(wakeCalls).toBe(1);
   });
 
   it('supports cancel on existing talk and validates talk id encoding', async () => {
@@ -353,6 +363,7 @@ describe('talk routes', () => {
       },
     );
     expect(cancelRes.status).toBe(200);
+    expect(abortCalls).toEqual(['talk-owner']);
 
     const badTalkRes = await server.request('/api/v1/talks/%ZZ/chat', {
       method: 'POST',

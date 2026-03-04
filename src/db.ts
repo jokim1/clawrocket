@@ -220,6 +220,7 @@ function createSchema(database: Database.Database): void {
       requested_by TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
       status TEXT NOT NULL
         CHECK(status IN ('queued', 'running', 'cancelled', 'completed', 'failed')),
+      trigger_message_id TEXT REFERENCES talk_messages(id) ON DELETE SET NULL,
       idempotency_key TEXT,
       created_at TEXT NOT NULL,
       started_at TEXT,
@@ -228,6 +229,8 @@ function createSchema(database: Database.Database): void {
     );
     CREATE INDEX IF NOT EXISTS idx_talk_runs_talk_id_status
       ON talk_runs(talk_id, status, created_at);
+    CREATE INDEX IF NOT EXISTS idx_talk_runs_status_created_at
+      ON talk_runs(status, created_at);
 
     CREATE TABLE IF NOT EXISTS talk_messages (
       id TEXT PRIMARY KEY,
@@ -329,6 +332,13 @@ function createSchema(database: Database.Database): void {
   // Add code_verifier column if it doesn't exist (migration for existing DBs)
   try {
     database.exec(`ALTER TABLE oauth_state ADD COLUMN code_verifier TEXT`);
+  } catch {
+    /* column already exists */
+  }
+
+  // Add trigger_message_id column if it doesn't exist (migration for existing DBs)
+  try {
+    database.exec(`ALTER TABLE talk_runs ADD COLUMN trigger_message_id TEXT`);
   } catch {
     /* column already exists */
   }
@@ -1586,6 +1596,14 @@ export function listTalkMessages(input: {
   return rows;
 }
 
+export function getTalkMessageById(
+  messageId: string,
+): TalkMessageRecord | undefined {
+  return db
+    .prepare('SELECT * FROM talk_messages WHERE id = ?')
+    .get(messageId) as TalkMessageRecord | undefined;
+}
+
 export function enqueueTalkTurnAtomic(input: {
   talkId: string;
   userId: string;
@@ -1661,6 +1679,7 @@ export function enqueueTalkTurnAtomic(input: {
         talk_id: txInput.talkId,
         requested_by: txInput.userId,
         status,
+        trigger_message_id: txInput.messageId,
         idempotency_key: txInput.idempotencyKey || null,
         created_at: now,
         started_at: status === 'running' ? now : null,
@@ -1925,6 +1944,7 @@ export interface TalkRunRecord {
   talk_id: string;
   requested_by: string;
   status: TalkRunStatus;
+  trigger_message_id: string | null;
   idempotency_key: string | null;
   created_at: string;
   started_at: string | null;
@@ -1936,16 +1956,17 @@ export function createTalkRun(input: TalkRunRecord): void {
   db.prepare(
     `
     INSERT INTO talk_runs (
-      id, talk_id, requested_by, status, idempotency_key, created_at,
-      started_at, ended_at, cancel_reason
+      id, talk_id, requested_by, status, trigger_message_id, idempotency_key,
+      created_at, started_at, ended_at, cancel_reason
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `,
   ).run(
     input.id,
     input.talk_id,
     input.requested_by,
     input.status,
+    input.trigger_message_id,
     input.idempotency_key,
     input.created_at,
     input.started_at,
@@ -2003,6 +2024,464 @@ export function getQueuedTalkRuns(
     `,
     )
     .all(talkId) as TalkRunRecord[];
+}
+
+export function listRunningTalkRuns(limit = 50): TalkRunRecord[] {
+  const normalizedLimit = Math.max(1, Math.floor(limit));
+  return db
+    .prepare(
+      `
+      SELECT *
+      FROM talk_runs
+      WHERE status = 'running'
+      ORDER BY created_at ASC
+      LIMIT ?
+    `,
+    )
+    .all(normalizedLimit) as TalkRunRecord[];
+}
+
+/**
+ * Appends an assistant message and related outbox event.
+ *
+ * Safe to call inside an existing transaction (better-sqlite3 will use savepoints
+ * for nested transactional scopes), and also safe as a standalone helper.
+ */
+export function appendAssistantMessageWithOutbox(input: {
+  talkId: string;
+  runId: string;
+  messageId: string;
+  content: string;
+  createdAt?: string;
+}): TalkMessageRecord {
+  const tx = db.transaction((txInput: typeof input): TalkMessageRecord => {
+    const createdAt = txInput.createdAt || new Date().toISOString();
+    const message: TalkMessageRecord = {
+      id: txInput.messageId,
+      talk_id: txInput.talkId,
+      role: 'assistant',
+      content: txInput.content,
+      created_by: null,
+      created_at: createdAt,
+      run_id: txInput.runId,
+      metadata_json: null,
+    };
+
+    createTalkMessage({
+      id: message.id,
+      talkId: message.talk_id,
+      role: message.role,
+      content: message.content,
+      createdBy: null,
+      runId: message.run_id,
+      createdAt: message.created_at,
+    });
+
+    touchTalkUpdatedAt(txInput.talkId, createdAt);
+    db.prepare(
+      `
+        INSERT INTO event_outbox (topic, event_type, payload, created_at)
+        VALUES (?, ?, ?, ?)
+      `,
+    ).run(
+      `talk:${txInput.talkId}`,
+      'message_appended',
+      JSON.stringify({
+        talkId: txInput.talkId,
+        messageId: txInput.messageId,
+        runId: txInput.runId,
+        role: 'assistant',
+        createdBy: null,
+      }),
+      createdAt,
+    );
+
+    return message;
+  });
+
+  return tx(input);
+}
+
+function promoteNextQueuedRunTx(
+  talkId: string,
+  now: string,
+): { id: string; triggerMessageId: string | null } | null {
+  const next = db
+    .prepare(
+      `
+      SELECT id, trigger_message_id
+      FROM talk_runs
+      WHERE talk_id = ? AND status = 'queued'
+      ORDER BY created_at ASC
+      LIMIT 1
+    `,
+    )
+    .get(talkId) as
+    | { id: string; trigger_message_id: string | null }
+    | undefined;
+  if (!next) return null;
+
+  const updated = db
+    .prepare(
+      `
+      UPDATE talk_runs
+      SET status = 'running',
+          started_at = ?,
+          ended_at = NULL,
+          cancel_reason = NULL
+      WHERE id = ? AND status = 'queued'
+    `,
+    )
+    .run(now, next.id);
+  if (updated.changes !== 1) return null;
+
+  db.prepare(
+    `
+    INSERT INTO event_outbox (topic, event_type, payload, created_at)
+    VALUES (?, ?, ?, ?)
+  `,
+  ).run(
+    `talk:${talkId}`,
+    'talk_run_started',
+    JSON.stringify({
+      talkId,
+      runId: next.id,
+      triggerMessageId: next.trigger_message_id,
+      status: 'running',
+    }),
+    now,
+  );
+
+  return { id: next.id, triggerMessageId: next.trigger_message_id };
+}
+
+export function completeRunAndPromoteNextAtomic(input: {
+  runId: string;
+  responseMessageId: string;
+  responseContent: string;
+  now?: string;
+}): {
+  applied: boolean;
+  talkId: string | null;
+  promotedRunId: string | null;
+} {
+  const tx = db.transaction(
+    (
+      txInput: typeof input,
+    ): {
+      applied: boolean;
+      talkId: string | null;
+      promotedRunId: string | null;
+    } => {
+      const now = txInput.now || new Date().toISOString();
+      const run = db
+        .prepare(
+          `
+          SELECT id, talk_id, trigger_message_id
+          FROM talk_runs
+          WHERE id = ? AND status = 'running'
+          LIMIT 1
+        `,
+        )
+        .get(txInput.runId) as
+        | { id: string; talk_id: string; trigger_message_id: string | null }
+        | undefined;
+      if (!run) {
+        return { applied: false, talkId: null, promotedRunId: null };
+      }
+
+      const completed = db
+        .prepare(
+          `
+          UPDATE talk_runs
+          SET status = 'completed',
+              ended_at = ?,
+              cancel_reason = NULL
+          WHERE id = ? AND status = 'running'
+        `,
+        )
+        .run(now, run.id);
+      if (completed.changes !== 1) {
+        return { applied: false, talkId: run.talk_id, promotedRunId: null };
+      }
+
+      const responseMessage = appendAssistantMessageWithOutbox({
+        talkId: run.talk_id,
+        runId: run.id,
+        messageId: txInput.responseMessageId,
+        content: txInput.responseContent,
+        createdAt: now,
+      });
+
+      db.prepare(
+        `
+        INSERT INTO event_outbox (topic, event_type, payload, created_at)
+        VALUES (?, ?, ?, ?)
+      `,
+      ).run(
+        `talk:${run.talk_id}`,
+        'talk_run_completed',
+        JSON.stringify({
+          talkId: run.talk_id,
+          runId: run.id,
+          triggerMessageId: run.trigger_message_id,
+          responseMessageId: responseMessage.id,
+        }),
+        now,
+      );
+
+      const promoted = promoteNextQueuedRunTx(run.talk_id, now);
+      return {
+        applied: true,
+        talkId: run.talk_id,
+        promotedRunId: promoted?.id || null,
+      };
+    },
+  );
+
+  return tx(input);
+}
+
+export function failRunAndPromoteNextAtomic(input: {
+  runId: string;
+  errorCode: string;
+  errorMessage: string;
+  now?: string;
+}): {
+  applied: boolean;
+  talkId: string | null;
+  promotedRunId: string | null;
+} {
+  const tx = db.transaction(
+    (
+      txInput: typeof input,
+    ): {
+      applied: boolean;
+      talkId: string | null;
+      promotedRunId: string | null;
+    } => {
+      const now = txInput.now || new Date().toISOString();
+      const run = db
+        .prepare(
+          `
+          SELECT id, talk_id, trigger_message_id
+          FROM talk_runs
+          WHERE id = ? AND status = 'running'
+          LIMIT 1
+        `,
+        )
+        .get(txInput.runId) as
+        | { id: string; talk_id: string; trigger_message_id: string | null }
+        | undefined;
+      if (!run) {
+        return { applied: false, talkId: null, promotedRunId: null };
+      }
+
+      const failed = db
+        .prepare(
+          `
+          UPDATE talk_runs
+          SET status = 'failed',
+              ended_at = ?,
+              cancel_reason = ?
+          WHERE id = ? AND status = 'running'
+        `,
+        )
+        .run(
+          now,
+          `${txInput.errorCode}: ${txInput.errorMessage}`.slice(0, 500),
+          run.id,
+        );
+      if (failed.changes !== 1) {
+        return { applied: false, talkId: run.talk_id, promotedRunId: null };
+      }
+
+      db.prepare(
+        `
+        INSERT INTO event_outbox (topic, event_type, payload, created_at)
+        VALUES (?, ?, ?, ?)
+      `,
+      ).run(
+        `talk:${run.talk_id}`,
+        'talk_run_failed',
+        JSON.stringify({
+          talkId: run.talk_id,
+          runId: run.id,
+          triggerMessageId: run.trigger_message_id,
+          errorCode: txInput.errorCode,
+          errorMessage: txInput.errorMessage,
+        }),
+        now,
+      );
+
+      const promoted = promoteNextQueuedRunTx(run.talk_id, now);
+      return {
+        applied: true,
+        talkId: run.talk_id,
+        promotedRunId: promoted?.id || null,
+      };
+    },
+  );
+
+  return tx(input);
+}
+
+export function cancelTalkRunsAtomic(input: {
+  talkId: string;
+  cancelledBy: string;
+  now?: string;
+}): {
+  cancelledRuns: number;
+  cancelledRunIds: string[];
+  cancelledRunning: boolean;
+} {
+  const tx = db.transaction(
+    (
+      txInput: typeof input,
+    ): {
+      cancelledRuns: number;
+      cancelledRunIds: string[];
+      cancelledRunning: boolean;
+    } => {
+      const now = txInput.now || new Date().toISOString();
+      const candidates = db
+        .prepare(
+          `
+          SELECT id, status
+          FROM talk_runs
+          WHERE talk_id = ? AND status IN ('running', 'queued')
+          ORDER BY created_at ASC
+        `,
+        )
+        .all(txInput.talkId) as Array<{ id: string; status: TalkRunStatus }>;
+
+      const cancelledRunIds: string[] = [];
+      let cancelledRunning = false;
+      for (const candidate of candidates) {
+        const updated = db
+          .prepare(
+            `
+            UPDATE talk_runs
+            SET status = 'cancelled',
+                ended_at = ?,
+                cancel_reason = ?
+            WHERE id = ? AND status IN ('running', 'queued')
+          `,
+          )
+          .run(
+            now,
+            `Cancelled by ${txInput.cancelledBy}`.slice(0, 500),
+            candidate.id,
+          );
+        if (updated.changes === 1) {
+          cancelledRunIds.push(candidate.id);
+          if (candidate.status === 'running') cancelledRunning = true;
+        }
+      }
+
+      if (cancelledRunIds.length > 0) {
+        // TODO(phase-2-streaming-sse): emit per-run cancellation lifecycle events
+        // when migrating to long-lived SSE consumers that need granular run-state updates.
+        db.prepare(
+          `
+          INSERT INTO event_outbox (topic, event_type, payload, created_at)
+          VALUES (?, ?, ?, ?)
+        `,
+        ).run(
+          `talk:${txInput.talkId}`,
+          'talk_run_cancelled',
+          JSON.stringify({
+            talkId: txInput.talkId,
+            cancelledBy: txInput.cancelledBy,
+            runIds: cancelledRunIds,
+          }),
+          now,
+        );
+      }
+
+      return {
+        cancelledRuns: cancelledRunIds.length,
+        cancelledRunIds,
+        cancelledRunning,
+      };
+    },
+  );
+
+  return tx(input);
+}
+
+export function failInterruptedRunsOnStartup(now?: string): {
+  failedRunIds: string[];
+  promotedRunIds: string[];
+} {
+  const tx = db.transaction(
+    (
+      inputNow?: string,
+    ): { failedRunIds: string[]; promotedRunIds: string[] } => {
+      const currentNow = inputNow || new Date().toISOString();
+      const runningRuns = db
+        .prepare(
+          `
+          SELECT id, talk_id, trigger_message_id
+          FROM talk_runs
+          WHERE status = 'running'
+          ORDER BY created_at ASC
+        `,
+        )
+        .all() as Array<{
+        id: string;
+        talk_id: string;
+        trigger_message_id: string | null;
+      }>;
+
+      const failedRunIds: string[] = [];
+      const affectedTalkIds = new Set<string>();
+      for (const run of runningRuns) {
+        const updated = db
+          .prepare(
+            `
+            UPDATE talk_runs
+            SET status = 'failed',
+                ended_at = ?,
+                cancel_reason = ?
+            WHERE id = ? AND status = 'running'
+          `,
+          )
+          .run(currentNow, 'interrupted_by_restart', run.id);
+        if (updated.changes !== 1) continue;
+
+        failedRunIds.push(run.id);
+        affectedTalkIds.add(run.talk_id);
+        db.prepare(
+          `
+          INSERT INTO event_outbox (topic, event_type, payload, created_at)
+          VALUES (?, ?, ?, ?)
+        `,
+        ).run(
+          `talk:${run.talk_id}`,
+          'talk_run_failed',
+          JSON.stringify({
+            talkId: run.talk_id,
+            runId: run.id,
+            triggerMessageId: run.trigger_message_id,
+            errorCode: 'interrupted_by_restart',
+            errorMessage: 'Run interrupted by process restart',
+          }),
+          currentNow,
+        );
+      }
+
+      const promotedRunIds: string[] = [];
+      for (const talkId of affectedTalkIds) {
+        const promoted = promoteNextQueuedRunTx(talkId, currentNow);
+        if (promoted) promotedRunIds.push(promoted.id);
+      }
+
+      return { failedRunIds, promotedRunIds };
+    },
+  );
+
+  return tx(now);
 }
 
 export function markTalkRunStatus(

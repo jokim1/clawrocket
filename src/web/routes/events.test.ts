@@ -9,7 +9,6 @@ import {
   upsertWebSession,
 } from '../../db.js';
 import { hashSessionToken } from '../../identity/session.js';
-import { TalkRunQueue } from '../../talks/run-queue.js';
 import { _resetRateLimitStateForTests } from '../middleware/rate-limit.js';
 import { createWebServer, WebServerHandle } from '../server.js';
 
@@ -69,7 +68,6 @@ describe('events routes', () => {
     server = createWebServer({
       host: '127.0.0.1',
       port: 0,
-      runQueue: new TalkRunQueue(),
     });
   });
 

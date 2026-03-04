@@ -2,6 +2,7 @@ import { randomUUID } from 'crypto';
 
 import {
   appendOutboxEvent,
+  cancelTalkRunsAtomic,
   createTalk,
   enqueueTalkTurnAtomic,
   getTalkForUser,
@@ -11,7 +12,6 @@ import {
   type TalkMessageRecord,
   type TalkWithAccessRecord,
 } from '../../db.js';
-import { TalkRunQueue } from '../../talks/run-queue.js';
 import { canEditTalk } from '../middleware/acl.js';
 import { AuthContext, ApiEnvelope } from '../types.js';
 
@@ -352,13 +352,10 @@ export function enqueueTalkChat(input: {
   };
 }
 
-export function cancelTalkChat(input: {
-  talkId: string;
-  auth: AuthContext;
-  runQueue: TalkRunQueue;
-}): {
+export function cancelTalkChat(input: { talkId: string; auth: AuthContext }): {
   statusCode: number;
   body: ApiEnvelope<{ talkId: string; cancelledRuns: number }>;
+  cancelledRunning: boolean;
 } {
   const talk = getTalkForUser(input.talkId, input.auth.userId);
   if (!talk) {
@@ -371,6 +368,7 @@ export function cancelTalkChat(input: {
           message: 'Talk not found',
         },
       },
+      cancelledRunning: false,
     };
   }
 
@@ -384,15 +382,16 @@ export function cancelTalkChat(input: {
           message: 'You do not have permission to cancel runs for this talk',
         },
       },
+      cancelledRunning: false,
     };
   }
 
-  const cancelledRuns = input.runQueue.cancelTalkRuns(
-    input.talkId,
-    input.auth.userId,
-  );
+  const cancellation = cancelTalkRunsAtomic({
+    talkId: input.talkId,
+    cancelledBy: input.auth.userId,
+  });
 
-  if (cancelledRuns === 0) {
+  if (cancellation.cancelledRuns === 0) {
     return {
       statusCode: 404,
       body: {
@@ -402,6 +401,7 @@ export function cancelTalkChat(input: {
           message: 'No running or queued chat exists for this talk',
         },
       },
+      cancelledRunning: false,
     };
   }
 
@@ -411,8 +411,9 @@ export function cancelTalkChat(input: {
       ok: true,
       data: {
         talkId: input.talkId,
-        cancelledRuns,
+        cancelledRuns: cancellation.cancelledRuns,
       },
     },
+    cancelledRunning: cancellation.cancelledRunning,
   };
 }

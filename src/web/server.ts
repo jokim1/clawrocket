@@ -26,7 +26,7 @@ import {
   REFRESH_TOKEN_COOKIE,
 } from '../identity/session.js';
 import { KeychainBridge, noopKeychainBridge } from '../secrets/keychain.js';
-import { TalkRunQueue } from '../talks/run-queue.js';
+import type { TalkRunWorkerControl } from '../talks/run-worker.js';
 import { validateCsrfToken } from './middleware/csrf.js';
 import {
   idempotencyPrecheck,
@@ -58,7 +58,7 @@ export interface WebServerOptions {
   host: string;
   port: number;
   keychain: KeychainBridge;
-  runQueue: TalkRunQueue;
+  runWorker: TalkRunWorkerControl;
 }
 
 export interface WebServerHandle {
@@ -71,11 +71,20 @@ export interface WebServerHandle {
 export function createWebServer(
   input?: Partial<WebServerOptions>,
 ): WebServerHandle {
+  const noopRunWorker: TalkRunWorkerControl = {
+    wake: () => {
+      /* no-op */
+    },
+    abortTalk: () => {
+      /* no-op */
+    },
+  };
+
   const opts: WebServerOptions = {
     host: input?.host ?? '127.0.0.1',
     port: input?.port ?? 3210,
     keychain: input?.keychain || noopKeychainBridge,
-    runQueue: input?.runQueue || new TalkRunQueue(),
+    runWorker: input?.runWorker || noopRunWorker,
   };
 
   const app = buildApp(opts);
@@ -680,6 +689,9 @@ function buildApp(opts: WebServerOptions): Hono {
       content: payload.data.content || '',
       idempotencyKey,
     });
+    if (result.statusCode === 202 && result.body.ok) {
+      opts.runWorker.wake();
+    }
 
     const serialized = JSON.stringify(result.body);
     saveIdempotencyResult({
@@ -850,8 +862,14 @@ function buildApp(opts: WebServerOptions): Hono {
     const result = cancelTalkChat({
       talkId,
       auth,
-      runQueue: opts.runQueue,
     });
+    if (
+      result.statusCode === 200 &&
+      result.body.ok &&
+      result.cancelledRunning
+    ) {
+      opts.runWorker.abortTalk(talkId);
+    }
 
     const serialized = JSON.stringify(result.body);
     saveIdempotencyResult({

@@ -27,6 +27,7 @@ export class TalkRunQueue {
       talk_id: input.talkId,
       requested_by: input.requestedBy,
       status,
+      trigger_message_id: null,
       idempotency_key: input.idempotencyKey || null,
       created_at: now,
       started_at: status === 'running' ? now : null,

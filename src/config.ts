@@ -20,6 +20,9 @@ const envConfig = readEnvFile([
   'ACCESS_TOKEN_TTL_SEC',
   'REFRESH_TOKEN_TTL_SEC',
   'DEVICE_CODE_TTL_SEC',
+  'TALK_RUN_POLL_MS',
+  'TALK_RUN_MAX_CONCURRENCY',
+  'TALK_MOCK_EXECUTION_MS',
 ]);
 
 export const ASSISTANT_NAME =
@@ -67,6 +70,31 @@ export const DEVICE_CODE_TTL_SEC = parseInt(
   process.env.DEVICE_CODE_TTL_SEC || envConfig.DEVICE_CODE_TTL_SEC || '600',
   10,
 );
+const talkRunPollMs = parseInt(
+  process.env.TALK_RUN_POLL_MS || envConfig.TALK_RUN_POLL_MS || '500',
+  10,
+);
+export const TALK_RUN_POLL_MS = Number.isFinite(talkRunPollMs)
+  ? Math.max(10, talkRunPollMs)
+  : 500;
+export const TALK_RUN_MAX_CONCURRENCY = Math.max(
+  1,
+  parseInt(
+    process.env.TALK_RUN_MAX_CONCURRENCY ||
+      envConfig.TALK_RUN_MAX_CONCURRENCY ||
+      '1',
+    10,
+  ) || 1,
+);
+const talkMockExecutionMs = parseInt(
+  process.env.TALK_MOCK_EXECUTION_MS ||
+    envConfig.TALK_MOCK_EXECUTION_MS ||
+    '300',
+  10,
+);
+export const TALK_MOCK_EXECUTION_MS = Number.isFinite(talkMockExecutionMs)
+  ? Math.max(0, talkMockExecutionMs)
+  : 300;
 
 // Absolute paths needed for container mounts
 const PROJECT_ROOT = process.cwd();
