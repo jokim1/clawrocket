@@ -1,5 +1,6 @@
 import { randomUUID } from 'crypto';
 
+import { logger } from '../../../logger.js';
 import {
   appendOutboxEvent,
   cancelTalkRunsAtomic,
@@ -36,12 +37,15 @@ interface TalkMessageApiRecord {
   runId: string | null;
 }
 
+const DEFAULT_TALK_AGENTS = ['Mock'];
+const MAX_TALK_AGENT_BADGES = 6;
+
 function toTalkApiRecord(talk: TalkWithAccessRecord): TalkApiRecord {
   return {
     id: talk.id,
     ownerId: talk.owner_id,
     title: talk.topic_title,
-    agents: parseTalkAgents(talk.llm_policy),
+    agents: parseTalkAgents(talk.id, talk.llm_policy),
     status: talk.status,
     version: talk.version,
     createdAt: talk.created_at,
@@ -50,10 +54,17 @@ function toTalkApiRecord(talk: TalkWithAccessRecord): TalkApiRecord {
   };
 }
 
-function parseTalkAgents(llmPolicy: string | null): string[] {
-  const DEFAULT_AGENTS = ['Mock'];
+/**
+ * Supported llm_policy shapes:
+ * - JSON array of strings
+ * - JSON object with agents/models arrays
+ * - JSON object with agent/model string
+ * - JSON string
+ * - non-JSON text split by | or ,
+ */
+function parseTalkAgents(talkId: string, llmPolicy: string | null): string[] {
   const raw = llmPolicy?.trim();
-  if (!raw) return DEFAULT_AGENTS;
+  if (!raw) return DEFAULT_TALK_AGENTS;
 
   let candidates: unknown[] = [];
   try {
@@ -84,9 +95,20 @@ function parseTalkAgents(llmPolicy: string | null): string[] {
         )
         .filter(Boolean),
     ),
-  ].slice(0, 6);
+  ].slice(0, MAX_TALK_AGENT_BADGES);
 
-  return normalized.length > 0 ? normalized : DEFAULT_AGENTS;
+  if (normalized.length > 0) {
+    return normalized;
+  }
+
+  const llmPolicyPreview =
+    raw.length > 120 ? `${raw.slice(0, 117)}...` : raw;
+  logger.warn(
+    { talkId, llmPolicyPreview },
+    'Unsupported llm_policy shape; defaulting to Mock agent badge',
+  );
+
+  return DEFAULT_TALK_AGENTS;
 }
 
 function toTalkMessageApiRecord(
