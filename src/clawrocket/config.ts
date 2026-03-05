@@ -15,6 +15,11 @@ const envConfig = readEnvFile([
   'TALK_RUN_POLL_MS',
   'TALK_RUN_MAX_CONCURRENCY',
   'TALK_MOCK_EXECUTION_MS',
+  'TALK_EXECUTOR_DEFAULT_ALIAS',
+  'TALK_EXECUTOR_ALIAS_MODEL_MAP_JSON',
+  'TALK_EXECUTOR_WEB_GROUP_FOLDER',
+  'ANTHROPIC_API_KEY',
+  'CLAUDE_CODE_OAUTH_TOKEN',
 ]);
 
 export const WEB_ENABLED =
@@ -83,3 +88,29 @@ const talkMockExecutionMs = parseInt(
 export const TALK_MOCK_EXECUTION_MS = Number.isFinite(talkMockExecutionMs)
   ? Math.max(0, talkMockExecutionMs)
   : 300;
+
+export const TALK_EXECUTOR_DEFAULT_ALIAS =
+  process.env.TALK_EXECUTOR_DEFAULT_ALIAS ||
+  envConfig.TALK_EXECUTOR_DEFAULT_ALIAS ||
+  'Mock';
+
+export const TALK_EXECUTOR_ALIAS_MODEL_MAP_JSON =
+  process.env.TALK_EXECUTOR_ALIAS_MODEL_MAP_JSON ||
+  envConfig.TALK_EXECUTOR_ALIAS_MODEL_MAP_JSON ||
+  '';
+
+export const TALK_EXECUTOR_WEB_GROUP_FOLDER =
+  process.env.TALK_EXECUTOR_WEB_GROUP_FOLDER ||
+  envConfig.TALK_EXECUTOR_WEB_GROUP_FOLDER ||
+  'web-talks';
+
+const TALK_EXECUTOR_ANTHROPIC_API_KEY =
+  process.env.ANTHROPIC_API_KEY || envConfig.ANTHROPIC_API_KEY || '';
+const TALK_EXECUTOR_CLAUDE_OAUTH_TOKEN =
+  process.env.CLAUDE_CODE_OAUTH_TOKEN ||
+  envConfig.CLAUDE_CODE_OAUTH_TOKEN ||
+  '';
+
+export const TALK_EXECUTOR_HAS_PROVIDER_AUTH =
+  TALK_EXECUTOR_ANTHROPIC_API_KEY.length > 0 ||
+  TALK_EXECUTOR_CLAUDE_OAUTH_TOKEN.length > 0;

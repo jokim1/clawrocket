@@ -12,7 +12,7 @@ import {
 } from '../db/index.js';
 import { logger } from '../../logger.js';
 
-import type { TalkExecutor } from './executor.js';
+import { TalkExecutorError, type TalkExecutor } from './executor.js';
 import { MockTalkExecutor } from './mock-executor.js';
 
 export interface TalkRunWorkerOptions {
@@ -240,7 +240,11 @@ export class TalkRunWorker implements TalkRunWorkerControl {
         return;
       }
 
-      this.failRun(run, 'execution_failed', errorMessage(error));
+      this.failRun(
+        run,
+        error instanceof TalkExecutorError ? error.code : 'execution_failed',
+        errorMessage(error),
+      );
     }
   }
 

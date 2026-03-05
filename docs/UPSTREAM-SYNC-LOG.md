@@ -9,6 +9,19 @@
 
 ## Sync Entries
 
+### 2026-03-05 - Phase 1.9 Step F Real Talk Executor Rollout Notes
+
+- Added stateful real talk executor path with per-talk persisted session metadata.
+- Runtime selection is automatic in `src/clawrocket/web/index.ts`:
+  - Real executor is enabled only when:
+    - provider auth is present (`ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN`)
+    - and `TALK_EXECUTOR_ALIAS_MODEL_MAP_JSON` is present and valid JSON object.
+  - Otherwise runtime falls back to `MockTalkExecutor`.
+- Added compatibility seed alias map in runtime defaults to prevent day-one failures:
+  - `Mock`, `Gemini`, `Opus4.6`, `Haiku`, `GPT-4o`, `Opus` -> `default`.
+- Rollback toggle:
+  - Remove/empty `TALK_EXECUTOR_ALIAS_MODEL_MAP_JSON` to force mock mode without code changes.
+
 ### 2026-03-04 - Cutover Mechanics Execution (Maintainer Clone)
 
 - Repository: `jokim1/clawrocket`

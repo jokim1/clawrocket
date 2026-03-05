@@ -15,6 +15,11 @@ import {
   type TalkMessageRecord,
   type TalkWithAccessRecord,
 } from '../../db/index.js';
+import {
+  parsePolicyAgentsForExecution,
+  parsePolicyAgentsForUiBadges,
+  TALK_POLICY_MAX_AGENTS,
+} from '../../talks/policy.js';
 import { canEditTalk } from '../middleware/acl.js';
 import { AuthContext, ApiEnvelope } from '../types.js';
 
@@ -41,10 +46,9 @@ interface TalkMessageApiRecord {
 
 const DEFAULT_TALK_AGENTS = ['Mock'];
 const MAX_TALK_AGENT_BADGES = 6;
-const MAX_POLICY_AGENTS = 12;
 const MAX_POLICY_AGENT_LABEL_CHARS = 80;
 const TALK_POLICY_LIMITS = {
-  maxAgents: MAX_POLICY_AGENTS,
+  maxAgents: TALK_POLICY_MAX_AGENTS,
   maxAgentChars: MAX_POLICY_AGENT_LABEL_CHARS,
 } as const;
 
@@ -74,7 +78,9 @@ function parseTalkAgents(talkId: string, llmPolicy: string | null): string[] {
   const raw = llmPolicy?.trim();
   if (!raw) return DEFAULT_TALK_AGENTS;
 
-  const normalized = parsePolicyAgentCandidates(raw, MAX_TALK_AGENT_BADGES);
+  // Intentionally separate from execution parser:
+  // list badges are capped for density and default to Mock on parse failures.
+  const normalized = parsePolicyAgentsForUiBadges(raw, MAX_TALK_AGENT_BADGES);
 
   if (normalized.length > 0) {
     return normalized;
@@ -90,45 +96,7 @@ function parseTalkAgents(talkId: string, llmPolicy: string | null): string[] {
 }
 
 function parseTalkPolicyAgents(llmPolicy: string | null): string[] {
-  const raw = llmPolicy?.trim();
-  if (!raw) return [];
-  return parsePolicyAgentCandidates(raw, MAX_POLICY_AGENTS);
-}
-
-function parsePolicyAgentCandidates(
-  rawPolicy: string,
-  maxItems: number,
-): string[] {
-  let candidates: unknown[] = [];
-  try {
-    const parsed = JSON.parse(rawPolicy) as unknown;
-    if (Array.isArray(parsed)) {
-      candidates = parsed;
-    } else if (parsed && typeof parsed === 'object') {
-      const asRecord = parsed as Record<string, unknown>;
-      if (Array.isArray(asRecord.agents)) {
-        candidates = asRecord.agents;
-      } else if (Array.isArray(asRecord.models)) {
-        candidates = asRecord.models;
-      } else {
-        candidates = [asRecord.agent, asRecord.model];
-      }
-    } else if (typeof parsed === 'string') {
-      candidates = [parsed];
-    }
-  } catch {
-    candidates = rawPolicy.split(/[|,]/);
-  }
-
-  return [
-    ...new Set(
-      candidates
-        .map((candidate) =>
-          typeof candidate === 'string' ? candidate.trim() : '',
-        )
-        .filter(Boolean),
-    ),
-  ].slice(0, maxItems);
+  return parsePolicyAgentsForExecution(llmPolicy);
 }
 
 function normalizePolicyAgents(input: unknown): {
@@ -152,8 +120,8 @@ function normalizePolicyAgents(input: unknown): {
       error: `each agent label must be ${MAX_POLICY_AGENT_LABEL_CHARS} characters or less`,
     };
   }
-  if (normalized.length > MAX_POLICY_AGENTS) {
-    return { error: `at most ${MAX_POLICY_AGENTS} agents are allowed` };
+  if (normalized.length > TALK_POLICY_MAX_AGENTS) {
+    return { error: `at most ${TALK_POLICY_MAX_AGENTS} agents are allowed` };
   }
 
   return { agents: normalized };

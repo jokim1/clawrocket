@@ -22,6 +22,8 @@ import { fileURLToPath } from 'url';
 interface ContainerInput {
   prompt: string;
   sessionId?: string;
+  model?: string;
+  toolProfile?: 'default' | 'web_talk';
   groupFolder: string;
   chatJid: string;
   isMain: boolean;
@@ -414,10 +416,18 @@ async function runQuery(
     log(`Additional directories: ${extraDirs.join(', ')}`);
   }
 
+  const toolProfile = containerInput.toolProfile || 'default';
+  const useWebTalkProfile = toolProfile === 'web_talk';
+  const selectedModel =
+    containerInput.model && containerInput.model !== 'default'
+      ? containerInput.model
+      : undefined;
+
   for await (const message of query({
     prompt: stream,
     options: {
       cwd: '/workspace/group',
+      model: selectedModel,
       additionalDirectories: extraDirs.length > 0 ? extraDirs : undefined,
       resume: sessionId,
       resumeSessionAt: resumeAt,
@@ -432,23 +442,27 @@ async function runQuery(
         'TeamCreate', 'TeamDelete', 'SendMessage',
         'TodoWrite', 'ToolSearch', 'Skill',
         'NotebookEdit',
-        'mcp__nanoclaw__*'
+        ...(useWebTalkProfile ? [] : ['mcp__nanoclaw__*'])
       ],
       env: sdkEnv,
       permissionMode: 'bypassPermissions',
       allowDangerouslySkipPermissions: true,
       settingSources: ['project', 'user'],
-      mcpServers: {
-        nanoclaw: {
-          command: 'node',
-          args: [mcpServerPath],
-          env: {
-            NANOCLAW_CHAT_JID: containerInput.chatJid,
-            NANOCLAW_GROUP_FOLDER: containerInput.groupFolder,
-            NANOCLAW_IS_MAIN: containerInput.isMain ? '1' : '0',
-          },
-        },
-      },
+      ...(useWebTalkProfile
+        ? {}
+        : {
+            mcpServers: {
+              nanoclaw: {
+                command: 'node',
+                args: [mcpServerPath],
+                env: {
+                  NANOCLAW_CHAT_JID: containerInput.chatJid,
+                  NANOCLAW_GROUP_FOLDER: containerInput.groupFolder,
+                  NANOCLAW_IS_MAIN: containerInput.isMain ? '1' : '0',
+                },
+              },
+            },
+          }),
       hooks: {
         PreCompact: [{ hooks: [createPreCompactHook(containerInput.assistantName)] }],
         PreToolUse: [{ matcher: 'Bash', hooks: [createSanitizeBashHook()] }],

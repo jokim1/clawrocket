@@ -33,6 +33,8 @@ const OUTPUT_END_MARKER = '---NANOCLAW_OUTPUT_END---';
 export interface ContainerInput {
   prompt: string;
   sessionId?: string;
+  model?: string;
+  toolProfile?: 'default' | 'web_talk';
   groupFolder: string;
   chatJid: string;
   isMain: boolean;
