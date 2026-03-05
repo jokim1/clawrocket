@@ -199,6 +199,119 @@ describe('TalkDetailPage', () => {
     expect(within(policyPanel).getByText('Opus4.6')).toBeTruthy();
   });
 
+  it('initializes policy editor from raw policy endpoint when talk badges show fallback', async () => {
+    mockFetch([
+      jsonResponse(200, {
+        ok: true,
+        data: {
+          talk: buildTalk({ accessRole: 'owner', agents: ['Mock'] }),
+        },
+      }),
+      jsonResponse(200, {
+        ok: true,
+        data: {
+          talkId: 'talk-1',
+          messages: [],
+          page: { limit: 100, count: 0, beforeCreatedAt: null },
+        },
+      }),
+      jsonResponse(200, {
+        ok: true,
+        data: {
+          talkId: 'talk-1',
+          agents: [],
+          limits: { maxAgents: 12, maxAgentChars: 80 },
+        },
+      }),
+    ]);
+
+    renderDetailPage();
+    await screen.findByRole('heading', { name: /Smoke Talk/i });
+
+    const input = screen.getByLabelText(
+      'Comma-separated agents',
+    ) as HTMLInputElement;
+    expect(input.value).toBe('');
+  });
+
+  it('preserves full policy agent list on save beyond badge-cap display', async () => {
+    const fullPolicyAgents = [
+      'Gemini',
+      'Opus4.6',
+      'Haiku',
+      'GPT-4o',
+      'Sonnet',
+      'Mistral',
+      'Llama',
+      'Qwen',
+    ];
+    const badgeAgents = fullPolicyAgents.slice(0, 6);
+    const responses = [
+      jsonResponse(200, {
+        ok: true,
+        data: {
+          talk: buildTalk({ accessRole: 'owner', agents: badgeAgents }),
+        },
+      }),
+      jsonResponse(200, {
+        ok: true,
+        data: {
+          talkId: 'talk-1',
+          messages: [],
+          page: { limit: 100, count: 0, beforeCreatedAt: null },
+        },
+      }),
+      jsonResponse(200, {
+        ok: true,
+        data: {
+          talkId: 'talk-1',
+          agents: fullPolicyAgents,
+          limits: { maxAgents: 12, maxAgentChars: 80 },
+        },
+      }),
+      jsonResponse(200, {
+        ok: true,
+        data: {
+          talkId: 'talk-1',
+          agents: fullPolicyAgents,
+          limits: { maxAgents: 12, maxAgentChars: 80 },
+        },
+      }),
+    ];
+    const fetchMock = vi.fn(
+      async (_input: RequestInfo | URL, _init?: RequestInit) => {
+        const next = responses.shift();
+        if (!next) {
+          throw new Error('No mocked response left for fetch()');
+        }
+        return next;
+      },
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const user = userEvent.setup();
+    renderDetailPage();
+    await screen.findByRole('heading', { name: /Smoke Talk/i });
+
+    const input = screen.getByLabelText(
+      'Comma-separated agents',
+    ) as HTMLInputElement;
+    expect(input.value).toBe(fullPolicyAgents.join(', '));
+
+    await user.click(screen.getByRole('button', { name: 'Save Agents' }));
+    await screen.findByText('Talk policy updated.');
+
+    expect(fetchMock.mock.calls).toHaveLength(4);
+    const putCall = fetchMock.mock.calls[3];
+    expect(putCall).toBeTruthy();
+    const putInit = putCall?.[1] as RequestInit | undefined;
+    const body = putInit?.body;
+    expect(typeof body).toBe('string');
+    expect(JSON.parse(body as string)).toEqual({
+      agents: fullPolicyAgents,
+    });
+  });
+
   it('shows send and cancel inline error states and clears send error on typing', async () => {
     mockFetch([
       jsonResponse(200, {
