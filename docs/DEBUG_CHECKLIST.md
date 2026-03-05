@@ -22,23 +22,26 @@ Both timers fire at the same time, so containers always exit via hard SIGKILL (c
 
 ```bash
 # 1. Is the service running?
-launchctl list | grep nanoclaw
-# Expected: PID  0  com.nanoclaw (PID = running, "-" = not running, non-zero exit = crashed)
+systemctl --user status nanoclaw
+# Expected: active (running)
+
+# Legacy macOS check (launchd)
+# launchctl list | grep nanoclaw
 
 # 2. Any running containers?
-container ls --format '{{.Names}} {{.Status}}' 2>/dev/null | grep nanoclaw
+docker ps --format '{{.Names}} {{.Status}}' 2>/dev/null | grep nanoclaw
 
 # 3. Any stopped/orphaned containers?
-container ls -a --format '{{.Names}} {{.Status}}' 2>/dev/null | grep nanoclaw
+docker ps -a --format '{{.Names}} {{.Status}}' 2>/dev/null | grep nanoclaw
 
 # 4. Recent errors in service log?
-grep -E 'ERROR|WARN' logs/nanoclaw.log | tail -20
+journalctl --user -u nanoclaw -n 200 | rg -n 'ERROR|WARN'
 
 # 5. Is WhatsApp connected? (look for last connection event)
-grep -E 'Connected to WhatsApp|Connection closed|connection.*close' logs/nanoclaw.log | tail -5
+journalctl --user -u nanoclaw -n 200 | rg -n 'Connected to WhatsApp|Connection closed|connection.*close'
 
 # 6. Are groups loaded?
-grep 'groupCount' logs/nanoclaw.log | tail -3
+journalctl --user -u nanoclaw -n 200 | rg -n 'groupCount'
 ```
 
 ## Session Transcript Branching
