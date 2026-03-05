@@ -5,6 +5,7 @@ import {
   getQueuedTalkRuns,
   getRunningTalkRun,
   upsertTalk,
+  upsertTalkLlmPolicy,
   upsertTalkMember,
   upsertUser,
   upsertWebSession,
@@ -61,6 +62,10 @@ describe('talk routes', () => {
       id: 'talk-private',
       ownerId: 'owner-1',
       topicTitle: 'Private Talk',
+    });
+    upsertTalkLlmPolicy({
+      talkId: 'talk-owner',
+      llmPolicy: '{"agents":["Gemini","Opus4.6"]}',
     });
 
     upsertTalkMember({
@@ -132,6 +137,10 @@ describe('talk routes', () => {
       'talk-member',
       'talk-owner',
     ]);
+    const sharedTalk = memberBody.data.talks.find(
+      (talk: any) => talk.id === 'talk-owner',
+    );
+    expect(sharedTalk.agents).toEqual(['Gemini', 'Opus4.6']);
 
     const ownerRes = await server.request('/api/v1/talks', {
       headers: {

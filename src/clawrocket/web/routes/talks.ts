@@ -19,6 +19,7 @@ interface TalkApiRecord {
   id: string;
   ownerId: string;
   title: string | null;
+  agents: string[];
   status: 'active' | 'paused' | 'archived';
   version: number;
   createdAt: string;
@@ -40,12 +41,52 @@ function toTalkApiRecord(talk: TalkWithAccessRecord): TalkApiRecord {
     id: talk.id,
     ownerId: talk.owner_id,
     title: talk.topic_title,
+    agents: parseTalkAgents(talk.llm_policy),
     status: talk.status,
     version: talk.version,
     createdAt: talk.created_at,
     updatedAt: talk.updated_at,
     accessRole: talk.access_role,
   };
+}
+
+function parseTalkAgents(llmPolicy: string | null): string[] {
+  const DEFAULT_AGENTS = ['Mock'];
+  const raw = llmPolicy?.trim();
+  if (!raw) return DEFAULT_AGENTS;
+
+  let candidates: unknown[] = [];
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (Array.isArray(parsed)) {
+      candidates = parsed;
+    } else if (parsed && typeof parsed === 'object') {
+      const asRecord = parsed as Record<string, unknown>;
+      if (Array.isArray(asRecord.agents)) {
+        candidates = asRecord.agents;
+      } else if (Array.isArray(asRecord.models)) {
+        candidates = asRecord.models;
+      } else {
+        candidates = [asRecord.agent, asRecord.model];
+      }
+    } else if (typeof parsed === 'string') {
+      candidates = [parsed];
+    }
+  } catch {
+    candidates = raw.split(/[|,]/);
+  }
+
+  const normalized = [
+    ...new Set(
+      candidates
+        .map((candidate) =>
+          typeof candidate === 'string' ? candidate.trim() : '',
+        )
+        .filter(Boolean),
+    ),
+  ].slice(0, 6);
+
+  return normalized.length > 0 ? normalized : DEFAULT_AGENTS;
 }
 
 function toTalkMessageApiRecord(

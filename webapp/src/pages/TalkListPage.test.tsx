@@ -29,6 +29,7 @@ describe('TalkListPage', () => {
             id: 'talk-created-1',
             ownerId: 'owner-1',
             title: 'Created Talk',
+            agents: ['Mock'],
             status: 'active',
             version: 1,
             createdAt: '2026-03-04T00:00:00.000Z',
@@ -77,6 +78,36 @@ describe('TalkListPage', () => {
 
     await screen.findByRole('alert');
     expect(screen.getByText('Talk creation failed')).toBeTruthy();
+  });
+
+  it('renders agent chips for each talk row', async () => {
+    mockFetch([
+      jsonResponse(200, {
+        ok: true,
+        data: {
+          talks: [
+            {
+              id: 'talk-1',
+              ownerId: 'owner-1',
+              title: 'Smoke Talk',
+              agents: ['Gemini', 'Opus4.6'],
+              status: 'active',
+              version: 1,
+              createdAt: '2026-03-04T00:00:00.000Z',
+              updatedAt: '2026-03-04T00:00:00.000Z',
+              accessRole: 'owner',
+            },
+          ],
+          page: { limit: 50, offset: 0, count: 1 },
+        },
+      }),
+    ]);
+
+    renderWithRouter();
+    await screen.findByRole('link', { name: /Smoke Talk/i });
+
+    expect(screen.getByText('Gemini')).toBeTruthy();
+    expect(screen.getByText('Opus4.6')).toBeTruthy();
   });
 });
 
