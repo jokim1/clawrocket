@@ -335,11 +335,9 @@ function detailReducer(state: DetailState, action: DetailAction): DetailState {
 
 const SCROLL_STICK_THRESHOLD_PX = 120;
 const TALK_MESSAGE_MAX_CHARS = 20_000;
-const TALK_POLICY_MAX_AGENTS = 12;
-const TALK_POLICY_MAX_AGENT_CHARS = 80;
-
 function normalizePolicyDraft(
   draft: string,
+  limits: { maxAgents: number; maxAgentChars: number } | null,
 ): { agents?: string[]; error?: string } {
   const normalized = [
     ...new Set(
@@ -350,14 +348,18 @@ function normalizePolicyDraft(
     ),
   ];
 
-  if (normalized.some((agent) => agent.length > TALK_POLICY_MAX_AGENT_CHARS)) {
+  if (!limits) {
+    return { agents: normalized };
+  }
+
+  if (normalized.some((agent) => agent.length > limits.maxAgentChars)) {
     return {
-      error: `Each agent label must be ${TALK_POLICY_MAX_AGENT_CHARS} characters or less.`,
+      error: `Each agent label must be ${limits.maxAgentChars} characters or less.`,
     };
   }
-  if (normalized.length > TALK_POLICY_MAX_AGENTS) {
+  if (normalized.length > limits.maxAgents) {
     return {
-      error: `At most ${TALK_POLICY_MAX_AGENTS} agents are allowed.`,
+      error: `At most ${limits.maxAgents} agents are allowed.`,
     };
   }
 
@@ -374,6 +376,10 @@ export function TalkDetailPage({
   const [draft, setDraft] = useState('');
   const [policyDraft, setPolicyDraft] = useState('');
   const [policyAgents, setPolicyAgents] = useState<string[]>([]);
+  const [policyLimits, setPolicyLimits] = useState<{
+    maxAgents: number;
+    maxAgentChars: number;
+  } | null>(null);
   const [policyState, setPolicyState] = useState<{
     status: 'idle' | 'saving' | 'error' | 'success';
     message?: string;
@@ -534,6 +540,7 @@ export function TalkDetailPage({
     dispatch({ type: 'BOOTSTRAP_LOADING' });
     setPolicyAgents([]);
     setPolicyDraft('');
+    setPolicyLimits(null);
     setPolicyState({ status: 'idle' });
 
     const load = async () => {
@@ -546,6 +553,7 @@ export function TalkDetailPage({
         if (!cancelled) {
           setPolicyAgents(policy.agents);
           setPolicyDraft(policy.agents.join(', '));
+          setPolicyLimits(policy.limits);
           setPolicyState({ status: 'idle' });
           dispatch({ type: 'BOOTSTRAP_READY', talk, messages });
         }
@@ -742,7 +750,7 @@ export function TalkDetailPage({
     if (state.kind !== 'ready') return;
     if (!canEditPolicy) return;
 
-    const normalized = normalizePolicyDraft(policyDraft);
+    const normalized = normalizePolicyDraft(policyDraft, policyLimits);
     if (!normalized.agents) {
       setPolicyState({ status: 'error', message: normalized.error });
       return;

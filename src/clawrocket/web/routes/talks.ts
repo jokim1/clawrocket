@@ -43,6 +43,10 @@ const DEFAULT_TALK_AGENTS = ['Mock'];
 const MAX_TALK_AGENT_BADGES = 6;
 const MAX_POLICY_AGENTS = 12;
 const MAX_POLICY_AGENT_LABEL_CHARS = 80;
+const TALK_POLICY_LIMITS = {
+  maxAgents: MAX_POLICY_AGENTS,
+  maxAgentChars: MAX_POLICY_AGENT_LABEL_CHARS,
+} as const;
 
 function toTalkApiRecord(talk: TalkWithAccessRecord): TalkApiRecord {
   return {
@@ -302,7 +306,11 @@ export function getTalkPolicyRoute(input: {
   auth: AuthContext;
 }): {
   statusCode: number;
-  body: ApiEnvelope<{ talkId: string; agents: string[] }>;
+  body: ApiEnvelope<{
+    talkId: string;
+    agents: string[];
+    limits: { maxAgents: number; maxAgentChars: number };
+  }>;
 } {
   const talk = getTalkForUser(input.talkId, input.auth.userId);
   if (!talk) {
@@ -325,6 +333,7 @@ export function getTalkPolicyRoute(input: {
       data: {
         talkId: input.talkId,
         agents: parseTalkPolicyAgents(talk.llm_policy),
+        limits: TALK_POLICY_LIMITS,
       },
     },
   };
@@ -336,7 +345,11 @@ export function updateTalkPolicyRoute(input: {
   agents: unknown;
 }): {
   statusCode: number;
-  body: ApiEnvelope<{ talkId: string; agents: string[] }>;
+  body: ApiEnvelope<{
+    talkId: string;
+    agents: string[];
+    limits: { maxAgents: number; maxAgentChars: number };
+  }>;
 } {
   const talk = getTalkForUser(input.talkId, input.auth.userId);
   if (!talk) {
@@ -395,6 +408,7 @@ export function updateTalkPolicyRoute(input: {
       data: {
         talkId: input.talkId,
         agents: normalized.agents,
+        limits: TALK_POLICY_LIMITS,
       },
     },
   };

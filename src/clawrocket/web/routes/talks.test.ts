@@ -327,6 +327,10 @@ describe('talk routes', () => {
     const viewerBody = (await viewerRes.json()) as any;
     expect(viewerBody.ok).toBe(true);
     expect(viewerBody.data.agents).toEqual(['Gemini', 'Opus4.6']);
+    expect(viewerBody.data.limits).toEqual({
+      maxAgents: 12,
+      maxAgentChars: 80,
+    });
 
     const outsiderRes = await server.request(
       '/api/v1/talks/talk-owner/policy',
@@ -362,6 +366,8 @@ describe('talk routes', () => {
     const editorBody = (await editorRes.json()) as any;
     expect(editorBody.ok).toBe(true);
     expect(editorBody.data.agents).toEqual(['Gemini', 'Opus4.6']);
+    expect(editorBody.data.limits.maxAgents).toBe(12);
+    expect(editorBody.data.limits.maxAgentChars).toBe(80);
 
     const readBackRes = await server.request(
       '/api/v1/talks/talk-owner/policy',
@@ -413,6 +419,36 @@ describe('talk routes', () => {
       (row: any) => row.id === 'talk-owner',
     );
     expect(talk.agents).toEqual(['Mock']);
+  });
+
+  it('replays idempotent policy updates', async () => {
+    const first = await server.request('/api/v1/talks/talk-owner/policy', {
+      method: 'PUT',
+      headers: {
+        Authorization: 'Bearer owner-token',
+        'Content-Type': 'application/json',
+        'Idempotency-Key': 'idem-policy-1',
+      },
+      body: JSON.stringify({ agents: ['Gemini', 'Opus4.6'] }),
+    });
+    expect(first.status).toBe(200);
+    const firstBody = (await first.json()) as any;
+    expect(firstBody.ok).toBe(true);
+    expect(firstBody.data.agents).toEqual(['Gemini', 'Opus4.6']);
+
+    const replay = await server.request('/api/v1/talks/talk-owner/policy', {
+      method: 'PUT',
+      headers: {
+        Authorization: 'Bearer owner-token',
+        'Content-Type': 'application/json',
+        'Idempotency-Key': 'idem-policy-1',
+      },
+      body: JSON.stringify({ agents: ['Gemini', 'Opus4.6'] }),
+    });
+    expect(replay.status).toBe(200);
+    expect(replay.headers.get('x-idempotent-replay')).toBe('true');
+    const replayBody = (await replay.json()) as any;
+    expect(replayBody.data.agents).toEqual(['Gemini', 'Opus4.6']);
   });
 
   it('enqueues chat runs and persists user messages', async () => {
