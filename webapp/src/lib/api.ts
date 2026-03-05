@@ -74,6 +74,10 @@ export type AuthConfigPayload = {
   devMode: boolean;
 };
 
+const AUTH_REFRESH_PATH = '/api/v1/auth/refresh';
+const AUTH_LOGOUT_PATH = '/api/v1/auth/logout';
+let refreshInFlight: Promise<boolean> | null = null;
+
 export async function getAuthConfig(): Promise<AuthConfigPayload> {
   return apiRequest<AuthConfigPayload>('/api/v1/auth/config');
 }
@@ -83,7 +87,19 @@ export async function getSessionMe(): Promise<SessionUser> {
   return envelope.user;
 }
 
-export async function startGoogleAuth(): Promise<StartAuthPayload> {
+export async function startGoogleAuth(input?: {
+  returnTo?: string;
+}): Promise<StartAuthPayload> {
+  if (input?.returnTo) {
+    return apiRequest<StartAuthPayload>('/api/v1/auth/google/start', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ returnTo: input.returnTo }),
+    });
+  }
+
   return apiRequest<StartAuthPayload>('/api/v1/auth/google/start', {
     method: 'POST',
   });
@@ -164,9 +180,24 @@ export async function cancelTalkRuns(
   );
 }
 
+export async function logout(): Promise<void> {
+  await apiRequest<{ loggedOut: boolean }>(AUTH_LOGOUT_PATH, {
+    method: 'POST',
+    headers: buildMutationHeaders({ includeJson: false }),
+  });
+}
+
 async function apiRequest<T>(
   path: string,
   init?: RequestInit,
+): Promise<T> {
+  return apiRequestWithRefresh<T>(path, init, true);
+}
+
+async function apiRequestWithRefresh<T>(
+  path: string,
+  init: RequestInit | undefined,
+  allowRefreshRetry: boolean,
 ): Promise<T> {
   const response = await fetch(path, {
     ...init,
@@ -178,6 +209,12 @@ async function apiRequest<T>(
   });
 
   if (response.status === 401) {
+    if (allowRefreshRetry && !shouldSkipRefresh(path)) {
+      const refreshed = await ensureRefreshedSession();
+      if (refreshed) {
+        return apiRequestWithRefresh<T>(path, init, false);
+      }
+    }
     throw new UnauthorizedError();
   }
 
@@ -191,6 +228,43 @@ async function apiRequest<T>(
     throw new ApiError(message, response.status, code);
   }
   return payload.data;
+}
+
+function shouldSkipRefresh(path: string): boolean {
+  const normalizedPath = path.split('?')[0];
+  return (
+    normalizedPath === AUTH_REFRESH_PATH || normalizedPath === AUTH_LOGOUT_PATH
+  );
+}
+
+async function ensureRefreshedSession(): Promise<boolean> {
+  if (refreshInFlight) return refreshInFlight;
+
+  refreshInFlight = (async () => {
+    try {
+      const response = await fetch(AUTH_REFRESH_PATH, {
+        method: 'POST',
+        credentials: 'include',
+        headers: {
+          accept: 'application/json',
+        },
+      });
+      if (response.status === 401 || !response.ok) return false;
+
+      const payload = (await response.json().catch(() => null)) as
+        | ApiEnvelope<unknown>
+        | null;
+      return Boolean(payload?.ok);
+    } catch {
+      return false;
+    }
+  })();
+
+  try {
+    return await refreshInFlight;
+  } finally {
+    refreshInFlight = null;
+  }
 }
 
 function buildMutationHeaders(input: { includeJson: boolean }): HeadersInit {

@@ -16,6 +16,10 @@ describe('App', () => {
         ok: false,
         error: { code: 'unauthorized', message: 'Authentication is required' },
       }),
+      jsonResponse(401, {
+        ok: false,
+        error: { code: 'invalid_refresh_token', message: 'Refresh failed' },
+      }),
       jsonResponse(200, {
         ok: true,
         data: { devMode: false },
@@ -36,6 +40,10 @@ describe('App', () => {
       jsonResponse(401, {
         ok: false,
         error: { code: 'unauthorized', message: 'Authentication is required' },
+      }),
+      jsonResponse(401, {
+        ok: false,
+        error: { code: 'invalid_refresh_token', message: 'Refresh failed' },
       }),
       jsonResponse(200, {
         ok: true,
@@ -103,6 +111,10 @@ describe('App', () => {
         ok: false,
         error: { code: 'unauthorized', message: 'Authentication is required' },
       }),
+      jsonResponse(401, {
+        ok: false,
+        error: { code: 'invalid_refresh_token', message: 'Refresh failed' },
+      }),
       jsonResponse(200, {
         ok: true,
         data: { devMode: false },
@@ -113,6 +125,45 @@ describe('App', () => {
     await waitFor(() =>
       expect(screen.getByRole('heading', { name: 'ClawRocket' })).toBeTruthy(),
     );
+  });
+
+  it('shows sign-in after clicking sign out from authenticated shell', async () => {
+    mockFetch([
+      jsonResponse(200, {
+        ok: true,
+        data: {
+          user: {
+            id: 'u1',
+            email: 'owner@example.com',
+            displayName: 'Owner',
+            role: 'owner',
+          },
+        },
+      }),
+      jsonResponse(200, {
+        ok: true,
+        data: {
+          talks: [],
+          page: { limit: 50, offset: 0, count: 0 },
+        },
+      }),
+      jsonResponse(200, {
+        ok: true,
+        data: { loggedOut: true },
+      }),
+      jsonResponse(200, {
+        ok: true,
+        data: { devMode: false },
+      }),
+    ]);
+
+    renderWithRouter('/app/talks');
+    const signOutButton = await screen.findByRole('button', {
+      name: 'Sign out',
+    });
+    signOutButton.click();
+
+    await screen.findByRole('heading', { name: 'ClawRocket' });
   });
 
   it('shows unavailable talk state for 404 detail fetch', async () => {

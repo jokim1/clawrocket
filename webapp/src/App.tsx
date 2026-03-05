@@ -2,7 +2,12 @@ import { useCallback, useEffect, useState } from 'react';
 import { Navigate, Route, Routes } from 'react-router-dom';
 
 import { SignInView } from './components/SignInView';
-import { getSessionMe, SessionUser, UnauthorizedError } from './lib/api';
+import {
+  getSessionMe,
+  logout as logoutSession,
+  SessionUser,
+  UnauthorizedError,
+} from './lib/api';
 import { TalkDetailPage } from './pages/TalkDetailPage';
 import { TalkListPage } from './pages/TalkListPage';
 
@@ -13,6 +18,7 @@ type AuthState =
 
 export function App() {
   const [auth, setAuth] = useState<AuthState>({ status: 'loading' });
+  const [signOutBusy, setSignOutBusy] = useState(false);
 
   const refreshSession = useCallback(async () => {
     try {
@@ -31,6 +37,17 @@ export function App() {
     setAuth({ status: 'unauthenticated' });
   }, []);
 
+  const handleSignOut = useCallback(async () => {
+    if (signOutBusy) return;
+    setSignOutBusy(true);
+    try {
+      await logoutSession();
+    } finally {
+      setAuth({ status: 'unauthenticated' });
+      setSignOutBusy(false);
+    }
+  }, [signOutBusy]);
+
   useEffect(() => {
     void refreshSession();
   }, [refreshSession]);
@@ -46,10 +63,18 @@ export function App() {
   return (
     <main className="app-shell">
       <header className="app-topbar">
-        <div>
+        <div className="app-user-meta">
           <strong>{auth.user.displayName}</strong>
           <span>{auth.user.email}</span>
         </div>
+        <button
+          type="button"
+          className="secondary-btn"
+          onClick={handleSignOut}
+          disabled={signOutBusy}
+        >
+          Sign out
+        </button>
       </header>
       <Routes>
         <Route path="/" element={<Navigate to="/app/talks" replace />} />
