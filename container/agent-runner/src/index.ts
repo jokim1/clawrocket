@@ -531,6 +531,7 @@ async function main(): Promise<void> {
 
   const __dirname = path.dirname(fileURLToPath(import.meta.url));
   const mcpServerPath = path.join(__dirname, 'ipc-mcp-stdio.js');
+  const isWebTalkProfile = (containerInput.toolProfile || 'default') === 'web_talk';
 
   let sessionId = containerInput.sessionId;
   fs.mkdirSync(IPC_INPUT_DIR, { recursive: true });
@@ -561,6 +562,13 @@ async function main(): Promise<void> {
       }
       if (queryResult.lastAssistantUuid) {
         resumeAt = queryResult.lastAssistantUuid;
+      }
+
+      // Web talk execution is single-turn: return the answer and exit so the host
+      // can finalize the run immediately instead of waiting on IPC follow-ups.
+      if (isWebTalkProfile) {
+        log('Web talk profile run complete, exiting after single query');
+        break;
       }
 
       // If _close was consumed during the query, exit immediately.
