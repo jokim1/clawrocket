@@ -309,50 +309,117 @@ a {
   justify-content: flex-start;
 }
 
-.run-chip-row {
+.run-history-panel {
+  border: 1px solid #dde4f2;
+  border-radius: 10px;
+  padding: 0.75rem;
+  display: grid;
+  gap: 0.6rem;
+}
+
+.run-history-panel h2 {
+  margin: 0;
+  font-size: 0.95rem;
+}
+
+.run-history-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.55rem;
+}
+
+.run-history-item {
+  border: 1px solid #d6deee;
+  border-radius: 10px;
+  background: #fbfdff;
+  padding: 0.55rem 0.65rem;
+  display: grid;
+  gap: 0.45rem;
+}
+
+.run-history-main {
   display: flex;
-  flex-wrap: wrap;
+  align-items: center;
   gap: 0.5rem;
 }
 
-.run-chip {
+.run-history-main code {
+  font-size: 0.78rem;
+  color: #495574;
+}
+
+.run-history-status {
   display: inline-flex;
   align-items: center;
-  gap: 0.35rem;
   border-radius: 999px;
-  padding: 0.2rem 0.65rem;
-  border: 1px solid #d0d8e7;
-  background: #f8faff;
-  font-size: 0.78rem;
+  border: 1px solid transparent;
+  padding: 0.1rem 0.5rem;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  font-size: 0.7rem;
+  font-weight: 700;
 }
 
-.run-chip span {
-  color: #596582;
-}
-
-.run-chip-running {
+.run-history-status-running {
   border-color: #bae6cb;
   background: #ecfff3;
+  color: #1f713f;
 }
 
-.run-chip-queued {
+.run-history-status-queued {
   border-color: #d8dff0;
   background: #f6f8ff;
+  color: #42527a;
 }
 
-.run-chip-completed {
+.run-history-status-completed {
   border-color: #c4d4f7;
   background: #eff5ff;
+  color: #21498f;
 }
 
-.run-chip-failed {
+.run-history-status-failed {
   border-color: #f3c0c0;
   background: #fff1f1;
+  color: #8e2e2e;
 }
 
-.run-chip-cancelled {
+.run-history-status-cancelled {
   border-color: #e0d5c5;
   background: #f9f3ea;
+  color: #6e5a3b;
+}
+
+.run-history-links {
+  display: grid;
+  gap: 0.3rem;
+}
+
+.run-history-link {
+  border: 0;
+  background: transparent;
+  padding: 0;
+  text-align: left;
+  font-size: 0.82rem;
+  color: #1a4fa6;
+  cursor: pointer;
+}
+
+.run-history-link:hover {
+  text-decoration: underline;
+}
+
+.run-history-muted {
+  font-size: 0.8rem;
+  color: #66728d;
+}
+
+.run-history-error {
+  margin: 0;
+  font-size: 0.82rem;
+  color: #8e2e2e;
 }
 
 .timeline {

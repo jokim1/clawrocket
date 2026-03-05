@@ -343,6 +343,101 @@ describe('TalkDetailPage', () => {
     expect(screen.getByText('run-2')).toBeTruthy();
   });
 
+  it('renders run history links and jumps to trigger/response messages', async () => {
+    const scrollIntoView = vi.fn();
+    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
+      configurable: true,
+      value: scrollIntoView,
+    });
+
+    mockFetch([
+      jsonResponse(200, {
+        ok: true,
+        data: {
+          talk: buildTalk({ accessRole: 'owner' }),
+        },
+      }),
+      jsonResponse(200, {
+        ok: true,
+        data: {
+          talkId: 'talk-1',
+          messages: [
+            {
+              id: 'msg-1',
+              role: 'user',
+              content: 'tell me about Gemini models',
+              createdBy: 'owner-1',
+              createdAt: '2026-03-04T00:00:00.000Z',
+              runId: null,
+            },
+          ],
+          page: { limit: 100, count: 1, beforeCreatedAt: null },
+        },
+      }),
+      jsonResponse(200, {
+        ok: true,
+        data: {
+          talkId: 'talk-1',
+          agents: ['Gemini'],
+          limits: { maxAgents: 12, maxAgentChars: 80 },
+        },
+      }),
+    ]);
+
+    const user = userEvent.setup();
+    renderDetailPage();
+    await screen.findByRole('heading', { name: /Smoke Talk/i });
+
+    await act(async () => {
+      streamInput?.onRunStarted({
+        talkId: 'talk-1',
+        runId: 'run-5',
+        triggerMessageId: 'msg-1',
+        status: 'running',
+      });
+    });
+
+    await act(async () => {
+      streamInput?.onMessageAppended({
+        talkId: 'talk-1',
+        messageId: 'msg-2',
+        role: 'assistant',
+        runId: 'run-5',
+        createdBy: null,
+        content: 'Here is a comparison.',
+        createdAt: '2026-03-04T00:00:01.000Z',
+      });
+    });
+
+    await act(async () => {
+      streamInput?.onRunCompleted({
+        talkId: 'talk-1',
+        runId: 'run-5',
+        triggerMessageId: 'msg-1',
+        responseMessageId: 'msg-2',
+      });
+    });
+
+    const runHistory = screen.getByLabelText('Run history');
+    expect(within(runHistory).getByText('run-5')).toBeTruthy();
+    expect(within(runHistory).getByText('completed')).toBeTruthy();
+
+    const triggerLink = within(runHistory).getByRole('button', {
+      name: /Trigger:/i,
+    });
+    const responseLink = within(runHistory).getByRole('button', {
+      name: /Response:/i,
+    });
+    const baselineCalls = scrollIntoView.mock.calls.length;
+
+    await user.click(triggerLink);
+    await user.click(responseLink);
+
+    expect(scrollIntoView.mock.calls.length).toBeGreaterThanOrEqual(
+      baselineCalls + 2,
+    );
+  });
+
   it('forces initial scroll and shows unread indicator when new events arrive below viewport', async () => {
     const scrollIntoView = vi.fn();
     vi.stubGlobal('IntersectionObserver', vi.fn());

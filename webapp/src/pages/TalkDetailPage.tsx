@@ -41,6 +41,13 @@ type RunView = {
   updatedAt: number;
 };
 
+function summarizeMessageForRun(message: TalkMessage | undefined, messageId: string): string {
+  if (!message) return messageId;
+  const compact = message.content.trim().replace(/\s+/g, ' ');
+  const preview = compact.length > 42 ? `${compact.slice(0, 42)}…` : compact;
+  return `${message.role}: ${preview || '(empty)'}`;
+}
+
 type DetailState = {
   kind: 'loading' | 'ready' | 'unavailable' | 'error';
   talk: Talk | null;
@@ -786,10 +793,23 @@ export function TalkDetailPage({
     dispatch({ type: 'CLEAR_UNREAD' });
   };
 
-  const runChips =
+  const messageLookup = useMemo(() => {
+    if (state.kind !== 'ready') {
+      return new Map<string, TalkMessage>();
+    }
+    return new Map(state.messages.map((message) => [message.id, message] as const));
+  }, [state.kind, state.messages]);
+
+  const runHistory =
     state.kind === 'ready'
       ? Object.values(state.runsById).sort((a, b) => b.updatedAt - a.updatedAt)
       : [];
+
+  const jumpToMessage = (messageId: string) => {
+    const element = document.getElementById(`message-${messageId}`);
+    if (!element) return;
+    element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  };
 
   if (state.kind === 'loading') {
     return <p className="page-state">Loading talk…</p>;
@@ -905,15 +925,61 @@ export function TalkDetailPage({
         )}
       </section>
 
-      {runChips.length > 0 ? (
-        <div className="run-chip-row" aria-label="Run status">
-          {runChips.map((run) => (
-            <span key={run.id} className={`run-chip run-chip-${run.status}`}>
-              <strong>{run.status}</strong>
-              <span>{run.id}</span>
-            </span>
-          ))}
-        </div>
+      {runHistory.length > 0 ? (
+        <section className="run-history-panel" aria-label="Run history">
+          <h2>Run History</h2>
+          <ul className="run-history-list">
+            {runHistory.map((run) => (
+              <li key={run.id} className="run-history-item">
+                <div className="run-history-main">
+                  <span className={`run-history-status run-history-status-${run.status}`}>
+                    {run.status}
+                  </span>
+                  <code>{run.id}</code>
+                </div>
+
+                <div className="run-history-links">
+                  {run.triggerMessageId ? (
+                    <button
+                      type="button"
+                      className="run-history-link"
+                      onClick={() => jumpToMessage(run.triggerMessageId!)}
+                    >
+                      Trigger:{' '}
+                      {summarizeMessageForRun(
+                        messageLookup.get(run.triggerMessageId),
+                        run.triggerMessageId,
+                      )}
+                    </button>
+                  ) : (
+                    <span className="run-history-muted">Trigger: not available</span>
+                  )}
+
+                  {run.responseMessageId ? (
+                    <button
+                      type="button"
+                      className="run-history-link"
+                      onClick={() => jumpToMessage(run.responseMessageId!)}
+                    >
+                      Response:{' '}
+                      {summarizeMessageForRun(
+                        messageLookup.get(run.responseMessageId),
+                        run.responseMessageId,
+                      )}
+                    </button>
+                  ) : null}
+                </div>
+
+                {run.status === 'failed' && run.errorMessage ? (
+                  <p className="run-history-error">
+                    {run.errorCode ? `${run.errorCode}: ` : ''}
+                    {run.errorMessage}
+                  </p>
+                ) : null}
+              </li>
+            ))}
+          </ul>
+        </section>
       ) : null}
 
       <div
@@ -926,7 +992,11 @@ export function TalkDetailPage({
           <p className="page-state">No messages yet.</p>
         ) : (
           state.messages.map((message) => (
-            <article key={message.id} className={`message message-${message.role}`}>
+            <article
+              key={message.id}
+              id={`message-${message.id}`}
+              className={`message message-${message.role}`}
+            >
               <header>
                 <strong>{message.role}</strong>
                 <time>{new Date(message.createdAt).toLocaleString()}</time>
