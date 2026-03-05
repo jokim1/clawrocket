@@ -366,27 +366,33 @@ async function runQuery(
 ): Promise<{ newSessionId?: string; lastAssistantUuid?: string; closedDuringQuery: boolean }> {
   const stream = new MessageStream();
   stream.push(prompt);
+  const useWebTalkProfile = (containerInput.toolProfile || 'default') === 'web_talk';
 
-  // Poll IPC for follow-up messages and _close sentinel during the query
-  let ipcPolling = true;
+  // Poll IPC for follow-up messages and _close sentinel during the query.
+  // Web talk profile is single-turn, so close input stream immediately.
+  let ipcPolling = !useWebTalkProfile;
   let closedDuringQuery = false;
-  const pollIpcDuringQuery = () => {
-    if (!ipcPolling) return;
-    if (shouldClose()) {
-      log('Close sentinel detected during query, ending stream');
-      closedDuringQuery = true;
-      stream.end();
-      ipcPolling = false;
-      return;
-    }
-    const messages = drainIpcInput();
-    for (const text of messages) {
-      log(`Piping IPC message into active query (${text.length} chars)`);
-      stream.push(text);
-    }
+  if (useWebTalkProfile) {
+    stream.end();
+  } else {
+    const pollIpcDuringQuery = () => {
+      if (!ipcPolling) return;
+      if (shouldClose()) {
+        log('Close sentinel detected during query, ending stream');
+        closedDuringQuery = true;
+        stream.end();
+        ipcPolling = false;
+        return;
+      }
+      const messages = drainIpcInput();
+      for (const text of messages) {
+        log(`Piping IPC message into active query (${text.length} chars)`);
+        stream.push(text);
+      }
+      setTimeout(pollIpcDuringQuery, IPC_POLL_MS);
+    };
     setTimeout(pollIpcDuringQuery, IPC_POLL_MS);
-  };
-  setTimeout(pollIpcDuringQuery, IPC_POLL_MS);
+  }
 
   let newSessionId: string | undefined;
   let lastAssistantUuid: string | undefined;
@@ -416,8 +422,6 @@ async function runQuery(
     log(`Additional directories: ${extraDirs.join(', ')}`);
   }
 
-  const toolProfile = containerInput.toolProfile || 'default';
-  const useWebTalkProfile = toolProfile === 'web_talk';
   const selectedModel =
     containerInput.model && containerInput.model !== 'default'
       ? containerInput.model
