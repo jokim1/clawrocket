@@ -80,6 +80,46 @@ describe('api auth retry behavior', () => {
     await expect(api.listTalks()).rejects.toBeInstanceOf(api.UnauthorizedError);
   });
 
+  it('throws UnauthorizedError when refresh succeeds but retried request is still 401', async () => {
+    const queue: Response[] = [
+      jsonResponse(401, {
+        ok: false,
+        error: { code: 'unauthorized', message: 'Authentication is required' },
+      }),
+      jsonResponse(200, {
+        ok: true,
+        data: {
+          user: {
+            id: 'u1',
+            email: 'owner@example.com',
+            displayName: 'Owner',
+            role: 'owner',
+          },
+        },
+      }),
+      jsonResponse(401, {
+        ok: false,
+        error: { code: 'unauthorized', message: 'Authentication is required' },
+      }),
+    ];
+    const paths: string[] = [];
+    vi.stubGlobal('fetch', async (input: RequestInfo | URL) => {
+      paths.push(normalizePath(input));
+      const next = queue.shift();
+      if (!next) throw new Error('No mocked response left for fetch()');
+      return next;
+    });
+
+    const api = await loadApiModule();
+
+    await expect(api.listTalks()).rejects.toBeInstanceOf(api.UnauthorizedError);
+    expect(paths).toEqual([
+      '/api/v1/talks',
+      '/api/v1/auth/refresh',
+      '/api/v1/talks',
+    ]);
+  });
+
   it('coalesces concurrent refresh attempts into a single refresh call', async () => {
     const callCounts = new Map<string, number>();
     let refreshCalls = 0;
