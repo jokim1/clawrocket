@@ -55,6 +55,10 @@ export type TalkRun = {
 export type TalkPolicy = {
   talkId: string;
   agents: string[];
+  limits: {
+    maxAgents: number;
+    maxAgentChars: number;
+  };
 };
 
 type ApiEnvelope<T> =

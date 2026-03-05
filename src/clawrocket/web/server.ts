@@ -726,6 +726,38 @@ function buildApp(opts: WebServerOptions): Hono {
       );
     }
 
+    const bodyText = await c.req.text();
+    const idempotencyKey = c.req.header('idempotency-key') || null;
+    const precheck = idempotencyPrecheck({
+      userId: auth.userId,
+      idempotencyKey,
+      method: c.req.method,
+      path: c.req.path,
+      bodyText,
+    });
+    if (precheck.error) {
+      return c.json(
+        {
+          ok: false,
+          error: {
+            code: 'idempotency_error',
+            message: precheck.error,
+          },
+        },
+        400,
+      );
+    }
+
+    if (precheck.replay && precheck.response) {
+      return new Response(precheck.response.responseBody, {
+        status: precheck.response.statusCode,
+        headers: {
+          'content-type': 'application/json; charset=utf-8',
+          'x-idempotent-replay': 'true',
+        },
+      });
+    }
+
     const encodedTalkId = c.req.param('talkId');
     const talkId = safeDecodePathSegment(encodedTalkId);
     if (!talkId) {
@@ -741,7 +773,6 @@ function buildApp(opts: WebServerOptions): Hono {
       );
     }
 
-    const bodyText = await c.req.text();
     const payload = parseJsonPayload<{ agents?: unknown }>(bodyText);
     if (!payload.ok) {
       return c.json(
@@ -761,7 +792,18 @@ function buildApp(opts: WebServerOptions): Hono {
       auth,
       agents: payload.data.agents,
     });
-    return new Response(JSON.stringify(result.body), {
+    const serialized = JSON.stringify(result.body);
+    saveIdempotencyResult({
+      userId: auth.userId,
+      idempotencyKey,
+      method: c.req.method,
+      path: c.req.path,
+      requestHash: precheck.requestHash,
+      statusCode: result.statusCode,
+      responseBody: serialized,
+    });
+
+    return new Response(serialized, {
       status: result.statusCode,
       headers: { 'content-type': 'application/json; charset=utf-8' },
     });
