@@ -475,17 +475,33 @@ async function main(): Promise<void> {
   }
 
   // Graceful shutdown handlers
+  let shutdownInFlight = false;
   const shutdown = async (signal: string) => {
-    logger.info({ signal }, 'Shutdown signal received');
-    await queue.shutdown(10000);
-    if (webServer) {
-      await webServer.stop();
+    if (shutdownInFlight) {
+      logger.warn({ signal }, 'Shutdown already in progress, ignoring signal');
+      return;
     }
-    for (const ch of channels) await ch.disconnect();
-    process.exit(0);
+    shutdownInFlight = true;
+    logger.info({ signal }, 'Shutdown signal received');
+
+    try {
+      await queue.shutdown(10000);
+      if (webServer) {
+        await webServer.stop();
+      }
+      for (const ch of channels) await ch.disconnect();
+      process.exit(0);
+    } catch (err) {
+      logger.error({ err, signal }, 'Shutdown failed');
+      process.exit(1);
+    }
   };
-  process.on('SIGTERM', () => shutdown('SIGTERM'));
-  process.on('SIGINT', () => shutdown('SIGINT'));
+  process.once('SIGTERM', () => {
+    void shutdown('SIGTERM');
+  });
+  process.once('SIGINT', () => {
+    void shutdown('SIGINT');
+  });
 
   // Channel callbacks (shared by all channels)
   const channelOpts = {
