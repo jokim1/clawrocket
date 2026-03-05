@@ -448,6 +448,7 @@ export type TalkAccessLevel = 'owner' | 'admin' | 'editor' | 'viewer';
 
 export interface TalkWithAccessRecord extends TalkRecord {
   access_role: TalkAccessLevel;
+  llm_policy: string | null;
 }
 
 export interface TalkListPage {
@@ -524,10 +525,13 @@ export function listTalksForUser(input: {
     return getDb()
       .prepare(
         `
-        SELECT id, owner_id, topic_title, status, version, created_at, updated_at,
-               CASE WHEN owner_id = ? THEN 'owner' ELSE ? END AS access_role
-        FROM talks
-        ORDER BY updated_at DESC, created_at DESC
+        SELECT t.id, t.owner_id, t.topic_title, t.status, t.version, t.created_at, t.updated_at,
+               p.llm_policy,
+               CASE WHEN t.owner_id = ? THEN 'owner' ELSE ? END AS access_role
+        FROM talks t
+        LEFT JOIN talk_llm_policies p
+          ON p.talk_id = t.id
+        ORDER BY t.updated_at DESC, t.created_at DESC
         LIMIT ? OFFSET ?
       `,
       )
@@ -550,11 +554,14 @@ export function listTalksForUser(input: {
         t.version,
         t.created_at,
         t.updated_at,
+        p.llm_policy,
         CASE WHEN t.owner_id = ? THEN 'owner' ELSE tm.role END AS access_role
       FROM talks t
       LEFT JOIN talk_members tm
         ON tm.talk_id = t.id
        AND tm.user_id = ?
+      LEFT JOIN talk_llm_policies p
+        ON p.talk_id = t.id
       WHERE t.owner_id = ? OR tm.user_id = ?
       ORDER BY t.updated_at DESC, t.created_at DESC
       LIMIT ? OFFSET ?
@@ -582,10 +589,13 @@ export function getTalkForUser(
     const row = getDb()
       .prepare(
         `
-        SELECT id, owner_id, topic_title, status, version, created_at, updated_at,
-               CASE WHEN owner_id = ? THEN 'owner' ELSE ? END AS access_role
-        FROM talks
-        WHERE id = ?
+        SELECT t.id, t.owner_id, t.topic_title, t.status, t.version, t.created_at, t.updated_at,
+               p.llm_policy,
+               CASE WHEN t.owner_id = ? THEN 'owner' ELSE ? END AS access_role
+        FROM talks t
+        LEFT JOIN talk_llm_policies p
+          ON p.talk_id = t.id
+        WHERE t.id = ?
         LIMIT 1
       `,
       )
@@ -606,11 +616,14 @@ export function getTalkForUser(
         t.version,
         t.created_at,
         t.updated_at,
+        p.llm_policy,
         CASE WHEN t.owner_id = ? THEN 'owner' ELSE tm.role END AS access_role
       FROM talks t
       LEFT JOIN talk_members tm
         ON tm.talk_id = t.id
        AND tm.user_id = ?
+      LEFT JOIN talk_llm_policies p
+        ON p.talk_id = t.id
       WHERE t.id = ?
         AND (t.owner_id = ? OR tm.user_id = ?)
       LIMIT 1
@@ -665,6 +678,28 @@ export function upsertTalkMember(input: {
   `,
     )
     .run(input.talkId, input.userId, input.role, new Date().toISOString());
+}
+
+export function upsertTalkLlmPolicy(input: {
+  talkId: string;
+  llmPolicy: string;
+  updatedAt?: string;
+}): void {
+  getDb()
+    .prepare(
+      `
+    INSERT INTO talk_llm_policies (talk_id, llm_policy, updated_at)
+    VALUES (?, ?, ?)
+    ON CONFLICT(talk_id) DO UPDATE SET
+      llm_policy = excluded.llm_policy,
+      updated_at = excluded.updated_at
+  `,
+    )
+    .run(
+      input.talkId,
+      input.llmPolicy,
+      input.updatedAt || new Date().toISOString(),
+    );
 }
 
 export function canUserAccessTalk(talkId: string, userId: string): boolean {

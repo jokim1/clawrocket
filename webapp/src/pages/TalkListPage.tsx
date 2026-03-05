@@ -118,7 +118,16 @@ export function TalkListPage({
           {talks.map((talk) => (
             <li key={talk.id}>
               <Link to={`/app/talks/${talk.id}`}>
-                <strong>{talk.title}</strong>
+                <div className="talk-list-main">
+                  <strong>{talk.title}</strong>
+                  <div className="talk-agent-row">
+                    {talk.agents.map((agent) => (
+                      <span key={agent} className="talk-agent-chip">
+                        {agent}
+                      </span>
+                    ))}
+                  </div>
+                </div>
                 <span>{new Date(talk.updatedAt).toLocaleString()}</span>
               </Link>
             </li>

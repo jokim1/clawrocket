@@ -1,5 +1,6 @@
 import { randomUUID } from 'crypto';
 
+import { logger } from '../../../logger.js';
 import {
   appendOutboxEvent,
   cancelTalkRunsAtomic,
@@ -19,6 +20,7 @@ interface TalkApiRecord {
   id: string;
   ownerId: string;
   title: string | null;
+  agents: string[];
   status: 'active' | 'paused' | 'archived';
   version: number;
   createdAt: string;
@@ -35,17 +37,77 @@ interface TalkMessageApiRecord {
   runId: string | null;
 }
 
+const DEFAULT_TALK_AGENTS = ['Mock'];
+const MAX_TALK_AGENT_BADGES = 6;
+
 function toTalkApiRecord(talk: TalkWithAccessRecord): TalkApiRecord {
   return {
     id: talk.id,
     ownerId: talk.owner_id,
     title: talk.topic_title,
+    agents: parseTalkAgents(talk.id, talk.llm_policy),
     status: talk.status,
     version: talk.version,
     createdAt: talk.created_at,
     updatedAt: talk.updated_at,
     accessRole: talk.access_role,
   };
+}
+
+/**
+ * Supported llm_policy shapes:
+ * - JSON array of strings
+ * - JSON object with agents/models arrays
+ * - JSON object with agent/model string
+ * - JSON string
+ * - non-JSON text split by | or ,
+ */
+function parseTalkAgents(talkId: string, llmPolicy: string | null): string[] {
+  const raw = llmPolicy?.trim();
+  if (!raw) return DEFAULT_TALK_AGENTS;
+
+  let candidates: unknown[] = [];
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (Array.isArray(parsed)) {
+      candidates = parsed;
+    } else if (parsed && typeof parsed === 'object') {
+      const asRecord = parsed as Record<string, unknown>;
+      if (Array.isArray(asRecord.agents)) {
+        candidates = asRecord.agents;
+      } else if (Array.isArray(asRecord.models)) {
+        candidates = asRecord.models;
+      } else {
+        candidates = [asRecord.agent, asRecord.model];
+      }
+    } else if (typeof parsed === 'string') {
+      candidates = [parsed];
+    }
+  } catch {
+    candidates = raw.split(/[|,]/);
+  }
+
+  const normalized = [
+    ...new Set(
+      candidates
+        .map((candidate) =>
+          typeof candidate === 'string' ? candidate.trim() : '',
+        )
+        .filter(Boolean),
+    ),
+  ].slice(0, MAX_TALK_AGENT_BADGES);
+
+  if (normalized.length > 0) {
+    return normalized;
+  }
+
+  const llmPolicyPreview = raw.length > 120 ? `${raw.slice(0, 117)}...` : raw;
+  logger.warn(
+    { talkId, llmPolicyPreview },
+    'Unsupported llm_policy shape; defaulting to Mock agent badge',
+  );
+
+  return DEFAULT_TALK_AGENTS;
 }
 
 function toTalkMessageApiRecord(

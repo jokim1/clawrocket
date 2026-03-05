@@ -5,6 +5,7 @@ import {
   getQueuedTalkRuns,
   getRunningTalkRun,
   upsertTalk,
+  upsertTalkLlmPolicy,
   upsertTalkMember,
   upsertUser,
   upsertWebSession,
@@ -61,6 +62,10 @@ describe('talk routes', () => {
       id: 'talk-private',
       ownerId: 'owner-1',
       topicTitle: 'Private Talk',
+    });
+    upsertTalkLlmPolicy({
+      talkId: 'talk-owner',
+      llmPolicy: '{"agents":["Gemini","Opus4.6"]}',
     });
 
     upsertTalkMember({
@@ -132,6 +137,14 @@ describe('talk routes', () => {
       'talk-member',
       'talk-owner',
     ]);
+    const ownTalk = memberBody.data.talks.find(
+      (talk: any) => talk.id === 'talk-member',
+    );
+    expect(ownTalk.agents).toEqual(['Mock']);
+    const sharedTalk = memberBody.data.talks.find(
+      (talk: any) => talk.id === 'talk-owner',
+    );
+    expect(sharedTalk.agents).toEqual(['Gemini', 'Opus4.6']);
 
     const ownerRes = await server.request('/api/v1/talks', {
       headers: {
@@ -141,6 +154,82 @@ describe('talk routes', () => {
     expect(ownerRes.status).toBe(200);
     const ownerBody = (await ownerRes.json()) as any;
     expect(ownerBody.data.talks).toHaveLength(3);
+  });
+
+  it('parses supported llm_policy shapes and caps agent badges', async () => {
+    upsertTalk({
+      id: 'talk-models-array',
+      ownerId: 'owner-1',
+      topicTitle: 'Models Array',
+    });
+    upsertTalkLlmPolicy({
+      talkId: 'talk-models-array',
+      llmPolicy: '{"models":["GPT-4o","Opus"]}',
+    });
+
+    upsertTalk({
+      id: 'talk-json-string',
+      ownerId: 'owner-1',
+      topicTitle: 'JSON String',
+    });
+    upsertTalkLlmPolicy({
+      talkId: 'talk-json-string',
+      llmPolicy: '"Gemini"',
+    });
+
+    upsertTalk({
+      id: 'talk-delimited',
+      ownerId: 'owner-1',
+      topicTitle: 'Delimited',
+    });
+    upsertTalkLlmPolicy({
+      talkId: 'talk-delimited',
+      llmPolicy: 'Gemini | Opus4.6',
+    });
+
+    upsertTalk({
+      id: 'talk-invalid-shape',
+      ownerId: 'owner-1',
+      topicTitle: 'Invalid Shape',
+    });
+    upsertTalkLlmPolicy({
+      talkId: 'talk-invalid-shape',
+      llmPolicy: '{"model":42}',
+    });
+
+    upsertTalk({
+      id: 'talk-many-agents',
+      ownerId: 'owner-1',
+      topicTitle: 'Many Agents',
+    });
+    upsertTalkLlmPolicy({
+      talkId: 'talk-many-agents',
+      llmPolicy: '{"agents":["A1","A2","A3","A4","A5","A6","A7","A8"]}',
+    });
+
+    const ownerRes = await server.request('/api/v1/talks', {
+      headers: {
+        Authorization: 'Bearer owner-token',
+      },
+    });
+    expect(ownerRes.status).toBe(200);
+    const ownerBody = (await ownerRes.json()) as any;
+    const byId = Object.fromEntries(
+      ownerBody.data.talks.map((talk: any) => [talk.id, talk]),
+    );
+
+    expect(byId['talk-models-array'].agents).toEqual(['GPT-4o', 'Opus']);
+    expect(byId['talk-json-string'].agents).toEqual(['Gemini']);
+    expect(byId['talk-delimited'].agents).toEqual(['Gemini', 'Opus4.6']);
+    expect(byId['talk-invalid-shape'].agents).toEqual(['Mock']);
+    expect(byId['talk-many-agents'].agents).toEqual([
+      'A1',
+      'A2',
+      'A3',
+      'A4',
+      'A5',
+      'A6',
+    ]);
   });
 
   it('normalizes talk list pagination in query and response metadata', async () => {

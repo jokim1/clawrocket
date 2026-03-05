@@ -226,12 +226,35 @@ a {
   display: flex;
   justify-content: space-between;
   gap: 0.75rem;
+  align-items: center;
   text-decoration: none;
   color: inherit;
   border: 1px solid #dde4f2;
   border-radius: 10px;
   padding: 0.8rem;
   background: #fdfefe;
+}
+
+.talk-list-main {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.talk-agent-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.talk-agent-chip {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  border: 1px solid #c7d8f8;
+  background: #edf4ff;
+  color: #1d4487;
+  font-size: 0.75rem;
+  padding: 0.1rem 0.55rem;
 }
 
 .talk-list li a span {

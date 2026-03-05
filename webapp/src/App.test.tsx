@@ -77,6 +77,7 @@ describe('App', () => {
               id: 'talk-1',
               ownerId: 'u1',
               title: 'Family Planning',
+              agents: ['Gemini', 'Opus4.6'],
               status: 'active',
               version: 1,
               createdAt: '2026-03-04T00:00:00.000Z',

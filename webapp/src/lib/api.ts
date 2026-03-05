@@ -28,6 +28,7 @@ export type Talk = {
   id: string;
   ownerId: string;
   title: string;
+  agents: string[];
   status: string;
   version: number;
   createdAt: string;
