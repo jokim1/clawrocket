@@ -1,0 +1,19 @@
+[Unit]
+Description=NanoClaw service (user)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/k1min8r/projects/clawrocket
+ExecStart=/usr/bin/npm start
+Restart=on-failure
+RestartSec=3
+KillSignal=SIGTERM
+TimeoutStopSec=30
+Environment=NODE_ENV=production
+# Optional: uncomment and set if you keep runtime env in a separate file.
+# EnvironmentFile=%h/projects/clawrocket/.env
+
+[Install]
+WantedBy=default.target

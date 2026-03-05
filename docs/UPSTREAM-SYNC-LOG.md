@@ -9,6 +9,26 @@
 
 ## Sync Entries
 
+### 2026-03-05 - Phase 1.9 Step F Runtime Validation Closeout (Ubuntu Host)
+
+- Host: `Alienware-Aurora-R13` (Ubuntu 24.04.3 LTS)
+- Runtime mode verification:
+  - Startup log confirms:
+    - `mode: "real"`
+    - `hasProviderAuth: true`
+    - `hasValidAliasMap: true`
+- API/session verification:
+  - `GET /api/v1/health` -> `200`
+  - `GET /api/v1/session/me` (cookie auth) -> `200`
+- Talk run lifecycle verification:
+  - Snapshot SSE events for active talk show terminal progression for recent runs:
+    - `talk_run_started` -> `talk_run_completed`
+  - Assistant responses are persisted and visible in `GET /api/v1/talks/:id/messages`.
+- Operational baseline update:
+  - Service operations standardized to Ubuntu `systemd --user` workflow.
+  - One-time migration cutover requires stopping unmanaged `nohup`/manual processes before enabling service to prevent `EADDRINUSE` and Telegram `getUpdates 409` conflict.
+  - Deploy procedure now includes syncing `container/agent-runner/src/` to all existing `data/sessions/<group>/agent-runner-src/` folders.
+
 ### 2026-03-05 - Phase 1.9 Step F Real Talk Executor Rollout Notes
 
 - Added stateful real talk executor path with per-talk persisted session metadata.

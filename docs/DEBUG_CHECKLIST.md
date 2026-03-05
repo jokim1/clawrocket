@@ -1,5 +1,12 @@
 # NanoClaw Debug Checklist
 
+## Ubuntu Runtime Operations
+
+For Ubuntu deployment/start/stop/restart procedures, use:
+- `docs/OPERATIONS_UBUNTU.md`
+
+This checklist remains focused on lower-level debugging flows.
+
 ## Known Issues (2026-02-08)
 
 ### 1. [FIXED] Resume branches from stale tree position
@@ -15,23 +22,26 @@ Both timers fire at the same time, so containers always exit via hard SIGKILL (c
 
 ```bash
 # 1. Is the service running?
-launchctl list | grep nanoclaw
-# Expected: PID  0  com.nanoclaw (PID = running, "-" = not running, non-zero exit = crashed)
+systemctl --user status nanoclaw
+# Expected: active (running)
+
+# Legacy macOS check (launchd)
+# launchctl list | grep nanoclaw
 
 # 2. Any running containers?
-container ls --format '{{.Names}} {{.Status}}' 2>/dev/null | grep nanoclaw
+docker ps --format '{{.Names}} {{.Status}}' 2>/dev/null | grep nanoclaw
 
 # 3. Any stopped/orphaned containers?
-container ls -a --format '{{.Names}} {{.Status}}' 2>/dev/null | grep nanoclaw
+docker ps -a --format '{{.Names}} {{.Status}}' 2>/dev/null | grep nanoclaw
 
 # 4. Recent errors in service log?
-grep -E 'ERROR|WARN' logs/nanoclaw.log | tail -20
+journalctl --user -u nanoclaw -n 200 | rg -n 'ERROR|WARN'
 
 # 5. Is WhatsApp connected? (look for last connection event)
-grep -E 'Connected to WhatsApp|Connection closed|connection.*close' logs/nanoclaw.log | tail -5
+journalctl --user -u nanoclaw -n 200 | rg -n 'Connected to WhatsApp|Connection closed|connection.*close'
 
 # 6. Are groups loaded?
-grep 'groupCount' logs/nanoclaw.log | tail -3
+journalctl --user -u nanoclaw -n 200 | rg -n 'groupCount'
 ```
 
 ## Session Transcript Branching
@@ -126,18 +136,11 @@ npm run auth
 ## Service Management
 
 ```bash
-# Restart the service
+# Ubuntu (systemd user service)
+systemctl --user status nanoclaw
+systemctl --user restart nanoclaw
+journalctl --user -u nanoclaw -f
+
+# Legacy macOS launchd flow (if you still run locally on macOS)
 launchctl kickstart -k gui/$(id -u)/com.nanoclaw
-
-# View live logs
-tail -f logs/nanoclaw.log
-
-# Stop the service (careful — running containers are detached, not killed)
-launchctl bootout gui/$(id -u)/com.nanoclaw
-
-# Start the service
-launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.nanoclaw.plist
-
-# Rebuild after code changes
-npm run build && launchctl kickstart -k gui/$(id -u)/com.nanoclaw
 ```
