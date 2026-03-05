@@ -204,8 +204,7 @@ describe('talk routes', () => {
     });
     upsertTalkLlmPolicy({
       talkId: 'talk-many-agents',
-      llmPolicy:
-        '{"agents":["A1","A2","A3","A4","A5","A6","A7","A8"]}',
+      llmPolicy: '{"agents":["A1","A2","A3","A4","A5","A6","A7","A8"]}',
     });
 
     const ownerRes = await server.request('/api/v1/talks', {

@@ -101,8 +101,7 @@ function parseTalkAgents(talkId: string, llmPolicy: string | null): string[] {
     return normalized;
   }
 
-  const llmPolicyPreview =
-    raw.length > 120 ? `${raw.slice(0, 117)}...` : raw;
+  const llmPolicyPreview = raw.length > 120 ? `${raw.slice(0, 117)}...` : raw;
   logger.warn(
     { talkId, llmPolicyPreview },
     'Unsupported llm_policy shape; defaulting to Mock agent badge',
