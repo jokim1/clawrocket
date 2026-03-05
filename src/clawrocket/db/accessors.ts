@@ -702,6 +702,12 @@ export function upsertTalkLlmPolicy(input: {
     );
 }
 
+export function deleteTalkLlmPolicy(talkId: string): void {
+  getDb()
+    .prepare('DELETE FROM talk_llm_policies WHERE talk_id = ?')
+    .run(talkId);
+}
+
 export function canUserAccessTalk(talkId: string, userId: string): boolean {
   const owned = getDb()
     .prepare('SELECT 1 AS ok FROM talks WHERE id = ? AND owner_id = ?')

@@ -67,6 +67,7 @@ describe('TalkDetailPage', () => {
     expect(
       screen.queryByRole('button', { name: 'Cancel Runs' }),
     ).toBeNull();
+    expect(screen.queryByLabelText('Comma-separated agents')).toBeNull();
 
     unmount();
 
@@ -90,6 +91,45 @@ describe('TalkDetailPage', () => {
     renderDetailPage();
     await screen.findByRole('heading', { name: /Smoke Talk/i });
     expect(screen.getByRole('button', { name: 'Cancel Runs' })).toBeTruthy();
+    expect(screen.getByLabelText('Comma-separated agents')).toBeTruthy();
+  });
+
+  it('updates talk policy from detail editor', async () => {
+    mockFetch([
+      jsonResponse(200, {
+        ok: true,
+        data: {
+          talk: buildTalk({ accessRole: 'owner', agents: ['Gemini'] }),
+        },
+      }),
+      jsonResponse(200, {
+        ok: true,
+        data: {
+          talkId: 'talk-1',
+          messages: [],
+          page: { limit: 100, count: 0, beforeCreatedAt: null },
+        },
+      }),
+      jsonResponse(200, {
+        ok: true,
+        data: {
+          talkId: 'talk-1',
+          agents: ['Gemini', 'Opus4.6'],
+        },
+      }),
+    ]);
+
+    const user = userEvent.setup();
+    renderDetailPage();
+    await screen.findByRole('heading', { name: /Smoke Talk/i });
+    const input = screen.getByLabelText('Comma-separated agents');
+    await user.clear(input);
+    await user.type(input, 'Gemini, Opus4.6');
+    await user.click(screen.getByRole('button', { name: 'Save Agents' }));
+
+    await screen.findByText('Talk policy updated.');
+    expect(screen.getByText('Gemini')).toBeTruthy();
+    expect(screen.getByText('Opus4.6')).toBeTruthy();
   });
 
   it('shows send and cancel inline error states and clears send error on typing', async () => {
@@ -311,11 +351,13 @@ function renderDetailPage(): ReturnType<typeof render> {
 
 function buildTalk(input: {
   accessRole: 'owner' | 'admin' | 'editor' | 'viewer';
+  agents?: string[];
 }) {
   return {
     id: 'talk-1',
     ownerId: 'owner-1',
     title: 'Smoke Talk',
+    agents: input.agents || ['Gemini'],
     status: 'active',
     version: 1,
     createdAt: '2026-03-04T00:00:00.000Z',

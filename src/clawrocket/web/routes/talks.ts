@@ -5,11 +5,13 @@ import {
   appendOutboxEvent,
   cancelTalkRunsAtomic,
   createTalk,
+  deleteTalkLlmPolicy,
   enqueueTalkTurnAtomic,
   getTalkForUser,
   listTalkMessages,
   listTalksForUser,
   normalizeTalkListPage,
+  upsertTalkLlmPolicy,
   type TalkMessageRecord,
   type TalkWithAccessRecord,
 } from '../../db/index.js';
@@ -39,6 +41,8 @@ interface TalkMessageApiRecord {
 
 const DEFAULT_TALK_AGENTS = ['Mock'];
 const MAX_TALK_AGENT_BADGES = 6;
+const MAX_POLICY_AGENTS = 12;
+const MAX_POLICY_AGENT_LABEL_CHARS = 80;
 
 function toTalkApiRecord(talk: TalkWithAccessRecord): TalkApiRecord {
   return {
@@ -66,9 +70,34 @@ function parseTalkAgents(talkId: string, llmPolicy: string | null): string[] {
   const raw = llmPolicy?.trim();
   if (!raw) return DEFAULT_TALK_AGENTS;
 
+  const normalized = parsePolicyAgentCandidates(raw, MAX_TALK_AGENT_BADGES);
+
+  if (normalized.length > 0) {
+    return normalized;
+  }
+
+  const llmPolicyPreview = raw.length > 120 ? `${raw.slice(0, 117)}...` : raw;
+  logger.warn(
+    { talkId, llmPolicyPreview },
+    'Unsupported llm_policy shape; defaulting to Mock agent badge',
+  );
+
+  return DEFAULT_TALK_AGENTS;
+}
+
+function parseTalkPolicyAgents(llmPolicy: string | null): string[] {
+  const raw = llmPolicy?.trim();
+  if (!raw) return [];
+  return parsePolicyAgentCandidates(raw, MAX_POLICY_AGENTS);
+}
+
+function parsePolicyAgentCandidates(
+  rawPolicy: string,
+  maxItems: number,
+): string[] {
   let candidates: unknown[] = [];
   try {
-    const parsed = JSON.parse(raw) as unknown;
+    const parsed = JSON.parse(rawPolicy) as unknown;
     if (Array.isArray(parsed)) {
       candidates = parsed;
     } else if (parsed && typeof parsed === 'object') {
@@ -84,10 +113,10 @@ function parseTalkAgents(talkId: string, llmPolicy: string | null): string[] {
       candidates = [parsed];
     }
   } catch {
-    candidates = raw.split(/[|,]/);
+    candidates = rawPolicy.split(/[|,]/);
   }
 
-  const normalized = [
+  return [
     ...new Set(
       candidates
         .map((candidate) =>
@@ -95,19 +124,32 @@ function parseTalkAgents(talkId: string, llmPolicy: string | null): string[] {
         )
         .filter(Boolean),
     ),
-  ].slice(0, MAX_TALK_AGENT_BADGES);
+  ].slice(0, maxItems);
+}
 
-  if (normalized.length > 0) {
-    return normalized;
+function normalizePolicyAgents(input: unknown): { agents?: string[]; error?: string } {
+  if (!Array.isArray(input)) {
+    return { error: 'agents must be an array of strings' };
   }
 
-  const llmPolicyPreview = raw.length > 120 ? `${raw.slice(0, 117)}...` : raw;
-  logger.warn(
-    { talkId, llmPolicyPreview },
-    'Unsupported llm_policy shape; defaulting to Mock agent badge',
-  );
+  const normalized = [
+    ...new Set(
+      input
+        .map((entry) => (typeof entry === 'string' ? entry.trim() : ''))
+        .filter(Boolean),
+    ),
+  ];
 
-  return DEFAULT_TALK_AGENTS;
+  if (normalized.some((agent) => agent.length > MAX_POLICY_AGENT_LABEL_CHARS)) {
+    return {
+      error: `each agent label must be ${MAX_POLICY_AGENT_LABEL_CHARS} characters or less`,
+    };
+  }
+  if (normalized.length > MAX_POLICY_AGENTS) {
+    return { error: `at most ${MAX_POLICY_AGENTS} agents are allowed` };
+  }
+
+  return { agents: normalized };
 }
 
 function toTalkMessageApiRecord(
@@ -247,6 +289,106 @@ export function getTalkRoute(input: { talkId: string; auth: AuthContext }): {
       ok: true,
       data: {
         talk: toTalkApiRecord(talk),
+      },
+    },
+  };
+}
+
+export function getTalkPolicyRoute(input: { talkId: string; auth: AuthContext }): {
+  statusCode: number;
+  body: ApiEnvelope<{ talkId: string; agents: string[] }>;
+} {
+  const talk = getTalkForUser(input.talkId, input.auth.userId);
+  if (!talk) {
+    return {
+      statusCode: 404,
+      body: {
+        ok: false,
+        error: {
+          code: 'talk_not_found',
+          message: 'Talk not found',
+        },
+      },
+    };
+  }
+
+  return {
+    statusCode: 200,
+    body: {
+      ok: true,
+      data: {
+        talkId: input.talkId,
+        agents: parseTalkPolicyAgents(talk.llm_policy),
+      },
+    },
+  };
+}
+
+export function updateTalkPolicyRoute(input: {
+  talkId: string;
+  auth: AuthContext;
+  agents: unknown;
+}): {
+  statusCode: number;
+  body: ApiEnvelope<{ talkId: string; agents: string[] }>;
+} {
+  const talk = getTalkForUser(input.talkId, input.auth.userId);
+  if (!talk) {
+    return {
+      statusCode: 404,
+      body: {
+        ok: false,
+        error: {
+          code: 'talk_not_found',
+          message: 'Talk not found',
+        },
+      },
+    };
+  }
+
+  if (!canEditTalk(input.talkId, input.auth.userId, input.auth.role)) {
+    return {
+      statusCode: 403,
+      body: {
+        ok: false,
+        error: {
+          code: 'forbidden',
+          message: 'You do not have permission to edit talk policy',
+        },
+      },
+    };
+  }
+
+  const normalized = normalizePolicyAgents(input.agents);
+  if (!normalized.agents) {
+    return {
+      statusCode: 400,
+      body: {
+        ok: false,
+        error: {
+          code: 'invalid_agents',
+          message: normalized.error || 'agents are invalid',
+        },
+      },
+    };
+  }
+
+  if (normalized.agents.length === 0) {
+    deleteTalkLlmPolicy(input.talkId);
+  } else {
+    upsertTalkLlmPolicy({
+      talkId: input.talkId,
+      llmPolicy: JSON.stringify({ agents: normalized.agents }),
+    });
+  }
+
+  return {
+    statusCode: 200,
+    body: {
+      ok: true,
+      data: {
+        talkId: input.talkId,
+        agents: normalized.agents,
       },
     },
   };

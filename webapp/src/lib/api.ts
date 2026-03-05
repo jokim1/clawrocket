@@ -52,6 +52,11 @@ export type TalkRun = {
   startedAt: string | null;
 };
 
+export type TalkPolicy = {
+  talkId: string;
+  agents: string[];
+};
+
 type ApiEnvelope<T> =
   | {
       ok: true;
@@ -144,6 +149,24 @@ export async function getTalk(talkId: string): Promise<Talk> {
     `/api/v1/talks/${encodeURIComponent(talkId)}`,
   );
   return envelope.talk;
+}
+
+export async function getTalkPolicy(talkId: string): Promise<TalkPolicy> {
+  return apiRequest<TalkPolicy>(`/api/v1/talks/${encodeURIComponent(talkId)}/policy`);
+}
+
+export async function updateTalkPolicy(input: {
+  talkId: string;
+  agents: string[];
+}): Promise<TalkPolicy> {
+  return apiRequest<TalkPolicy>(
+    `/api/v1/talks/${encodeURIComponent(input.talkId)}/policy`,
+    {
+      method: 'PUT',
+      headers: buildMutationHeaders({ includeJson: true }),
+      body: JSON.stringify({ agents: input.agents }),
+    },
+  );
 }
 
 export async function listTalkMessages(talkId: string): Promise<TalkMessage[]> {

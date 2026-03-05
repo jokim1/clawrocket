@@ -57,9 +57,11 @@ import {
   cancelTalkChat,
   createTalkRoute,
   enqueueTalkChat,
+  getTalkPolicyRoute,
   getTalkRoute,
   listTalkMessagesRoute,
   listTalksRoute,
+  updateTalkPolicyRoute,
 } from './routes/talks.js';
 import { authenticateRequest } from './middleware/auth.js';
 import { AuthContext } from './types.js';
@@ -655,6 +657,109 @@ function buildApp(opts: WebServerOptions): Hono {
       auth,
       limit: limit ?? undefined,
       beforeCreatedAt,
+    });
+    return new Response(JSON.stringify(result.body), {
+      status: result.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
+  });
+
+  app.get('/api/v1/talks/:talkId/policy', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+
+    const rateResult = checkRateLimit({ userId: auth.userId, bucket: 'read' });
+    if (!rateResult.allowed) {
+      return rateLimitedResponse(c, rateResult);
+    }
+
+    const encodedTalkId = c.req.param('talkId');
+    const talkId = safeDecodePathSegment(encodedTalkId);
+    if (!talkId) {
+      return c.json(
+        {
+          ok: false,
+          error: {
+            code: 'invalid_talk_id',
+            message: 'Talk ID path segment is not valid URL encoding',
+          },
+        },
+        400,
+      );
+    }
+
+    const result = getTalkPolicyRoute({
+      talkId,
+      auth,
+    });
+    return new Response(JSON.stringify(result.body), {
+      status: result.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
+  });
+
+  app.put('/api/v1/talks/:talkId/policy', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+
+    const rateResult = checkRateLimit({ userId: auth.userId, bucket: 'write' });
+    if (!rateResult.allowed) {
+      return rateLimitedResponse(c, rateResult);
+    }
+
+    const csrf = validateCsrfToken({
+      method: c.req.method,
+      authType: auth.authType,
+      cookieHeader: c.req.header('cookie'),
+      csrfHeader: c.req.header('x-csrf-token'),
+    });
+    if (!csrf.ok) {
+      return c.json(
+        {
+          ok: false,
+          error: {
+            code: 'csrf_failed',
+            message: csrf.reason,
+          },
+        },
+        403,
+      );
+    }
+
+    const encodedTalkId = c.req.param('talkId');
+    const talkId = safeDecodePathSegment(encodedTalkId);
+    if (!talkId) {
+      return c.json(
+        {
+          ok: false,
+          error: {
+            code: 'invalid_talk_id',
+            message: 'Talk ID path segment is not valid URL encoding',
+          },
+        },
+        400,
+      );
+    }
+
+    const bodyText = await c.req.text();
+    const payload = parseJsonPayload<{ agents?: unknown }>(bodyText);
+    if (!payload.ok) {
+      return c.json(
+        {
+          ok: false,
+          error: {
+            code: 'invalid_json',
+            message: payload.error,
+          },
+        },
+        400,
+      );
+    }
+
+    const result = updateTalkPolicyRoute({
+      talkId,
+      auth,
+      agents: payload.data.agents,
     });
     return new Response(JSON.stringify(result.body), {
       status: result.statusCode,
