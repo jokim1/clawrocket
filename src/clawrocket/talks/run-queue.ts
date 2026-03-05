@@ -46,6 +46,8 @@ export class TalkRunQueue {
         talkId: input.talkId,
         runId: input.runId,
         status,
+        executorAlias: record.executor_alias,
+        executorModel: record.executor_model,
       }),
     });
 
@@ -65,6 +67,8 @@ export class TalkRunQueue {
       payload: JSON.stringify({
         talkId: run.talk_id,
         runId,
+        executorAlias: run.executor_alias,
+        executorModel: run.executor_model,
       }),
     });
 
@@ -79,6 +83,8 @@ export class TalkRunQueue {
         talkId: run.talk_id,
         runId: nextQueued.id,
         status: 'running',
+        executorAlias: nextQueued.executor_alias,
+        executorModel: nextQueued.executor_model,
       }),
     });
   }

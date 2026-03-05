@@ -38,6 +38,8 @@ type RunView = {
   responseMessageId?: string;
   errorCode?: string;
   errorMessage?: string;
+  executorAlias?: string | null;
+  executorModel?: string | null;
   updatedAt: number;
 };
 
@@ -82,17 +84,23 @@ type DetailAction =
       type: 'RUN_STARTED';
       runId: string;
       triggerMessageId: string | null;
+      executorAlias?: string | null;
+      executorModel?: string | null;
     }
   | {
       type: 'RUN_QUEUED';
       runId: string;
       triggerMessageId: string | null;
+      executorAlias?: string | null;
+      executorModel?: string | null;
     }
   | {
       type: 'RUN_COMPLETED';
       runId: string;
       triggerMessageId: string | null;
       responseMessageId: string;
+      executorAlias?: string | null;
+      executorModel?: string | null;
     }
   | {
       type: 'RUN_FAILED';
@@ -100,6 +108,8 @@ type DetailAction =
       triggerMessageId: string | null;
       errorCode: string;
       errorMessage: string;
+      executorAlias?: string | null;
+      executorModel?: string | null;
     }
   | {
       type: 'RUN_CANCELLED_BATCH';
@@ -150,6 +160,8 @@ function withRun(
       responseMessageId: patch.responseMessageId ?? current?.responseMessageId,
       errorCode: patch.errorCode ?? current?.errorCode,
       errorMessage: patch.errorMessage ?? current?.errorMessage,
+      executorAlias: patch.executorAlias ?? current?.executorAlias,
+      executorModel: patch.executorModel ?? current?.executorModel,
       updatedAt: now,
     },
   };
@@ -210,6 +222,8 @@ function detailReducer(state: DetailState, action: DetailAction): DetailState {
         runsById: withRun(state, action.runId, {
           status: 'running',
           triggerMessageId: action.triggerMessageId,
+          executorAlias: action.executorAlias,
+          executorModel: action.executorModel,
         }),
       };
     case 'RUN_QUEUED':
@@ -219,6 +233,8 @@ function detailReducer(state: DetailState, action: DetailAction): DetailState {
         runsById: withRun(state, action.runId, {
           status: 'queued',
           triggerMessageId: action.triggerMessageId,
+          executorAlias: action.executorAlias,
+          executorModel: action.executorModel,
         }),
       };
     case 'RUN_COMPLETED':
@@ -229,6 +245,8 @@ function detailReducer(state: DetailState, action: DetailAction): DetailState {
           status: 'completed',
           triggerMessageId: action.triggerMessageId,
           responseMessageId: action.responseMessageId,
+          executorAlias: action.executorAlias,
+          executorModel: action.executorModel,
         }),
       };
     case 'RUN_FAILED':
@@ -240,6 +258,8 @@ function detailReducer(state: DetailState, action: DetailAction): DetailState {
           triggerMessageId: action.triggerMessageId,
           errorCode: action.errorCode,
           errorMessage: action.errorMessage,
+          executorAlias: action.executorAlias,
+          executorModel: action.executorModel,
         }),
       };
     case 'RUN_CANCELLED_BATCH':
@@ -499,6 +519,8 @@ export function TalkDetailPage({
         type: event.status === 'queued' ? 'RUN_QUEUED' : 'RUN_STARTED',
         runId: event.runId,
         triggerMessageId: event.triggerMessageId,
+        executorAlias: event.executorAlias,
+        executorModel: event.executorModel,
       });
     },
     [talkId],
@@ -524,6 +546,8 @@ export function TalkDetailPage({
         runId: event.runId,
         triggerMessageId: event.triggerMessageId,
         responseMessageId: event.responseMessageId,
+        executorAlias: event.executorAlias,
+        executorModel: event.executorModel,
       });
     },
     [talkId],
@@ -538,6 +562,8 @@ export function TalkDetailPage({
         triggerMessageId: event.triggerMessageId,
         errorCode: event.errorCode,
         errorMessage: event.errorMessage,
+        executorAlias: event.executorAlias,
+        executorModel: event.executorModel,
       });
     },
     [talkId],
@@ -950,6 +976,19 @@ export function TalkDetailPage({
                   </span>
                   <code>{run.id}</code>
                 </div>
+
+                {run.executorAlias || run.executorModel ? (
+                  <p className="run-history-meta">
+                    Executor:{' '}
+                    {run.executorAlias ? <code>{run.executorAlias}</code> : 'unknown'}
+                    {run.executorModel ? (
+                      <>
+                        <span> · </span>
+                        <code>{run.executorModel}</code>
+                      </>
+                    ) : null}
+                  </p>
+                ) : null}
 
                 <div className="run-history-links">
                   {run.triggerMessageId ? (

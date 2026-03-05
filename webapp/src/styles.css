@@ -416,6 +416,17 @@ a {
   color: #66728d;
 }
 
+.run-history-meta {
+  margin: 0;
+  font-size: 0.8rem;
+  color: #4b5978;
+}
+
+.run-history-meta code {
+  font-size: 0.76rem;
+  color: #495574;
+}
+
 .run-history-error {
   margin: 0;
   font-size: 0.82rem;
