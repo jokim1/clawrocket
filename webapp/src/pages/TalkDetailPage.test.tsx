@@ -60,6 +60,13 @@ describe('TalkDetailPage', () => {
           page: { limit: 100, count: 0, beforeCreatedAt: null },
         },
       }),
+      jsonResponse(200, {
+        ok: true,
+        data: {
+          talkId: 'talk-1',
+          agents: ['Gemini'],
+        },
+      }),
     ]);
 
     const { unmount } = renderDetailPage();
@@ -86,6 +93,13 @@ describe('TalkDetailPage', () => {
           page: { limit: 100, count: 0, beforeCreatedAt: null },
         },
       }),
+      jsonResponse(200, {
+        ok: true,
+        data: {
+          talkId: 'talk-1',
+          agents: ['Gemini'],
+        },
+      }),
     ]);
 
     renderDetailPage();
@@ -108,6 +122,13 @@ describe('TalkDetailPage', () => {
           talkId: 'talk-1',
           messages: [],
           page: { limit: 100, count: 0, beforeCreatedAt: null },
+        },
+      }),
+      jsonResponse(200, {
+        ok: true,
+        data: {
+          talkId: 'talk-1',
+          agents: ['Gemini', 'Opus4.6'],
         },
       }),
       jsonResponse(200, {
@@ -146,6 +167,13 @@ describe('TalkDetailPage', () => {
           talkId: 'talk-1',
           messages: [],
           page: { limit: 100, count: 0, beforeCreatedAt: null },
+        },
+      }),
+      jsonResponse(200, {
+        ok: true,
+        data: {
+          talkId: 'talk-1',
+          agents: ['Gemini'],
         },
       }),
       jsonResponse(500, {
@@ -199,6 +227,13 @@ describe('TalkDetailPage', () => {
             },
           ],
           page: { limit: 100, count: 1, beforeCreatedAt: null },
+        },
+      }),
+      jsonResponse(200, {
+        ok: true,
+        data: {
+          talkId: 'talk-1',
+          agents: ['Gemini'],
         },
       }),
       jsonResponse(200, {
@@ -290,6 +325,13 @@ describe('TalkDetailPage', () => {
             },
           ],
           page: { limit: 100, count: 1, beforeCreatedAt: null },
+        },
+      }),
+      jsonResponse(200, {
+        ok: true,
+        data: {
+          talkId: 'talk-1',
+          agents: ['Gemini'],
         },
       }),
     ]);

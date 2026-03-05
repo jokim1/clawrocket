@@ -13,6 +13,7 @@ import {
   ApiError,
   cancelTalkRuns,
   getTalk,
+  getTalkPolicy,
   listTalkMessages,
   sendTalkMessage,
   Talk,
@@ -531,14 +532,21 @@ export function TalkDetailPage({
   useEffect(() => {
     let cancelled = false;
     dispatch({ type: 'BOOTSTRAP_LOADING' });
+    setPolicyAgents([]);
+    setPolicyDraft('');
+    setPolicyState({ status: 'idle' });
 
     const load = async () => {
       try {
-        const [talk, messages] = await Promise.all([
+        const [talk, messages, policy] = await Promise.all([
           getTalk(talkId),
           listTalkMessages(talkId),
+          getTalkPolicy(talkId),
         ]);
         if (!cancelled) {
+          setPolicyAgents(policy.agents);
+          setPolicyDraft(policy.agents.join(', '));
+          setPolicyState({ status: 'idle' });
           dispatch({ type: 'BOOTSTRAP_READY', talk, messages });
         }
       } catch (err) {
@@ -632,13 +640,6 @@ export function TalkDetailPage({
     scrollToBottom('auto');
     dispatch({ type: 'CLEAR_UNREAD' });
   }, [state.kind, state.initialScrollPending, state.messages.length, scrollToBottom]);
-
-  useEffect(() => {
-    if (state.kind !== 'ready') return;
-    setPolicyAgents(state.talk?.agents ?? []);
-    setPolicyDraft((state.talk?.agents ?? []).join(', '));
-    setPolicyState({ status: 'idle' });
-  }, [state.kind, talkId]);
 
   useEffect(() => {
     if (state.kind !== 'ready' || state.initialScrollPending) return;
