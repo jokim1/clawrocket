@@ -29,12 +29,15 @@ import {
   enqueueTalkTurnAtomic,
   failInterruptedRunsOnStartup,
   failRunAndPromoteNextAtomic,
+  deleteTalkExecutorSession,
   getIdempotencyCache,
   getOutboxEventsForTopics,
   getQueuedTalkRuns,
   getRunningTalkRun,
   getTalkById,
+  getTalkExecutorSession,
   getTalkForUser,
+  getTalkLlmPolicyByTalkId,
   getTalkRunById,
   getUserById,
   listTalkMessages,
@@ -44,7 +47,10 @@ import {
   pruneEventOutbox,
   pruneIdempotencyCache,
   saveIdempotencyCache,
+  setTalkRunExecutorProfile,
   upsertTalk,
+  upsertTalkExecutorSession,
+  upsertTalkLlmPolicy,
   upsertTalkMember,
   upsertUser,
   upsertWebSession,
@@ -535,6 +541,49 @@ describe('phase 0 schema and reliability tables', () => {
     expect(second).toBeUndefined();
   });
 
+  it('stores and reads talk policy by talk id', () => {
+    expect(getTalkLlmPolicyByTalkId('talk-1')).toBeNull();
+
+    upsertTalkLlmPolicy({
+      talkId: 'talk-1',
+      llmPolicy: '{"agents":["Gemini","Opus4.6"]}',
+      updatedAt: '2024-01-01T00:00:00.000Z',
+    });
+
+    expect(getTalkLlmPolicyByTalkId('talk-1')).toBe(
+      '{"agents":["Gemini","Opus4.6"]}',
+    );
+  });
+
+  it('upserts and deletes talk executor sessions', () => {
+    expect(getTalkExecutorSession('talk-1')).toBeUndefined();
+
+    upsertTalkExecutorSession({
+      talkId: 'talk-1',
+      sessionId: 'session-1',
+      executorAlias: 'Gemini',
+      executorModel: 'default',
+      updatedAt: '2024-01-01T00:00:00.000Z',
+    });
+    upsertTalkExecutorSession({
+      talkId: 'talk-1',
+      sessionId: 'session-2',
+      executorAlias: 'Opus4.6',
+      executorModel: 'default',
+      updatedAt: '2024-01-01T00:00:01.000Z',
+    });
+
+    const session = getTalkExecutorSession('talk-1');
+    expect(session).toBeDefined();
+    expect(session?.session_id).toBe('session-2');
+    expect(session?.executor_alias).toBe('Opus4.6');
+    expect(session?.executor_model).toBe('default');
+    expect(session?.updated_at).toBe('2024-01-01T00:00:01.000Z');
+
+    deleteTalkExecutorSession('talk-1');
+    expect(getTalkExecutorSession('talk-1')).toBeUndefined();
+  });
+
   it('does not change talk owner when upserting existing talk id', () => {
     upsertUser({
       id: 'owner-2',
@@ -872,6 +921,8 @@ describe('phase 0 schema and reliability tables', () => {
       status: 'running',
       trigger_message_id: null,
       idempotency_key: null,
+      executor_alias: null,
+      executor_model: null,
       created_at: new Date().toISOString(),
       started_at: new Date().toISOString(),
       ended_at: null,
@@ -884,6 +935,8 @@ describe('phase 0 schema and reliability tables', () => {
       status: 'queued',
       trigger_message_id: null,
       idempotency_key: null,
+      executor_alias: null,
+      executor_model: null,
       created_at: new Date().toISOString(),
       started_at: null,
       ended_at: null,
@@ -901,6 +954,27 @@ describe('phase 0 schema and reliability tables', () => {
       new Date().toISOString(),
     );
     expect(getTalkRunById('run-1')?.status).toBe('completed');
+  });
+
+  it('persists executor alias/model metadata on talk runs', () => {
+    enqueueTalkTurnAtomic({
+      talkId: 'talk-1',
+      userId: 'owner-1',
+      content: 'metadata check',
+      messageId: 'msg-meta-1',
+      runId: 'run-meta-1',
+      now: '2024-01-01T00:00:55.000Z',
+    });
+
+    setTalkRunExecutorProfile({
+      runId: 'run-meta-1',
+      executorAlias: 'Gemini',
+      executorModel: 'default',
+    });
+
+    const run = getTalkRunById('run-meta-1');
+    expect(run?.executor_alias).toBe('Gemini');
+    expect(run?.executor_model).toBe('default');
   });
 
   it('preserves hot events while pruning old outbox rows', () => {

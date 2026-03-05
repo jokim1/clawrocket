@@ -451,6 +451,14 @@ export interface TalkWithAccessRecord extends TalkRecord {
   llm_policy: string | null;
 }
 
+export interface TalkExecutorSessionRecord {
+  talk_id: string;
+  session_id: string;
+  executor_alias: string;
+  executor_model: string;
+  updated_at: string;
+}
+
 export interface TalkListPage {
   limit: number;
   offset: number;
@@ -708,6 +716,70 @@ export function deleteTalkLlmPolicy(talkId: string): void {
     .run(talkId);
 }
 
+export function getTalkLlmPolicyByTalkId(talkId: string): string | null {
+  const row = getDb()
+    .prepare(
+      `
+      SELECT llm_policy
+      FROM talk_llm_policies
+      WHERE talk_id = ?
+      LIMIT 1
+    `,
+    )
+    .get(talkId) as { llm_policy: string } | undefined;
+  return row?.llm_policy || null;
+}
+
+export function getTalkExecutorSession(
+  talkId: string,
+): TalkExecutorSessionRecord | undefined {
+  return getDb()
+    .prepare(
+      `
+      SELECT talk_id, session_id, executor_alias, executor_model, updated_at
+      FROM talk_executor_sessions
+      WHERE talk_id = ?
+      LIMIT 1
+    `,
+    )
+    .get(talkId) as TalkExecutorSessionRecord | undefined;
+}
+
+export function upsertTalkExecutorSession(input: {
+  talkId: string;
+  sessionId: string;
+  executorAlias: string;
+  executorModel: string;
+  updatedAt?: string;
+}): void {
+  getDb()
+    .prepare(
+      `
+      INSERT INTO talk_executor_sessions (
+        talk_id, session_id, executor_alias, executor_model, updated_at
+      ) VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(talk_id) DO UPDATE SET
+        session_id = excluded.session_id,
+        executor_alias = excluded.executor_alias,
+        executor_model = excluded.executor_model,
+        updated_at = excluded.updated_at
+    `,
+    )
+    .run(
+      input.talkId,
+      input.sessionId,
+      input.executorAlias,
+      input.executorModel,
+      input.updatedAt || new Date().toISOString(),
+    );
+}
+
+export function deleteTalkExecutorSession(talkId: string): void {
+  getDb()
+    .prepare('DELETE FROM talk_executor_sessions WHERE talk_id = ?')
+    .run(talkId);
+}
+
 export function canUserAccessTalk(talkId: string, userId: string): boolean {
   const owned = getDb()
     .prepare('SELECT 1 AS ok FROM talks WHERE id = ? AND owner_id = ?')
@@ -928,6 +1000,8 @@ export function enqueueTalkTurnAtomic(input: {
         status,
         trigger_message_id: txInput.messageId,
         idempotency_key: txInput.idempotencyKey || null,
+        executor_alias: null,
+        executor_model: null,
         created_at: now,
         started_at: status === 'running' ? now : null,
         ended_at: null,
@@ -1197,6 +1271,8 @@ export interface TalkRunRecord {
   status: TalkRunStatus;
   trigger_message_id: string | null;
   idempotency_key: string | null;
+  executor_alias: string | null;
+  executor_model: string | null;
   created_at: string;
   started_at: string | null;
   ended_at: string | null;
@@ -1209,9 +1285,10 @@ export function createTalkRun(input: TalkRunRecord): void {
       `
     INSERT INTO talk_runs (
       id, talk_id, requested_by, status, trigger_message_id, idempotency_key,
+      executor_alias, executor_model,
       created_at, started_at, ended_at, cancel_reason
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `,
     )
     .run(
@@ -1221,11 +1298,29 @@ export function createTalkRun(input: TalkRunRecord): void {
       input.status,
       input.trigger_message_id,
       input.idempotency_key,
+      input.executor_alias,
+      input.executor_model,
       input.created_at,
       input.started_at,
       input.ended_at,
       input.cancel_reason,
     );
+}
+
+export function setTalkRunExecutorProfile(input: {
+  runId: string;
+  executorAlias: string;
+  executorModel: string;
+}): void {
+  getDb()
+    .prepare(
+      `
+      UPDATE talk_runs
+      SET executor_alias = ?, executor_model = ?
+      WHERE id = ?
+    `,
+    )
+    .run(input.executorAlias, input.executorModel, input.runId);
 }
 
 export function getTalkRunById(runId: string): TalkRunRecord | null {

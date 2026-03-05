@@ -16,6 +16,7 @@ import type {
   TalkExecutorInput,
   TalkExecutorOutput,
 } from './executor.js';
+import { TalkExecutorError } from './executor.js';
 import { MockTalkExecutor } from './mock-executor.js';
 import { TalkRunWorker } from './run-worker.js';
 
@@ -47,6 +48,15 @@ class BlockingExecutor implements TalkExecutor {
       };
       signal.addEventListener('abort', onAbort, { once: true });
     });
+  }
+}
+
+class AliasUnmappedExecutor implements TalkExecutor {
+  async execute(): Promise<TalkExecutorOutput> {
+    throw new TalkExecutorError(
+      'executor_alias_unmapped',
+      'No model mapping configured for alias',
+    );
   }
 }
 
@@ -256,6 +266,42 @@ describe('TalkRunWorker', () => {
 
     const staleRun = getTalkRunById('run-5');
     expect(staleRun?.cancel_reason).toBe('interrupted_by_restart');
+
+    await worker.stop();
+  });
+
+  it('propagates typed executor error codes to failed run events', async () => {
+    const worker = new TalkRunWorker({
+      executor: new AliasUnmappedExecutor(),
+      pollMs: 10_000,
+      maxConcurrency: 1,
+    });
+    await worker.start();
+
+    enqueueTalkTurnAtomic({
+      talkId: 'talk-1',
+      userId: 'owner-1',
+      content: 'this should fail',
+      messageId: 'msg-7',
+      runId: 'run-7',
+    });
+
+    worker.wake();
+    await waitFor(() => getTalkRunById('run-7')?.status === 'failed');
+
+    const run = getTalkRunById('run-7');
+    expect(run?.cancel_reason).toContain('executor_alias_unmapped');
+
+    const events = getOutboxEventsForTopics(['talk:talk-1'], 0, 100);
+    const failedEvent = events.find(
+      (event) =>
+        event.event_type === 'talk_run_failed' &&
+        event.payload.includes('"runId":"run-7"'),
+    );
+    expect(failedEvent).toBeDefined();
+    expect(failedEvent?.payload).toContain(
+      '"errorCode":"executor_alias_unmapped"',
+    );
 
     await worker.stop();
   });

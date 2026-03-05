@@ -140,6 +140,8 @@ function createClawrocketSchema(database: Database.Database): void {
         CHECK(status IN ('queued', 'running', 'cancelled', 'completed', 'failed')),
       trigger_message_id TEXT REFERENCES talk_messages(id) ON DELETE SET NULL,
       idempotency_key TEXT,
+      executor_alias TEXT,
+      executor_model TEXT,
       created_at TEXT NOT NULL,
       started_at TEXT,
       ended_at TEXT,
@@ -167,6 +169,14 @@ function createClawrocketSchema(database: Database.Database): void {
     CREATE TABLE IF NOT EXISTS talk_llm_policies (
       talk_id TEXT PRIMARY KEY REFERENCES talks(id) ON DELETE CASCADE,
       llm_policy TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS talk_executor_sessions (
+      talk_id TEXT PRIMARY KEY REFERENCES talks(id) ON DELETE CASCADE,
+      session_id TEXT NOT NULL,
+      executor_alias TEXT NOT NULL,
+      executor_model TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
   `);
@@ -208,6 +218,20 @@ function createClawrocketSchema(database: Database.Database): void {
   // Add trigger_message_id column if it doesn't exist (migration for existing DBs)
   try {
     database.exec(`ALTER TABLE talk_runs ADD COLUMN trigger_message_id TEXT`);
+  } catch {
+    /* column already exists */
+  }
+
+  // Add executor_alias column if it doesn't exist (migration for existing DBs)
+  try {
+    database.exec(`ALTER TABLE talk_runs ADD COLUMN executor_alias TEXT`);
+  } catch {
+    /* column already exists */
+  }
+
+  // Add executor_model column if it doesn't exist (migration for existing DBs)
+  try {
+    database.exec(`ALTER TABLE talk_runs ADD COLUMN executor_model TEXT`);
   } catch {
     /* column already exists */
   }
