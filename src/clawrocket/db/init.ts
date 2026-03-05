@@ -73,6 +73,7 @@ function createClawrocketSchema(database: Database.Database): void {
       code_verifier_hash TEXT NOT NULL,
       code_verifier TEXT,
       redirect_uri TEXT NOT NULL,
+      return_to TEXT,
       created_at TEXT NOT NULL,
       expires_at TEXT NOT NULL,
       used_at TEXT
@@ -193,6 +194,13 @@ function createClawrocketSchema(database: Database.Database): void {
   // Add code_verifier column if it doesn't exist (migration for existing DBs)
   try {
     database.exec(`ALTER TABLE oauth_state ADD COLUMN code_verifier TEXT`);
+  } catch {
+    /* column already exists */
+  }
+
+  // Add return_to column if it doesn't exist (migration for existing DBs)
+  try {
+    database.exec(`ALTER TABLE oauth_state ADD COLUMN return_to TEXT`);
   } catch {
     /* column already exists */
   }

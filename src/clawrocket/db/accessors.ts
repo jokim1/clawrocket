@@ -279,6 +279,7 @@ export interface OAuthStateRecord {
   code_verifier_hash: string;
   code_verifier: string | null;
   redirect_uri: string;
+  return_to: string | null;
   created_at: string;
   expires_at: string;
   used_at: string | null;
@@ -292,15 +293,16 @@ export function createOAuthState(input: {
   codeVerifierHash: string;
   codeVerifier?: string;
   redirectUri: string;
+  returnTo?: string;
   expiresAt: string;
 }): void {
   getDb()
     .prepare(
       `
     INSERT INTO oauth_state (
-      id, provider, state_hash, nonce_hash, code_verifier_hash, code_verifier, redirect_uri,
+      id, provider, state_hash, nonce_hash, code_verifier_hash, code_verifier, redirect_uri, return_to,
       created_at, expires_at, used_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
   `,
     )
     .run(
@@ -311,6 +313,7 @@ export function createOAuthState(input: {
       input.codeVerifierHash,
       input.codeVerifier || null,
       input.redirectUri,
+      input.returnTo || null,
       new Date().toISOString(),
       input.expiresAt,
     );

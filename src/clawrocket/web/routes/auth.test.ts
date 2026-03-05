@@ -96,6 +96,70 @@ describe('auth routes (phase 1)', () => {
     expect(meRes.status).toBe(200);
   });
 
+  it('redirects browser callback requests to returnTo from start payload', async () => {
+    const startRes = await server.request('/api/v1/auth/google/start', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ returnTo: '/app/talks/talk-42?view=latest#tail' }),
+    });
+    expect(startRes.status).toBe(200);
+    const startBody = (await startRes.json()) as any;
+    const state = startBody.data.state as string;
+
+    const callbackRes = await server.request(
+      `/api/v1/auth/google/callback?state=${encodeURIComponent(
+        state,
+      )}&email=owner@example.com&name=Owner`,
+      {
+        headers: {
+          Accept:
+            'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        },
+      },
+    );
+    expect(callbackRes.status).toBe(302);
+    expect(callbackRes.headers.get('location')).toBe(
+      '/app/talks/talk-42?view=latest#tail',
+    );
+  });
+
+  it('falls back to /app/talks when returnTo is unsafe', async () => {
+    const unsafeReturnToCases = [
+      '//evil.com',
+      '/\\evil.com',
+      '/app/talks%0d%0aX-Injected: yes',
+    ];
+
+    for (const returnTo of unsafeReturnToCases) {
+      const startRes = await server.request('/api/v1/auth/google/start', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ returnTo }),
+      });
+      expect(startRes.status).toBe(200);
+      const startBody = (await startRes.json()) as any;
+      const state = startBody.data.state as string;
+
+      const callbackRes = await server.request(
+        `/api/v1/auth/google/callback?state=${encodeURIComponent(
+          state,
+        )}&email=owner@example.com&name=Owner`,
+        {
+          headers: {
+            Accept:
+              'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          },
+        },
+      );
+      expect(callbackRes.status).toBe(302);
+      expect(callbackRes.headers.get('location')).toBe('/app/talks');
+    }
+  });
+
   it('requires invite for second account and allows login after invite', async () => {
     const ownerCtx = await loginViaDevCallback(
       server,

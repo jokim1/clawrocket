@@ -1,4 +1,5 @@
 import { FormEvent, useEffect, useState } from 'react';
+import { useLocation } from 'react-router-dom';
 
 import {
   completeDevCallback,
@@ -9,11 +10,13 @@ import {
 export function SignInView(props: {
   onSignedIn: () => Promise<void> | void;
 }): JSX.Element {
+  const location = useLocation();
   const [email, setEmail] = useState('owner@example.com');
   const [name, setName] = useState('Owner');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showDevLogin, setShowDevLogin] = useState(false);
+  const returnTo = `${location.pathname}${location.search}${location.hash}`;
 
   useEffect(() => {
     let cancelled = false;
@@ -37,7 +40,7 @@ export function SignInView(props: {
     setBusy(true);
     setError(null);
     try {
-      const auth = await startGoogleAuth();
+      const auth = await startGoogleAuth({ returnTo });
       window.location.assign(auth.authorizationUrl);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unable to start sign-in');
@@ -50,7 +53,7 @@ export function SignInView(props: {
     setBusy(true);
     setError(null);
     try {
-      const auth = await startGoogleAuth();
+      const auth = await startGoogleAuth({ returnTo });
       const callback = new URL(auth.authorizationUrl, window.location.origin);
       callback.searchParams.set('email', email.trim());
       callback.searchParams.set('name', name.trim() || 'User');
