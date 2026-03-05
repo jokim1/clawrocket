@@ -1,5 +1,12 @@
 # NanoClaw Debug Checklist
 
+## Ubuntu Runtime Operations
+
+For Ubuntu deployment/start/stop/restart procedures, use:
+- `docs/OPERATIONS_UBUNTU.md`
+
+This checklist remains focused on lower-level debugging flows.
+
 ## Known Issues (2026-02-08)
 
 ### 1. [FIXED] Resume branches from stale tree position
@@ -126,18 +133,11 @@ npm run auth
 ## Service Management
 
 ```bash
-# Restart the service
+# Ubuntu (systemd user service)
+systemctl --user status nanoclaw
+systemctl --user restart nanoclaw
+journalctl --user -u nanoclaw -f
+
+# Legacy macOS launchd flow (if you still run locally on macOS)
 launchctl kickstart -k gui/$(id -u)/com.nanoclaw
-
-# View live logs
-tail -f logs/nanoclaw.log
-
-# Stop the service (careful — running containers are detached, not killed)
-launchctl bootout gui/$(id -u)/com.nanoclaw
-
-# Start the service
-launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.nanoclaw.plist
-
-# Rebuild after code changes
-npm run build && launchctl kickstart -k gui/$(id -u)/com.nanoclaw
 ```
