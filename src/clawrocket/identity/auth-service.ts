@@ -43,6 +43,7 @@ export interface SessionMaterial {
 export interface LoginResult {
   user: UserRecord;
   session: SessionMaterial;
+  returnTo?: string | null;
 }
 
 export interface OAuthStartResult {
@@ -79,7 +80,9 @@ const GOOGLE_ISSUERS = new Set([
   'https://accounts.google.com',
 ]);
 
-export function startGoogleOAuth(): OAuthStartResult {
+export function startGoogleOAuth(input?: {
+  returnTo?: string;
+}): OAuthStartResult {
   const state = randomOpaque(24);
   const nonce = randomOpaque(24);
   const codeVerifier = randomOpaque(48);
@@ -102,6 +105,7 @@ export function startGoogleOAuth(): OAuthStartResult {
     codeVerifierHash,
     codeVerifier,
     redirectUri,
+    returnTo: input?.returnTo,
     expiresAt,
   });
 
@@ -197,7 +201,7 @@ export async function completeGoogleOAuthCallback(input: {
     userAgent: input.userAgent,
   });
 
-  return { user, session };
+  return { user, session, returnTo: consumed.returnTo };
 }
 
 export function refreshSession(refreshToken: string): LoginResult {
@@ -441,6 +445,7 @@ function consumeOAuthState(state: string): {
   nonceHash: string;
   codeVerifier: string | null;
   redirectUri: string;
+  returnTo: string | null;
 } | null {
   const row = consumeOAuthStateByHash(hashOpaqueToken(state));
   if (!row) return null;
@@ -449,6 +454,7 @@ function consumeOAuthState(state: string): {
     nonceHash: row.nonce_hash,
     codeVerifier: row.code_verifier,
     redirectUri: row.redirect_uri,
+    returnTo: row.return_to,
   };
 }
 

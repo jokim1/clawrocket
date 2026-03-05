@@ -220,7 +220,20 @@ function buildApp(opts: WebServerOptions): Hono {
     if (!rateResult.allowed) return rateLimitedResponse(c, rateResult);
 
     try {
-      const payload = startGoogleOAuth();
+      let requestedReturnTo: string | undefined;
+      const contentType = (c.req.header('content-type') || '').toLowerCase();
+      if (contentType.includes('application/json')) {
+        const body = (await c.req.json().catch(() => ({}))) as {
+          returnTo?: unknown;
+        };
+        if (typeof body.returnTo === 'string') {
+          requestedReturnTo = body.returnTo;
+        }
+      }
+
+      const payload = startGoogleOAuth({
+        returnTo: normalizeReturnToPath(requestedReturnTo) || undefined,
+      });
       return c.json({ ok: true, data: payload }, 200);
     } catch (err) {
       return authErrorResponse(c, err);
@@ -251,7 +264,10 @@ function buildApp(opts: WebServerOptions): Hono {
       const accept = (c.req.header('accept') || '').toLowerCase();
       if (accept.includes('text/html')) {
         c.header('cache-control', 'no-store');
-        return c.redirect('/app/talks', 302);
+        return c.redirect(
+          normalizeReturnToPath(result.returnTo) || '/app/talks',
+          302,
+        );
       }
       return c.json(
         {
@@ -1349,6 +1365,35 @@ function safeDecodePathSegment(value: string): string | null {
   } catch {
     return null;
   }
+}
+
+function normalizeReturnToPath(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+
+  const candidate = value.trim();
+  if (!candidate) return null;
+  if (/%0d|%0a/i.test(candidate)) return null;
+  if (!isSafeRelativeRedirectTarget(candidate)) return null;
+
+  let decoded = '';
+  try {
+    decoded = decodeURIComponent(candidate);
+  } catch {
+    return null;
+  }
+
+  if (/%0d|%0a/i.test(decoded)) return null;
+  if (!isSafeRelativeRedirectTarget(decoded)) return null;
+
+  return candidate;
+}
+
+function isSafeRelativeRedirectTarget(pathValue: string): boolean {
+  if (!pathValue.startsWith('/')) return false;
+  if (pathValue.startsWith('//')) return false;
+  if (pathValue.includes('\\')) return false;
+  if (/[\u0000-\u001f\u007f]/.test(pathValue)) return false;
+  return true;
 }
 
 function normalizeUser(user: UserLike) {

@@ -522,11 +522,13 @@ describe('phase 0 schema and reliability tables', () => {
       nonceHash: 'nonce-hash-1',
       codeVerifierHash: 'verifier-hash-1',
       redirectUri: 'http://127.0.0.1:3210/api/v1/auth/google/callback',
+      returnTo: '/app/talks/talk-1',
       expiresAt: new Date(Date.now() + 60_000).toISOString(),
     });
 
     const first = consumeOAuthStateByHash('state-hash-1');
     expect(first?.id).toBe('oauth-1');
+    expect(first?.return_to).toBe('/app/talks/talk-1');
     expect(first?.used_at).toBeTruthy();
 
     const second = consumeOAuthStateByHash('state-hash-1');
