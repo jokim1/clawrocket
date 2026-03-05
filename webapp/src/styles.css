@@ -246,6 +246,10 @@ a {
   gap: 0.35rem;
 }
 
+.talk-agent-row-detail {
+  margin-top: 0.45rem;
+}
+
 .talk-agent-chip {
   display: inline-flex;
   align-items: center;

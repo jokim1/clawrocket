@@ -4,6 +4,7 @@ import {
   render,
   screen,
   waitFor,
+  within,
 } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -65,6 +66,7 @@ describe('TalkDetailPage', () => {
         data: {
           talkId: 'talk-1',
           agents: ['Gemini'],
+          limits: { maxAgents: 12, maxAgentChars: 80 },
         },
       }),
     ]);
@@ -98,6 +100,7 @@ describe('TalkDetailPage', () => {
         data: {
           talkId: 'talk-1',
           agents: ['Gemini'],
+          limits: { maxAgents: 12, maxAgentChars: 80 },
         },
       }),
     ]);
@@ -106,6 +109,46 @@ describe('TalkDetailPage', () => {
     await screen.findByRole('heading', { name: /Smoke Talk/i });
     expect(screen.getByRole('button', { name: 'Cancel Runs' })).toBeTruthy();
     expect(screen.getByLabelText('Comma-separated agents')).toBeTruthy();
+  });
+
+  it('renders effective agent badges from talk payload', async () => {
+    mockFetch([
+      jsonResponse(200, {
+        ok: true,
+        data: {
+          talk: buildTalk({
+            accessRole: 'owner',
+            agents: ['Gemini', 'Opus4.6', 'Haiku'],
+          }),
+        },
+      }),
+      jsonResponse(200, {
+        ok: true,
+        data: {
+          talkId: 'talk-1',
+          messages: [],
+          page: { limit: 100, count: 0, beforeCreatedAt: null },
+        },
+      }),
+      jsonResponse(200, {
+        ok: true,
+        data: {
+          talkId: 'talk-1',
+          agents: ['Gemini'],
+          limits: { maxAgents: 12, maxAgentChars: 80 },
+        },
+      }),
+    ]);
+
+    renderDetailPage();
+    await screen.findByRole('heading', { name: /Smoke Talk/i });
+
+    const effectiveAgents = screen.getByRole('list', {
+      name: 'Effective agents',
+    });
+    expect(within(effectiveAgents).getByText('Gemini')).toBeTruthy();
+    expect(within(effectiveAgents).getByText('Opus4.6')).toBeTruthy();
+    expect(within(effectiveAgents).getByText('Haiku')).toBeTruthy();
   });
 
   it('updates talk policy from detail editor', async () => {
@@ -129,6 +172,7 @@ describe('TalkDetailPage', () => {
         data: {
           talkId: 'talk-1',
           agents: ['Gemini', 'Opus4.6'],
+          limits: { maxAgents: 12, maxAgentChars: 80 },
         },
       }),
       jsonResponse(200, {
@@ -136,6 +180,7 @@ describe('TalkDetailPage', () => {
         data: {
           talkId: 'talk-1',
           agents: ['Gemini', 'Opus4.6'],
+          limits: { maxAgents: 12, maxAgentChars: 80 },
         },
       }),
     ]);
@@ -149,8 +194,9 @@ describe('TalkDetailPage', () => {
     await user.click(screen.getByRole('button', { name: 'Save Agents' }));
 
     await screen.findByText('Talk policy updated.');
-    expect(screen.getByText('Gemini')).toBeTruthy();
-    expect(screen.getByText('Opus4.6')).toBeTruthy();
+    const policyPanel = screen.getByLabelText('Talk policy');
+    expect(within(policyPanel).getByText('Gemini')).toBeTruthy();
+    expect(within(policyPanel).getByText('Opus4.6')).toBeTruthy();
   });
 
   it('shows send and cancel inline error states and clears send error on typing', async () => {
@@ -174,6 +220,7 @@ describe('TalkDetailPage', () => {
         data: {
           talkId: 'talk-1',
           agents: ['Gemini'],
+          limits: { maxAgents: 12, maxAgentChars: 80 },
         },
       }),
       jsonResponse(500, {
@@ -234,6 +281,7 @@ describe('TalkDetailPage', () => {
         data: {
           talkId: 'talk-1',
           agents: ['Gemini'],
+          limits: { maxAgents: 12, maxAgentChars: 80 },
         },
       }),
       jsonResponse(200, {
@@ -332,6 +380,7 @@ describe('TalkDetailPage', () => {
         data: {
           talkId: 'talk-1',
           agents: ['Gemini'],
+          limits: { maxAgents: 12, maxAgentChars: 80 },
         },
       }),
     ]);
