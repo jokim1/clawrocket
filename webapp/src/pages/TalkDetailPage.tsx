@@ -394,6 +394,7 @@ export function TalkDetailPage({
 
   const timelineRef = useRef<HTMLDivElement | null>(null);
   const endRef = useRef<HTMLDivElement | null>(null);
+  const messageElementRefs = useRef<Map<string, HTMLElement>>(new Map());
   const autoStickToBottomRef = useRef(false);
   const onUnauthorizedRef = useRef(onUnauthorized);
 
@@ -431,6 +432,17 @@ export function TalkDetailPage({
   const scrollToBottom = useCallback((behavior: ScrollBehavior = 'auto') => {
     endRef.current?.scrollIntoView({ behavior, block: 'end' });
   }, []);
+
+  const setMessageElementRef = useCallback(
+    (messageId: string, element: HTMLElement | null) => {
+      if (element) {
+        messageElementRefs.current.set(messageId, element);
+        return;
+      }
+      messageElementRefs.current.delete(messageId);
+    },
+    [],
+  );
 
   const resyncMessages = useCallback(async () => {
     try {
@@ -545,6 +557,7 @@ export function TalkDetailPage({
   useEffect(() => {
     let cancelled = false;
     dispatch({ type: 'BOOTSTRAP_LOADING' });
+    messageElementRefs.current.clear();
     setPolicyAgents([]);
     setPolicyDraft('');
     setPolicyLimits(null);
@@ -806,7 +819,7 @@ export function TalkDetailPage({
       : [];
 
   const jumpToMessage = (messageId: string) => {
-    const element = document.getElementById(`message-${messageId}`);
+    const element = messageElementRefs.current.get(messageId);
     if (!element) return;
     element.scrollIntoView({ behavior: 'smooth', block: 'center' });
   };
@@ -995,6 +1008,7 @@ export function TalkDetailPage({
             <article
               key={message.id}
               id={`message-${message.id}`}
+              ref={(element) => setMessageElementRef(message.id, element)}
               className={`message message-${message.role}`}
             >
               <header>
