@@ -317,6 +317,104 @@ describe('talk routes', () => {
     expect(outsiderRes.status).toBe(404);
   });
 
+  it('returns talk policy for authorized users and 404 for outsiders', async () => {
+    const viewerRes = await server.request('/api/v1/talks/talk-owner/policy', {
+      headers: {
+        Authorization: 'Bearer viewer-token',
+      },
+    });
+    expect(viewerRes.status).toBe(200);
+    const viewerBody = (await viewerRes.json()) as any;
+    expect(viewerBody.ok).toBe(true);
+    expect(viewerBody.data.agents).toEqual(['Gemini', 'Opus4.6']);
+
+    const outsiderRes = await server.request(
+      '/api/v1/talks/talk-owner/policy',
+      {
+        headers: {
+          Authorization: 'Bearer outsider-token',
+        },
+      },
+    );
+    expect(outsiderRes.status).toBe(404);
+  });
+
+  it('updates talk policy for editor and blocks viewer', async () => {
+    const viewerRes = await server.request('/api/v1/talks/talk-owner/policy', {
+      method: 'PUT',
+      headers: {
+        Authorization: 'Bearer viewer-token',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ agents: ['Gemini'] }),
+    });
+    expect(viewerRes.status).toBe(403);
+
+    const editorRes = await server.request('/api/v1/talks/talk-owner/policy', {
+      method: 'PUT',
+      headers: {
+        Authorization: 'Bearer member-token',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ agents: ['Gemini', 'Opus4.6', 'Gemini'] }),
+    });
+    expect(editorRes.status).toBe(200);
+    const editorBody = (await editorRes.json()) as any;
+    expect(editorBody.ok).toBe(true);
+    expect(editorBody.data.agents).toEqual(['Gemini', 'Opus4.6']);
+
+    const readBackRes = await server.request(
+      '/api/v1/talks/talk-owner/policy',
+      {
+        headers: {
+          Authorization: 'Bearer owner-token',
+        },
+      },
+    );
+    expect(readBackRes.status).toBe(200);
+    const readBackBody = (await readBackRes.json()) as any;
+    expect(readBackBody.data.agents).toEqual(['Gemini', 'Opus4.6']);
+  });
+
+  it('validates talk policy payload and supports clearing policy', async () => {
+    const invalidRes = await server.request('/api/v1/talks/talk-owner/policy', {
+      method: 'PUT',
+      headers: {
+        Authorization: 'Bearer owner-token',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ agents: 'Gemini' }),
+    });
+    expect(invalidRes.status).toBe(400);
+    const invalidBody = (await invalidRes.json()) as any;
+    expect(invalidBody.ok).toBe(false);
+    expect(invalidBody.error.code).toBe('invalid_agents');
+
+    const clearRes = await server.request('/api/v1/talks/talk-owner/policy', {
+      method: 'PUT',
+      headers: {
+        Authorization: 'Bearer owner-token',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ agents: [] }),
+    });
+    expect(clearRes.status).toBe(200);
+    const clearBody = (await clearRes.json()) as any;
+    expect(clearBody.data.agents).toEqual([]);
+
+    const listRes = await server.request('/api/v1/talks', {
+      headers: {
+        Authorization: 'Bearer owner-token',
+      },
+    });
+    expect(listRes.status).toBe(200);
+    const listBody = (await listRes.json()) as any;
+    const talk = listBody.data.talks.find(
+      (row: any) => row.id === 'talk-owner',
+    );
+    expect(talk.agents).toEqual(['Mock']);
+  });
+
   it('enqueues chat runs and persists user messages', async () => {
     const first = await server.request('/api/v1/talks/talk-owner/chat', {
       method: 'POST',

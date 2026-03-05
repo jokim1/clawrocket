@@ -13,10 +13,12 @@ import {
   ApiError,
   cancelTalkRuns,
   getTalk,
+  getTalkPolicy,
   listTalkMessages,
   sendTalkMessage,
   Talk,
   TalkMessage,
+  updateTalkPolicy,
   UnauthorizedError,
 } from '../lib/api';
 import { openTalkStream } from '../lib/talkStream';
@@ -333,6 +335,34 @@ function detailReducer(state: DetailState, action: DetailAction): DetailState {
 
 const SCROLL_STICK_THRESHOLD_PX = 120;
 const TALK_MESSAGE_MAX_CHARS = 20_000;
+const TALK_POLICY_MAX_AGENTS = 12;
+const TALK_POLICY_MAX_AGENT_CHARS = 80;
+
+function normalizePolicyDraft(
+  draft: string,
+): { agents?: string[]; error?: string } {
+  const normalized = [
+    ...new Set(
+      draft
+        .split(',')
+        .map((entry) => entry.trim())
+        .filter(Boolean),
+    ),
+  ];
+
+  if (normalized.some((agent) => agent.length > TALK_POLICY_MAX_AGENT_CHARS)) {
+    return {
+      error: `Each agent label must be ${TALK_POLICY_MAX_AGENT_CHARS} characters or less.`,
+    };
+  }
+  if (normalized.length > TALK_POLICY_MAX_AGENTS) {
+    return {
+      error: `At most ${TALK_POLICY_MAX_AGENTS} agents are allowed.`,
+    };
+  }
+
+  return { agents: normalized };
+}
 
 export function TalkDetailPage({
   onUnauthorized,
@@ -342,6 +372,12 @@ export function TalkDetailPage({
   const { talkId = '' } = useParams<{ talkId: string }>();
   const [state, dispatch] = useReducer(detailReducer, undefined, createInitialDetailState);
   const [draft, setDraft] = useState('');
+  const [policyDraft, setPolicyDraft] = useState('');
+  const [policyAgents, setPolicyAgents] = useState<string[]>([]);
+  const [policyState, setPolicyState] = useState<{
+    status: 'idle' | 'saving' | 'error' | 'success';
+    message?: string;
+  }>({ status: 'idle' });
 
   const timelineRef = useRef<HTMLDivElement | null>(null);
   const endRef = useRef<HTMLDivElement | null>(null);
@@ -369,6 +405,7 @@ export function TalkDetailPage({
   const accessRole = state.kind === 'ready' ? state.talk?.accessRole : null;
   const canCancelRuns =
     accessRole === 'owner' || accessRole === 'admin' || accessRole === 'editor';
+  const canEditPolicy = canCancelRuns;
 
   const isNearBottom = useCallback((): boolean => {
     const container = timelineRef.current;
@@ -495,14 +532,21 @@ export function TalkDetailPage({
   useEffect(() => {
     let cancelled = false;
     dispatch({ type: 'BOOTSTRAP_LOADING' });
+    setPolicyAgents([]);
+    setPolicyDraft('');
+    setPolicyState({ status: 'idle' });
 
     const load = async () => {
       try {
-        const [talk, messages] = await Promise.all([
+        const [talk, messages, policy] = await Promise.all([
           getTalk(talkId),
           listTalkMessages(talkId),
+          getTalkPolicy(talkId),
         ]);
         if (!cancelled) {
+          setPolicyAgents(policy.agents);
+          setPolicyDraft(policy.agents.join(', '));
+          setPolicyState({ status: 'idle' });
           dispatch({ type: 'BOOTSTRAP_READY', talk, messages });
         }
       } catch (err) {
@@ -687,6 +731,47 @@ export function TalkDetailPage({
     dispatch({ type: 'CLEAR_UNREAD' });
   };
 
+  const handlePolicyDraftChange = (value: string) => {
+    setPolicyDraft(value);
+    if (policyState.status === 'error' || policyState.status === 'success') {
+      setPolicyState({ status: 'idle' });
+    }
+  };
+
+  const handleSavePolicy = async () => {
+    if (state.kind !== 'ready') return;
+    if (!canEditPolicy) return;
+
+    const normalized = normalizePolicyDraft(policyDraft);
+    if (!normalized.agents) {
+      setPolicyState({ status: 'error', message: normalized.error });
+      return;
+    }
+
+    setPolicyState({ status: 'saving' });
+    try {
+      const result = await updateTalkPolicy({
+        talkId: state.talk!.id,
+        agents: normalized.agents,
+      });
+      setPolicyAgents(result.agents);
+      setPolicyDraft(result.agents.join(', '));
+      setPolicyState({
+        status: 'success',
+        message: 'Talk policy updated.',
+      });
+    } catch (err) {
+      if (err instanceof UnauthorizedError) {
+        handleUnauthorized();
+        return;
+      }
+      setPolicyState({
+        status: 'error',
+        message: err instanceof Error ? err.message : 'Failed to update talk policy',
+      });
+    }
+  };
+
   const handleTimelineScroll = () => {
     if (state.kind !== 'ready' || !state.hasUnreadBelow) return;
     if (!isNearBottom()) return;
@@ -748,6 +833,56 @@ export function TalkDetailPage({
         </div>
         <Link to="/app/talks">Back</Link>
       </header>
+
+      <section className="policy-panel" aria-label="Talk policy">
+        <h2>Talk Agents</h2>
+        {policyAgents.length > 0 ? (
+          <div className="talk-agent-row">
+            {policyAgents.map((agent) => (
+              <span key={agent} className="talk-agent-chip">
+                {agent}
+              </span>
+            ))}
+          </div>
+        ) : (
+          <p className="policy-muted">No custom agents configured (using defaults).</p>
+        )}
+        {canEditPolicy ? (
+          <div className="policy-editor">
+            <label htmlFor="talk-policy-input">Comma-separated agents</label>
+            <input
+              id="talk-policy-input"
+              type="text"
+              value={policyDraft}
+              onChange={(event) => handlePolicyDraftChange(event.target.value)}
+              placeholder="Gemini, Opus4.6"
+              disabled={policyState.status === 'saving'}
+            />
+            <div className="policy-editor-controls">
+              <button
+                type="button"
+                className="secondary-btn"
+                onClick={handleSavePolicy}
+                disabled={policyState.status === 'saving'}
+              >
+                {policyState.status === 'saving' ? 'Saving…' : 'Save Agents'}
+              </button>
+            </div>
+            {policyState.status === 'error' ? (
+              <div className="inline-banner inline-banner-error" role="alert">
+                {policyState.message}
+              </div>
+            ) : null}
+            {policyState.status === 'success' ? (
+              <div className="inline-banner inline-banner-success" role="status">
+                {policyState.message}
+              </div>
+            ) : null}
+          </div>
+        ) : (
+          <p className="policy-muted">You have read-only access to talk policy.</p>
+        )}
+      </section>
 
       {runChips.length > 0 ? (
         <div className="run-chip-row" aria-label="Run status">

@@ -192,6 +192,13 @@ describe('App', () => {
           page: { limit: 100, count: 0, beforeCreatedAt: null },
         },
       }),
+      jsonResponse(200, {
+        ok: true,
+        data: {
+          talkId: 'talk-missing',
+          agents: [],
+        },
+      }),
     ]);
 
     renderWithRouter('/app/talks/talk-missing');

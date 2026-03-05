@@ -263,6 +263,48 @@ a {
   white-space: nowrap;
 }
 
+.policy-panel {
+  border: 1px solid #dde4f2;
+  border-radius: 10px;
+  padding: 0.75rem;
+  display: grid;
+  gap: 0.55rem;
+}
+
+.policy-panel h2 {
+  margin: 0;
+  font-size: 0.95rem;
+}
+
+.policy-muted {
+  margin: 0;
+  color: #66728d;
+  font-size: 0.86rem;
+}
+
+.policy-editor {
+  display: grid;
+  gap: 0.45rem;
+}
+
+.policy-editor label {
+  font-size: 0.85rem;
+  color: #4b5978;
+}
+
+.policy-editor input {
+  border: 1px solid #c8d3e9;
+  border-radius: 9px;
+  padding: 0.55rem 0.65rem;
+  font-size: 0.9rem;
+}
+
+.policy-editor-controls {
+  display: flex;
+  gap: 0.55rem;
+  justify-content: flex-start;
+}
+
 .run-chip-row {
   display: flex;
   flex-wrap: wrap;
