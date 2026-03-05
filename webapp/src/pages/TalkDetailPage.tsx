@@ -838,6 +838,19 @@ export function TalkDetailPage({
             </span>
           </h1>
           <p>Event-authoritative live timeline.</p>
+          {talk.agents.length > 0 ? (
+            <div
+              className="talk-agent-row talk-agent-row-detail"
+              role="list"
+              aria-label="Effective agents"
+            >
+              {talk.agents.map((agent) => (
+                <span key={agent} className="talk-agent-chip" role="listitem">
+                  {agent}
+                </span>
+              ))}
+            </div>
+          ) : null}
         </div>
         <Link to="/app/talks">Back</Link>
       </header>
