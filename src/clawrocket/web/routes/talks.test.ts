@@ -328,11 +328,14 @@ describe('talk routes', () => {
     expect(viewerBody.ok).toBe(true);
     expect(viewerBody.data.agents).toEqual(['Gemini', 'Opus4.6']);
 
-    const outsiderRes = await server.request('/api/v1/talks/talk-owner/policy', {
-      headers: {
-        Authorization: 'Bearer outsider-token',
+    const outsiderRes = await server.request(
+      '/api/v1/talks/talk-owner/policy',
+      {
+        headers: {
+          Authorization: 'Bearer outsider-token',
+        },
       },
-    });
+    );
     expect(outsiderRes.status).toBe(404);
   });
 
@@ -360,11 +363,14 @@ describe('talk routes', () => {
     expect(editorBody.ok).toBe(true);
     expect(editorBody.data.agents).toEqual(['Gemini', 'Opus4.6']);
 
-    const readBackRes = await server.request('/api/v1/talks/talk-owner/policy', {
-      headers: {
-        Authorization: 'Bearer owner-token',
+    const readBackRes = await server.request(
+      '/api/v1/talks/talk-owner/policy',
+      {
+        headers: {
+          Authorization: 'Bearer owner-token',
+        },
       },
-    });
+    );
     expect(readBackRes.status).toBe(200);
     const readBackBody = (await readBackRes.json()) as any;
     expect(readBackBody.data.agents).toEqual(['Gemini', 'Opus4.6']);
@@ -403,7 +409,9 @@ describe('talk routes', () => {
     });
     expect(listRes.status).toBe(200);
     const listBody = (await listRes.json()) as any;
-    const talk = listBody.data.talks.find((row: any) => row.id === 'talk-owner');
+    const talk = listBody.data.talks.find(
+      (row: any) => row.id === 'talk-owner',
+    );
     expect(talk.agents).toEqual(['Mock']);
   });
 

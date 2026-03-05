@@ -127,7 +127,10 @@ function parsePolicyAgentCandidates(
   ].slice(0, maxItems);
 }
 
-function normalizePolicyAgents(input: unknown): { agents?: string[]; error?: string } {
+function normalizePolicyAgents(input: unknown): {
+  agents?: string[];
+  error?: string;
+} {
   if (!Array.isArray(input)) {
     return { error: 'agents must be an array of strings' };
   }
@@ -294,7 +297,10 @@ export function getTalkRoute(input: { talkId: string; auth: AuthContext }): {
   };
 }
 
-export function getTalkPolicyRoute(input: { talkId: string; auth: AuthContext }): {
+export function getTalkPolicyRoute(input: {
+  talkId: string;
+  auth: AuthContext;
+}): {
   statusCode: number;
   body: ApiEnvelope<{ talkId: string; agents: string[] }>;
 } {
