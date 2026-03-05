@@ -451,6 +451,42 @@ describe('talk routes', () => {
     expect(replayBody.data.agents).toEqual(['Gemini', 'Opus4.6']);
   });
 
+  it('rejects policy idempotency key reuse when body changes', async () => {
+    const first = await server.request('/api/v1/talks/talk-owner/policy', {
+      method: 'PUT',
+      headers: {
+        Authorization: 'Bearer owner-token',
+        'Content-Type': 'application/json',
+        'Idempotency-Key': 'idem-policy-body-mismatch',
+      },
+      body: JSON.stringify({ agents: ['Gemini', 'Opus4.6'] }),
+    });
+    expect(first.status).toBe(200);
+
+    const second = await server.request('/api/v1/talks/talk-owner/policy', {
+      method: 'PUT',
+      headers: {
+        Authorization: 'Bearer owner-token',
+        'Content-Type': 'application/json',
+        'Idempotency-Key': 'idem-policy-body-mismatch',
+      },
+      body: JSON.stringify({ agents: ['Gemini', 'Haiku'] }),
+    });
+    expect(second.status).toBe(400);
+    const secondBody = (await second.json()) as any;
+    expect(secondBody.ok).toBe(false);
+    expect(secondBody.error.code).toBe('idempotency_error');
+
+    const policyRes = await server.request('/api/v1/talks/talk-owner/policy', {
+      headers: {
+        Authorization: 'Bearer owner-token',
+      },
+    });
+    expect(policyRes.status).toBe(200);
+    const policyBody = (await policyRes.json()) as any;
+    expect(policyBody.data.agents).toEqual(['Gemini', 'Opus4.6']);
+  });
+
   it('enqueues chat runs and persists user messages', async () => {
     const first = await server.request('/api/v1/talks/talk-owner/chat', {
       method: 'POST',
