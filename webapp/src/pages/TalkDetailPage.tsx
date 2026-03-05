@@ -793,10 +793,12 @@ export function TalkDetailPage({
     dispatch({ type: 'CLEAR_UNREAD' });
   };
 
-  const messageLookup =
-    state.kind === 'ready'
-      ? new Map(state.messages.map((message) => [message.id, message] as const))
-      : new Map<string, TalkMessage>();
+  const messageLookup = useMemo(() => {
+    if (state.kind !== 'ready') {
+      return new Map<string, TalkMessage>();
+    }
+    return new Map(state.messages.map((message) => [message.id, message] as const));
+  }, [state.kind, state.messages]);
 
   const runHistory =
     state.kind === 'ready'
