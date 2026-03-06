@@ -82,11 +82,7 @@ export interface TalkAgentRecord {
   updated_at: string;
 }
 
-export type LlmAttemptStatus =
-  | 'success'
-  | 'failed'
-  | 'skipped'
-  | 'cancelled';
+export type LlmAttemptStatus = 'success' | 'failed' | 'skipped' | 'cancelled';
 
 export type LlmFailureClass =
   | 'timeout'

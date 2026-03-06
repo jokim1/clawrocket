@@ -676,7 +676,9 @@ function buildApp(opts: WebServerOptions): Hono {
           ok: false,
           error: {
             code: 'invalid_json',
-            message: payload.ok ? 'Request body must be a JSON object' : payload.error,
+            message: payload.ok
+              ? 'Request body must be a JSON object'
+              : payload.error,
           },
         },
         400,
@@ -1462,7 +1464,10 @@ function buildApp(opts: WebServerOptions): Hono {
       );
     }
 
-    const payload = parseJsonPayload<{ content?: string; targetAgentId?: string | null }>(bodyText);
+    const payload = parseJsonPayload<{
+      content?: string;
+      targetAgentId?: string | null;
+    }>(bodyText);
     if (!payload.ok) {
       return c.json(
         {

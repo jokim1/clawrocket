@@ -125,7 +125,10 @@ function getRoutePrimaryStep(routeId: string): TalkRouteStepRecord | undefined {
 function buildDefaultTalkAgentName(routeId: string): string {
   const primaryStep = getRoutePrimaryStep(routeId);
   if (primaryStep) {
-    const model = getLlmProviderModel(primaryStep.provider_id, primaryStep.model_id);
+    const model = getLlmProviderModel(
+      primaryStep.provider_id,
+      primaryStep.model_id,
+    );
     if (model?.display_name?.trim()) {
       return model.display_name.trim();
     }
@@ -477,9 +480,9 @@ export function getTalkRouteUsageCounts(routeId: string): TalkRouteUsageCounts {
     `,
     )
     .get(routeId) as {
-      assigned_agent_count: number;
-      assigned_talk_count: number;
-    };
+    assigned_agent_count: number;
+    assigned_talk_count: number;
+  };
 
   return {
     assignedAgentCount: row?.assigned_agent_count || 0,
@@ -554,7 +557,9 @@ export function getTalkAgentById(
     .get(talkId, agentId) as TalkAgentRecord | undefined;
 }
 
-export function getPrimaryTalkAgent(talkId: string): TalkAgentRecord | undefined {
+export function getPrimaryTalkAgent(
+  talkId: string,
+): TalkAgentRecord | undefined {
   return getDb()
     .prepare(
       `
@@ -691,8 +696,7 @@ export function listTalkLlmSettingsSnapshot(): TalkLlmSettingsSnapshot {
       getDb()
         .prepare('SELECT provider_id FROM llm_provider_secrets')
         .all() as Array<{ provider_id: string }>
-    )
-      .map((row: { provider_id: string }) => row.provider_id),
+    ).map((row: { provider_id: string }) => row.provider_id),
   );
 
   const routes = listTalkRoutes();

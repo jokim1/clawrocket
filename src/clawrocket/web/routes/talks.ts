@@ -176,7 +176,9 @@ function validateAgentInputs(input: unknown): {
         : `agent_${randomUUID()}`;
     const isPrimary = raw.isPrimary === true;
     const sortOrder =
-      typeof raw.sortOrder === 'number' ? Math.max(0, Math.floor(raw.sortOrder)) : index;
+      typeof raw.sortOrder === 'number'
+        ? Math.max(0, Math.floor(raw.sortOrder))
+        : index;
 
     if (!name) return { error: 'each talk agent must have a name' };
     if (name.length > MAX_TALK_AGENT_NAME_CHARS) {

@@ -40,7 +40,13 @@ function configureTalkRuntime(input: {
   providers: Array<{
     id: string;
     name: string;
-    providerKind: 'anthropic' | 'openai' | 'gemini' | 'deepseek' | 'kimi' | 'custom';
+    providerKind:
+      | 'anthropic'
+      | 'openai'
+      | 'gemini'
+      | 'deepseek'
+      | 'kimi'
+      | 'custom';
     apiFormat: 'anthropic_messages' | 'openai_chat_completions';
     baseUrl: string;
     authScheme: 'x_api_key' | 'bearer';
@@ -84,7 +90,12 @@ function configureTalkRuntime(input: {
   ]);
 }
 
-function createCompletedTurn(runId: string, userText: string, assistantText: string, createdAt: string): void {
+function createCompletedTurn(
+  runId: string,
+  userText: string,
+  assistantText: string,
+  createdAt: string,
+): void {
   createTalkRun({
     id: runId,
     talk_id: TALK_ID,
@@ -120,7 +131,11 @@ function createCompletedTurn(runId: string, userText: string, assistantText: str
   });
 }
 
-function createOrphanUserTurn(runId: string, userText: string, createdAt: string): void {
+function createOrphanUserTurn(
+  runId: string,
+  userText: string,
+  createdAt: string,
+): void {
   createTalkRun({
     id: runId,
     talk_id: TALK_ID,
@@ -202,7 +217,9 @@ function createStreamingResponse(
   );
 }
 
-function createNeverStartingResponse(signal: AbortSignal | null | undefined): Response {
+function createNeverStartingResponse(
+  signal: AbortSignal | null | undefined,
+): Response {
   return new Response(
     new ReadableStream<Uint8Array>({
       start(controller) {
@@ -275,7 +292,9 @@ describe('DirectTalkExecutor', () => {
     });
 
     const snapshot = listTalkLlmSettingsSnapshot();
-    const provider = snapshot.providers.find((entry) => entry.id === 'anthropic.primary');
+    const provider = snapshot.providers.find(
+      (entry) => entry.id === 'anthropic.primary',
+    );
     expect(provider?.hasCredential).toBe(true);
     expect('credential' in (provider || {})).toBe(false);
   });
@@ -353,7 +372,10 @@ describe('DirectTalkExecutor', () => {
     const executor = new DirectTalkExecutor({
       fetchImpl: async (_url, init) => {
         capturedBody = JSON.parse(String(init?.body));
-        return createStreamingResponse(init?.signal, chunkString(rawStream, 17));
+        return createStreamingResponse(
+          init?.signal,
+          chunkString(rawStream, 17),
+        );
       },
     });
 
@@ -402,7 +424,9 @@ describe('DirectTalkExecutor', () => {
       'talk_response_usage',
       'talk_response_completed',
     ]);
-    expect(getTalkRunById('run-current')?.executor_alias).toBe('anthropic.primary');
+    expect(getTalkRunById('run-current')?.executor_alias).toBe(
+      'anthropic.primary',
+    );
     expect(getTalkRunById('run-current')?.executor_model).toBe('claude-test');
   });
 
@@ -514,7 +538,9 @@ describe('DirectTalkExecutor', () => {
     );
 
     expect(output.content).toBe('Fallback worked');
-    expect(getTalkRunById('run-fallback')?.executor_alias).toBe('openai.fallback');
+    expect(getTalkRunById('run-fallback')?.executor_alias).toBe(
+      'openai.fallback',
+    );
     expect(getTalkRunById('run-fallback')?.executor_model).toBe('gpt-fallback');
 
     const attempts = listLlmAttemptsForRun('run-fallback');

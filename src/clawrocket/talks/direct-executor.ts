@@ -115,7 +115,10 @@ function buildAuthHeaders(
   return headers;
 }
 
-function parseSseBuffer(buffer: string): { events: SseEvent[]; remainder: string } {
+function parseSseBuffer(buffer: string): {
+  events: SseEvent[];
+  remainder: string;
+} {
   const normalized = buffer.replace(/\r\n/g, '\n');
   const parts = normalized.split('\n\n');
   const remainder = parts.pop() || '';
@@ -161,9 +164,12 @@ async function readSseResponse(
   let buffer = '';
   let sawFirstChunk = false;
 
-  let responseStartTimer: ReturnType<typeof setTimeout> | null = setTimeout(() => {
-    controller.abort('response_start_timeout');
-  }, timeouts.responseStartTimeoutMs);
+  let responseStartTimer: ReturnType<typeof setTimeout> | null = setTimeout(
+    () => {
+      controller.abort('response_start_timeout');
+    },
+    timeouts.responseStartTimeoutMs,
+  );
   let idleTimer: ReturnType<typeof setTimeout> | null = null;
   const absoluteTimer = setTimeout(() => {
     controller.abort('absolute_timeout');
@@ -228,7 +234,9 @@ async function parseErrorResponse(response: Response): Promise<{
   body: unknown;
   message: string;
 }> {
-  const contentType = (response.headers.get('content-type') || '').toLowerCase();
+  const contentType = (
+    response.headers.get('content-type') || ''
+  ).toLowerCase();
   const text = await response.text();
 
   if (contentType.includes('application/json')) {
@@ -238,7 +246,8 @@ async function parseErrorResponse(response: Response): Promise<{
         typeof body === 'object' &&
         body &&
         'error' in body &&
-        typeof (body as { error?: { message?: unknown } }).error?.message === 'string'
+        typeof (body as { error?: { message?: unknown } }).error?.message ===
+          'string'
           ? String((body as { error: { message: string } }).error.message)
           : text || `Provider request failed with status ${response.status}`;
       return { status: response.status, body, message };
@@ -288,9 +297,10 @@ function classifyProviderFailure(error: unknown): ClassifiedTalkError {
       return {
         code: error.code,
         message: error.sourceMessage,
-        failureClass: error.code === 'message_too_large_for_route'
-          ? 'invalid_request'
-          : 'configuration',
+        failureClass:
+          error.code === 'message_too_large_for_route'
+            ? 'invalid_request'
+            : 'configuration',
         retryable: false,
       };
     }
@@ -361,7 +371,8 @@ function classifyProviderFailure(error: unknown): ClassifiedTalkError {
 
   return {
     code: 'execution_failed',
-    message: error instanceof Error ? error.message : 'Unknown talk execution failure',
+    message:
+      error instanceof Error ? error.message : 'Unknown talk execution failure',
     failureClass: 'unknown',
     retryable: false,
   };
@@ -372,7 +383,8 @@ function classifyHttpFailure(response: {
   body: unknown;
   message: string;
 }): ClassifiedTalkError {
-  const message = response.message || `Provider request failed with ${response.status}`;
+  const message =
+    response.message || `Provider request failed with ${response.status}`;
   const bodyText = JSON.stringify(response.body).toLowerCase();
 
   if (response.status === 429) {
@@ -541,7 +553,11 @@ export class DirectTalkExecutor implements TalkExecutor {
       sawEligibleStep = true;
 
       if (step.provider.base_url.startsWith('mock://')) {
-        const result = await this.executeMockAttempt(attemptContext, emit, signal);
+        const result = await this.executeMockAttempt(
+          attemptContext,
+          emit,
+          signal,
+        );
         return {
           ...result,
           agentId: resolved.agent.id,
@@ -832,22 +848,25 @@ export class DirectTalkExecutor implements TalkExecutor {
 
     try {
       const { system, messages } = buildAnthropicMessages(promptMessages);
-      const response = await this.fetchImpl(joinUrl(provider.base_url, '/v1/messages'), {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          'anthropic-version': '2023-06-01',
-          ...buildAuthHeaders(provider, secret),
+      const response = await this.fetchImpl(
+        joinUrl(provider.base_url, '/v1/messages'),
+        {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            'anthropic-version': '2023-06-01',
+            ...buildAuthHeaders(provider, secret),
+          },
+          body: JSON.stringify({
+            model: modelId,
+            max_tokens: maxOutputTokens,
+            system,
+            messages,
+            stream: true,
+          }),
+          signal: controller.signal,
         },
-        body: JSON.stringify({
-          model: modelId,
-          max_tokens: maxOutputTokens,
-          system,
-          messages,
-          stream: true,
-        }),
-        signal: controller.signal,
-      });
+      );
 
       if (!response.ok) {
         const failure = classifyHttpFailure(await parseErrorResponse(response));
@@ -906,14 +925,17 @@ export class DirectTalkExecutor implements TalkExecutor {
           }
 
           if (
-            (payload.type === 'message_start' || payload.type === 'message_delta') &&
+            (payload.type === 'message_start' ||
+              payload.type === 'message_delta') &&
             typeof payload.message === 'object' &&
             payload.message &&
             'usage' in payload.message
           ) {
-            const rawUsage = (payload.message as {
-              usage?: { input_tokens?: number; output_tokens?: number };
-            }).usage;
+            const rawUsage = (
+              payload.message as {
+                usage?: { input_tokens?: number; output_tokens?: number };
+              }
+            ).usage;
             usage = {
               inputTokens: rawUsage?.input_tokens ?? usage?.inputTokens,
               outputTokens: rawUsage?.output_tokens ?? usage?.outputTokens,
@@ -935,7 +957,8 @@ export class DirectTalkExecutor implements TalkExecutor {
               typeof payload.error === 'object' &&
               payload.error &&
               'message' in payload.error &&
-              typeof (payload.error as { message?: unknown }).message === 'string'
+              typeof (payload.error as { message?: unknown }).message ===
+                'string'
                 ? String((payload.error as { message: string }).message)
                 : 'Anthropic streaming request failed.';
             throw new TalkExecutorError('provider_request_failed', message);

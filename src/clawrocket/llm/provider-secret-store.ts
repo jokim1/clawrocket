@@ -4,8 +4,7 @@ import { logger } from '../../logger.js';
 import type { ProviderSecretPayload } from './types.js';
 
 const SECRET_KEY_ENV = 'CLAWROCKET_PROVIDER_SECRET_KEY';
-const DEV_FALLBACK_SECRET =
-  'clawrocket-dev-provider-secret-key-unsafe-default';
+const DEV_FALLBACK_SECRET = 'clawrocket-dev-provider-secret-key-unsafe-default';
 const AES_ALGO = 'aes-256-gcm';
 let warnedAboutFallbackSecret = false;
 
@@ -25,7 +24,11 @@ function getSecretMaterial(): string {
 }
 
 function deriveKey(): Buffer {
-  return crypto.scryptSync(getSecretMaterial(), 'clawrocket-provider-store', 32);
+  return crypto.scryptSync(
+    getSecretMaterial(),
+    'clawrocket-provider-store',
+    32,
+  );
 }
 
 export function encryptProviderSecret(payload: ProviderSecretPayload): string {

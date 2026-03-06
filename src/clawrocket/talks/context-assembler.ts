@@ -56,7 +56,7 @@ const PERSONA_PROMPTS: Record<TalkPersonaRole, string> = {
   strategist:
     'Adopt a strategist persona. Focus on tradeoffs, sequencing, leverage, and long-term consequences.',
   'devils-advocate':
-    'Adopt a devil\'s advocate persona. Challenge the strongest-looking path with concrete counterarguments and risks.',
+    "Adopt a devil's advocate persona. Challenge the strongest-looking path with concrete counterarguments and risks.",
   synthesizer:
     'Adopt a synthesizer persona. Combine competing viewpoints into a coherent, decisive answer.',
   editor:
@@ -106,7 +106,8 @@ function buildHistoricalTurns(
     if (!message.run_id || message.run_id === currentRunId) continue;
     const group = byRunId.get(message.run_id) || {};
     if (message.role === 'user' && !group.user) group.user = message;
-    if (message.role === 'assistant' && !group.assistant) group.assistant = message;
+    if (message.role === 'assistant' && !group.assistant)
+      group.assistant = message;
     byRunId.set(message.run_id, group);
   }
 
@@ -170,7 +171,10 @@ export function assembleTalkPromptContext(
   }
 
   const selectedHistorical: PromptMessage[] = [];
-  const historicalTurns = buildHistoricalTurns(input.talkId, input.currentRunId);
+  const historicalTurns = buildHistoricalTurns(
+    input.talkId,
+    input.currentRunId,
+  );
   for (let index = historicalTurns.length - 1; index >= 0; index -= 1) {
     const turn = historicalTurns[index];
     const userMessage: PromptMessage = {
