@@ -87,7 +87,12 @@ async function defaultReadLinuxProcessInfo(
 
 async function defaultReadPsCommand(pid: number): Promise<string | null> {
   try {
-    const { stdout } = await execFile('ps', ['-p', String(pid), '-o', 'command=']);
+    const { stdout } = await execFile('ps', [
+      '-p',
+      String(pid),
+      '-o',
+      'command=',
+    ]);
     const command = stdout.trim();
     return command || null;
   } catch {
@@ -121,7 +126,10 @@ export class InstanceCoordinator {
   private readonly webPort: number | null;
   private readonly now: () => number;
   private readonly sleep: (ms: number) => Promise<void>;
-  private readonly signalProcess: (pid: number, signal: NodeJS.Signals | 0) => void;
+  private readonly signalProcess: (
+    pid: number,
+    signal: NodeJS.Signals | 0,
+  ) => void;
   private readonly readLinuxProcessInfo: (
     pid: number,
   ) => Promise<{ cmdline: string; cwd: string } | null>;
@@ -167,9 +175,11 @@ export class InstanceCoordinator {
     this.readLinuxProcessInfo =
       options.readLinuxProcessInfo ?? defaultReadLinuxProcessInfo;
     this.readPsCommand = options.readPsCommand ?? defaultReadPsCommand;
-    this.createControlServer = options.createControlServer ?? (() => net.createServer());
+    this.createControlServer =
+      options.createControlServer ?? (() => net.createServer());
     this.createControlConnection =
-      options.createControlConnection ?? ((socketPath: string) => net.createConnection(socketPath));
+      options.createControlConnection ??
+      ((socketPath: string) => net.createConnection(socketPath));
   }
 
   getBootId(): string {
@@ -212,21 +222,27 @@ export class InstanceCoordinator {
         continue;
       }
 
-      const socketAccepted = await this.requestGracefulTakeover(ownerState.record);
+      const socketAccepted = await this.requestGracefulTakeover(
+        ownerState.record,
+      );
       if (socketAccepted) {
         const released = await this.waitForOwnerRelease(
           ownerState.record,
           GRACEFUL_TAKEOVER_TIMEOUT_MS,
         );
         if (released) {
-          await this.cleanupStaleState(ownerState.record.controlSocketPath || null);
+          await this.cleanupStaleState(
+            ownerState.record.controlSocketPath || null,
+          );
           continue;
         }
       }
 
       const verification = await this.verifyProcessIdentity(ownerState.record);
       if (verification.kind === 'dead') {
-        await this.cleanupStaleState(ownerState.record.controlSocketPath || null);
+        await this.cleanupStaleState(
+          ownerState.record.controlSocketPath || null,
+        );
         continue;
       }
 
@@ -250,7 +266,9 @@ export class InstanceCoordinator {
         GRACEFUL_TAKEOVER_TIMEOUT_MS,
       );
       if (gracefulReleased) {
-        await this.cleanupStaleState(ownerState.record.controlSocketPath || null);
+        await this.cleanupStaleState(
+          ownerState.record.controlSocketPath || null,
+        );
         continue;
       }
 
@@ -260,7 +278,9 @@ export class InstanceCoordinator {
         FORCE_KILL_WAIT_MS,
       );
       if (forceReleased) {
-        await this.cleanupStaleState(ownerState.record.controlSocketPath || null);
+        await this.cleanupStaleState(
+          ownerState.record.controlSocketPath || null,
+        );
         continue;
       }
 
@@ -269,7 +289,9 @@ export class InstanceCoordinator {
       );
     }
 
-    throw new Error('Exceeded maximum retries while attempting singleton takeover.');
+    throw new Error(
+      'Exceeded maximum retries while attempting singleton takeover.',
+    );
   }
 
   async release(): Promise<void> {
@@ -306,9 +328,11 @@ export class InstanceCoordinator {
         await activeOwnershipHandle.close();
       }
       await this.safeUnlink(this.lockFilePath);
-      await fs.promises.rm(this.runtimeRoot, { recursive: false, force: true }).catch(() => {
-        /* ignore non-empty runtime root */
-      });
+      await fs.promises
+        .rm(this.runtimeRoot, { recursive: false, force: true })
+        .catch(() => {
+          /* ignore non-empty runtime root */
+        });
     })();
 
     await this.releaseInFlight;
@@ -422,7 +446,10 @@ export class InstanceCoordinator {
             },
           );
         } catch (error) {
-          logger.warn({ err: error }, 'Failed to parse takeover control message');
+          logger.warn(
+            { err: error },
+            'Failed to parse takeover control message',
+          );
           socket.end(
             `${JSON.stringify({ ok: false, error: 'invalid_request' })}\n`,
           );
@@ -505,10 +532,12 @@ export class InstanceCoordinator {
       if (isErrno(error, 'ENOENT')) return null;
       throw error;
     });
-    const lockStat = await fs.promises.stat(this.lockFilePath).catch((error) => {
-      if (isErrno(error, 'ENOENT')) return null;
-      throw error;
-    });
+    const lockStat = await fs.promises
+      .stat(this.lockFilePath)
+      .catch((error) => {
+        if (isErrno(error, 'ENOENT')) return null;
+        throw error;
+      });
 
     const lockAgeMs = lockStat
       ? this.now() - lockStat.mtimeMs
@@ -741,7 +770,9 @@ export class InstanceCoordinator {
     }
   }
 
-  private async cleanupStaleState(controlSocketPath: string | null): Promise<void> {
+  private async cleanupStaleState(
+    controlSocketPath: string | null,
+  ): Promise<void> {
     const sockets = new Set<string>([this.fallbackSocketPath]);
     if (controlSocketPath && controlSocketPath !== this.preferredSocketPath) {
       sockets.add(controlSocketPath);
