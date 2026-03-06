@@ -1,146 +1,144 @@
-# NanoClaw Debug Checklist
+# ClawRocket Debug Checklist
 
-## Ubuntu Runtime Operations
+Use [OPERATIONS_UBUNTU.md](OPERATIONS_UBUNTU.md) for routine service management. This file is for targeted debugging.
 
-For Ubuntu deployment/start/stop/restart procedures, use:
-- `docs/OPERATIONS_UBUNTU.md`
+## 1. Process Ownership And Single-Instance State
 
-This checklist remains focused on lower-level debugging flows.
-
-## Known Issues (2026-02-08)
-
-### 1. [FIXED] Resume branches from stale tree position
-When agent teams spawns subagent CLI processes, they write to the same session JSONL. On subsequent `query()` resumes, the CLI reads the JSONL but may pick a stale branch tip (from before the subagent activity), causing the agent's response to land on a branch the host never receives a `result` for. **Fix**: pass `resumeSessionAt` with the last assistant message UUID to explicitly anchor each resume.
-
-### 2. IDLE_TIMEOUT == CONTAINER_TIMEOUT (both 30 min)
-Both timers fire at the same time, so containers always exit via hard SIGKILL (code 137) instead of graceful `_close` sentinel shutdown. The idle timeout should be shorter (e.g., 5 min) so containers wind down between messages, while container timeout stays at 30 min as a safety net for stuck agents.
-
-### 3. Cursor advanced before agent succeeds
-`processGroupMessages` advances `lastAgentTimestamp` before the agent runs. If the container times out, retries find no messages (cursor already past them). Messages are permanently lost on timeout.
-
-## Quick Status Check
+Check who owns the runtime:
 
 ```bash
-# 1. Is the service running?
-systemctl --user status nanoclaw
-# Expected: active (running)
-
-# Legacy macOS check (launchd)
-# launchctl list | grep nanoclaw
-
-# 2. Any running containers?
-docker ps --format '{{.Names}} {{.Status}}' 2>/dev/null | grep nanoclaw
-
-# 3. Any stopped/orphaned containers?
-docker ps -a --format '{{.Names}} {{.Status}}' 2>/dev/null | grep nanoclaw
-
-# 4. Recent errors in service log?
-journalctl --user -u nanoclaw -n 200 | rg -n 'ERROR|WARN'
-
-# 5. Is WhatsApp connected? (look for last connection event)
-journalctl --user -u nanoclaw -n 200 | rg -n 'Connected to WhatsApp|Connection closed|connection.*close'
-
-# 6. Are groups loaded?
-journalctl --user -u nanoclaw -n 200 | rg -n 'groupCount'
+ls -la data/runtime/instance
+cat data/runtime/instance/owner.json
 ```
 
-## Session Transcript Branching
+Key files:
+
+- `data/runtime/instance/ownership.lock`
+- `data/runtime/instance/owner.json`
+- `data/runtime/instance/lock/control.sock` or hashed `/tmp` fallback socket
+
+Useful checks:
 
 ```bash
-# Check for concurrent CLI processes in session debug logs
-ls -la data/sessions/<group>/.claude/debug/
-
-# Count unique SDK processes that handled messages
-# Each .txt file = one CLI subprocess. Multiple = concurrent queries.
-
-# Check parentUuid branching in transcript
-python3 -c "
-import json, sys
-lines = open('data/sessions/<group>/.claude/projects/-workspace-group/<session>.jsonl').read().strip().split('\n')
-for i, line in enumerate(lines):
-  try:
-    d = json.loads(line)
-    if d.get('type') == 'user' and d.get('message'):
-      parent = d.get('parentUuid', 'ROOT')[:8]
-      content = str(d['message'].get('content', ''))[:60]
-      print(f'L{i+1} parent={parent} {content}')
-  except: pass
-"
+pgrep -fa "node dist/index.js"
+lsof -iTCP:3210 -sTCP:LISTEN || true
 ```
 
-## Container Timeout Investigation
+If startup/takeover is behaving strangely, verify:
+
+- only one process owns the same `DATA_DIR`
+- the PID in `owner.json` is real
+- the process command line actually belongs to ClawRocket/NanoClaw
+
+## 2. Health And Web Surface
 
 ```bash
-# Check for recent timeouts
-grep -E 'Container timeout|timed out' logs/nanoclaw.log | tail -10
-
-# Check container log files for the timed-out container
-ls -lt groups/*/logs/container-*.log | head -10
-
-# Read the most recent container log (replace path)
-cat groups/<group>/logs/container-<timestamp>.log
-
-# Check if retries were scheduled and what happened
-grep -E 'Scheduling retry|retry|Max retries' logs/nanoclaw.log | tail -10
+curl -i http://127.0.0.1:3210/api/v1/health
 ```
 
-## Agent Not Responding
+Expected:
+
+- `200` when DB is readable
+- no optimistic “server started” logs on bind failure
+
+If auth/session issues are suspected:
+
+- sign in via the web UI
+- inspect `/api/v1/session/me`
+- inspect `/api/v1/settings/executor-status`
+
+## 3. Core Executor Checks
+
+The core executor still uses the container/Claude path.
+
+Check:
 
 ```bash
-# Check if messages are being received from WhatsApp
-grep 'New messages' logs/nanoclaw.log | tail -10
-
-# Check if messages are being processed (container spawned)
-grep -E 'Processing messages|Spawning container' logs/nanoclaw.log | tail -10
-
-# Check if messages are being piped to active container
-grep -E 'Piped messages|sendMessage' logs/nanoclaw.log | tail -10
-
-# Check the queue state — any active containers?
-grep -E 'Starting container|Container active|concurrency limit' logs/nanoclaw.log | tail -10
-
-# Check lastAgentTimestamp vs latest message timestamp
-sqlite3 store/messages.db "SELECT chat_jid, MAX(timestamp) as latest FROM messages GROUP BY chat_jid ORDER BY latest DESC LIMIT 5;"
+journalctl --user -u nanoclaw -n 200 | rg -n "Talk executor mode selected|Database initialized|Container runtime"
+docker ps --format '{{.Names}} {{.Status}}' 2>/dev/null | grep nanoclaw || true
 ```
 
-## Container Mount Issues
+Watch for:
+
+- container runtime failures
+- auth misconfiguration
+- no channels connected
+
+## 4. Talk Runtime Checks
+
+Talks use the direct HTTP runtime.
+
+Useful checks:
 
 ```bash
-# Check mount validation logs (shows on container spawn)
-grep -E 'Mount validated|Mount.*REJECTED|mount' logs/nanoclaw.log | tail -10
-
-# Verify the mount allowlist is readable
-cat ~/.config/nanoclaw/mount-allowlist.json
-
-# Check group's container_config in DB
-sqlite3 store/messages.db "SELECT name, container_config FROM registered_groups;"
-
-# Test-run a container to check mounts (dry run)
-# Replace <group-folder> with the group's folder name
-container run -i --rm --entrypoint ls nanoclaw-agent:latest /workspace/extra/
+journalctl --user -u nanoclaw -n 200 | rg -n "direct_http|Retryable talk-provider failure|route_unavailable"
+sqlite3 data/messages.db "SELECT id, status, created_at, started_at, ended_at FROM talk_runs ORDER BY created_at DESC LIMIT 10;"
+sqlite3 data/messages.db "SELECT provider_id, model_id, status, failure_class, created_at FROM llm_attempts ORDER BY created_at DESC LIMIT 20;"
 ```
 
-## WhatsApp Auth Issues
+When debugging a specific talk:
 
 ```bash
-# Check if QR code was requested (means auth expired)
-grep 'QR\|authentication required\|qr' logs/nanoclaw.log | tail -5
-
-# Check auth files exist
-ls -la store/auth/
-
-# Re-authenticate if needed
-npm run auth
+sqlite3 data/messages.db "SELECT id, role, created_at, substr(content,1,120) FROM talk_messages WHERE talk_id = '<talk-id>' ORDER BY created_at DESC LIMIT 20;"
+sqlite3 data/messages.db "SELECT id, name, route_id, is_primary, sort_order FROM talk_agents WHERE talk_id = '<talk-id>' ORDER BY sort_order;"
 ```
 
-## Service Management
+Look for:
+
+- missing primary agent
+- missing/default route mismatch
+- retryable provider failures causing fallback
+- repeated `route_unavailable` or auth/config errors
+
+## 5. Settings And Provider State
+
+Current settings split:
+
+- core executor settings
+- Talk LLM settings
+
+Check:
 
 ```bash
-# Ubuntu (systemd user service)
-systemctl --user status nanoclaw
-systemctl --user restart nanoclaw
-journalctl --user -u nanoclaw -f
-
-# Legacy macOS launchd flow (if you still run locally on macOS)
-launchctl kickstart -k gui/$(id -u)/com.nanoclaw
+sqlite3 data/messages.db "SELECT key, value FROM settings_kv WHERE key LIKE 'executor.%' OR key LIKE 'talkLlm.%' ORDER BY key;"
+sqlite3 data/messages.db "SELECT id, provider_kind, api_format, enabled FROM llm_providers ORDER BY id;"
+sqlite3 data/messages.db "SELECT route_id, position, provider_id, model_id FROM talk_route_steps ORDER BY route_id, position;"
 ```
+
+Notes:
+
+- Talk provider secrets are encrypted in `llm_provider_secrets`
+- core executor credentials are managed separately via executor settings
+- the admin UI currently edits Talk LLM settings as JSON
+
+## 6. Channels And Scheduler
+
+```bash
+journalctl --user -u nanoclaw -n 200 | rg -n "Group registered|Task created|Task resumed|Task paused|Task cancelled"
+journalctl --user -u nanoclaw -n 200 | rg -n "Connected to Telegram|Connected to WhatsApp|connection"
+```
+
+If duplicate consumer behavior appears, check the singleton guard first before chasing channel-specific causes.
+
+## 7. Common Failure Patterns
+
+### Health is down
+- DB unreadable or initialization failed.
+
+### Web server won’t bind
+- another process owns the port
+- or another ClawRocket process is already running and should be taken over intentionally
+
+### Talk run never starts
+- TalkRunWorker not running
+- no valid primary agent / route
+- provider disabled or route invalid
+
+### Talk run starts but fails immediately
+- provider credentials missing
+- invalid provider/model configuration
+- timeout or retryable upstream failure exhausted the route steps
+
+### Restart button does nothing
+- service is not running under `systemd --user`
+- or `CLAWROCKET_SELF_RESTART=1` is missing

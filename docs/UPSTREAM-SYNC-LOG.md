@@ -9,6 +9,20 @@
 
 ## Sync Entries
 
+### 2026-03-06 - Singleton Guard And Context Documentation Cleanup
+
+- Added a real per-`DATA_DIR` singleton coordinator:
+  - held `ownership.lock` file handle
+  - `owner.json` metadata
+  - control-socket graceful takeover
+  - verified signal fallback
+- Startup now installs signal handlers before singleton acquisition and only reports web-server success after confirmed bind.
+- Cleaned active documentation to reflect current ClawRocket architecture:
+  - core executor remains containerized and upstream-sensitive
+  - Talks run through the direct HTTP runtime
+  - Ubuntu `systemd --user` remains the canonical production model
+- Removed stale planning/duplicate architecture docs from the active docs set.
+
 ### 2026-03-05 - Phase 1.9 Step F Runtime Validation Closeout (Ubuntu Host)
 
 - Host: `Alienware-Aurora-R13` (Ubuntu 24.04.3 LTS)

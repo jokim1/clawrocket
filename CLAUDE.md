@@ -1,64 +1,86 @@
-# NanoClaw
+# ClawRocket Repo Context
 
-Personal Claude assistant. See [README.md](README.md) for philosophy and setup. See [docs/REQUIREMENTS.md](docs/REQUIREMENTS.md) for architecture decisions.
+See [README.md](README.md) for product overview. This file is the short coding context for agents working inside the repo.
 
-## Quick Context
+## Current Project Shape
 
-Single Node.js process with skill-based channel system. Channels (WhatsApp, Telegram, Slack, Discord, Gmail) are skills that self-register at startup. Messages route to Claude Agent SDK running in containers (Linux VMs). Each group has isolated filesystem and memory.
+ClawRocket is a NanoClaw-derived fork with two distinct runtime domains:
+
+1. **NanoClaw core**
+   - single-process orchestrator
+   - containerized Claude execution
+   - channels, scheduler, IPC, group queues
+
+2. **ClawRocket web/talk stack**
+   - auth + RBAC
+   - web UI and API
+   - executor settings
+   - provider-routed Talk runtime
+   - direct HTTP streaming talk execution
+
+Keep those domains separate when making changes.
+
+## Most Important Boundaries
+
+- Prefer ClawRocket-specific work under `src/clawrocket/*`.
+- Treat changes to `src/index.ts`, `src/db.ts`, `src/config.ts`, and `src/task-scheduler.ts` as upstream-sensitive.
+- Before widening that surface, check [docs/UPSTREAM-PATCH-SURFACE.md](docs/UPSTREAM-PATCH-SURFACE.md).
 
 ## Key Files
 
 | File | Purpose |
-|------|---------|
-| `src/index.ts` | Orchestrator: state, message loop, agent invocation |
-| `src/channels/registry.ts` | Channel registry (self-registration at startup) |
-| `src/ipc.ts` | IPC watcher and task processing |
-| `src/router.ts` | Message formatting and outbound routing |
-| `src/config.ts` | Trigger pattern, paths, intervals |
-| `src/container-runner.ts` | Spawns agent containers with mounts |
-| `src/task-scheduler.ts` | Runs scheduled tasks |
-| `src/db.ts` | SQLite operations |
-| `groups/{name}/CLAUDE.md` | Per-group memory (isolated) |
-| `container/skills/agent-browser.md` | Browser automation tool (available to all agents via Bash) |
+| --- | --- |
+| `src/index.ts` | core startup, singleton coordination, channels, scheduler, message loop |
+| `src/instance-coordinator.ts` | single-instance ownership and graceful takeover |
+| `src/container-runner.ts` | containerized core executor path |
+| `src/clawrocket/web/index.ts` | web-server bootstrap and Talk worker wiring |
+| `src/clawrocket/web/server.ts` | Hono app and HTTP bind lifecycle |
+| `src/clawrocket/talks/direct-executor.ts` | provider-neutral direct Talk runtime |
+| `src/clawrocket/talks/run-worker.ts` | queued Talk run dispatch |
+| `src/clawrocket/talks/executor-settings.ts` | core executor settings + restart status |
+| `src/clawrocket/db/init.ts` | ClawRocket schema |
+| `src/clawrocket/db/llm-accessors.ts` | Talk provider, route, agent, and attempt persistence |
+| `webapp/src/pages/SettingsPage.tsx` | executor + Talk LLM settings UI |
+| `webapp/src/pages/TalkDetailPage.tsx` | Talk UI, agent targeting, streaming state |
 
-## Skills
+## Current Runtime Facts
 
-| Skill | When to Use |
-|-------|-------------|
-| `/setup` | First-time installation, authentication, service configuration |
-| `/customize` | Adding channels, integrations, changing behavior |
-| `/debug` | Container issues, logs, troubleshooting |
-| `/update-nanoclaw` | Bring upstream NanoClaw updates into a customized install |
-| `/qodo-pr-resolver` | Fetch and fix Qodo PR review issues interactively or in batch |
-| `/get-qodo-rules` | Load org- and repo-level coding rules from Qodo before code tasks |
+- Talk runtime mode is `direct_http`.
+- Talks are stateless and text-only in v1.
+- Core executor remains on the container/Claude path.
+- Talk provider secrets are encrypted at rest.
+- Core executor credentials are managed through the executor settings service.
+- A built-in mock Talk route exists for first boot.
+- Only one process should own a given `DATA_DIR`; a second process attempts graceful takeover.
 
-## Development
+## Operations Facts
 
-Run commands directly—don't tell the user to run them.
+- Ubuntu `systemd --user` is the canonical deployment model.
+- `CLAWROCKET_SELF_RESTART=1` enables owner-triggered restart from the settings page.
+- The web server should only log startup success after confirmed bind.
+
+## Development Commands
 
 ```bash
-npm run dev          # Run with hot reload
-npm run build        # Compile TypeScript
-./container/build.sh # Rebuild agent container
+npm run dev
+npm run dev:web
+npm run typecheck
+npm run test
+npm run build
+npm --prefix webapp run typecheck
+npm --prefix webapp run test
 ```
 
-Service management:
-```bash
-# macOS (launchd)
-launchctl load ~/Library/LaunchAgents/com.nanoclaw.plist
-launchctl unload ~/Library/LaunchAgents/com.nanoclaw.plist
-launchctl kickstart -k gui/$(id -u)/com.nanoclaw  # restart
+## Docs To Trust
 
-# Linux (systemd)
-systemctl --user start nanoclaw
-systemctl --user stop nanoclaw
-systemctl --user restart nanoclaw
-```
+- [docs/SPEC.md](docs/SPEC.md): current architecture
+- [docs/REQUIREMENTS.md](docs/REQUIREMENTS.md): current constraints/priorities
+- [docs/SECURITY.md](docs/SECURITY.md): security model
+- [docs/DEBUG_CHECKLIST.md](docs/DEBUG_CHECKLIST.md): debugging flows
+- [docs/OPERATIONS_UBUNTU.md](docs/OPERATIONS_UBUNTU.md): production operations
 
-## Troubleshooting
+## Docs To Avoid Reintroducing
 
-**WhatsApp not connecting after upgrade:** WhatsApp is now a separate skill, not bundled in core. Run `/add-whatsapp` (or `npx tsx scripts/apply-skill.ts .claude/skills/add-whatsapp && npm run build`) to install it. Existing auth credentials and groups are preserved.
-
-## Container Build Cache
-
-The container buildkit caches the build context aggressively. `--no-cache` alone does NOT invalidate COPY steps — the builder's volume retains stale files. To force a truly clean rebuild, prune the builder then re-run `./container/build.sh`.
+- old phase plans
+- rollout notes masquerading as source-of-truth docs
+- upstream NanoClaw-only descriptions that ignore the ClawRocket web/talk stack

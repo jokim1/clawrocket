@@ -1,5 +1,7 @@
 # Claude Agent SDK Deep Dive
 
+This document applies to the **containerized core executor path only**. It does not describe the direct HTTP Talk runtime under `src/clawrocket/talks/*`.
+
 Findings from reverse-engineering `@anthropic-ai/claude-agent-sdk` v0.2.29–0.2.34 to understand how `query()` works, why agent teams subagents were being killed, and how to fix it. Supplemented with official SDK reference docs.
 
 ## Architecture
