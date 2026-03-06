@@ -13,11 +13,7 @@ import {
   setTalkRunExecutorProfile,
   upsertTalkExecutorSession,
 } from '../db/index.js';
-import {
-  TALK_EXECUTOR_ALIAS_MODEL_MAP_JSON,
-  TALK_EXECUTOR_DEFAULT_ALIAS,
-  TALK_EXECUTOR_WEB_GROUP_FOLDER,
-} from '../config.js';
+import { TALK_EXECUTOR_WEB_GROUP_FOLDER } from '../config.js';
 
 import {
   TalkExecutor,
@@ -25,16 +21,8 @@ import {
   TalkExecutorInput,
   TalkExecutorOutput,
 } from './executor.js';
+import { computeSessionCompatKey } from './executor-settings.js';
 import { parsePolicyAgentsForExecution } from './policy.js';
-
-const COMPATIBILITY_ALIAS_MODEL_SEEDS: Record<string, string> = {
-  Mock: 'default',
-  Gemini: 'default',
-  'Opus4.6': 'default',
-  Haiku: 'default',
-  'GPT-4o': 'default',
-  Opus: 'default',
-};
 
 const INVALID_SESSION_ERROR_HINTS = [
   'invalid session',
@@ -61,63 +49,6 @@ function isSessionInvalidError(errorMessage: string): boolean {
   return INVALID_SESSION_ERROR_HINTS.some((hint) => normalized.includes(hint));
 }
 
-function normalizeEnvAliasModelMap(rawJson: string): Record<string, string> {
-  if (!rawJson.trim()) return {};
-
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(rawJson);
-  } catch (error) {
-    logger.warn(
-      { err: error },
-      'TALK_EXECUTOR_ALIAS_MODEL_MAP_JSON is invalid JSON; ignoring override',
-    );
-    return {};
-  }
-
-  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    logger.warn(
-      'TALK_EXECUTOR_ALIAS_MODEL_MAP_JSON must be a JSON object; ignoring override',
-    );
-    return {};
-  }
-
-  const normalized: Record<string, string> = {};
-  for (const [rawAlias, rawModel] of Object.entries(parsed)) {
-    const alias = rawAlias.trim();
-    const model = typeof rawModel === 'string' ? rawModel.trim() : '';
-    if (!alias || !model) {
-      logger.warn(
-        { alias: rawAlias },
-        'Skipping invalid talk executor alias map entry',
-      );
-      continue;
-    }
-    normalized[alias] = model;
-  }
-
-  return normalized;
-}
-
-export function hasValidAliasModelMapConfig(rawJson: string): boolean {
-  if (!rawJson.trim()) return false;
-  try {
-    const parsed = JSON.parse(rawJson);
-    return (
-      Boolean(parsed) && typeof parsed === 'object' && !Array.isArray(parsed)
-    );
-  } catch {
-    return false;
-  }
-}
-
-export function getTalkExecutorAliasModelMap(): Record<string, string> {
-  return {
-    ...COMPATIBILITY_ALIAS_MODEL_SEEDS,
-    ...normalizeEnvAliasModelMap(TALK_EXECUTOR_ALIAS_MODEL_MAP_JSON),
-  };
-}
-
 interface ExecutionProfile {
   alias: string;
   model: string;
@@ -125,8 +56,8 @@ interface ExecutionProfile {
 }
 
 export interface RealTalkExecutorOptions {
-  aliasModelMap?: Record<string, string>;
-  defaultAlias?: string;
+  aliasModelMap: Record<string, string>;
+  defaultAlias: string;
   groupFolder?: string;
   runContainer?: typeof runContainerAgent;
 }
@@ -137,10 +68,9 @@ export class RealTalkExecutor implements TalkExecutor {
   private readonly groupFolder: string;
   private readonly runContainer: typeof runContainerAgent;
 
-  constructor(options: RealTalkExecutorOptions = {}) {
-    this.aliasModelMap =
-      options.aliasModelMap || getTalkExecutorAliasModelMap();
-    this.defaultAlias = options.defaultAlias || TALK_EXECUTOR_DEFAULT_ALIAS;
+  constructor(options: RealTalkExecutorOptions) {
+    this.aliasModelMap = options.aliasModelMap;
+    this.defaultAlias = options.defaultAlias;
     this.groupFolder = options.groupFolder || TALK_EXECUTOR_WEB_GROUP_FOLDER;
     this.runContainer = options.runContainer || runContainerAgent;
   }
@@ -149,34 +79,18 @@ export class RealTalkExecutor implements TalkExecutor {
     input: TalkExecutorInput,
     signal: AbortSignal,
   ): Promise<TalkExecutorOutput> {
+    const candidate = this.resolveExecutionProfile(input.talkId);
     const session = getTalkExecutorSession(input.talkId);
-    const fromSession = this.resolveExecutionProfile(input.talkId, session);
+    const fromSession = this.resolveReusableProfile(candidate, session);
     return this.executeWithRetry(
       input,
       signal,
       fromSession,
-      session !== undefined,
+      Boolean(fromSession.sessionId),
     );
   }
 
-  private resolveExecutionProfile(
-    talkId: string,
-    session:
-      | {
-          session_id: string;
-          executor_alias: string;
-          executor_model: string;
-        }
-      | undefined,
-  ): ExecutionProfile {
-    if (session) {
-      return {
-        alias: session.executor_alias,
-        model: session.executor_model,
-        sessionId: session.session_id,
-      };
-    }
-
+  private resolveExecutionProfile(talkId: string): ExecutionProfile {
     const llmPolicy = getTalkLlmPolicyByTalkId(talkId);
     const parsedAliases = parsePolicyAgentsForExecution(llmPolicy);
     const alias = parsedAliases[0] || this.defaultAlias;
@@ -189,6 +103,33 @@ export class RealTalkExecutor implements TalkExecutor {
     }
 
     return { alias, model };
+  }
+
+  private resolveReusableProfile(
+    candidate: ExecutionProfile,
+    session:
+      | {
+          session_id: string;
+          session_compat_key: string;
+        }
+      | undefined,
+  ): ExecutionProfile {
+    if (!session) {
+      return candidate;
+    }
+
+    const expectedCompatKey = computeSessionCompatKey(
+      candidate.alias,
+      candidate.model,
+    );
+    if (session.session_compat_key !== expectedCompatKey) {
+      return candidate;
+    }
+
+    return {
+      ...candidate,
+      sessionId: session.session_id,
+    };
   }
 
   private async executeWithRetry(
@@ -220,10 +161,7 @@ export class RealTalkExecutor implements TalkExecutor {
       );
 
       deleteTalkExecutorSession(input.talkId);
-      const retryProfile = this.resolveExecutionProfile(
-        input.talkId,
-        undefined,
-      );
+      const retryProfile = this.resolveExecutionProfile(input.talkId);
       return this.executeOnce(input, signal, retryProfile);
     }
   }
@@ -247,6 +185,7 @@ export class RealTalkExecutor implements TalkExecutor {
         sessionId: output.sessionId,
         executorAlias: profile.alias,
         executorModel: profile.model,
+        sessionCompatKey: computeSessionCompatKey(profile.alias, profile.model),
       });
     }
 

@@ -36,6 +36,11 @@ systemctl --user daemon-reload
 systemctl --user enable --now nanoclaw
 ```
 
+Notes:
+- The bundled service sets `Restart=always` so the web settings page can trigger a graceful self-restart.
+- The web restart button is enabled only when `CLAWROCKET_SELF_RESTART=1` is present in the service environment.
+- The restart flow sends `SIGTERM` after the HTTP response flushes, so the existing graceful shutdown path still runs.
+
 Optional (start on boot even without active login session):
 
 ```bash

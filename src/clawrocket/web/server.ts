@@ -15,6 +15,7 @@ import {
 } from '../config.js';
 import {
   canUserAccessTalk,
+  countRunningTalkRuns,
   getOutboxEventsForTopics,
   getOutboxMinEventIdForTopics,
   getUserById,
@@ -36,6 +37,10 @@ import {
 } from '../identity/session.js';
 import { KeychainBridge, noopKeychainBridge } from '../secrets/keychain.js';
 import type { TalkRunWorkerControl } from '../talks/run-worker.js';
+import {
+  ExecutorSettingsService,
+  ExecutorSettingsValidationError,
+} from '../talks/executor-settings.js';
 import { validateCsrfToken } from './middleware/csrf.js';
 import {
   idempotencyPrecheck,
@@ -81,6 +86,7 @@ export interface WebServerOptions {
   keychain: KeychainBridge;
   runWorker: TalkRunWorkerControl;
   webAppDistDir: string;
+  executorSettings: ExecutorSettingsService;
 }
 
 export interface WebServerHandle {
@@ -108,7 +114,20 @@ export function createWebServer(
     keychain: input?.keychain || noopKeychainBridge,
     runWorker: input?.runWorker || noopRunWorker,
     webAppDistDir: input?.webAppDistDir ?? DEFAULT_WEB_APP_DIST_DIR,
+    executorSettings: input?.executorSettings || new ExecutorSettingsService(),
   };
+
+  // startWebServer() already runs bootstrap migration in production. Repeat it
+  // here so request-only server instances used by tests exercise the same
+  // executor settings path without needing the full startup wrapper.
+  opts.executorSettings.runBootstrapMigration();
+  if (!opts.executorSettings.getRunningSnapshot()) {
+    const config = opts.executorSettings.resolveEffectiveConfig();
+    opts.executorSettings.captureRunningSnapshot(
+      config,
+      opts.executorSettings.getConfigVersion(),
+    );
+  }
 
   const app = buildApp(opts);
   let server: ReturnType<typeof serve> | null = null;
@@ -387,6 +406,297 @@ function buildApp(opts: WebServerOptions): Hono {
     if (!user || user.is_active !== 1) return unauthorized(c);
 
     return c.json({ ok: true, data: { user: normalizeUser(user) } }, 200);
+  });
+
+  app.get('/api/v1/settings/executor', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+    if (auth.role !== 'owner' && auth.role !== 'admin') {
+      return forbidden(c, 'Owner or admin role required');
+    }
+
+    const rateResult = checkRateLimit({
+      principalId: auth.userId,
+      bucket: 'read',
+    });
+    if (!rateResult.allowed) {
+      return rateLimitedResponse(c, rateResult);
+    }
+
+    return c.json(
+      {
+        ok: true,
+        data: opts.executorSettings.getSettingsView(),
+      },
+      200,
+    );
+  });
+
+  app.put('/api/v1/settings/executor', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+    if (auth.role !== 'owner' && auth.role !== 'admin') {
+      return forbidden(c, 'Owner or admin role required');
+    }
+
+    const rateResult = checkRateLimit({
+      principalId: auth.userId,
+      bucket: 'write',
+    });
+    if (!rateResult.allowed) {
+      return rateLimitedResponse(c, rateResult);
+    }
+
+    const csrf = validateCsrfToken({
+      method: c.req.method,
+      authType: auth.authType,
+      cookieHeader: c.req.header('cookie'),
+      csrfHeader: c.req.header('x-csrf-token'),
+    });
+    if (!csrf.ok) {
+      return c.json(
+        {
+          ok: false,
+          error: {
+            code: 'csrf_failed',
+            message: csrf.reason,
+          },
+        },
+        403,
+      );
+    }
+
+    const bodyText = await c.req.text();
+    const idempotencyKey = c.req.header('idempotency-key') || null;
+    const precheck = idempotencyPrecheck({
+      userId: auth.userId,
+      idempotencyKey,
+      method: c.req.method,
+      path: c.req.path,
+      bodyText,
+    });
+    if (precheck.error) {
+      return c.json(
+        {
+          ok: false,
+          error: {
+            code: 'idempotency_error',
+            message: precheck.error,
+          },
+        },
+        400,
+      );
+    }
+
+    if (precheck.replay && precheck.response) {
+      return new Response(precheck.response.responseBody, {
+        status: precheck.response.statusCode,
+        headers: {
+          'content-type': 'application/json; charset=utf-8',
+          'x-idempotent-replay': 'true',
+        },
+      });
+    }
+
+    const payload = parseJsonPayload<{
+      anthropicApiKey?: string | null;
+      claudeOauthToken?: string | null;
+      anthropicAuthToken?: string | null;
+      anthropicBaseUrl?: string | null;
+      aliasModelMap?: Record<string, string>;
+      defaultAlias?: string;
+    }>(bodyText);
+    if (!payload.ok) {
+      return c.json(
+        {
+          ok: false,
+          error: {
+            code: 'invalid_json',
+            message: payload.error,
+          },
+        },
+        400,
+      );
+    }
+
+    try {
+      const data = opts.executorSettings.saveExecutorConfig(
+        payload.data,
+        auth.userId,
+      );
+      const serialized = JSON.stringify({ ok: true, data });
+      saveIdempotencyResult({
+        userId: auth.userId,
+        idempotencyKey,
+        method: c.req.method,
+        path: c.req.path,
+        requestHash: precheck.requestHash,
+        statusCode: 200,
+        responseBody: serialized,
+      });
+
+      return new Response(serialized, {
+        status: 200,
+        headers: { 'content-type': 'application/json; charset=utf-8' },
+      });
+    } catch (err) {
+      if (err instanceof ExecutorSettingsValidationError) {
+        return c.json(
+          {
+            ok: false,
+            error: {
+              code: err.code,
+              message: err.message,
+              details: err.details,
+            },
+          },
+          400,
+        );
+      }
+      throw err;
+    }
+  });
+
+  app.get('/api/v1/settings/executor-status', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+    if (auth.role !== 'owner' && auth.role !== 'admin') {
+      return forbidden(c, 'Owner or admin role required');
+    }
+
+    const rateResult = checkRateLimit({
+      principalId: auth.userId,
+      bucket: 'read',
+    });
+    if (!rateResult.allowed) {
+      return rateLimitedResponse(c, rateResult);
+    }
+
+    return c.json(
+      {
+        ok: true,
+        data: opts.executorSettings.getStatusView(),
+      },
+      200,
+    );
+  });
+
+  app.post('/api/v1/settings/restart', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+    if (auth.role !== 'owner') {
+      return forbidden(c, 'Owner role required');
+    }
+
+    const rateResult = checkRateLimit({
+      principalId: auth.userId,
+      bucket: 'write',
+    });
+    if (!rateResult.allowed) {
+      return rateLimitedResponse(c, rateResult);
+    }
+
+    const csrf = validateCsrfToken({
+      method: c.req.method,
+      authType: auth.authType,
+      cookieHeader: c.req.header('cookie'),
+      csrfHeader: c.req.header('x-csrf-token'),
+    });
+    if (!csrf.ok) {
+      return c.json(
+        {
+          ok: false,
+          error: {
+            code: 'csrf_failed',
+            message: csrf.reason,
+          },
+        },
+        403,
+      );
+    }
+
+    const bodyText = await c.req.text();
+    const idempotencyKey = c.req.header('idempotency-key') || null;
+    const precheck = idempotencyPrecheck({
+      userId: auth.userId,
+      idempotencyKey,
+      method: c.req.method,
+      path: c.req.path,
+      bodyText,
+    });
+    if (precheck.error) {
+      return c.json(
+        {
+          ok: false,
+          error: {
+            code: 'idempotency_error',
+            message: precheck.error,
+          },
+        },
+        400,
+      );
+    }
+
+    if (precheck.replay && precheck.response) {
+      return new Response(precheck.response.responseBody, {
+        status: precheck.response.statusCode,
+        headers: {
+          'content-type': 'application/json; charset=utf-8',
+          'x-idempotent-replay': 'true',
+        },
+      });
+    }
+
+    if (!opts.executorSettings.isRestartSupported()) {
+      return c.json(
+        {
+          ok: false,
+          error: {
+            code: 'restart_unsupported',
+            message:
+              'Service restart is only available when CLAWROCKET_SELF_RESTART=1',
+          },
+        },
+        409,
+      );
+    }
+
+    if (opts.executorSettings.getStartupAgeMs() < 10_000) {
+      return c.json(
+        {
+          ok: false,
+          error: {
+            code: 'restart_cooldown',
+            message: 'Service recently started',
+          },
+        },
+        409,
+      );
+    }
+
+    const data = {
+      status: 'restarting',
+      activeRunCount: countRunningTalkRuns(),
+    };
+    const serialized = JSON.stringify({ ok: true, data });
+    saveIdempotencyResult({
+      userId: auth.userId,
+      idempotencyKey,
+      method: c.req.method,
+      path: c.req.path,
+      requestHash: precheck.requestHash,
+      statusCode: 200,
+      responseBody: serialized,
+    });
+
+    setTimeout(() => {
+      process.kill(process.pid, 'SIGTERM');
+    }, 500);
+
+    return new Response(serialized, {
+      status: 200,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
   });
 
   app.post('/api/v1/settings/users/invite', async (c) => {
@@ -1187,6 +1497,19 @@ function unauthorized(c: Context) {
       },
     },
     401,
+  );
+}
+
+function forbidden(c: Context, message: string) {
+  return c.json(
+    {
+      ok: false,
+      error: {
+        code: 'forbidden',
+        message,
+      },
+    },
+    403,
   );
 }
 

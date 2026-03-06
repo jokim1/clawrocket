@@ -456,6 +456,7 @@ export interface TalkExecutorSessionRecord {
   session_id: string;
   executor_alias: string;
   executor_model: string;
+  session_compat_key: string;
   updated_at: string;
 }
 
@@ -736,7 +737,13 @@ export function getTalkExecutorSession(
   return getDb()
     .prepare(
       `
-      SELECT talk_id, session_id, executor_alias, executor_model, updated_at
+      SELECT
+        talk_id,
+        session_id,
+        executor_alias,
+        executor_model,
+        session_compat_key,
+        updated_at
       FROM talk_executor_sessions
       WHERE talk_id = ?
       LIMIT 1
@@ -750,18 +757,25 @@ export function upsertTalkExecutorSession(input: {
   sessionId: string;
   executorAlias: string;
   executorModel: string;
+  sessionCompatKey: string;
   updatedAt?: string;
 }): void {
   getDb()
     .prepare(
       `
       INSERT INTO talk_executor_sessions (
-        talk_id, session_id, executor_alias, executor_model, updated_at
-      ) VALUES (?, ?, ?, ?, ?)
+        talk_id,
+        session_id,
+        executor_alias,
+        executor_model,
+        session_compat_key,
+        updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?)
       ON CONFLICT(talk_id) DO UPDATE SET
         session_id = excluded.session_id,
         executor_alias = excluded.executor_alias,
         executor_model = excluded.executor_model,
+        session_compat_key = excluded.session_compat_key,
         updated_at = excluded.updated_at
     `,
     )
@@ -770,6 +784,7 @@ export function upsertTalkExecutorSession(input: {
       input.sessionId,
       input.executorAlias,
       input.executorModel,
+      input.sessionCompatKey,
       input.updatedAt || new Date().toISOString(),
     );
 }
@@ -1025,6 +1040,8 @@ export function enqueueTalkTurnAtomic(input: {
             runId: txInput.runId,
             triggerMessageId: txInput.messageId,
             status,
+            executorAlias: run.executor_alias,
+            executorModel: run.executor_model,
           }),
           now,
         );
@@ -1389,6 +1406,19 @@ export function listRunningTalkRuns(limit = 50): TalkRunRecord[] {
     .all(normalizedLimit) as TalkRunRecord[];
 }
 
+export function countRunningTalkRuns(): number {
+  const row = getDb()
+    .prepare(
+      `
+      SELECT COUNT(*) AS count
+      FROM talk_runs
+      WHERE status = 'running'
+    `,
+    )
+    .get() as { count: number };
+  return row.count;
+}
+
 /**
  * Appends an assistant message and related outbox event.
  *
@@ -1461,7 +1491,7 @@ function promoteNextQueuedRunTx(
   const next = getDb()
     .prepare(
       `
-      SELECT id, trigger_message_id
+      SELECT id, trigger_message_id, executor_alias, executor_model
       FROM talk_runs
       WHERE talk_id = ? AND status = 'queued'
       ORDER BY created_at ASC
@@ -1469,7 +1499,12 @@ function promoteNextQueuedRunTx(
     `,
     )
     .get(talkId) as
-    | { id: string; trigger_message_id: string | null }
+    | {
+        id: string;
+        trigger_message_id: string | null;
+        executor_alias: string | null;
+        executor_model: string | null;
+      }
     | undefined;
   if (!next) return null;
 
@@ -1502,6 +1537,8 @@ function promoteNextQueuedRunTx(
         runId: next.id,
         triggerMessageId: next.trigger_message_id,
         status: 'running',
+        executorAlias: next.executor_alias,
+        executorModel: next.executor_model,
       }),
       now,
     );
@@ -1531,14 +1568,20 @@ export function completeRunAndPromoteNextAtomic(input: {
       const run = getDb()
         .prepare(
           `
-          SELECT id, talk_id, trigger_message_id
+          SELECT id, talk_id, trigger_message_id, executor_alias, executor_model
           FROM talk_runs
           WHERE id = ? AND status = 'running'
           LIMIT 1
         `,
         )
         .get(txInput.runId) as
-        | { id: string; talk_id: string; trigger_message_id: string | null }
+        | {
+            id: string;
+            talk_id: string;
+            trigger_message_id: string | null;
+            executor_alias: string | null;
+            executor_model: string | null;
+          }
         | undefined;
       if (!run) {
         return { applied: false, talkId: null, promotedRunId: null };
@@ -1582,6 +1625,8 @@ export function completeRunAndPromoteNextAtomic(input: {
             runId: run.id,
             triggerMessageId: run.trigger_message_id,
             responseMessageId: responseMessage.id,
+            executorAlias: run.executor_alias,
+            executorModel: run.executor_model,
           }),
           now,
         );
@@ -1620,14 +1665,20 @@ export function failRunAndPromoteNextAtomic(input: {
       const run = getDb()
         .prepare(
           `
-          SELECT id, talk_id, trigger_message_id
+          SELECT id, talk_id, trigger_message_id, executor_alias, executor_model
           FROM talk_runs
           WHERE id = ? AND status = 'running'
           LIMIT 1
         `,
         )
         .get(txInput.runId) as
-        | { id: string; talk_id: string; trigger_message_id: string | null }
+        | {
+            id: string;
+            talk_id: string;
+            trigger_message_id: string | null;
+            executor_alias: string | null;
+            executor_model: string | null;
+          }
         | undefined;
       if (!run) {
         return { applied: false, talkId: null, promotedRunId: null };
@@ -1668,6 +1719,8 @@ export function failRunAndPromoteNextAtomic(input: {
             triggerMessageId: run.trigger_message_id,
             errorCode: txInput.errorCode,
             errorMessage: txInput.errorMessage,
+            executorAlias: run.executor_alias,
+            executorModel: run.executor_model,
           }),
           now,
         );
@@ -1782,7 +1835,7 @@ export function failInterruptedRunsOnStartup(now?: string): {
       const runningRuns = getDb()
         .prepare(
           `
-          SELECT id, talk_id, trigger_message_id
+          SELECT id, talk_id, trigger_message_id, executor_alias, executor_model
           FROM talk_runs
           WHERE status = 'running'
           ORDER BY created_at ASC
@@ -1792,6 +1845,8 @@ export function failInterruptedRunsOnStartup(now?: string): {
         id: string;
         talk_id: string;
         trigger_message_id: string | null;
+        executor_alias: string | null;
+        executor_model: string | null;
       }>;
 
       const failedRunIds: string[] = [];
@@ -1828,6 +1883,8 @@ export function failInterruptedRunsOnStartup(now?: string): {
               triggerMessageId: run.trigger_message_id,
               errorCode: 'interrupted_by_restart',
               errorMessage: 'Run interrupted by process restart',
+              executorAlias: run.executor_alias,
+              executorModel: run.executor_model,
             }),
             currentNow,
           );

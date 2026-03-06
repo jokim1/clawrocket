@@ -170,12 +170,16 @@ We don't want configuration sprawl. Every user should customize NanoClaw so that
 
 **Can I use third-party or open-source models?**
 
-Yes. NanoClaw supports any API-compatible model endpoint. Set these environment variables in your `.env` file:
+Yes. NanoClaw supports Anthropic-compatible endpoints, and the web Settings page is the primary place to manage executor credentials after bootstrap handoff.
+
+For first boot or pre-upgrade installs, you can still seed the executor from `.env`:
 
 ```bash
 ANTHROPIC_BASE_URL=https://your-api-endpoint.com
 ANTHROPIC_AUTH_TOKEN=your-token-here
 ```
+
+If you were already using `.env` for executor credentials, ClawRocket imports them into the settings database on first boot after upgrade and then treats the settings page as authoritative.
 
 This allows you to use:
 - Local models via [Ollama](https://ollama.ai) with an API proxy

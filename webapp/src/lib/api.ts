@@ -61,6 +61,49 @@ export type TalkPolicy = {
   };
 };
 
+export type SettingsActor = {
+  id: string;
+  displayName: string;
+};
+
+export type ExecutorSettings = {
+  configuredAliasMap: Record<string, string>;
+  effectiveAliasMap: Record<string, string>;
+  defaultAlias: string;
+  hasApiKey: boolean;
+  hasOauthToken: boolean;
+  hasAuthToken: boolean;
+  anthropicBaseUrl: string;
+  isConfigured: boolean;
+  configVersion: number;
+  lastUpdatedAt: string | null;
+  lastUpdatedBy: SettingsActor | null;
+  configErrors: string[];
+};
+
+export type ExecutorSettingsUpdate = {
+  anthropicApiKey?: string | null;
+  claudeOauthToken?: string | null;
+  anthropicAuthToken?: string | null;
+  anthropicBaseUrl?: string | null;
+  aliasModelMap?: Record<string, string>;
+  defaultAlias?: string;
+};
+
+export type ExecutorStatus = {
+  mode: 'real' | 'mock';
+  restartSupported: boolean;
+  pendingRestartReasons: string[];
+  activeRunCount: number;
+  hasProviderAuth: boolean;
+  hasValidAliasMap: boolean;
+  detectedAuthMethod: 'oauth' | 'api_key' | 'auth_token' | 'none';
+  configVersion: number;
+  isConfigured: boolean;
+  bootId: string;
+  configErrors: string[];
+};
+
 type ApiEnvelope<T> =
   | {
       ok: true;
@@ -180,6 +223,52 @@ export async function listTalkMessages(talkId: string): Promise<TalkMessage[]> {
     page: { limit: number; count: number; beforeCreatedAt: string | null };
   }>(`/api/v1/talks/${encodeURIComponent(talkId)}/messages`);
   return envelope.messages;
+}
+
+export async function getExecutorSettings(): Promise<ExecutorSettings> {
+  return apiRequest<ExecutorSettings>('/api/v1/settings/executor');
+}
+
+export async function updateExecutorSettings(
+  update: ExecutorSettingsUpdate,
+): Promise<ExecutorSettings> {
+  return apiRequest<ExecutorSettings>('/api/v1/settings/executor', {
+    method: 'PUT',
+    headers: buildMutationHeaders({ includeJson: true }),
+    body: JSON.stringify(update),
+  });
+}
+
+export async function getExecutorStatus(): Promise<ExecutorStatus> {
+  return apiRequest<ExecutorStatus>('/api/v1/settings/executor-status');
+}
+
+export async function restartService(): Promise<{
+  status: string;
+  activeRunCount: number;
+}> {
+  return apiRequest<{ status: string; activeRunCount: number }>(
+    '/api/v1/settings/restart',
+    {
+      method: 'POST',
+      headers: buildMutationHeaders({ includeJson: false }),
+    },
+  );
+}
+
+export async function getHealthStatus(): Promise<boolean> {
+  try {
+    const response = await fetch('/api/v1/health', {
+      method: 'GET',
+      credentials: 'include',
+      headers: {
+        accept: 'application/json',
+      },
+    });
+    return response.ok;
+  } catch {
+    return false;
+  }
 }
 
 export async function sendTalkMessage(input: {

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Navigate, Route, Routes } from 'react-router-dom';
+import { Link, Navigate, Route, Routes } from 'react-router-dom';
 
 import { SignInView } from './components/SignInView';
 import {
@@ -10,6 +10,7 @@ import {
 } from './lib/api';
 import { TalkDetailPage } from './pages/TalkDetailPage';
 import { TalkListPage } from './pages/TalkListPage';
+import { SettingsPage } from './pages/SettingsPage';
 
 type AuthState =
   | { status: 'loading' }
@@ -63,6 +64,12 @@ export function App() {
   return (
     <main className="app-shell">
       <header className="app-topbar">
+        <nav className="app-nav">
+          <Link to="/app/talks">Talks</Link>
+          {auth.user.role === 'owner' || auth.user.role === 'admin' ? (
+            <Link to="/app/settings">Settings</Link>
+          ) : null}
+        </nav>
         <div className="app-user-meta">
           <strong>{auth.user.displayName}</strong>
           <span>{auth.user.email}</span>
@@ -85,6 +92,19 @@ export function App() {
         <Route
           path="/app/talks/:talkId"
           element={<TalkDetailPage onUnauthorized={handleUnauthorized} />}
+        />
+        <Route
+          path="/app/settings"
+          element={
+            auth.user.role === 'owner' || auth.user.role === 'admin' ? (
+              <SettingsPage
+                onUnauthorized={handleUnauthorized}
+                userRole={auth.user.role}
+              />
+            ) : (
+              <Navigate to="/app/talks" replace />
+            )
+          }
         />
         <Route path="*" element={<Navigate to="/app/talks" replace />} />
       </Routes>

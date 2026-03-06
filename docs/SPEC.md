@@ -384,7 +384,9 @@ Additional mounts appear at `/workspace/extra/{containerPath}` inside the contai
 
 ### Claude Authentication
 
-Configure authentication in a `.env` file in the project root. Two options:
+The web Settings page is the primary configuration surface for talk-executor auth after bootstrap handoff. Existing `.env` values are treated as bootstrap inputs on first boot after upgrade.
+
+For bootstrap-only auth, two supported credential styles remain:
 
 **Option 1: Claude Subscription (OAuth token)**
 ```bash
@@ -397,7 +399,7 @@ The token can be extracted from `~/.claude/.credentials.json` if you're logged i
 ANTHROPIC_API_KEY=sk-ant-api03-...
 ```
 
-Only the authentication variables (`CLAUDE_CODE_OAUTH_TOKEN` and `ANTHROPIC_API_KEY`) are extracted from `.env` and written to `data/env/env`, then mounted into the container at `/workspace/env-dir/env` and sourced by the entrypoint script. This ensures other environment variables in `.env` are not exposed to the agent. This workaround is needed because some container runtimes lose `-e` environment variables when using `-i` (interactive mode with piped stdin).
+After bootstrap handoff, executor credentials live in `settings_kv` and are passed into talk-execution containers directly from the settings service. The executor also supports `ANTHROPIC_AUTH_TOKEN` and `ANTHROPIC_BASE_URL` for Anthropic-compatible third-party endpoints.
 
 ### Changing the Assistant Name
 

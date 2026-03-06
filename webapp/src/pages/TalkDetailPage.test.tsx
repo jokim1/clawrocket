@@ -528,12 +528,17 @@ describe('TalkDetailPage', () => {
         runId: 'run-5',
         triggerMessageId: 'msg-1',
         responseMessageId: 'msg-2',
+        executorAlias: 'Gemini',
+        executorModel: 'default',
       });
     });
 
     const runHistory = screen.getByLabelText('Run history');
     expect(within(runHistory).getByText('run-5')).toBeTruthy();
     expect(within(runHistory).getByText('completed')).toBeTruthy();
+    expect(within(runHistory).getByText('Executor:')).toBeTruthy();
+    expect(within(runHistory).getByText('Gemini')).toBeTruthy();
+    expect(within(runHistory).getByText('default')).toBeTruthy();
 
     const triggerLink = within(runHistory).getByRole('button', {
       name: /Trigger:/i,

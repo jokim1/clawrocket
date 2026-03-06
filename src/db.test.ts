@@ -55,6 +55,7 @@ import {
   upsertUser,
   upsertWebSession,
 } from './clawrocket/db/index.js';
+import { computeSessionCompatKey } from './clawrocket/talks/executor-settings.js';
 
 beforeEach(() => {
   _initTestDatabase();
@@ -563,6 +564,7 @@ describe('phase 0 schema and reliability tables', () => {
       sessionId: 'session-1',
       executorAlias: 'Gemini',
       executorModel: 'default',
+      sessionCompatKey: computeSessionCompatKey('Gemini', 'default'),
       updatedAt: '2024-01-01T00:00:00.000Z',
     });
     upsertTalkExecutorSession({
@@ -570,6 +572,7 @@ describe('phase 0 schema and reliability tables', () => {
       sessionId: 'session-2',
       executorAlias: 'Opus4.6',
       executorModel: 'default',
+      sessionCompatKey: computeSessionCompatKey('Opus4.6', 'default'),
       updatedAt: '2024-01-01T00:00:01.000Z',
     });
 
@@ -578,6 +581,9 @@ describe('phase 0 schema and reliability tables', () => {
     expect(session?.session_id).toBe('session-2');
     expect(session?.executor_alias).toBe('Opus4.6');
     expect(session?.executor_model).toBe('default');
+    expect(session?.session_compat_key).toBe(
+      computeSessionCompatKey('Opus4.6', 'default'),
+    );
     expect(session?.updated_at).toBe('2024-01-01T00:00:01.000Z');
 
     deleteTalkExecutorSession('talk-1');
@@ -975,6 +981,73 @@ describe('phase 0 schema and reliability tables', () => {
     const run = getTalkRunById('run-meta-1');
     expect(run?.executor_alias).toBe('Gemini');
     expect(run?.executor_model).toBe('default');
+  });
+
+  it('includes executor alias/model in terminal run lifecycle events', () => {
+    enqueueTalkTurnAtomic({
+      talkId: 'talk-1',
+      userId: 'owner-1',
+      content: 'terminal metadata complete',
+      messageId: 'msg-meta-term-1',
+      runId: 'run-meta-term-1',
+      now: '2024-01-01T00:00:56.000Z',
+    });
+
+    setTalkRunExecutorProfile({
+      runId: 'run-meta-term-1',
+      executorAlias: 'Gemini',
+      executorModel: 'default',
+    });
+
+    const completion = completeRunAndPromoteNextAtomic({
+      runId: 'run-meta-term-1',
+      responseMessageId: 'msg-meta-term-1r',
+      responseContent: 'done',
+      now: '2024-01-01T00:00:57.000Z',
+    });
+    expect(completion.applied).toBe(true);
+
+    enqueueTalkTurnAtomic({
+      talkId: 'talk-1',
+      userId: 'owner-1',
+      content: 'terminal metadata fail',
+      messageId: 'msg-meta-term-2',
+      runId: 'run-meta-term-2',
+      now: '2024-01-01T00:00:58.000Z',
+    });
+
+    setTalkRunExecutorProfile({
+      runId: 'run-meta-term-2',
+      executorAlias: 'Opus4.6',
+      executorModel: 'default',
+    });
+
+    const failure = failRunAndPromoteNextAtomic({
+      runId: 'run-meta-term-2',
+      errorCode: 'execution_failed',
+      errorMessage: 'boom',
+      now: '2024-01-01T00:00:59.000Z',
+    });
+    expect(failure.applied).toBe(true);
+
+    const events = getOutboxEventsForTopics(['talk:talk-1'], 0, 100);
+    const completedEvent = events.find(
+      (event) =>
+        event.event_type === 'talk_run_completed' &&
+        event.payload.includes('"runId":"run-meta-term-1"'),
+    );
+    expect(completedEvent).toBeDefined();
+    expect(completedEvent?.payload).toContain('"executorAlias":"Gemini"');
+    expect(completedEvent?.payload).toContain('"executorModel":"default"');
+
+    const failedEvent = events.find(
+      (event) =>
+        event.event_type === 'talk_run_failed' &&
+        event.payload.includes('"runId":"run-meta-term-2"'),
+    );
+    expect(failedEvent).toBeDefined();
+    expect(failedEvent?.payload).toContain('"executorAlias":"Opus4.6"');
+    expect(failedEvent?.payload).toContain('"executorModel":"default"');
   });
 
   it('preserves hot events while pruning old outbox rows', () => {

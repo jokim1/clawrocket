@@ -19,6 +19,8 @@ export type TalkRunStartedEvent = {
   runId: string;
   triggerMessageId: string | null;
   status: 'running' | 'queued';
+  executorAlias?: string | null;
+  executorModel?: string | null;
 };
 
 export type TalkRunCompletedEvent = {
@@ -26,6 +28,8 @@ export type TalkRunCompletedEvent = {
   runId: string;
   triggerMessageId: string | null;
   responseMessageId: string;
+  executorAlias?: string | null;
+  executorModel?: string | null;
 };
 
 export type TalkRunFailedEvent = {
@@ -34,6 +38,8 @@ export type TalkRunFailedEvent = {
   triggerMessageId: string | null;
   errorCode: string;
   errorMessage: string;
+  executorAlias?: string | null;
+  executorModel?: string | null;
 };
 
 export type TalkRunCancelledEvent = {

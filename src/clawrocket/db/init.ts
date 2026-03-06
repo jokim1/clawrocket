@@ -2,6 +2,12 @@ import Database from 'better-sqlite3';
 
 import { getDb } from '../../db.js';
 
+function computeSessionCompatKey(alias: string, model: string): string {
+  // Keep this backfill logic aligned with the canonical helper in
+  // talks/executor-settings.ts.
+  return JSON.stringify([alias, model]);
+}
+
 function createClawrocketSchema(database: Database.Database): void {
   database.exec(`
     CREATE TABLE IF NOT EXISTS users (
@@ -172,11 +178,19 @@ function createClawrocketSchema(database: Database.Database): void {
       updated_at TEXT NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS settings_kv (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      updated_by TEXT REFERENCES users(id)
+    );
+
     CREATE TABLE IF NOT EXISTS talk_executor_sessions (
       talk_id TEXT PRIMARY KEY REFERENCES talks(id) ON DELETE CASCADE,
       session_id TEXT NOT NULL,
       executor_alias TEXT NOT NULL,
       executor_model TEXT NOT NULL,
+      session_compat_key TEXT NOT NULL DEFAULT '',
       updated_at TEXT NOT NULL
     );
   `);
@@ -234,6 +248,60 @@ function createClawrocketSchema(database: Database.Database): void {
     database.exec(`ALTER TABLE talk_runs ADD COLUMN executor_model TEXT`);
   } catch {
     /* column already exists */
+  }
+
+  // Add session_compat_key column if it doesn't exist (migration for existing DBs)
+  try {
+    database.exec(
+      `ALTER TABLE talk_executor_sessions ADD COLUMN session_compat_key TEXT NOT NULL DEFAULT ''`,
+    );
+  } catch {
+    /* column already exists */
+  }
+
+  const staleSessions = database
+    .prepare(
+      `
+      SELECT talk_id, executor_alias, executor_model
+      FROM talk_executor_sessions
+      WHERE session_compat_key = ''
+        AND executor_alias != ''
+        AND executor_model != ''
+    `,
+    )
+    .all() as Array<{
+    talk_id: string;
+    executor_alias: string;
+    executor_model: string;
+  }>;
+
+  if (staleSessions.length > 0) {
+    const backfill = database.prepare(
+      `
+      UPDATE talk_executor_sessions
+      SET session_compat_key = ?
+      WHERE talk_id = ?
+    `,
+    );
+
+    const tx = database.transaction(
+      (
+        rows: Array<{
+          talk_id: string;
+          executor_alias: string;
+          executor_model: string;
+        }>,
+      ) => {
+        for (const row of rows) {
+          backfill.run(
+            computeSessionCompatKey(row.executor_alias, row.executor_model),
+            row.talk_id,
+          );
+        }
+      },
+    );
+
+    tx(staleSessions);
   }
 }
 
