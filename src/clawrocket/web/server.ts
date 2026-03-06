@@ -1,7 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 
-import { serve } from '@hono/node-server';
+import { createAdaptorServer, type ServerType } from '@hono/node-server';
 import { getConnInfo } from '@hono/node-server/conninfo';
 import { bodyLimit } from 'hono/body-limit';
 import { deleteCookie, getCookie, setCookie } from 'hono/cookie';
@@ -99,7 +99,7 @@ export interface WebServerHandle {
   start: () => Promise<{ host: string; port: number }>;
   stop: () => Promise<void>;
   request: (path: string, init?: RequestInit) => Promise<Response>;
-  server: ReturnType<typeof serve> | null;
+  server: ServerType | null;
 }
 
 export function createWebServer(
@@ -136,7 +136,7 @@ export function createWebServer(
   }
 
   const app = buildApp(opts);
-  let server: ReturnType<typeof serve> | null = null;
+  let server: ServerType | null = null;
 
   return {
     get server() {
@@ -158,16 +158,35 @@ export function createWebServer(
         return { host: opts.host, port: resolvedPort };
       }
 
-      server = serve({
+      const candidate = createAdaptorServer({
         fetch: app.fetch,
         hostname: opts.host,
         port: opts.port,
       });
+      server = candidate;
 
-      const address = server.address();
-      const resolvedPort =
-        address && typeof address === 'object' ? address.port : opts.port;
-      return { host: opts.host, port: resolvedPort };
+      return new Promise<{ host: string; port: number }>((resolve, reject) => {
+        const cleanup = () => {
+          candidate.off('error', onError);
+          candidate.off('listening', onListening);
+        };
+        const onError = (error: Error) => {
+          cleanup();
+          server = null;
+          reject(error);
+        };
+        const onListening = () => {
+          cleanup();
+          const address = candidate.address();
+          const resolvedPort =
+            address && typeof address === 'object' ? address.port : opts.port;
+          resolve({ host: opts.host, port: resolvedPort });
+        };
+
+        candidate.once('error', onError);
+        candidate.once('listening', onListening);
+        candidate.listen(opts.port, opts.host);
+      });
     },
     stop: async () => {
       if (!server) return;
