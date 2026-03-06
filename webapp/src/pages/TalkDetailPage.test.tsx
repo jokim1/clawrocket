@@ -307,9 +307,8 @@ describe('TalkDetailPage', () => {
     const putInit = putCall?.[1] as RequestInit | undefined;
     const body = putInit?.body;
     expect(typeof body).toBe('string');
-    expect(JSON.parse(body as string)).toEqual({
-      agents: fullPolicyAgents,
-    });
+    const parsed = JSON.parse(body as string) as { agents: Array<{ name: string }> };
+    expect(parsed.agents.map((agent) => agent.name)).toEqual(fullPolicyAgents);
   });
 
   it('shows send and cancel inline error states and clears send error on typing', async () => {

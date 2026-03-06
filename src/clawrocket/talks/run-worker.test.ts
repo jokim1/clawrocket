@@ -210,7 +210,7 @@ describe('TalkRunWorker', () => {
     );
 
     expect(userMessages).toHaveLength(2);
-    expect(userMessages.every((message) => message.run_id === null)).toBe(true);
+    expect(userMessages.every((message) => message.run_id !== null)).toBe(true);
     expect(assistantMessages).toHaveLength(2);
     expect(assistantMessages.every((message) => message.run_id !== null)).toBe(
       true,

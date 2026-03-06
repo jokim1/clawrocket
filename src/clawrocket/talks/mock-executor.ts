@@ -2,6 +2,7 @@ import { TALK_MOCK_EXECUTION_MS } from '../config.js';
 
 import type {
   TalkExecutor,
+  TalkExecutionEvent,
   TalkExecutorInput,
   TalkExecutorOutput,
 } from './executor.js';
@@ -58,11 +59,30 @@ export class MockTalkExecutor implements TalkExecutor {
   async execute(
     input: TalkExecutorInput,
     signal: AbortSignal,
+    emit?: (event: TalkExecutionEvent) => void,
   ): Promise<TalkExecutorOutput> {
+    emit?.({
+      type: 'talk_response_started',
+      runId: input.runId,
+      talkId: input.talkId,
+    });
     await waitFor(this.executionMs, signal);
 
+    const content = `Mock assistant response to: ${input.triggerContent}`;
+    emit?.({
+      type: 'talk_response_delta',
+      runId: input.runId,
+      talkId: input.talkId,
+      deltaText: content,
+    });
+    emit?.({
+      type: 'talk_response_completed',
+      runId: input.runId,
+      talkId: input.talkId,
+    });
+
     return {
-      content: `Mock assistant response to: ${input.triggerContent}`,
+      content,
     };
   }
 }

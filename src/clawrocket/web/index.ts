@@ -6,12 +6,11 @@ import {
   WEB_PORT,
 } from '../config.js';
 import type { TalkExecutor } from '../talks/executor.js';
-import { MockTalkExecutor } from '../talks/mock-executor.js';
 import {
   ExecutorSettingsService,
   setActiveExecutorSettingsService,
 } from '../talks/executor-settings.js';
-import { RealTalkExecutor } from '../talks/real-executor.js';
+import { DirectTalkExecutor } from '../talks/direct-executor.js';
 import { TalkRunWorker } from '../talks/run-worker.js';
 
 import { createWebServer, WebServerHandle } from './server.js';
@@ -20,17 +19,7 @@ export async function startWebServer(): Promise<WebServerHandle> {
   const executorSettings = new ExecutorSettingsService();
   executorSettings.runBootstrapMigration();
   const effectiveConfig = executorSettings.resolveEffectiveConfig();
-  const useRealExecutor =
-    effectiveConfig.hasProviderAuth &&
-    effectiveConfig.hasValidAliasMap &&
-    effectiveConfig.configErrors.length === 0;
-
-  const executor: TalkExecutor = useRealExecutor
-    ? new RealTalkExecutor({
-        aliasModelMap: effectiveConfig.effectiveAliasMap,
-        defaultAlias: effectiveConfig.defaultAlias,
-      })
-    : new MockTalkExecutor();
+  const executor: TalkExecutor = new DirectTalkExecutor();
 
   executorSettings.captureRunningSnapshot(
     effectiveConfig,
@@ -40,10 +29,7 @@ export async function startWebServer(): Promise<WebServerHandle> {
 
   logger.info(
     {
-      mode: useRealExecutor ? 'real' : 'mock',
-      hasProviderAuth: effectiveConfig.hasProviderAuth,
-      hasValidAliasMap: effectiveConfig.hasValidAliasMap,
-      configErrors: effectiveConfig.configErrors,
+      mode: 'direct_http',
     },
     'Talk executor mode selected',
   );

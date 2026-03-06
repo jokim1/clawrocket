@@ -12,6 +12,8 @@ export type MessageAppendedEvent = {
   createdBy: string | null;
   content?: string;
   createdAt?: string;
+  agentId?: string | null;
+  agentName?: string | null;
 };
 
 export type TalkRunStartedEvent = {
@@ -30,6 +32,53 @@ export type TalkRunCompletedEvent = {
   responseMessageId: string;
   executorAlias?: string | null;
   executorModel?: string | null;
+};
+
+export type TalkResponseStartedEvent = {
+  talkId: string;
+  runId: string;
+  agentId?: string | null;
+  agentName?: string | null;
+  routeStepPosition?: number | null;
+  providerId?: string | null;
+  modelId?: string | null;
+};
+
+export type TalkResponseDeltaEvent = {
+  talkId: string;
+  runId: string;
+  agentId?: string | null;
+  agentName?: string | null;
+  deltaText: string;
+  routeStepPosition?: number | null;
+  providerId?: string | null;
+  modelId?: string | null;
+};
+
+export type TalkResponseUsageEvent = {
+  talkId: string;
+  runId: string;
+  agentId?: string | null;
+  usage?: {
+    inputTokens?: number;
+    outputTokens?: number;
+    estimatedCostUsd?: number;
+  };
+  routeStepPosition?: number | null;
+  providerId?: string | null;
+  modelId?: string | null;
+};
+
+export type TalkResponseTerminalEvent = {
+  talkId: string;
+  runId: string;
+  agentId?: string | null;
+  agentName?: string | null;
+  routeStepPosition?: number | null;
+  providerId?: string | null;
+  modelId?: string | null;
+  errorCode?: string;
+  errorMessage?: string;
 };
 
 export type TalkRunFailedEvent = {
@@ -62,6 +111,12 @@ interface TalkStreamCallbacks {
   onMessageAppended: (event: MessageAppendedEvent) => void;
   onRunStarted: (event: TalkRunStartedEvent) => void;
   onRunQueued: (event: TalkRunStartedEvent) => void;
+  onResponseStarted?: (event: TalkResponseStartedEvent) => void;
+  onResponseDelta?: (event: TalkResponseDeltaEvent) => void;
+  onResponseUsage?: (event: TalkResponseUsageEvent) => void;
+  onResponseCompleted?: (event: TalkResponseTerminalEvent) => void;
+  onResponseFailed?: (event: TalkResponseTerminalEvent) => void;
+  onResponseCancelled?: (event: TalkResponseTerminalEvent) => void;
   onRunCompleted: (event: TalkRunCompletedEvent) => void;
   onRunFailed: (event: TalkRunFailedEvent) => void;
   onRunCancelled: (event: TalkRunCancelledEvent) => void;
@@ -238,6 +293,48 @@ export function openTalkStream(input: OpenTalkStreamInput): TalkStreamHandle {
       const payload = parse<TalkRunCompletedEvent>(event);
       if (!payload) return;
       input.onRunCompleted(payload);
+    });
+
+    next.addEventListener('talk_response_started', (event) => {
+      if (next !== source || stopped) return;
+      const payload = parse<TalkResponseStartedEvent>(event);
+      if (!payload) return;
+      input.onResponseStarted?.(payload);
+    });
+
+    next.addEventListener('talk_response_delta', (event) => {
+      if (next !== source || stopped) return;
+      const payload = parse<TalkResponseDeltaEvent>(event);
+      if (!payload) return;
+      input.onResponseDelta?.(payload);
+    });
+
+    next.addEventListener('talk_response_usage', (event) => {
+      if (next !== source || stopped) return;
+      const payload = parse<TalkResponseUsageEvent>(event);
+      if (!payload) return;
+      input.onResponseUsage?.(payload);
+    });
+
+    next.addEventListener('talk_response_completed', (event) => {
+      if (next !== source || stopped) return;
+      const payload = parse<TalkResponseTerminalEvent>(event);
+      if (!payload) return;
+      input.onResponseCompleted?.(payload);
+    });
+
+    next.addEventListener('talk_response_failed', (event) => {
+      if (next !== source || stopped) return;
+      const payload = parse<TalkResponseTerminalEvent>(event);
+      if (!payload) return;
+      input.onResponseFailed?.(payload);
+    });
+
+    next.addEventListener('talk_response_cancelled', (event) => {
+      if (next !== source || stopped) return;
+      const payload = parse<TalkResponseTerminalEvent>(event);
+      if (!payload) return;
+      input.onResponseCancelled?.(payload);
     });
 
     next.addEventListener('talk_run_failed', (event) => {

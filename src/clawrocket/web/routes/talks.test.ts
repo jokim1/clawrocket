@@ -406,7 +406,7 @@ describe('talk routes', () => {
     });
     expect(clearRes.status).toBe(200);
     const clearBody = (await clearRes.json()) as any;
-    expect(clearBody.data.agents).toEqual([]);
+    expect(clearBody.data.agents).toEqual(['Mock']);
 
     const listRes = await server.request('/api/v1/talks', {
       headers: {

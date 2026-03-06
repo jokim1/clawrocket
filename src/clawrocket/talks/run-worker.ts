@@ -2,6 +2,7 @@ import { randomUUID } from 'crypto';
 
 import { TALK_RUN_MAX_CONCURRENCY, TALK_RUN_POLL_MS } from '../config.js';
 import {
+  appendOutboxEvent,
   completeRunAndPromoteNextAtomic,
   failInterruptedRunsOnStartup,
   failRunAndPromoteNextAtomic,
@@ -12,7 +13,11 @@ import {
 } from '../db/index.js';
 import { logger } from '../../logger.js';
 
-import { TalkExecutorError, type TalkExecutor } from './executor.js';
+import {
+  TalkExecutorError,
+  type TalkExecutionEvent,
+  type TalkExecutor,
+} from './executor.js';
 import { MockTalkExecutor } from './mock-executor.js';
 
 export interface TalkRunWorkerOptions {
@@ -217,14 +222,19 @@ export class TalkRunWorker implements TalkRunWorkerControl {
           requestedBy: run.requested_by,
           triggerMessageId: triggerMessage.id,
           triggerContent: triggerMessage.content,
+          targetAgentId: run.target_agent_id,
         },
         signal,
+        (event) => this.emitExecutionEvent(event),
       );
 
       const completed = completeRunAndPromoteNextAtomic({
         runId: run.id,
         responseMessageId: `msg_${randomUUID()}`,
         responseContent: output.content,
+        responseMetadataJson: output.metadataJson,
+        agentId: output.agentId,
+        agentName: output.agentName,
       });
       if (!completed.applied) {
         logger.debug(
@@ -246,6 +256,14 @@ export class TalkRunWorker implements TalkRunWorkerControl {
         errorMessage(error),
       );
     }
+  }
+
+  private emitExecutionEvent(event: TalkExecutionEvent): void {
+    appendOutboxEvent({
+      topic: `talk:${event.talkId}`,
+      eventType: event.type,
+      payload: JSON.stringify(event),
+    });
   }
 
   private failRun(

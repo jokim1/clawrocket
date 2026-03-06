@@ -43,6 +43,8 @@ export type TalkMessage = {
   createdBy: string | null;
   createdAt: string;
   runId: string | null;
+  agentId?: string | null;
+  agentName?: string | null;
 };
 
 export type TalkRun = {
@@ -50,6 +52,7 @@ export type TalkRun = {
   status: 'queued' | 'running' | 'cancelled' | 'completed' | 'failed';
   createdAt: string;
   startedAt: string | null;
+  targetAgentId: string | null;
 };
 
 export type TalkPolicy = {
@@ -59,6 +62,69 @@ export type TalkPolicy = {
     maxAgents: number;
     maxAgentChars: number;
   };
+};
+
+export type TalkAgent = {
+  id: string;
+  name: string;
+  personaRole:
+    | 'assistant'
+    | 'analyst'
+    | 'critic'
+    | 'strategist'
+    | 'devils-advocate'
+    | 'synthesizer'
+    | 'editor';
+  routeId: string;
+  isPrimary: boolean;
+  sortOrder: number;
+};
+
+export type TalkLlmProvider = {
+  id: string;
+  name: string;
+  providerKind:
+    | 'anthropic'
+    | 'openai'
+    | 'gemini'
+    | 'deepseek'
+    | 'kimi'
+    | 'custom';
+  apiFormat: 'anthropic_messages' | 'openai_chat_completions';
+  baseUrl: string;
+  authScheme: 'x_api_key' | 'bearer';
+  enabled: boolean;
+  coreCompatibility: 'none' | 'claude_sdk_proxy';
+  responseStartTimeoutMs: number | null;
+  streamIdleTimeoutMs: number | null;
+  absoluteTimeoutMs: number | null;
+  hasCredential: boolean;
+  models: Array<{
+    modelId: string;
+    displayName: string;
+    contextWindowTokens: number;
+    defaultMaxOutputTokens: number;
+    enabled: boolean;
+  }>;
+};
+
+export type TalkLlmRoute = {
+  id: string;
+  name: string;
+  enabled: boolean;
+  assignedAgentCount: number;
+  assignedTalkCount: number;
+  steps: Array<{
+    position: number;
+    providerId: string;
+    modelId: string;
+  }>;
+};
+
+export type TalkLlmSettings = {
+  defaultRouteId: string | null;
+  providers: TalkLlmProvider[];
+  routes: TalkLlmRoute[];
 };
 
 export type SettingsActor = {
@@ -225,6 +291,49 @@ export async function listTalkMessages(talkId: string): Promise<TalkMessage[]> {
   return envelope.messages;
 }
 
+export async function getTalkAgents(talkId: string): Promise<TalkAgent[]> {
+  const envelope = await apiRequest<{
+    talkId: string;
+    agents: TalkAgent[];
+  }>(`/api/v1/talks/${encodeURIComponent(talkId)}/agents`);
+  return envelope.agents;
+}
+
+export async function updateTalkAgents(input: {
+  talkId: string;
+  agents: TalkAgent[];
+}): Promise<TalkAgent[]> {
+  const envelope = await apiRequest<{
+    talkId: string;
+    agents: TalkAgent[];
+  }>(`/api/v1/talks/${encodeURIComponent(input.talkId)}/agents`, {
+    method: 'PUT',
+    headers: buildMutationHeaders({ includeJson: true }),
+    body: JSON.stringify({ agents: input.agents }),
+  });
+  return envelope.agents;
+}
+
+export async function getTalkLlmSettings(): Promise<TalkLlmSettings> {
+  return apiRequest<TalkLlmSettings>('/api/v1/settings/talk-llm');
+}
+
+export async function updateTalkLlmSettings(
+  update: TalkLlmSettings & {
+    providers: Array<
+      TalkLlmProvider & {
+        credential?: { apiKey: string; organizationId?: string } | null;
+      }
+    >;
+  },
+): Promise<TalkLlmSettings> {
+  return apiRequest<TalkLlmSettings>('/api/v1/settings/talk-llm', {
+    method: 'PUT',
+    headers: buildMutationHeaders({ includeJson: true }),
+    body: JSON.stringify(update),
+  });
+}
+
 export async function getExecutorSettings(): Promise<ExecutorSettings> {
   return apiRequest<ExecutorSettings>('/api/v1/settings/executor');
 }
@@ -274,13 +383,17 @@ export async function getHealthStatus(): Promise<boolean> {
 export async function sendTalkMessage(input: {
   talkId: string;
   content: string;
+  targetAgentId?: string | null;
 }): Promise<{ talkId: string; message: TalkMessage; run: TalkRun }> {
   return apiRequest<{ talkId: string; message: TalkMessage; run: TalkRun }>(
     `/api/v1/talks/${encodeURIComponent(input.talkId)}/chat`,
     {
       method: 'POST',
       headers: buildMutationHeaders({ includeJson: true }),
-      body: JSON.stringify({ content: input.content }),
+      body: JSON.stringify({
+        content: input.content,
+        targetAgentId: input.targetAgentId ?? null,
+      }),
     },
   );
 }
