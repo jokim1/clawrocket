@@ -9,13 +9,29 @@ import { hashSessionToken } from '../../identity/session.js';
 import { _resetRateLimitStateForTests } from '../middleware/rate-limit.js';
 import { createWebServer, type WebServerHandle } from '../server.js';
 
+const BOOTSTRAP_ENV_KEYS = [
+  'ANTHROPIC_API_KEY',
+  'CLAUDE_CODE_OAUTH_TOKEN',
+  'ANTHROPIC_AUTH_TOKEN',
+] as const;
+
 describe('settings routes', () => {
   let server: WebServerHandle;
+  let savedBootstrapEnv: Partial<
+    Record<(typeof BOOTSTRAP_ENV_KEYS)[number], string>
+  >;
 
   beforeEach(() => {
     _initTestDatabase();
     _resetRateLimitStateForTests();
     delete process.env.CLAWROCKET_SELF_RESTART;
+    savedBootstrapEnv = {};
+    for (const key of BOOTSTRAP_ENV_KEYS) {
+      if (process.env[key] !== undefined) {
+        savedBootstrapEnv[key] = process.env[key];
+      }
+      delete process.env[key];
+    }
 
     upsertUser({
       id: 'owner-1',
@@ -68,6 +84,14 @@ describe('settings routes', () => {
     vi.restoreAllMocks();
     vi.useRealTimers();
     delete process.env.CLAWROCKET_SELF_RESTART;
+    for (const key of BOOTSTRAP_ENV_KEYS) {
+      const value = savedBootstrapEnv[key];
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
   });
 
   it('applies owner/admin RBAC and never returns secret values', async () => {
@@ -77,6 +101,15 @@ describe('settings routes', () => {
       },
     });
     expect(memberRes.status).toBe(403);
+
+    const initialOwnerRes = await server.request('/api/v1/settings/executor', {
+      headers: {
+        Authorization: 'Bearer owner-token',
+      },
+    });
+    expect(initialOwnerRes.status).toBe(200);
+    const initialOwnerBody = (await initialOwnerRes.json()) as any;
+    const initialConfigVersion = initialOwnerBody.data.configVersion;
 
     const updateRes = await server.request('/api/v1/settings/executor', {
       method: 'PUT',
@@ -97,7 +130,7 @@ describe('settings routes', () => {
     expect(updateBody.ok).toBe(true);
     expect(updateBody.data.hasApiKey).toBe(true);
     expect(updateBody.data.anthropicApiKey).toBeUndefined();
-    expect(updateBody.data.configVersion).toBe(1);
+    expect(updateBody.data.configVersion).toBe(initialConfigVersion + 1);
 
     const ownerRes = await server.request('/api/v1/settings/executor', {
       headers: {

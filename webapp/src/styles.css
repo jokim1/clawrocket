@@ -190,6 +190,111 @@ a {
   border-radius: 999px;
 }
 
+.settings-section-actions {
+  display: flex;
+  gap: 0.75rem;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.talk-llm-editor {
+  display: grid;
+  gap: 1rem;
+}
+
+.talk-llm-toolbar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 1rem;
+  align-items: end;
+}
+
+.talk-llm-section {
+  display: grid;
+  gap: 0.85rem;
+  padding-top: 0.25rem;
+  border-top: 1px solid #e5ebf7;
+}
+
+.talk-llm-section-header,
+.talk-llm-card-header,
+.talk-llm-subsection-header,
+.talk-llm-inline-actions {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.talk-llm-section h3,
+.talk-llm-card h4,
+.talk-llm-subsection h5 {
+  margin: 0;
+}
+
+.talk-llm-card-list {
+  display: grid;
+  gap: 0.85rem;
+}
+
+.talk-llm-card-list-compact {
+  gap: 0.65rem;
+}
+
+.talk-llm-card,
+.talk-llm-nested-card {
+  border: 1px solid #dbe4f5;
+  border-radius: 12px;
+  background: #f8fbff;
+  padding: 0.9rem;
+}
+
+.talk-llm-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 0.75rem;
+  margin-top: 0.75rem;
+}
+
+.talk-llm-grid label,
+.talk-llm-field-span {
+  display: grid;
+  gap: 0.3rem;
+}
+
+.talk-llm-field-span {
+  grid-column: 1 / -1;
+}
+
+.talk-llm-grid input,
+.talk-llm-grid select {
+  border: 1px solid #c8d3e9;
+  border-radius: 9px;
+  padding: 0.62rem 0.72rem;
+  font-size: 0.95rem;
+}
+
+.talk-llm-subsection {
+  display: grid;
+  gap: 0.75rem;
+  margin-top: 0.85rem;
+}
+
+.talk-llm-checkbox {
+  display: inline-flex;
+  gap: 0.5rem;
+  align-items: center;
+  margin-top: 0.75rem;
+  color: #30415f;
+}
+
+.talk-llm-meta {
+  margin: 0.2rem 0 0;
+  color: #647492;
+  font-size: 0.9rem;
+}
+
 .auth-shell {
   min-height: 100vh;
   display: grid;
@@ -720,7 +825,8 @@ a {
   }
 
   .settings-form-grid,
-  .settings-alias-row {
+  .settings-alias-row,
+  .talk-llm-toolbar {
     grid-template-columns: 1fr;
   }
 }

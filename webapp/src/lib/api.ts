@@ -127,6 +127,16 @@ export type TalkLlmSettings = {
   routes: TalkLlmRoute[];
 };
 
+export type TalkLlmSettingsUpdate = {
+  defaultRouteId: string;
+  providers: Array<
+    Omit<TalkLlmProvider, 'hasCredential'> & {
+      credential?: { apiKey: string; organizationId?: string } | null;
+    }
+  >;
+  routes: Array<Omit<TalkLlmRoute, 'assignedAgentCount' | 'assignedTalkCount'>>;
+};
+
 export type SettingsActor = {
   id: string;
   displayName: string;
@@ -319,13 +329,7 @@ export async function getTalkLlmSettings(): Promise<TalkLlmSettings> {
 }
 
 export async function updateTalkLlmSettings(
-  update: TalkLlmSettings & {
-    providers: Array<
-      TalkLlmProvider & {
-        credential?: { apiKey: string; organizationId?: string } | null;
-      }
-    >;
-  },
+  update: TalkLlmSettingsUpdate,
 ): Promise<TalkLlmSettings> {
   return apiRequest<TalkLlmSettings>('/api/v1/settings/talk-llm', {
     method: 'PUT',
