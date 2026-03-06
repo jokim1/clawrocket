@@ -3,12 +3,13 @@ import path from 'path';
 
 import {
   ASSISTANT_NAME,
+  DATA_DIR,
   IDLE_TIMEOUT,
   POLL_INTERVAL,
   TELEGRAM_BOT_POOL,
   TRIGGER_PATTERN,
 } from './config.js';
-import { WEB_ENABLED } from './clawrocket/config.js';
+import { WEB_ENABLED, WEB_HOST, WEB_PORT } from './clawrocket/config.js';
 import './channels/index.js';
 import {
   getChannelFactory,
@@ -49,6 +50,7 @@ import { findChannel, formatMessages, formatOutbound } from './router.js';
 import { startSchedulerLoop } from './task-scheduler.js';
 import { Channel, NewMessage, RegisteredGroup } from './types.js';
 import { startWebServer } from './clawrocket/web/index.js';
+import { InstanceCoordinator } from './instance-coordinator.js';
 import { logger } from './logger.js';
 
 // Re-export for backwards compatibility during refactor
@@ -454,136 +456,216 @@ function ensureContainerSystemRunning(): void {
 }
 
 async function main(): Promise<void> {
-  ensureContainerSystemRunning();
-  initDatabase();
-  // ClawRocket integration seam: initialize ClawRocket schema in shared DB.
-  initClawrocketSchema();
-  // ClawRocket integration seam: register scheduler maintenance callbacks.
-  registerClawrocketSchedulerMaintenanceHook();
-  logger.info('Database initialized');
-  loadState();
-
+  const coordinator = new InstanceCoordinator({
+    dataDir: DATA_DIR,
+    webHost: WEB_ENABLED ? WEB_HOST : null,
+    webPort: WEB_ENABLED ? WEB_PORT : null,
+  });
   let webServer:
     | {
         stop: () => Promise<void>;
       }
     | undefined;
-  if (WEB_ENABLED) {
-    webServer = await startWebServer();
-  } else {
-    logger.info('Web API server is disabled (WEB_ENABLED=false)');
-  }
+  let shutdownPromise: Promise<void> | null = null;
+  let signalHandlersInstalled = false;
 
-  // Graceful shutdown handlers
-  let shutdownInFlight = false;
-  const shutdown = async (signal: string) => {
-    if (shutdownInFlight) {
-      logger.warn({ signal }, 'Shutdown already in progress, ignoring signal');
-      return;
-    }
-    shutdownInFlight = true;
-    logger.info({ signal }, 'Shutdown signal received');
-
-    try {
-      await queue.shutdown(10000);
-      if (webServer) {
-        await webServer.stop();
-      }
-      for (const ch of channels) await ch.disconnect();
-      process.exit(0);
-    } catch (err) {
-      logger.error({ err, signal }, 'Shutdown failed');
-      process.exit(1);
-    }
-  };
-  process.once('SIGTERM', () => {
-    void shutdown('SIGTERM');
-  });
-  process.once('SIGINT', () => {
-    void shutdown('SIGINT');
-  });
-
-  // Channel callbacks (shared by all channels)
-  const channelOpts = {
-    onMessage: (_chatJid: string, msg: NewMessage) => storeMessage(msg),
-    onChatMetadata: (
-      chatJid: string,
-      timestamp: string,
-      name?: string,
-      channel?: string,
-      isGroup?: boolean,
-    ) => storeChatMetadata(chatJid, timestamp, name, channel, isGroup),
-    registeredGroups: () => registeredGroups,
-  };
-
-  // Create and connect all registered channels.
-  // Each channel self-registers via the barrel import above.
-  // Factories return null when credentials are missing, so unconfigured channels are skipped.
-  for (const channelName of getRegisteredChannelNames()) {
-    const factory = getChannelFactory(channelName)!;
-    const channel = factory(channelOpts);
-    if (!channel) {
+  const gracefulShutdown = (
+    reason: string,
+    options?: { exitCode?: number; terminateProcess?: boolean },
+  ): Promise<void> => {
+    if (shutdownPromise) {
       logger.warn(
-        { channel: channelName },
-        'Channel installed but credentials missing — skipping. Check .env or re-run the channel skill.',
+        { reason },
+        'Shutdown already in progress, waiting for active shutdown',
       );
-      continue;
+      return shutdownPromise;
     }
-    channels.push(channel);
-    await channel.connect();
-  }
-  if (channels.length === 0) {
-    logger.fatal('No channels connected');
-    process.exit(1);
-  }
 
-  // Initialize Telegram bot pool for agent teams
-  if (TELEGRAM_BOT_POOL.length > 0) {
-    await initBotPool(TELEGRAM_BOT_POOL);
-  }
+    const exitCode = options?.exitCode ?? 0;
+    const terminateProcess = options?.terminateProcess ?? true;
+    shutdownPromise = (async () => {
+      logger.info({ reason, exitCode }, 'Shutting down NanoClaw');
 
-  // Start subsystems (independently of connection handler)
-  startSchedulerLoop({
-    registeredGroups: () => registeredGroups,
-    getSessions: () => sessions,
-    queue,
-    onProcess: (groupJid, proc, containerName, groupFolder) =>
-      queue.registerProcess(groupJid, proc, containerName, groupFolder),
-    sendMessage: async (jid, rawText) => {
-      const channel = findChannel(channels, jid);
-      if (!channel) {
-        logger.warn({ jid }, 'No channel owns JID, cannot send message');
-        return;
+      let releaseError: unknown;
+
+      try {
+        await queue.shutdown(10_000);
+      } catch (error) {
+        releaseError = releaseError ?? error;
+        logger.error({ err: error, reason }, 'Failed to drain group queue');
       }
-      const text = formatOutbound(rawText);
-      if (text) await channel.sendMessage(jid, text);
-    },
-  });
-  startIpcWatcher({
-    sendMessage: (jid, text) => {
-      const channel = findChannel(channels, jid);
-      if (!channel) throw new Error(`No channel for JID: ${jid}`);
-      return channel.sendMessage(jid, text);
-    },
-    registeredGroups: () => registeredGroups,
-    registerGroup,
-    syncGroups: async (force: boolean) => {
+
+      if (webServer) {
+        try {
+          await webServer.stop();
+        } catch (error) {
+          releaseError = releaseError ?? error;
+          logger.error({ err: error, reason }, 'Failed to stop web server');
+        }
+      }
+
       await Promise.all(
-        channels
-          .filter((ch) => ch.syncGroups)
-          .map((ch) => ch.syncGroups!(force)),
+        channels.map(async (channel) => {
+          try {
+            await channel.disconnect();
+          } catch (error) {
+            releaseError = releaseError ?? error;
+            logger.error(
+              { err: error, reason, channel: channel.name },
+              'Failed to disconnect channel during shutdown',
+            );
+          }
+        }),
       );
-    },
-    getAvailableGroups,
-    writeGroupsSnapshot: (gf, im, ag, rj) =>
-      writeGroupsSnapshot(gf, im, ag, rj),
+
+      try {
+        await coordinator.release();
+      } catch (error) {
+        releaseError = releaseError ?? error;
+        logger.error(
+          { err: error, reason },
+          'Failed to release singleton coordinator',
+        );
+      }
+
+      if (terminateProcess) {
+        process.exit(releaseError ? 1 : exitCode);
+      }
+
+      if (releaseError) {
+        throw releaseError;
+      }
+    })();
+
+    return shutdownPromise;
+  };
+
+  const installSignalHandlers = () => {
+    if (signalHandlersInstalled) return;
+    signalHandlersInstalled = true;
+    process.once('SIGTERM', () => {
+      void gracefulShutdown('SIGTERM');
+    });
+    process.once('SIGINT', () => {
+      void gracefulShutdown('SIGINT');
+    });
+  };
+  installSignalHandlers();
+
+  await coordinator.acquire(async () => {
+    await gracefulShutdown('takeover_request');
   });
-  queue.setProcessMessagesFn(processGroupMessages);
-  recoverPendingMessages();
-  startMessageLoop().catch((err) => {
-    logger.fatal({ err }, 'Message loop crashed unexpectedly');
-    process.exit(1);
-  });
+
+  try {
+    ensureContainerSystemRunning();
+    initDatabase();
+    // ClawRocket integration seam: initialize ClawRocket schema in shared DB.
+    initClawrocketSchema();
+    // ClawRocket integration seam: register scheduler maintenance callbacks.
+    registerClawrocketSchedulerMaintenanceHook();
+    logger.info('Database initialized');
+    loadState();
+
+    if (WEB_ENABLED) {
+      webServer = await startWebServer();
+    } else {
+      logger.info('Web API server is disabled (WEB_ENABLED=false)');
+    }
+
+    // Channel callbacks (shared by all channels)
+    const channelOpts = {
+      onMessage: (_chatJid: string, msg: NewMessage) => storeMessage(msg),
+      onChatMetadata: (
+        chatJid: string,
+        timestamp: string,
+        name?: string,
+        channel?: string,
+        isGroup?: boolean,
+      ) => storeChatMetadata(chatJid, timestamp, name, channel, isGroup),
+      registeredGroups: () => registeredGroups,
+    };
+
+    // Create and connect all registered channels.
+    // Each channel self-registers via the barrel import above.
+    // Factories return null when credentials are missing, so unconfigured channels are skipped.
+    for (const channelName of getRegisteredChannelNames()) {
+      const factory = getChannelFactory(channelName)!;
+      const channel = factory(channelOpts);
+      if (!channel) {
+        logger.warn(
+          { channel: channelName },
+          'Channel installed but credentials missing — skipping. Check .env or re-run the channel skill.',
+        );
+        continue;
+      }
+      channels.push(channel);
+      await channel.connect();
+    }
+    if (channels.length === 0) {
+      throw new Error('No channels connected');
+    }
+
+    // Initialize Telegram bot pool for agent teams
+    if (TELEGRAM_BOT_POOL.length > 0) {
+      await initBotPool(TELEGRAM_BOT_POOL);
+    }
+
+    // Start subsystems (independently of connection handler)
+    startSchedulerLoop({
+      registeredGroups: () => registeredGroups,
+      getSessions: () => sessions,
+      queue,
+      onProcess: (groupJid, proc, containerName, groupFolder) =>
+        queue.registerProcess(groupJid, proc, containerName, groupFolder),
+      sendMessage: async (jid, rawText) => {
+        const channel = findChannel(channels, jid);
+        if (!channel) {
+          logger.warn({ jid }, 'No channel owns JID, cannot send message');
+          return;
+        }
+        const text = formatOutbound(rawText);
+        if (text) await channel.sendMessage(jid, text);
+      },
+    });
+    startIpcWatcher({
+      sendMessage: (jid, text) => {
+        const channel = findChannel(channels, jid);
+        if (!channel) throw new Error(`No channel for JID: ${jid}`);
+        return channel.sendMessage(jid, text);
+      },
+      registeredGroups: () => registeredGroups,
+      registerGroup,
+      syncGroups: async (force: boolean) => {
+        await Promise.all(
+          channels
+            .filter((ch) => ch.syncGroups)
+            .map((ch) => ch.syncGroups!(force)),
+        );
+      },
+      getAvailableGroups,
+      writeGroupsSnapshot: (gf, im, ag, rj) =>
+        writeGroupsSnapshot(gf, im, ag, rj),
+    });
+    queue.setProcessMessagesFn(processGroupMessages);
+    recoverPendingMessages();
+    startMessageLoop().catch((err) => {
+      logger.fatal({ err }, 'Message loop crashed unexpectedly');
+      void gracefulShutdown('message_loop_crash', { exitCode: 1 });
+    });
+  } catch (error) {
+    try {
+      await gracefulShutdown('startup_failure', {
+        exitCode: 1,
+        terminateProcess: false,
+      });
+    } catch (shutdownError) {
+      logger.error(
+        { err: shutdownError, startupErr: error },
+        'Failed to shut down cleanly after startup error',
+      );
+    }
+    throw error;
+  }
 }
 
 // Guard: only run when executed directly, not when imported by tests
