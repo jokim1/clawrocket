@@ -17,7 +17,9 @@ const BOOTSTRAP_ENV_KEYS = [
 
 describe('settings routes', () => {
   let server: WebServerHandle;
-  let savedBootstrapEnv: Partial<Record<(typeof BOOTSTRAP_ENV_KEYS)[number], string>>;
+  let savedBootstrapEnv: Partial<
+    Record<(typeof BOOTSTRAP_ENV_KEYS)[number], string>
+  >;
 
   beforeEach(() => {
     _initTestDatabase();
