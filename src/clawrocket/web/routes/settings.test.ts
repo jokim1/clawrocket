@@ -198,4 +198,253 @@ describe('settings routes', () => {
     await vi.runAllTimersAsync();
     expect(killSpy).toHaveBeenCalledWith(process.pid, 'SIGTERM');
   });
+
+  it('starts async executor verification for owners and admins', async () => {
+    const scheduleVerification = vi.fn(() => ({
+      scheduled: true,
+      mode: 'subscription',
+      code: 'scheduled',
+      message: 'Verification started.',
+    }));
+    server = createWebServer({
+      host: '127.0.0.1',
+      port: 0,
+      executorVerifier: {
+        scheduleVerification,
+      } as any,
+    });
+
+    const response = await server.request('/api/v1/settings/executor/verify', {
+      method: 'POST',
+      headers: {
+        Authorization: 'Bearer owner-token',
+        'Idempotency-Key': 'verify-owner-1',
+      },
+    });
+
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as any;
+    expect(body.ok).toBe(true);
+    expect(body.data.scheduled).toBe(true);
+    expect(scheduleVerification).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns subscription host status with service-user context', async () => {
+    server = createWebServer({
+      host: '127.0.0.1',
+      port: 0,
+      subscriptionHostAuth: {
+        async getStatusView() {
+          return {
+            serviceUser: 'clawrocket',
+            serviceUid: 1001,
+            serviceHomePath: '/srv/clawrocket',
+            runtimeContext: 'systemd',
+            claudeCliInstalled: true,
+            hostLoginDetected: true,
+            serviceEnvOauthPresent: false,
+            importAvailable: false,
+            hostCredentialFingerprint: null,
+            message: 'Host login detected.',
+            recommendedCommands: ['sudo -u clawrocket -H claude login'],
+          };
+        },
+      } as any,
+    });
+
+    const response = await server.request(
+      '/api/v1/settings/executor/subscription-host-status',
+      {
+        headers: {
+          Authorization: 'Bearer owner-token',
+        },
+      },
+    );
+
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as any;
+    expect(body.ok).toBe(true);
+    expect(body.data.serviceUser).toBe('clawrocket');
+    expect(body.data.runtimeContext).toBe('systemd');
+    expect(body.data.recommendedCommands[0]).toContain('sudo -u clawrocket');
+  });
+
+  it('imports a host subscription credential and persists subscription mode', async () => {
+    server = createWebServer({
+      host: '127.0.0.1',
+      port: 0,
+      subscriptionHostAuth: {
+        async getStatusView() {
+          return {
+            serviceUser: 'clawrocket',
+            serviceUid: 1001,
+            serviceHomePath: '/srv/clawrocket',
+            runtimeContext: 'host',
+            claudeCliInstalled: true,
+            hostLoginDetected: true,
+            serviceEnvOauthPresent: true,
+            importAvailable: true,
+            hostCredentialFingerprint: 'fingerprint-1',
+            message: 'Ready to import.',
+            recommendedCommands: [],
+          };
+        },
+        async probeImportSource() {
+          return {
+            serviceUser: 'clawrocket',
+            serviceUid: 1001,
+            serviceHomePath: '/srv/clawrocket',
+            runtimeContext: 'host',
+            claudeCliInstalled: true,
+            hostLoginDetected: true,
+            serviceEnvOauthPresent: true,
+            importAvailable: true,
+            hostCredentialFingerprint: 'fingerprint-1',
+            message: 'Ready to import.',
+            recommendedCommands: [],
+            importSource: 'service_env',
+            importCredential: 'oauth-imported',
+          };
+        },
+      } as any,
+    });
+
+    const response = await server.request(
+      '/api/v1/settings/executor/subscription/import',
+      {
+        method: 'POST',
+        headers: {
+          Authorization: 'Bearer owner-token',
+          'Content-Type': 'application/json',
+          'Idempotency-Key': 'subscription-import-1',
+        },
+        body: JSON.stringify({
+          expectedFingerprint: 'fingerprint-1',
+        }),
+      },
+    );
+
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as any;
+    expect(body.ok).toBe(true);
+    expect(body.data.status).toBe('imported');
+    expect(body.data.settings.executorAuthMode).toBe('subscription');
+    expect(body.data.settings.hasOauthToken).toBe(true);
+  });
+
+  it('returns no_change when the imported subscription credential already matches settings', async () => {
+    server = createWebServer({
+      host: '127.0.0.1',
+      port: 0,
+      subscriptionHostAuth: {
+        async getStatusView() {
+          throw new Error('unused');
+        },
+        async probeImportSource() {
+          return {
+            serviceUser: 'clawrocket',
+            serviceUid: 1001,
+            serviceHomePath: '/srv/clawrocket',
+            runtimeContext: 'host',
+            claudeCliInstalled: true,
+            hostLoginDetected: true,
+            serviceEnvOauthPresent: true,
+            importAvailable: true,
+            hostCredentialFingerprint: 'fingerprint-1',
+            message: 'Ready to import.',
+            recommendedCommands: [],
+            importSource: 'service_env',
+            importCredential: 'oauth-imported',
+          };
+        },
+      } as any,
+    });
+
+    const firstResponse = await server.request(
+      '/api/v1/settings/executor/subscription/import',
+      {
+        method: 'POST',
+        headers: {
+          Authorization: 'Bearer owner-token',
+          'Content-Type': 'application/json',
+          'Idempotency-Key': 'subscription-import-initial',
+        },
+        body: JSON.stringify({
+          expectedFingerprint: 'fingerprint-1',
+        }),
+      },
+    );
+    expect(firstResponse.status).toBe(200);
+
+    const response = await server.request(
+      '/api/v1/settings/executor/subscription/import',
+      {
+        method: 'POST',
+        headers: {
+          Authorization: 'Bearer owner-token',
+          'Content-Type': 'application/json',
+          'Idempotency-Key': 'subscription-import-no-change',
+        },
+        body: JSON.stringify({
+          expectedFingerprint: 'fingerprint-1',
+        }),
+      },
+    );
+
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as any;
+    expect(body.ok).toBe(true);
+    expect(body.data.status).toBe('no_change');
+    expect(body.data.settings.executorAuthMode).toBe('subscription');
+    expect(body.data.settings.hasOauthToken).toBe(true);
+  });
+
+  it('rejects stale host import attempts when the fingerprint changed', async () => {
+    server = createWebServer({
+      host: '127.0.0.1',
+      port: 0,
+      subscriptionHostAuth: {
+        async getStatusView() {
+          throw new Error('unused');
+        },
+        async probeImportSource() {
+          return {
+            serviceUser: 'clawrocket',
+            serviceUid: 1001,
+            serviceHomePath: '/srv/clawrocket',
+            runtimeContext: 'host',
+            claudeCliInstalled: true,
+            hostLoginDetected: true,
+            serviceEnvOauthPresent: true,
+            importAvailable: true,
+            hostCredentialFingerprint: 'fresh-fingerprint',
+            message: 'Ready to import.',
+            recommendedCommands: [],
+            importSource: 'service_env',
+            importCredential: 'oauth-imported',
+          };
+        },
+      } as any,
+    });
+
+    const response = await server.request(
+      '/api/v1/settings/executor/subscription/import',
+      {
+        method: 'POST',
+        headers: {
+          Authorization: 'Bearer owner-token',
+          'Content-Type': 'application/json',
+          'Idempotency-Key': 'subscription-import-stale',
+        },
+        body: JSON.stringify({
+          expectedFingerprint: 'stale-fingerprint',
+        }),
+      },
+    );
+
+    expect(response.status).toBe(409);
+    const body = (await response.json()) as any;
+    expect(body.ok).toBe(false);
+    expect(body.error.code).toBe('host_state_changed');
+  });
 });

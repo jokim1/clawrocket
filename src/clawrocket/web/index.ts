@@ -10,6 +10,7 @@ import {
   ExecutorSettingsService,
   setActiveExecutorSettingsService,
 } from '../talks/executor-settings.js';
+import { ExecutorCredentialVerifier } from '../talks/executor-credentials-verifier.js';
 import { DirectTalkExecutor } from '../talks/direct-executor.js';
 import { TalkRunWorker } from '../talks/run-worker.js';
 
@@ -26,6 +27,9 @@ export async function startWebServer(): Promise<WebServerHandle> {
     executorSettings.getConfigVersion(),
   );
   setActiveExecutorSettingsService(executorSettings);
+  const executorVerifier = new ExecutorCredentialVerifier({
+    executorSettings,
+  });
 
   logger.info(
     {
@@ -46,6 +50,7 @@ export async function startWebServer(): Promise<WebServerHandle> {
     port: WEB_PORT,
     runWorker,
     executorSettings,
+    executorVerifier,
   });
 
   let bound: { host: string; port: number };

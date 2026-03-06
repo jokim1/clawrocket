@@ -51,6 +51,9 @@ describe('ExecutorSettingsService', () => {
     expect(saved.hasApiKey).toBe(true);
     expect(saved.hasOauthToken).toBe(false);
     expect(saved.hasAuthToken).toBe(false);
+    expect(saved.executorAuthMode).toBe('api_key');
+    expect(saved.activeCredentialConfigured).toBe(true);
+    expect(saved.verificationStatus).toBe('not_verified');
     expect(saved.anthropicBaseUrl).toBe('https://api.example.test');
     expect(saved.defaultAlias).toBe('Gemini');
     expect(saved.configVersion).toBe(1);
@@ -59,7 +62,6 @@ describe('ExecutorSettingsService', () => {
       displayName: 'Owner',
     });
     expect(saved.lastUpdatedAt).not.toBeNull();
-    expect(service.resolveDetectedAuthMethod()).toBe('api_key');
 
     expect(service.getExecutorSecrets()).toEqual({
       ANTHROPIC_API_KEY: 'sk-test',
@@ -117,6 +119,7 @@ describe('ExecutorSettingsService', () => {
     expect(view.effectiveAliasMap.Gemini).toBe('gemini-pro');
     expect(view.anthropicBaseUrl).toBe('https://bootstrap.example.test');
     expect(view.hasApiKey).toBe(true);
+    expect(view.executorAuthMode).toBe('api_key');
     expect(view.configVersion).toBe(1);
     expect(view.lastUpdatedBy).toBeNull();
   });
@@ -284,6 +287,136 @@ describe('ExecutorSettingsService', () => {
         'owner-1',
       ),
     ).toThrowError(ExecutorSettingsValidationError);
+  });
+
+  it('exports only the selected Anthropic auth mode when standby credentials are stored', () => {
+    const service = createService();
+
+    service.saveExecutorConfig(
+      {
+        claudeOauthToken: 'oauth-test',
+        anthropicApiKey: 'sk-test',
+        executorAuthMode: 'subscription',
+        aliasModelMap: { Gemini: 'gemini-pro' },
+        defaultAlias: 'Gemini',
+      },
+      'owner-1',
+    );
+
+    expect(service.getExecutorSecrets()).toEqual({
+      CLAUDE_CODE_OAUTH_TOKEN: 'oauth-test',
+    });
+
+    service.saveExecutorConfig(
+      {
+        executorAuthMode: 'api_key',
+      },
+      'owner-1',
+    );
+
+    expect(service.getExecutorSecrets()).toEqual({
+      ANTHROPIC_API_KEY: 'sk-test',
+    });
+  });
+
+  it('makes imported subscription credentials immediately available to verification', () => {
+    const service = createService();
+
+    const imported = service.importSubscriptionCredential(
+      'oauth-imported',
+      'owner-1',
+    );
+
+    expect(imported.status).toBe('imported');
+    expect(imported.settings.executorAuthMode).toBe('subscription');
+    expect(service.getExecutorSecrets()).toEqual({
+      CLAUDE_CODE_OAUTH_TOKEN: 'oauth-imported',
+    });
+
+    const target = service.getVerificationTarget('subscription');
+    expect(target?.mode).toBe('subscription');
+    expect(target?.credential).toBe('oauth-imported');
+  });
+
+  it('requires explicit selection when auth token is mixed with another credential', () => {
+    const now = new Date().toISOString();
+    getDb()
+      .prepare(
+        `
+        INSERT INTO settings_kv (key, value, updated_at, updated_by)
+        VALUES (?, ?, ?, ?)
+      `,
+      )
+      .run('executor.anthropicApiKey', 'sk-test', now, null);
+    getDb()
+      .prepare(
+        `
+        INSERT INTO settings_kv (key, value, updated_at, updated_by)
+        VALUES (?, ?, ?, ?)
+      `,
+      )
+      .run('executor.anthropicAuthToken', 'bearer-test', now, null);
+    getDb()
+      .prepare(
+        `
+        INSERT INTO settings_kv (key, value, updated_at, updated_by)
+        VALUES (?, ?, ?, ?)
+      `,
+      )
+      .run('executor.configOwned', 'true', now, null);
+
+    const service = createService();
+    const view = service.getSettingsView();
+
+    expect(view.executorAuthMode).toBe('none');
+    expect(view.activeCredentialConfigured).toBe(false);
+    expect(view.configErrors).toContain(
+      'Multiple Anthropic credential types are stored. Select an active auth mode before running the core executor.',
+    );
+  });
+
+  it('resets stale verifying state on read', () => {
+    const service = createService();
+    service.saveExecutorConfig(
+      {
+        anthropicApiKey: 'sk-test',
+        executorAuthMode: 'api_key',
+        aliasModelMap: { Gemini: 'gemini-pro' },
+        defaultAlias: 'Gemini',
+      },
+      'owner-1',
+    );
+    const target = service.getVerificationTarget('api_key');
+    expect(target).not.toBeNull();
+
+    const staleStartedAt = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+    getDb()
+      .prepare(
+        `
+        UPDATE settings_kv
+        SET value = ?, updated_at = ?
+        WHERE key = 'executor.authVerification'
+      `,
+      )
+      .run(
+        JSON.stringify({
+          api_key: {
+            status: 'verifying',
+            fingerprint: target!.fingerprint,
+            verificationStartedAt: staleStartedAt,
+            lastVerifiedAt: null,
+            lastVerificationError: null,
+          },
+        }),
+        staleStartedAt,
+      );
+
+    const view = service.getSettingsView();
+
+    expect(view.verificationStatus).toBe('not_verified');
+    expect(view.lastVerificationError).toBe(
+      'Previous verification attempt expired before completion.',
+    );
   });
 
   it('surfaces config errors for corrupted owned config and metadata without user FK', () => {
