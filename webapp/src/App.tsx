@@ -1,11 +1,14 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Link, Navigate, Route, Routes } from 'react-router-dom';
+import { Navigate, Route, Routes } from 'react-router-dom';
 
+import { ClawTalkSidebar } from './components/ClawTalkSidebar';
 import { SignInView } from './components/SignInView';
 import {
   getSessionMe,
+  listTalks,
   logout as logoutSession,
   SessionUser,
+  Talk,
   UnauthorizedError,
 } from './lib/api';
 import { TalkDetailPage } from './pages/TalkDetailPage';
@@ -20,6 +23,9 @@ type AuthState =
 export function App() {
   const [auth, setAuth] = useState<AuthState>({ status: 'loading' });
   const [signOutBusy, setSignOutBusy] = useState(false);
+  const [talks, setTalks] = useState<Talk[]>([]);
+  const [talksLoading, setTalksLoading] = useState(true);
+  const [talksError, setTalksError] = useState<string | null>(null);
 
   const refreshSession = useCallback(async () => {
     try {
@@ -53,6 +59,40 @@ export function App() {
     void refreshSession();
   }, [refreshSession]);
 
+  const refreshTalks = useCallback(async () => {
+    try {
+      const rows = await listTalks();
+      setTalks(rows);
+      setTalksError(null);
+    } catch (err) {
+      if (err instanceof UnauthorizedError) {
+        handleUnauthorized();
+        return;
+      }
+      setTalksError(err instanceof Error ? err.message : 'Failed to load talks');
+    } finally {
+      setTalksLoading(false);
+    }
+  }, [handleUnauthorized]);
+
+  useEffect(() => {
+    if (auth.status !== 'authenticated') {
+      setTalks([]);
+      setTalksLoading(true);
+      setTalksError(null);
+      return;
+    }
+    void refreshTalks();
+  }, [auth.status, refreshTalks]);
+
+  const handleTalkCreated = useCallback((talk: Talk) => {
+    setTalks((current) => {
+      const next = current.filter((item) => item.id !== talk.id);
+      return [talk, ...next];
+    });
+    setTalksError(null);
+  }, []);
+
   if (auth.status === 'loading') {
     return <main className="page-state">Checking session…</main>;
   }
@@ -61,53 +101,70 @@ export function App() {
     return <SignInView onSignedIn={refreshSession} />;
   }
 
+  const canManageSettings =
+    auth.user.role === 'owner' || auth.user.role === 'admin';
+
   return (
     <main className="app-shell">
-      <header className="app-topbar">
-        <nav className="app-nav">
-          <Link to="/app/talks">Talks</Link>
-          {auth.user.role === 'owner' || auth.user.role === 'admin' ? (
-            <Link to="/app/settings">Settings</Link>
-          ) : null}
-        </nav>
-        <div className="app-user-meta">
-          <strong>{auth.user.displayName}</strong>
-          <span>{auth.user.email}</span>
+      <ClawTalkSidebar
+        talks={talks}
+        loading={talksLoading}
+        error={talksError}
+        canManageSettings={canManageSettings}
+      />
+      <div className="app-main">
+        <header className="app-main-topbar">
+          <div className="app-user-meta">
+            <strong>{auth.user.displayName}</strong>
+            <span>{auth.user.email}</span>
+          </div>
+          <button
+            type="button"
+            className="secondary-btn"
+            onClick={handleSignOut}
+            disabled={signOutBusy}
+          >
+            Sign out
+          </button>
+        </header>
+        <div className="app-main-content">
+          <Routes>
+            <Route path="/" element={<Navigate to="/app/talks" replace />} />
+            <Route
+              path="/app/talks"
+              element={
+                <TalkListPage
+                  onUnauthorized={handleUnauthorized}
+                  externalData={{
+                    talks,
+                    loading: talksLoading,
+                    error: talksError,
+                  }}
+                  onTalkCreated={handleTalkCreated}
+                />
+              }
+            />
+            <Route
+              path="/app/talks/:talkId"
+              element={<TalkDetailPage onUnauthorized={handleUnauthorized} />}
+            />
+            <Route
+              path="/app/settings"
+              element={
+                canManageSettings ? (
+                  <SettingsPage
+                    onUnauthorized={handleUnauthorized}
+                    userRole={auth.user.role}
+                  />
+                ) : (
+                  <Navigate to="/app/talks" replace />
+                )
+              }
+            />
+            <Route path="*" element={<Navigate to="/app/talks" replace />} />
+          </Routes>
         </div>
-        <button
-          type="button"
-          className="secondary-btn"
-          onClick={handleSignOut}
-          disabled={signOutBusy}
-        >
-          Sign out
-        </button>
-      </header>
-      <Routes>
-        <Route path="/" element={<Navigate to="/app/talks" replace />} />
-        <Route
-          path="/app/talks"
-          element={<TalkListPage onUnauthorized={handleUnauthorized} />}
-        />
-        <Route
-          path="/app/talks/:talkId"
-          element={<TalkDetailPage onUnauthorized={handleUnauthorized} />}
-        />
-        <Route
-          path="/app/settings"
-          element={
-            auth.user.role === 'owner' || auth.user.role === 'admin' ? (
-              <SettingsPage
-                onUnauthorized={handleUnauthorized}
-                userRole={auth.user.role}
-              />
-            ) : (
-              <Navigate to="/app/talks" replace />
-            )
-          }
-        />
-        <Route path="*" element={<Navigate to="/app/talks" replace />} />
-      </Routes>
+      </div>
     </main>
   );
 }
