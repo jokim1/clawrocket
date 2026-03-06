@@ -1,32 +1,8 @@
-# NanoClaw Ubuntu Operations Runbook
+# ClawRocket Ubuntu Operations Runbook
 
-This runbook is the canonical production workflow for Ubuntu hosts.
-Use a user-level `systemd` service (`nanoclaw.service`) and avoid `nohup`.
+Ubuntu `systemd --user` is the canonical production deployment path.
 
-## One-Time Migration Cutover (from nohup/manual)
-
-Run these once before enabling the service:
-
-```bash
-cd ~/projects/clawrocket
-
-# Stop unmanaged process(es) first.
-pkill -f "node dist/index.js" || true
-systemctl --user stop nanoclaw || true
-
-# Remove stale web-talk containers that may keep old runner behavior.
-docker ps --filter name=nanoclaw-web-talks -q | xargs -r docker rm -f
-
-# Verify clean slate (required to avoid EADDRINUSE / duplicate polling).
-pgrep -fa "node dist/index.js" || true
-lsof -iTCP:3210 -sTCP:LISTEN || true
-```
-
-Expected:
-- `pgrep` prints nothing.
-- `lsof` prints nothing.
-
-## Install and Enable systemd User Service
+## 1. Install Or Refresh The User Service
 
 ```bash
 cd ~/projects/clawrocket
@@ -36,109 +12,108 @@ systemctl --user daemon-reload
 systemctl --user enable --now nanoclaw
 ```
 
-Notes:
-- The bundled service sets `Restart=always` so the web settings page can trigger a graceful self-restart.
-- The web restart button is enabled only when `CLAWROCKET_SELF_RESTART=1` is present in the service environment.
-- The restart flow sends `SIGTERM` after the HTTP response flushes, so the existing graceful shutdown path still runs.
-
-Optional (start on boot even without active login session):
+Optional:
 
 ```bash
-sudo loginctl enable-linger k1min8r
+sudo loginctl enable-linger "$USER"
 ```
 
-## Daily Service Commands
+## 2. Standard Service Commands
 
 ```bash
-# Status
 systemctl --user status nanoclaw
-
-# Restart
 systemctl --user restart nanoclaw
-
-# Stop
 systemctl --user stop nanoclaw
-
-# Start
 systemctl --user start nanoclaw
-
-# Recent logs
 journalctl --user -u nanoclaw -n 100
-
-# Follow logs live
 journalctl --user -u nanoclaw -f
 ```
 
-## Standard Deploy / Update Procedure
+## 3. Deploy Procedure
 
 ```bash
 cd ~/projects/clawrocket
 git pull --ff-only origin main
 npm install
 npm run build
-
-# Sync agent-runner source to all existing group session folders.
-mkdir -p data/sessions
-for group_dir in data/sessions/*; do
-  [ -d "$group_dir" ] || continue
-  mkdir -p "$group_dir/agent-runner-src"
-  rsync -a --delete container/agent-runner/src/ "$group_dir/agent-runner-src/"
-done
-
 systemctl --user restart nanoclaw
 ```
 
-Notes:
-- The sync loop intentionally updates all existing groups, not just `web-talks`.
-- If `data/sessions/*` has no directories yet, the loop safely no-ops.
-
-## Verification Checklist
+If the webapp bundle is part of the deploy:
 
 ```bash
-# Service + API
+npm run build:web
+```
+
+## 4. Runtime Verification
+
+```bash
 systemctl --user status nanoclaw
 curl -i http://127.0.0.1:3210/api/v1/health
-
-# Single-instance guard
 pgrep -fa "node dist/index.js"
-
-# Check for duplicate Telegram polling conflicts
-journalctl --user -u nanoclaw -n 200 | rg -n "getUpdates|409|Conflict" || true
 ```
 
 Expected:
-- Health returns `200`.
-- One effective runtime chain (`sh -c ...` wrapper + `node dist/index.js` child).
-- No recurring `getUpdates 409` conflict messages.
 
-## Talk Execution Sanity Check
+- service is `active (running)`
+- health returns `200`
+- one effective process owner for the active `DATA_DIR`
 
-After signing in and sending one message:
+## 5. Single-Instance Guidance
+
+ClawRocket now enforces one owner per `DATA_DIR`.
+
+Operational guidance:
+
+- use `systemctl --user restart nanoclaw` for normal restarts
+- do not launch a second ad hoc production process against the same data dir unless you intentionally want it to take over
+- if you do start a second instance, it will try to shut down the first gracefully before falling back to verified signals
+
+Useful checks:
 
 ```bash
-BASE="http://127.0.0.1:3210"
-TALK_ID="<talk-id>"
-
-curl -s -b /tmp/claw_cookies.txt "$BASE/api/v1/talks/$TALK_ID/events?stream=0" \
-  | rg -n "talk_run_started|talk_run_completed|talk_run_failed"
+ls -la ~/projects/clawrocket/data/runtime/instance
+cat ~/projects/clawrocket/data/runtime/instance/owner.json
 ```
 
-Expected:
-- For the latest run: `talk_run_started` followed by `talk_run_completed` or `talk_run_failed`.
+## 6. Settings And Restart Support
 
-## Troubleshooting
+The settings page can request restart only when the service environment includes:
 
-### `EADDRINUSE` or `ERR_CONNECTION_REFUSED`
-1. Ensure only service-managed process is running:
-   - `pkill -f "node dist/index.js" || true`
-2. Restart service:
-   - `systemctl --user restart nanoclaw`
-3. Re-check health endpoint.
+```bash
+CLAWROCKET_SELF_RESTART=1
+```
 
-### Telegram `getUpdates 409 Conflict`
-1. Check for duplicate app processes.
-2. Stop all unmanaged processes.
-3. Restart only via `systemctl --user restart nanoclaw`.
+That is already present in the bundled Ubuntu service file.
 
-### Stale `agent-runner-src` behavior
-Run the all-group sync loop from the deploy procedure, then restart service.
+## 7. Talk Runtime Sanity Check
+
+After signing in and sending a Talk message:
+
+```bash
+journalctl --user -u nanoclaw -n 200 | rg -n "direct_http|talk_run_started|talk_run_completed|talk_run_failed"
+sqlite3 ~/projects/clawrocket/data/messages.db "SELECT status, created_at FROM talk_runs ORDER BY created_at DESC LIMIT 10;"
+sqlite3 ~/projects/clawrocket/data/messages.db "SELECT provider_id, model_id, status, failure_class FROM llm_attempts ORDER BY created_at DESC LIMIT 20;"
+```
+
+## 8. Common Troubleshooting
+
+### Health endpoint fails
+1. Check `systemctl --user status nanoclaw`
+2. Check recent logs
+3. Verify DB path permissions and container runtime availability
+
+### Unexpected takeover or process replacement
+1. Check `owner.json`
+2. Check whether another manual process was started against the same checkout
+3. Prefer service-managed restarts instead of manual `node dist/index.js`
+
+### Web bind issues
+1. Check who owns port `3210`
+2. Check whether another ClawRocket instance is already active
+3. Use service restart instead of starting parallel processes
+
+### Talk runtime failures
+1. Verify Talk LLM settings in the admin UI
+2. Verify provider credentials and routes
+3. Inspect `llm_attempts` for failure class and fallback behavior

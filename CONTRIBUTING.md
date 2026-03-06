@@ -1,23 +1,30 @@
 # Contributing
 
-## Source Code Changes
+## Source Changes
 
-**Accepted:** Bug fixes, security fixes, simplifications, reducing code.
+Accepted source changes generally fall into these buckets:
 
-**Not accepted:** Features, capabilities, compatibility, enhancements. These should be skills.
+- bug fixes
+- security fixes
+- ClawRocket web/talk/runtime improvements
+- upstream-safe maintenance and simplification
+- documentation that reflects the current implementation
+
+When changing NanoClaw-core files, follow [docs/UPSTREAM-PATCH-SURFACE.md](docs/UPSTREAM-PATCH-SURFACE.md).
 
 ## Skills
 
-A [skill](https://code.claude.com/docs/en/skills) is a markdown file in `.claude/skills/` that teaches Claude Code how to transform a NanoClaw installation.
+Skills are still the preferred way to add optional integrations or large product branches that do not belong in the shared base.
 
-A PR that contributes a skill should not modify any source files.
+A [skill](https://code.claude.com/docs/en/skills) should contain the instructions Claude follows to transform an installation. A skill-focused PR should avoid unnecessary source-file edits outside the skill itself.
 
-Your skill should contain the **instructions** Claude follows to add the feature—not pre-built code. See `/add-telegram` for a good example.
+## Testing
 
-### Why?
+Before submitting a code change, run the relevant checks:
 
-Every user should have clean and minimal code that does exactly what they need. Skills let users selectively add features to their fork without inheriting code for features they don't want.
-
-### Testing
-
-Test your skill by running it on a fresh clone before submitting.
+```bash
+npm run typecheck
+npm run test
+npm --prefix webapp run typecheck
+npm --prefix webapp run test
+```

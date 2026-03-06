@@ -1,16 +1,19 @@
 # Upstream Patch Surface
 
-This document defines the intended NanoClaw core touchpoints that ClawRocket is allowed to modify.
+This document defines the NanoClaw-core files ClawRocket is expected to touch directly.
 
-| File | Seam Purpose | Integration Region |
+## Allowed Core Touchpoints
+
+| File | Why It Is A Seam | Current ClawRocket Use |
 | --- | --- | --- |
-| `src/db.ts` | Shared SQLite connection ownership and safe DB accessor for ClawRocket modules | `getDb()` + core schema/init only |
-| `src/index.ts` | ClawRocket bootstrap from core runtime startup | Calls to `initClawrocketSchema()`, `registerClawrocketSchedulerMaintenanceHook()`, web bootstrap import |
-| `src/config.ts` | Keep NanoClaw core config aligned with upstream | Core-only env/config constants |
-| `src/task-scheduler.ts` | Maintenance hook seam without core->ClawRocket DB coupling | `registerSchedulerMaintenanceHook()` registration API and hook execution |
+| `src/db.ts` | Shared SQLite connection and core DB initialization ownership | ClawRocket schema access depends on the same DB handle |
+| `src/index.ts` | Core process startup and shutdown orchestration | ClawRocket schema bootstrap, web bootstrap, singleton coordination wiring |
+| `src/config.ts` | Shared core config/env constants | Core runtime configuration stays aligned with upstream |
+| `src/task-scheduler.ts` | Scheduler maintenance hook seam | ClawRocket scheduler maintenance registration |
 
-## Review Checklist
+## Working Rules
 
-1. Changes outside the files above require explicit rationale.
-2. Core files should include `ClawRocket integration seam` comments where hooks are applied.
-3. ClawRocket-specific functionality should live under `src/clawrocket/*`.
+1. Prefer `src/clawrocket/*` for all ClawRocket-specific behavior.
+2. Changes outside the files above need explicit rationale.
+3. Core-file edits should stay narrow and commentable as integration seams.
+4. Do not move Talk runtime, auth, or web-specific logic back into NanoClaw-core files unless the boundary itself is being intentionally redesigned.

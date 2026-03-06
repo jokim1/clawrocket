@@ -1,5 +1,7 @@
 # Apple Container Networking Setup (macOS 26)
 
+This document applies to the **containerized core executor path** on macOS. It is not relevant to the direct HTTP Talk runtime.
+
 Apple Container's vmnet networking requires manual configuration for containers to access the internet. Without this, containers can communicate with the host but cannot reach external services (DNS, HTTPS, APIs).
 
 ## Quick Setup

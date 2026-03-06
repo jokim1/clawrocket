@@ -1,128 +1,105 @@
-# NanoClaw Security Model
+# ClawRocket Security Model
 
-## Trust Model
+This document describes the current security model and its real limitations.
 
-| Entity | Trust Level | Rationale |
-|--------|-------------|-----------|
-| Main group | Trusted | Private self-chat, admin control |
-| Non-main groups | Untrusted | Other users may be malicious |
-| Container agents | Sandboxed | Isolated execution environment |
-| WhatsApp messages | User input | Potential prompt injection |
+## 1. Trust Model
 
-## Security Boundaries
+| Component | Trust Level | Notes |
+| --- | --- | --- |
+| Host process | Trusted | Owns DB, routing, settings, web auth, provider secrets |
+| Web `owner` / `admin` users | Trusted operators | Can change runtime configuration |
+| Non-admin users | Partially trusted | Can participate in Talks based on access controls |
+| Core container agents | Sandboxed | Isolated from host by container boundary |
+| Talk runtime prompts | Untrusted input | Processed in host process and sent to external providers |
+| External model providers | External trust boundary | Receive Talk prompt content and provider credentials over API |
 
-### 1. Container Isolation (Primary Boundary)
+## 2. Primary Boundaries
 
-Agents execute in containers (lightweight Linux VMs), providing:
-- **Process isolation** - Container processes cannot affect the host
-- **Filesystem isolation** - Only explicitly mounted directories are visible
-- **Non-root execution** - Runs as unprivileged `node` user (uid 1000)
-- **Ephemeral containers** - Fresh environment per invocation (`--rm`)
+### Core executor boundary
 
-This is the primary security boundary. Rather than relying on application-level permission checks, the attack surface is limited by what's mounted.
+Core execution is protected primarily by container isolation:
 
-### 2. Mount Security
+- filesystem isolation via explicit mounts
+- unprivileged execution inside the container
+- per-group session and IPC separation
+- host-side mount validation
 
-**External Allowlist** - Mount permissions stored at `~/.config/nanoclaw/mount-allowlist.json`, which is:
-- Outside project root
-- Never mounted into containers
-- Cannot be modified by agents
+This is the stronger isolation boundary in the repo.
 
-**Default Blocked Patterns:**
-```
-.ssh, .gnupg, .aws, .azure, .gcloud, .kube, .docker,
-credentials, .env, .netrc, .npmrc, id_rsa, id_ed25519,
-private_key, .secret
-```
+### Talk runtime boundary
 
-**Protections:**
-- Symlink resolution before validation (prevents traversal attacks)
-- Container path validation (rejects `..` and absolute paths)
-- `nonMainReadOnly` option forces read-only for non-main groups
+Talk execution is different:
 
-**Read-Only Project Root:**
+- runs in the host process
+- uses direct outbound HTTP
+- is text-only in v1
+- does not expose Bash/tools/container mounts to Talk agents
 
-The main group's project root is mounted read-only. Writable paths the agent needs (group folder, IPC, `.claude/`) are mounted separately. This prevents the agent from modifying host application code (`src/`, `dist/`, `package.json`, etc.) which would bypass the sandbox entirely on next restart.
+The Talk runtime is safer in capability scope than the core container path, but it is not container-isolated.
 
-### 3. Session Isolation
+## 3. Credential Handling
 
-Each group has isolated Claude sessions at `data/sessions/{group}/.claude/`:
-- Groups cannot see other groups' conversation history
-- Session data includes full message history and file contents read
-- Prevents cross-group information disclosure
+### Core executor credentials
 
-### 4. IPC Authorization
+Core executor credentials are managed by the executor settings service and exposed to the containerized runtime as needed for Claude execution.
 
-Messages and task operations are verified against group identity:
+Important limitation:
 
-| Operation | Main Group | Non-Main Group |
-|-----------|------------|----------------|
-| Send message to own chat | ✓ | ✓ |
-| Send message to other chats | ✓ | ✗ |
-| Schedule task for self | ✓ | ✓ |
-| Schedule task for others | ✓ | ✗ |
-| View all tasks | ✓ | Own only |
-| Manage other groups | ✓ | ✗ |
+- these settings are not encrypted at rest in a dedicated secret store
+- they are not returned via settings APIs
+- they are still sensitive host data and should be treated similarly to `.env` secrets
 
-### 5. Credential Handling
+### Talk provider secrets
 
-**Mounted Credentials:**
-- Claude auth tokens (filtered from `.env`, read-only)
+Talk provider secrets are stored separately and encrypted before being written to SQLite.
 
-**NOT Mounted:**
-- WhatsApp session (`store/auth/`) - host only
-- Mount allowlist - external, never mounted
-- Any credentials matching blocked patterns
+Important details:
 
-**Credential Filtering:**
-Only these environment variables are exposed to containers:
-```typescript
-const allowedVars = [
-  'CLAUDE_CODE_OAUTH_TOKEN',
-  'ANTHROPIC_API_KEY',
-  'ANTHROPIC_AUTH_TOKEN',
-  'ANTHROPIC_BASE_URL',
-];
-```
+- encryption key comes from `CLAWROCKET_PROVIDER_SECRET_KEY`
+- if absent in development, the code falls back to an unsafe development key and logs a warning
+- provider GET APIs expose only `hasCredential`, not the underlying secret
 
-> **Note:** Anthropic credentials are stored in SQLite and passed into the container environment at runtime so Claude Code can authenticate when the agent runs. This still means the agent can discover credentials from its own execution environment. Ideally, Claude Code would authenticate without exposing credentials to the agent process, but that isolation is not implemented in this phase.
+## 4. Web Security Model
 
-## Privilege Comparison
+The web app and API enforce:
 
-| Capability | Main Group | Non-Main Group |
-|------------|------------|----------------|
-| Project root access | `/workspace/project` (ro) | None |
-| Group folder | `/workspace/group` (rw) | `/workspace/group` (rw) |
-| Global memory | Implicit via project | `/workspace/global` (ro) |
-| Additional mounts | Configurable | Read-only unless allowed |
-| Network access | Unrestricted | Unrestricted |
-| MCP tools | All | All |
+- authenticated sessions
+- CSRF protection on mutating routes
+- idempotency on write paths where required
+- RBAC for owner/admin/member roles
 
-## Security Architecture Diagram
+Current high-value admin surfaces:
 
-```
-┌──────────────────────────────────────────────────────────────────┐
-│                        UNTRUSTED ZONE                             │
-│  WhatsApp Messages (potentially malicious)                        │
-└────────────────────────────────┬─────────────────────────────────┘
-                                 │
-                                 ▼ Trigger check, input escaping
-┌──────────────────────────────────────────────────────────────────┐
-│                     HOST PROCESS (TRUSTED)                        │
-│  • Message routing                                                │
-│  • IPC authorization                                              │
-│  • Mount validation (external allowlist)                          │
-│  • Container lifecycle                                            │
-│  • Credential filtering                                           │
-└────────────────────────────────┬─────────────────────────────────┘
-                                 │
-                                 ▼ Explicit mounts only
-┌──────────────────────────────────────────────────────────────────┐
-│                CONTAINER (ISOLATED/SANDBOXED)                     │
-│  • Agent execution                                                │
-│  • Bash commands (sandboxed)                                      │
-│  • File operations (limited to mounts)                            │
-│  • Network access (unrestricted)                                  │
-│  • Cannot modify security config                                  │
-└──────────────────────────────────────────────────────────────────┘
-```
+- executor settings
+- Talk LLM settings
+- service restart
+
+Restart remains owner-only.
+
+## 5. Single-Instance Safety
+
+ClawRocket now enforces one runtime owner per `DATA_DIR`.
+
+This is primarily an operational safety mechanism, but it also reduces integrity risks such as:
+
+- duplicate schedulers
+- duplicate channel consumers
+- duplicate Talk workers
+- conflicting ownership of runtime state
+
+The coordinator verifies process identity before using signals during takeover.
+
+## 6. Known Limitations
+
+1. Core executor credentials are not protected by the same encrypted secret store used for Talk provider secrets.
+2. Talk prompts leave the host process and are sent to external providers selected by route configuration.
+3. The Talk runtime is not container-isolated.
+4. The core executor may still expose credentials to the runtime environment needed by the Claude/agent path.
+5. Native Windows takeover is out of scope.
+
+## 7. Practical Security Guidance
+
+- Use the Talk runtime only with providers you are willing to trust with Talk content.
+- Set `CLAWROCKET_PROVIDER_SECRET_KEY` in non-development environments.
+- Use the Ubuntu systemd service rather than ad hoc manual background processes.
+- Keep ClawRocket-specific changes under `src/clawrocket/*` so security-sensitive core changes stay auditable.
