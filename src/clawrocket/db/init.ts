@@ -8,6 +8,90 @@ function computeSessionCompatKey(alias: string, model: string): string {
   return JSON.stringify([alias, model]);
 }
 
+function seedBuiltinTalkLlmDefaults(database: Database.Database): void {
+  const now = new Date().toISOString();
+
+  database
+    .prepare(
+      `
+      INSERT INTO llm_providers (
+        id, name, provider_kind, api_format, base_url, auth_scheme, enabled,
+        core_compatibility, response_start_timeout_ms, stream_idle_timeout_ms,
+        absolute_timeout_ms, updated_at, updated_by
+      )
+      VALUES (
+        'builtin.mock',
+        'Local Mock',
+        'custom',
+        'openai_chat_completions',
+        'mock://local-talk-runtime',
+        'bearer',
+        1,
+        'none',
+        60000,
+        20000,
+        300000,
+        ?,
+        NULL
+      )
+      ON CONFLICT(id) DO NOTHING
+    `,
+    )
+    .run(now);
+
+  database
+    .prepare(
+      `
+      INSERT INTO llm_provider_models (
+        provider_id, model_id, display_name, context_window_tokens,
+        default_max_output_tokens, enabled, updated_at, updated_by
+      )
+      VALUES (
+        'builtin.mock',
+        'mock-default',
+        'Mock',
+        64000,
+        2048,
+        1,
+        ?,
+        NULL
+      )
+      ON CONFLICT(provider_id, model_id) DO NOTHING
+    `,
+    )
+    .run(now);
+
+  database
+    .prepare(
+      `
+      INSERT INTO talk_routes (id, name, enabled, updated_at, updated_by)
+      VALUES ('route.default.mock', 'Local Mock Default', 1, ?, NULL)
+      ON CONFLICT(id) DO NOTHING
+    `,
+    )
+    .run(now);
+
+  database
+    .prepare(
+      `
+      INSERT INTO talk_route_steps (route_id, position, provider_id, model_id)
+      VALUES ('route.default.mock', 0, 'builtin.mock', 'mock-default')
+      ON CONFLICT(route_id, position) DO NOTHING
+    `,
+    )
+    .run();
+
+  database
+    .prepare(
+      `
+      INSERT INTO settings_kv (key, value, updated_at, updated_by)
+      VALUES ('talkLlm.defaultRouteId', 'route.default.mock', ?, NULL)
+      ON CONFLICT(key) DO NOTHING
+    `,
+    )
+    .run(now);
+}
+
 function createClawrocketSchema(database: Database.Database): void {
   database.exec(`
     CREATE TABLE IF NOT EXISTS users (
@@ -145,6 +229,7 @@ function createClawrocketSchema(database: Database.Database): void {
       status TEXT NOT NULL
         CHECK(status IN ('queued', 'running', 'cancelled', 'completed', 'failed')),
       trigger_message_id TEXT REFERENCES talk_messages(id) ON DELETE SET NULL,
+      target_agent_id TEXT,
       idempotency_key TEXT,
       executor_alias TEXT,
       executor_model TEXT,
@@ -193,6 +278,104 @@ function createClawrocketSchema(database: Database.Database): void {
       session_compat_key TEXT NOT NULL DEFAULT '',
       updated_at TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS llm_providers (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      provider_kind TEXT NOT NULL
+        CHECK(provider_kind IN ('anthropic', 'openai', 'gemini', 'deepseek', 'kimi', 'custom')),
+      api_format TEXT NOT NULL
+        CHECK(api_format IN ('anthropic_messages', 'openai_chat_completions')),
+      base_url TEXT NOT NULL,
+      auth_scheme TEXT NOT NULL
+        CHECK(auth_scheme IN ('x_api_key', 'bearer')),
+      enabled INTEGER NOT NULL DEFAULT 1,
+      core_compatibility TEXT NOT NULL DEFAULT 'none'
+        CHECK(core_compatibility IN ('none', 'claude_sdk_proxy')),
+      response_start_timeout_ms INTEGER,
+      stream_idle_timeout_ms INTEGER,
+      absolute_timeout_ms INTEGER,
+      updated_at TEXT NOT NULL,
+      updated_by TEXT REFERENCES users(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS llm_provider_models (
+      provider_id TEXT NOT NULL REFERENCES llm_providers(id) ON DELETE CASCADE,
+      model_id TEXT NOT NULL,
+      display_name TEXT NOT NULL,
+      context_window_tokens INTEGER NOT NULL,
+      default_max_output_tokens INTEGER NOT NULL,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      updated_at TEXT NOT NULL,
+      updated_by TEXT REFERENCES users(id),
+      PRIMARY KEY (provider_id, model_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS llm_provider_secrets (
+      provider_id TEXT PRIMARY KEY REFERENCES llm_providers(id) ON DELETE CASCADE,
+      ciphertext TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      updated_by TEXT REFERENCES users(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS talk_routes (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      updated_at TEXT NOT NULL,
+      updated_by TEXT REFERENCES users(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS talk_route_steps (
+      route_id TEXT NOT NULL REFERENCES talk_routes(id) ON DELETE CASCADE,
+      position INTEGER NOT NULL,
+      provider_id TEXT NOT NULL REFERENCES llm_providers(id) ON DELETE CASCADE,
+      model_id TEXT NOT NULL,
+      PRIMARY KEY (route_id, position),
+      FOREIGN KEY (provider_id, model_id)
+        REFERENCES llm_provider_models(provider_id, model_id)
+        ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS talk_agents (
+      id TEXT PRIMARY KEY,
+      talk_id TEXT NOT NULL REFERENCES talks(id) ON DELETE CASCADE,
+      name TEXT NOT NULL,
+      persona_role TEXT NOT NULL
+        CHECK(persona_role IN ('assistant', 'analyst', 'critic', 'strategist', 'devils-advocate', 'synthesizer', 'editor')),
+      -- Prevent deleting a route while Talk agents still reference it.
+      route_id TEXT NOT NULL REFERENCES talk_routes(id) ON DELETE RESTRICT,
+      is_primary INTEGER NOT NULL DEFAULT 0,
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_talk_agents_talk_sort
+      ON talk_agents(talk_id, sort_order, created_at);
+    CREATE INDEX IF NOT EXISTS idx_talk_agents_route_id
+      ON talk_agents(route_id);
+
+    CREATE TABLE IF NOT EXISTS llm_attempts (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      run_id TEXT NOT NULL REFERENCES talk_runs(id) ON DELETE CASCADE,
+      talk_id TEXT NOT NULL REFERENCES talks(id) ON DELETE CASCADE,
+      agent_id TEXT REFERENCES talk_agents(id) ON DELETE SET NULL,
+      route_id TEXT REFERENCES talk_routes(id) ON DELETE SET NULL,
+      route_step_position INTEGER,
+      provider_id TEXT REFERENCES llm_providers(id) ON DELETE SET NULL,
+      model_id TEXT,
+      status TEXT NOT NULL
+        CHECK(status IN ('success', 'failed', 'skipped', 'cancelled')),
+      failure_class TEXT,
+      latency_ms INTEGER,
+      input_tokens INTEGER,
+      output_tokens INTEGER,
+      estimated_cost_usd REAL,
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_llm_attempts_run_id ON llm_attempts(run_id);
+    CREATE INDEX IF NOT EXISTS idx_llm_attempts_talk_id_created_at
+      ON llm_attempts(talk_id, created_at);
   `);
 
   try {
@@ -259,6 +442,12 @@ function createClawrocketSchema(database: Database.Database): void {
     /* column already exists */
   }
 
+  try {
+    database.exec(`ALTER TABLE talk_runs ADD COLUMN target_agent_id TEXT`);
+  } catch {
+    /* column already exists */
+  }
+
   const staleSessions = database
     .prepare(
       `
@@ -303,6 +492,8 @@ function createClawrocketSchema(database: Database.Database): void {
 
     tx(staleSessions);
   }
+
+  seedBuiltinTalkLlmDefaults(database);
 }
 
 export function initClawrocketSchema(): void {

@@ -13,17 +13,22 @@ import {
   ApiError,
   cancelTalkRuns,
   getTalk,
-  getTalkPolicy,
+  getTalkAgents,
   listTalkMessages,
   sendTalkMessage,
   Talk,
+  TalkAgent,
   TalkMessage,
-  updateTalkPolicy,
+  updateTalkAgents,
   UnauthorizedError,
 } from '../lib/api';
 import { openTalkStream } from '../lib/talkStream';
 import type {
   MessageAppendedEvent,
+  TalkResponseDeltaEvent,
+  TalkResponseStartedEvent,
+  TalkResponseTerminalEvent,
+  TalkResponseUsageEvent,
   TalkRunCancelledEvent,
   TalkRunCompletedEvent,
   TalkRunFailedEvent,
@@ -41,6 +46,16 @@ type RunView = {
   executorAlias?: string | null;
   executorModel?: string | null;
   updatedAt: number;
+};
+
+type LiveResponseView = {
+  runId: string;
+  text: string;
+  agentId?: string | null;
+  agentName?: string | null;
+  providerId?: string | null;
+  modelId?: string | null;
+  errorMessage?: string;
 };
 
 function summarizeMessageForRun(message: TalkMessage | undefined, messageId: string): string {
@@ -63,6 +78,7 @@ type DetailState = {
     error?: string;
     lastDraft?: string;
   };
+  liveResponse: LiveResponseView | null;
   cancelState: {
     status: 'idle' | 'posting' | 'success' | 'error';
     message?: string;
@@ -115,6 +131,11 @@ type DetailAction =
       type: 'RUN_CANCELLED_BATCH';
       runIds: string[];
     }
+  | { type: 'RESPONSE_STARTED'; event: TalkResponseStartedEvent }
+  | { type: 'RESPONSE_DELTA'; event: TalkResponseDeltaEvent }
+  | { type: 'RESPONSE_COMPLETED'; event: TalkResponseTerminalEvent }
+  | { type: 'RESPONSE_FAILED'; event: TalkResponseTerminalEvent }
+  | { type: 'RESPONSE_CANCELLED'; event: TalkResponseTerminalEvent }
   | { type: 'STREAM_CONNECTING' }
   | { type: 'STREAM_LIVE' }
   | { type: 'STREAM_RECONNECTING' }
@@ -138,6 +159,7 @@ function createInitialDetailState(): DetailState {
     runsById: {},
     streamState: 'connecting',
     sendState: { status: 'idle' },
+    liveResponse: null,
     cancelState: { status: 'idle' },
     hasUnreadBelow: false,
     initialScrollPending: false,
@@ -184,6 +206,7 @@ function detailReducer(state: DetailState, action: DetailAction): DetailState {
         runsById: {},
         streamState: 'connecting',
         sendState: { status: 'idle' },
+        liveResponse: null,
         cancelState: { status: 'idle' },
         hasUnreadBelow: false,
         initialScrollPending: true,
@@ -194,6 +217,7 @@ function detailReducer(state: DetailState, action: DetailAction): DetailState {
         kind: action.unavailable ? 'unavailable' : 'error',
         errorMessage: action.message,
         streamState: 'offline',
+        liveResponse: null,
       };
     case 'MESSAGE_APPENDED': {
       if (state.kind !== 'ready') return state;
@@ -241,6 +265,8 @@ function detailReducer(state: DetailState, action: DetailAction): DetailState {
       if (state.kind !== 'ready') return state;
       return {
         ...state,
+        liveResponse:
+          state.liveResponse?.runId === action.runId ? null : state.liveResponse,
         runsById: withRun(state, action.runId, {
           status: 'completed',
           triggerMessageId: action.triggerMessageId,
@@ -253,6 +279,8 @@ function detailReducer(state: DetailState, action: DetailAction): DetailState {
       if (state.kind !== 'ready') return state;
       return {
         ...state,
+        liveResponse:
+          state.liveResponse?.runId === action.runId ? null : state.liveResponse,
         runsById: withRun(state, action.runId, {
           status: 'failed',
           triggerMessageId: action.triggerMessageId,
@@ -266,6 +294,10 @@ function detailReducer(state: DetailState, action: DetailAction): DetailState {
       if (state.kind !== 'ready' || action.runIds.length === 0) return state;
       return {
         ...state,
+        liveResponse:
+          state.liveResponse && action.runIds.includes(state.liveResponse.runId)
+            ? null
+            : state.liveResponse,
         runsById: action.runIds.reduce((runsById, runId) => {
           const current = runsById[runId];
           return {
@@ -282,6 +314,59 @@ function detailReducer(state: DetailState, action: DetailAction): DetailState {
           };
         }, state.runsById),
       };
+    case 'RESPONSE_STARTED':
+      if (state.kind !== 'ready') return state;
+      return {
+        ...state,
+        liveResponse: {
+          runId: action.event.runId,
+          text: '',
+          agentId: action.event.agentId,
+          agentName: action.event.agentName,
+          providerId: action.event.providerId,
+          modelId: action.event.modelId,
+        },
+      };
+    case 'RESPONSE_DELTA':
+      if (state.kind !== 'ready') return state;
+      if (state.liveResponse?.runId !== action.event.runId) {
+        return {
+          ...state,
+          liveResponse: {
+            runId: action.event.runId,
+            text: action.event.deltaText,
+            agentId: action.event.agentId,
+            agentName: action.event.agentName,
+            providerId: action.event.providerId,
+            modelId: action.event.modelId,
+          },
+        };
+      }
+      return {
+        ...state,
+        liveResponse: {
+          ...state.liveResponse,
+          text: `${state.liveResponse.text}${action.event.deltaText}`,
+        },
+      };
+    case 'RESPONSE_COMPLETED':
+      if (state.kind !== 'ready') return state;
+      if (state.liveResponse?.runId !== action.event.runId) return state;
+      return { ...state, liveResponse: null };
+    case 'RESPONSE_FAILED':
+      if (state.kind !== 'ready') return state;
+      if (state.liveResponse?.runId !== action.event.runId) return state;
+      return {
+        ...state,
+        liveResponse: {
+          ...state.liveResponse,
+          errorMessage: action.event.errorMessage,
+        },
+      };
+    case 'RESPONSE_CANCELLED':
+      if (state.kind !== 'ready') return state;
+      if (state.liveResponse?.runId !== action.event.runId) return state;
+      return { ...state, liveResponse: null };
     case 'STREAM_CONNECTING':
       if (state.kind !== 'ready') return state;
       return { ...state, streamState: 'connecting' };
@@ -352,6 +437,7 @@ function detailReducer(state: DetailState, action: DetailAction): DetailState {
         messages: action.messages,
         messageIds: new Set(action.messages.map((message) => message.id)),
         runsById: {},
+        liveResponse: null,
         hasUnreadBelow: false,
         initialScrollPending: false,
       };
@@ -362,11 +448,8 @@ function detailReducer(state: DetailState, action: DetailAction): DetailState {
 
 const SCROLL_STICK_THRESHOLD_PX = 120;
 const TALK_MESSAGE_MAX_CHARS = 20_000;
-function normalizePolicyDraft(
-  draft: string,
-  limits: { maxAgents: number; maxAgentChars: number } | null,
-): { agents?: string[]; error?: string } {
-  const normalized = [
+function normalizeAgentNames(draft: string): string[] {
+  return [
     ...new Set(
       draft
         .split(',')
@@ -374,23 +457,25 @@ function normalizePolicyDraft(
         .filter(Boolean),
     ),
   ];
+}
 
-  if (!limits) {
-    return { agents: normalized };
+function coerceAgents(
+  input: TalkAgent[] | string[],
+  fallbackRouteId: string,
+): TalkAgent[] {
+  if (!Array.isArray(input)) return [];
+  if (input.length === 0) return [];
+  if (typeof input[0] !== 'string') {
+    return input as TalkAgent[];
   }
-
-  if (normalized.some((agent) => agent.length > limits.maxAgentChars)) {
-    return {
-      error: `Each agent label must be ${limits.maxAgentChars} characters or less.`,
-    };
-  }
-  if (normalized.length > limits.maxAgents) {
-    return {
-      error: `At most ${limits.maxAgents} agents are allowed.`,
-    };
-  }
-
-  return { agents: normalized };
+  return (input as string[]).map((name, index) => ({
+    id: `legacy-${index}`,
+    name,
+    personaRole: 'assistant',
+    routeId: fallbackRouteId,
+    isPrimary: index === 0,
+    sortOrder: index,
+  }));
 }
 
 export function TalkDetailPage({
@@ -401,13 +486,10 @@ export function TalkDetailPage({
   const { talkId = '' } = useParams<{ talkId: string }>();
   const [state, dispatch] = useReducer(detailReducer, undefined, createInitialDetailState);
   const [draft, setDraft] = useState('');
-  const [policyDraft, setPolicyDraft] = useState('');
-  const [policyAgents, setPolicyAgents] = useState<string[]>([]);
-  const [policyLimits, setPolicyLimits] = useState<{
-    maxAgents: number;
-    maxAgentChars: number;
-  } | null>(null);
-  const [policyState, setPolicyState] = useState<{
+  const [agents, setAgents] = useState<TalkAgent[]>([]);
+  const [agentDrafts, setAgentDrafts] = useState<TalkAgent[]>([]);
+  const [targetAgentId, setTargetAgentId] = useState<string | null>(null);
+  const [agentState, setAgentState] = useState<{
     status: 'idle' | 'saving' | 'error' | 'success';
     message?: string;
   }>({ status: 'idle' });
@@ -439,7 +521,7 @@ export function TalkDetailPage({
   const accessRole = state.kind === 'ready' ? state.talk?.accessRole : null;
   const canCancelRuns =
     accessRole === 'owner' || accessRole === 'admin' || accessRole === 'editor';
-  const canEditPolicy = canCancelRuns;
+  const canEditAgents = canCancelRuns;
 
   const isNearBottom = useCallback((): boolean => {
     const container = timelineRef.current;
@@ -506,6 +588,8 @@ export function TalkDetailPage({
           createdBy: event.createdBy,
           createdAt: event.createdAt,
           runId: event.runId,
+          agentId: event.agentId,
+          agentName: event.agentName,
         },
       });
     },
@@ -580,27 +664,81 @@ export function TalkDetailPage({
     [talkId],
   );
 
+  const handleResponseStarted = useCallback(
+    (event: TalkResponseStartedEvent) => {
+      if (event.talkId !== talkId) return;
+      dispatch({ type: 'RESPONSE_STARTED', event });
+    },
+    [talkId],
+  );
+
+  const handleResponseDelta = useCallback(
+    (event: TalkResponseDeltaEvent) => {
+      if (event.talkId !== talkId) return;
+      const nearBottom = isNearBottom();
+      if (nearBottom) {
+        autoStickToBottomRef.current = true;
+      }
+      dispatch({ type: 'RESPONSE_DELTA', event });
+    },
+    [isNearBottom, talkId],
+  );
+
+  const handleResponseUsage = useCallback(
+    (_event: TalkResponseUsageEvent) => {
+      // Reserved for future UI surfacing.
+    },
+    [],
+  );
+
+  const handleResponseCompleted = useCallback(
+    (event: TalkResponseTerminalEvent) => {
+      if (event.talkId !== talkId) return;
+      dispatch({ type: 'RESPONSE_COMPLETED', event });
+    },
+    [talkId],
+  );
+
+  const handleResponseFailed = useCallback(
+    (event: TalkResponseTerminalEvent) => {
+      if (event.talkId !== talkId) return;
+      dispatch({ type: 'RESPONSE_FAILED', event });
+    },
+    [talkId],
+  );
+
+  const handleResponseCancelled = useCallback(
+    (event: TalkResponseTerminalEvent) => {
+      if (event.talkId !== talkId) return;
+      dispatch({ type: 'RESPONSE_CANCELLED', event });
+    },
+    [talkId],
+  );
+
   useEffect(() => {
     let cancelled = false;
     dispatch({ type: 'BOOTSTRAP_LOADING' });
     messageElementRefs.current.clear();
-    setPolicyAgents([]);
-    setPolicyDraft('');
-    setPolicyLimits(null);
-    setPolicyState({ status: 'idle' });
+    setAgents([]);
+    setAgentDrafts([]);
+    setTargetAgentId(null);
+    setAgentState({ status: 'idle' });
 
     const load = async () => {
       try {
-        const [talk, messages, policy] = await Promise.all([
+        const [talk, messages, rawAgents] = await Promise.all([
           getTalk(talkId),
           listTalkMessages(talkId),
-          getTalkPolicy(talkId),
+          getTalkAgents(talkId),
         ]);
         if (!cancelled) {
-          setPolicyAgents(policy.agents);
-          setPolicyDraft(policy.agents.join(', '));
-          setPolicyLimits(policy.limits);
-          setPolicyState({ status: 'idle' });
+          const nextAgents = coerceAgents(rawAgents as TalkAgent[] | string[], 'route.default.mock');
+          setAgents(nextAgents);
+          setAgentDrafts(nextAgents);
+          setTargetAgentId(
+            nextAgents.find((agent) => agent.isPrimary)?.id || nextAgents[0]?.id || null,
+          );
+          setAgentState({ status: 'idle' });
           dispatch({ type: 'BOOTSTRAP_READY', talk, messages });
         }
       } catch (err) {
@@ -644,6 +782,12 @@ export function TalkDetailPage({
       onMessageAppended: handleMessageAppended,
       onRunStarted: handleRunStarted,
       onRunQueued: handleRunQueued,
+      onResponseStarted: handleResponseStarted,
+      onResponseDelta: handleResponseDelta,
+      onResponseUsage: handleResponseUsage,
+      onResponseCompleted: handleResponseCompleted,
+      onResponseFailed: handleResponseFailed,
+      onResponseCancelled: handleResponseCancelled,
       onRunCompleted: handleRunCompleted,
       onRunFailed: handleRunFailed,
       onRunCancelled: handleRunCancelled,
@@ -676,6 +820,12 @@ export function TalkDetailPage({
     };
   }, [
     handleMessageAppended,
+    handleResponseCancelled,
+    handleResponseCompleted,
+    handleResponseDelta,
+    handleResponseFailed,
+    handleResponseStarted,
+    handleResponseUsage,
     handleRunCancelled,
     handleRunCompleted,
     handleRunFailed,
@@ -738,7 +888,11 @@ export function TalkDetailPage({
     dispatch({ type: 'SEND_STARTED' });
 
     try {
-      await sendTalkMessage({ talkId: talk.id, content });
+      await sendTalkMessage({
+        talkId: talk.id,
+        content,
+        targetAgentId,
+      });
       setDraft('');
       dispatch({ type: 'SEND_CLEARED' });
     } catch (err) {
@@ -785,32 +939,83 @@ export function TalkDetailPage({
     dispatch({ type: 'CLEAR_UNREAD' });
   };
 
-  const handlePolicyDraftChange = (value: string) => {
-    setPolicyDraft(value);
-    if (policyState.status === 'error' || policyState.status === 'success') {
-      setPolicyState({ status: 'idle' });
+  const handleAgentDraftChange = (
+    agentId: string,
+    patch: Partial<TalkAgent>,
+  ) => {
+    setAgentDrafts((current) =>
+      current.map((agent) =>
+        agent.id === agentId ? { ...agent, ...patch } : agent,
+      ),
+    );
+    if (agentState.status === 'error' || agentState.status === 'success') {
+      setAgentState({ status: 'idle' });
     }
   };
 
-  const handleSavePolicy = async () => {
-    if (state.kind !== 'ready') return;
-    if (!canEditPolicy) return;
+  const handleAddAgent = () => {
+    const fallbackRouteId =
+      agentDrafts.find((agent) => agent.isPrimary)?.routeId ||
+      agentDrafts[0]?.routeId ||
+      'route.default.mock';
+    const nextAgent: TalkAgent = {
+      id: globalThis.crypto?.randomUUID?.() || `agent-${Date.now()}`,
+      name: `Agent ${agentDrafts.length + 1}`,
+      personaRole: 'assistant',
+      routeId: fallbackRouteId,
+      isPrimary: false,
+      sortOrder: agentDrafts.length,
+    };
+    setAgentDrafts((current) => [...current, nextAgent]);
+  };
 
-    const normalized = normalizePolicyDraft(policyDraft, policyLimits);
-    if (!normalized.agents) {
-      setPolicyState({ status: 'error', message: normalized.error });
-      return;
-    }
+  const handleRemoveAgent = (agentId: string) => {
+    setAgentDrafts((current) => {
+      const remaining = current.filter((agent) => agent.id !== agentId);
+      if (remaining.length === 0) return current;
+      if (!remaining.some((agent) => agent.isPrimary)) {
+        remaining[0] = { ...remaining[0], isPrimary: true };
+      }
+      return remaining.map((agent, index) => ({ ...agent, sortOrder: index }));
+    });
+  };
 
-    setPolicyState({ status: 'saving' });
+  const handleSetPrimaryAgent = (agentId: string) => {
+    setAgentDrafts((current) =>
+      current.map((agent) => ({
+        ...agent,
+        isPrimary: agent.id === agentId,
+      })),
+    );
+    setTargetAgentId(agentId);
+  };
+
+  const handleSaveAgents = async () => {
+    if (state.kind !== 'ready' || !canEditAgents) return;
+
+    setAgentState({ status: 'saving' });
     try {
-      const result = await updateTalkPolicy({
-        talkId: state.talk!.id,
-        agents: normalized.agents,
-      });
-      setPolicyAgents(result.agents);
-      setPolicyDraft(result.agents.join(', '));
-      setPolicyState({
+      const normalized = agentDrafts.map((agent, index) => ({
+        ...agent,
+        name: agent.name.trim(),
+        routeId: agent.routeId.trim(),
+        sortOrder: index,
+      }));
+      const saved = coerceAgents(
+        (await updateTalkAgents({
+          talkId: state.talk!.id,
+          agents: normalized,
+        })) as TalkAgent[] | string[],
+        normalized.find((agent) => agent.isPrimary)?.routeId ||
+          normalized[0]?.routeId ||
+          'route.default.mock',
+      );
+      setAgents(saved);
+      setAgentDrafts(saved);
+      setTargetAgentId(
+        saved.find((agent) => agent.isPrimary)?.id || saved[0]?.id || null,
+      );
+      setAgentState({
         status: 'success',
         message: 'Talk policy updated.',
       });
@@ -819,9 +1024,9 @@ export function TalkDetailPage({
         handleUnauthorized();
         return;
       }
-      setPolicyState({
+      setAgentState({
         status: 'error',
-        message: err instanceof Error ? err.message : 'Failed to update talk policy',
+        message: err instanceof Error ? err.message : 'Failed to update talk agents',
       });
     }
   };
@@ -916,51 +1121,146 @@ export function TalkDetailPage({
 
       <section className="policy-panel" aria-label="Talk policy">
         <h2>Talk Agents</h2>
-        {policyAgents.length > 0 ? (
+        {agents.length > 0 ? (
           <div className="talk-agent-row">
-            {policyAgents.map((agent) => (
-              <span key={agent} className="talk-agent-chip">
-                {agent}
+            {agents.map((agent) => (
+              <span key={agent.id} className="talk-agent-chip">
+                {agent.name}
               </span>
             ))}
           </div>
-        ) : (
-          <p className="policy-muted">No custom agents configured (using defaults).</p>
-        )}
-        {canEditPolicy ? (
+        ) : null}
+        {canEditAgents ? (
           <div className="policy-editor">
             <label htmlFor="talk-policy-input">Comma-separated agents</label>
             <input
               id="talk-policy-input"
               type="text"
-              value={policyDraft}
-              onChange={(event) => handlePolicyDraftChange(event.target.value)}
+              value={agentDrafts.map((agent) => agent.name).join(', ')}
+              onChange={(event) => {
+                const names = normalizeAgentNames(event.target.value);
+                setAgentDrafts((current) => {
+                  const primaryId =
+                    current.find((agent) => agent.isPrimary)?.id || current[0]?.id || null;
+                  return names.map((name, index) => ({
+                    id:
+                      current[index]?.id ||
+                      globalThis.crypto?.randomUUID?.() ||
+                      `agent-${Date.now()}-${index}`,
+                    name,
+                    personaRole: current[index]?.personaRole || 'assistant',
+                    routeId:
+                      current[index]?.routeId ||
+                      current.find((agent) => agent.isPrimary)?.routeId ||
+                      current[0]?.routeId ||
+                      'route.default.mock',
+                    isPrimary:
+                      current[index]?.id === primaryId || (!primaryId && index === 0),
+                    sortOrder: index,
+                  }));
+                });
+                if (agentState.status === 'error' || agentState.status === 'success') {
+                  setAgentState({ status: 'idle' });
+                }
+              }}
               placeholder="Gemini, Opus4.6"
-              disabled={policyState.status === 'saving'}
+              disabled={agentState.status === 'saving'}
             />
+            {agentDrafts.map((agent) => (
+              <div key={agent.id} className="policy-agent-grid">
+                <label>
+                  <span>Name</span>
+                  <input
+                    type="text"
+                    value={agent.name}
+                    onChange={(event) =>
+                      handleAgentDraftChange(agent.id, { name: event.target.value })
+                    }
+                    disabled={agentState.status === 'saving'}
+                  />
+                </label>
+                <label>
+                  <span>Persona</span>
+                  <select
+                    value={agent.personaRole}
+                    onChange={(event) =>
+                      handleAgentDraftChange(agent.id, {
+                        personaRole: event.target.value as TalkAgent['personaRole'],
+                      })
+                    }
+                    disabled={agentState.status === 'saving'}
+                  >
+                    <option value="assistant">Assistant</option>
+                    <option value="analyst">Analyst</option>
+                    <option value="critic">Critic</option>
+                    <option value="strategist">Strategist</option>
+                    <option value="devils-advocate">Devil&apos;s Advocate</option>
+                    <option value="synthesizer">Synthesizer</option>
+                    <option value="editor">Editor</option>
+                  </select>
+                </label>
+                <label>
+                  <span>Route ID</span>
+                  <input
+                    type="text"
+                    value={agent.routeId}
+                    onChange={(event) =>
+                      handleAgentDraftChange(agent.id, { routeId: event.target.value })
+                    }
+                    disabled={agentState.status === 'saving'}
+                  />
+                </label>
+                <label className="policy-primary-toggle">
+                  <input
+                    type="radio"
+                    name="primary-talk-agent"
+                    checked={agent.isPrimary}
+                    onChange={() => handleSetPrimaryAgent(agent.id)}
+                    disabled={agentState.status === 'saving'}
+                  />
+                  <span>Primary</span>
+                </label>
+                <button
+                  type="button"
+                  className="secondary-btn"
+                  onClick={() => handleRemoveAgent(agent.id)}
+                  disabled={agentDrafts.length <= 1 || agentState.status === 'saving'}
+                >
+                  Remove
+                </button>
+              </div>
+            ))}
             <div className="policy-editor-controls">
               <button
                 type="button"
                 className="secondary-btn"
-                onClick={handleSavePolicy}
-                disabled={policyState.status === 'saving'}
+                onClick={handleAddAgent}
+                disabled={agentState.status === 'saving'}
               >
-                {policyState.status === 'saving' ? 'Saving…' : 'Save Agents'}
+                Add Agent
+              </button>
+              <button
+                type="button"
+                className="secondary-btn"
+                onClick={handleSaveAgents}
+                disabled={agentState.status === 'saving'}
+              >
+                {agentState.status === 'saving' ? 'Saving…' : 'Save Agents'}
               </button>
             </div>
-            {policyState.status === 'error' ? (
+            {agentState.status === 'error' ? (
               <div className="inline-banner inline-banner-error" role="alert">
-                {policyState.message}
+                {agentState.message}
               </div>
             ) : null}
-            {policyState.status === 'success' ? (
+            {agentState.status === 'success' ? (
               <div className="inline-banner inline-banner-success" role="status">
-                {policyState.message}
+                {agentState.message}
               </div>
             ) : null}
           </div>
         ) : (
-          <p className="policy-muted">You have read-only access to talk policy.</p>
+          <p className="policy-muted">You have read-only access to talk agents.</p>
         )}
       </section>
 
@@ -1051,13 +1351,33 @@ export function TalkDetailPage({
               className={`message message-${message.role}`}
             >
               <header>
-                <strong>{message.role}</strong>
+                <strong>
+                  {message.agentName ? `${message.agentName} · ` : ''}
+                  {message.role}
+                </strong>
                 <time>{new Date(message.createdAt).toLocaleString()}</time>
               </header>
               <p>{message.content}</p>
             </article>
           ))
         )}
+
+        {state.liveResponse ? (
+          <article className="message message-assistant message-live">
+            <header>
+              <strong>
+                {state.liveResponse.agentName
+                  ? `${state.liveResponse.agentName} · assistant`
+                  : 'assistant'}
+              </strong>
+              <time>Streaming…</time>
+            </header>
+            <p>{state.liveResponse.text || 'Thinking…'}</p>
+            {state.liveResponse.errorMessage ? (
+              <p className="run-history-error">{state.liveResponse.errorMessage}</p>
+            ) : null}
+          </article>
+        ) : null}
 
         {state.hasUnreadBelow ? (
           <button
@@ -1073,6 +1393,21 @@ export function TalkDetailPage({
       </div>
 
       <form className="composer" onSubmit={handleSend}>
+        <label className="composer-target">
+          <span>Reply agent</span>
+          <select
+            value={targetAgentId || ''}
+            onChange={(event) => setTargetAgentId(event.target.value || null)}
+            disabled={state.sendState.status === 'posting' || agents.length === 0}
+          >
+            {agentDrafts.map((agent) => (
+              <option key={agent.id} value={agent.id}>
+                {agent.name}
+                {agent.isPrimary ? ' (Primary)' : ''}
+              </option>
+            ))}
+          </select>
+        </label>
         <textarea
           value={draft}
           onChange={(event) => handleDraftChange(event.target.value)}

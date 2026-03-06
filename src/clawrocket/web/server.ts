@@ -64,10 +64,16 @@ import {
   enqueueTalkChat,
   getTalkPolicyRoute,
   getTalkRoute,
+  listTalkAgentsRoute,
   listTalkMessagesRoute,
   listTalksRoute,
+  updateTalkAgentsRoute,
   updateTalkPolicyRoute,
 } from './routes/talks.js';
+import {
+  getTalkLlmSettingsRoute,
+  updateTalkLlmSettingsRoute,
+} from './routes/talk-llm.js';
 import { authenticateRequest } from './middleware/auth.js';
 import { AuthContext } from './types.js';
 
@@ -581,6 +587,123 @@ function buildApp(opts: WebServerOptions): Hono {
     );
   });
 
+  app.get('/api/v1/settings/talk-llm', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+
+    const rateResult = checkRateLimit({
+      principalId: auth.userId,
+      bucket: 'read',
+    });
+    if (!rateResult.allowed) {
+      return rateLimitedResponse(c, rateResult);
+    }
+
+    const result = getTalkLlmSettingsRoute({ auth });
+    return new Response(JSON.stringify(result.body), {
+      status: result.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
+  });
+
+  app.put('/api/v1/settings/talk-llm', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+
+    const rateResult = checkRateLimit({
+      principalId: auth.userId,
+      bucket: 'write',
+    });
+    if (!rateResult.allowed) {
+      return rateLimitedResponse(c, rateResult);
+    }
+
+    const csrf = validateCsrfToken({
+      method: c.req.method,
+      authType: auth.authType,
+      cookieHeader: c.req.header('cookie'),
+      csrfHeader: c.req.header('x-csrf-token'),
+    });
+    if (!csrf.ok) {
+      return c.json(
+        {
+          ok: false,
+          error: {
+            code: 'csrf_failed',
+            message: csrf.reason,
+          },
+        },
+        403,
+      );
+    }
+
+    const bodyText = await c.req.text();
+    const idempotencyKey = c.req.header('idempotency-key') || null;
+    const precheck = idempotencyPrecheck({
+      userId: auth.userId,
+      idempotencyKey,
+      method: c.req.method,
+      path: c.req.path,
+      bodyText,
+    });
+    if (precheck.error) {
+      return c.json(
+        {
+          ok: false,
+          error: {
+            code: 'idempotency_error',
+            message: precheck.error,
+          },
+        },
+        400,
+      );
+    }
+
+    if (precheck.replay && precheck.response) {
+      return new Response(precheck.response.responseBody, {
+        status: precheck.response.statusCode,
+        headers: {
+          'content-type': 'application/json; charset=utf-8',
+          'x-idempotent-replay': 'true',
+        },
+      });
+    }
+
+    const payload = parseJsonPayload(bodyText);
+    if (!payload.ok || !payload.data || typeof payload.data !== 'object') {
+      return c.json(
+        {
+          ok: false,
+          error: {
+            code: 'invalid_json',
+            message: payload.ok ? 'Request body must be a JSON object' : payload.error,
+          },
+        },
+        400,
+      );
+    }
+
+    const result = updateTalkLlmSettingsRoute({
+      auth,
+      payload: payload.data as Record<string, unknown>,
+    });
+    const serialized = JSON.stringify(result.body);
+    saveIdempotencyResult({
+      userId: auth.userId,
+      idempotencyKey,
+      method: c.req.method,
+      path: c.req.path,
+      requestHash: precheck.requestHash,
+      statusCode: result.statusCode,
+      responseBody: serialized,
+    });
+
+    return new Response(serialized, {
+      status: result.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
+  });
+
   app.post('/api/v1/settings/restart', async (c) => {
     const auth = requireAuth(c);
     if (!auth) return unauthorized(c);
@@ -974,6 +1097,148 @@ function buildApp(opts: WebServerOptions): Hono {
     });
   });
 
+  app.get('/api/v1/talks/:talkId/agents', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+
+    const rateResult = checkRateLimit({ userId: auth.userId, bucket: 'read' });
+    if (!rateResult.allowed) {
+      return rateLimitedResponse(c, rateResult);
+    }
+
+    const encodedTalkId = c.req.param('talkId');
+    const talkId = safeDecodePathSegment(encodedTalkId);
+    if (!talkId) {
+      return c.json(
+        {
+          ok: false,
+          error: {
+            code: 'invalid_talk_id',
+            message: 'Talk ID path segment is not valid URL encoding',
+          },
+        },
+        400,
+      );
+    }
+
+    const result = listTalkAgentsRoute({ talkId, auth });
+    return new Response(JSON.stringify(result.body), {
+      status: result.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
+  });
+
+  app.put('/api/v1/talks/:talkId/agents', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+
+    const rateResult = checkRateLimit({ userId: auth.userId, bucket: 'write' });
+    if (!rateResult.allowed) {
+      return rateLimitedResponse(c, rateResult);
+    }
+
+    const csrf = validateCsrfToken({
+      method: c.req.method,
+      authType: auth.authType,
+      cookieHeader: c.req.header('cookie'),
+      csrfHeader: c.req.header('x-csrf-token'),
+    });
+    if (!csrf.ok) {
+      return c.json(
+        {
+          ok: false,
+          error: {
+            code: 'csrf_failed',
+            message: csrf.reason,
+          },
+        },
+        403,
+      );
+    }
+
+    const bodyText = await c.req.text();
+    const idempotencyKey = c.req.header('idempotency-key') || null;
+    const precheck = idempotencyPrecheck({
+      userId: auth.userId,
+      idempotencyKey,
+      method: c.req.method,
+      path: c.req.path,
+      bodyText,
+    });
+    if (precheck.error) {
+      return c.json(
+        {
+          ok: false,
+          error: {
+            code: 'idempotency_error',
+            message: precheck.error,
+          },
+        },
+        400,
+      );
+    }
+
+    if (precheck.replay && precheck.response) {
+      return new Response(precheck.response.responseBody, {
+        status: precheck.response.statusCode,
+        headers: {
+          'content-type': 'application/json; charset=utf-8',
+          'x-idempotent-replay': 'true',
+        },
+      });
+    }
+
+    const encodedTalkId = c.req.param('talkId');
+    const talkId = safeDecodePathSegment(encodedTalkId);
+    if (!talkId) {
+      return c.json(
+        {
+          ok: false,
+          error: {
+            code: 'invalid_talk_id',
+            message: 'Talk ID path segment is not valid URL encoding',
+          },
+        },
+        400,
+      );
+    }
+
+    const payload = parseJsonPayload<{ agents?: unknown }>(bodyText);
+    if (!payload.ok) {
+      return c.json(
+        {
+          ok: false,
+          error: {
+            code: 'invalid_json',
+            message: payload.error,
+          },
+        },
+        400,
+      );
+    }
+
+    const result = updateTalkAgentsRoute({
+      talkId,
+      auth,
+      agents: payload.data.agents,
+    });
+    const serialized = JSON.stringify(result.body);
+    saveIdempotencyResult({
+      userId: auth.userId,
+      idempotencyKey,
+      method: c.req.method,
+      path: c.req.path,
+      requestHash: precheck.requestHash,
+      statusCode: result.statusCode,
+      responseBody: serialized,
+    });
+
+    return new Response(serialized, {
+      status: result.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
+  });
+
   app.get('/api/v1/talks/:talkId/policy', async (c) => {
     const auth = requireAuth(c);
     if (!auth) return unauthorized(c);
@@ -1197,7 +1462,7 @@ function buildApp(opts: WebServerOptions): Hono {
       );
     }
 
-    const payload = parseJsonPayload<{ content?: string }>(bodyText);
+    const payload = parseJsonPayload<{ content?: string; targetAgentId?: string | null }>(bodyText);
     if (!payload.ok) {
       return c.json(
         {
@@ -1215,6 +1480,10 @@ function buildApp(opts: WebServerOptions): Hono {
       talkId,
       auth,
       content: payload.data.content || '',
+      targetAgentId:
+        typeof payload.data.targetAgentId === 'string'
+          ? payload.data.targetAgentId
+          : null,
       idempotencyKey,
     });
     if (result.statusCode === 202 && result.body.ok) {

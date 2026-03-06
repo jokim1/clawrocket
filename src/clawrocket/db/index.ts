@@ -6,6 +6,7 @@ import { _initClawrocketTestSchema } from './init.js';
 
 export { _initClawrocketTestSchema, initClawrocketSchema } from './init.js';
 export * from './accessors.js';
+export * from './llm-accessors.js';
 export { isDatabaseHealthy };
 
 /** @internal - for tests only. Initializes core + clawrocket schemas. */

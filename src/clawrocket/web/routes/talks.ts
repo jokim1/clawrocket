@@ -1,24 +1,30 @@
 import { randomUUID } from 'crypto';
 
-import { logger } from '../../../logger.js';
 import {
-  appendOutboxEvent,
   cancelTalkRunsAtomic,
   createTalk,
   deleteTalkLlmPolicy,
   enqueueTalkTurnAtomic,
+  ensureTalkHasDefaultAgent,
+  getPrimaryTalkAgent,
+  getTalkAgentById,
   getTalkForUser,
+  getTalkRouteById,
+  listTalkAgents,
   listTalkMessages,
   listTalksForUser,
   normalizeTalkListPage,
+  replaceTalkAgents,
+  resetTalkAgentsToDefault,
   upsertTalkLlmPolicy,
+  type TalkAgentInput,
   type TalkMessageRecord,
   type TalkWithAccessRecord,
 } from '../../db/index.js';
+import type { TalkPersonaRole } from '../../llm/types.js';
 import {
   parsePolicyAgentsForExecution,
   parsePolicyAgentsForUiBadges,
-  TALK_POLICY_MAX_AGENTS,
 } from '../../talks/policy.js';
 import { canEditTalk } from '../middleware/acl.js';
 import { AuthContext, ApiEnvelope } from '../types.js';
@@ -42,22 +48,46 @@ interface TalkMessageApiRecord {
   createdBy: string | null;
   createdAt: string;
   runId: string | null;
+  agentId?: string | null;
+  agentName?: string | null;
+}
+
+export interface TalkAgentApiRecord {
+  id: string;
+  name: string;
+  personaRole: TalkPersonaRole;
+  routeId: string;
+  isPrimary: boolean;
+  sortOrder: number;
 }
 
 const DEFAULT_TALK_AGENTS = ['Mock'];
 const MAX_TALK_AGENT_BADGES = 6;
-const MAX_POLICY_AGENT_LABEL_CHARS = 80;
-const TALK_POLICY_LIMITS = {
-  maxAgents: TALK_POLICY_MAX_AGENTS,
-  maxAgentChars: MAX_POLICY_AGENT_LABEL_CHARS,
-} as const;
+const MAX_TALK_AGENTS = 12;
+const MAX_TALK_AGENT_NAME_CHARS = 80;
+
+function parseFallbackAgentBadges(llmPolicy: string | null): string[] {
+  const normalized = parsePolicyAgentsForUiBadges(
+    llmPolicy?.trim() || '',
+    MAX_TALK_AGENT_BADGES,
+  );
+  return normalized.length > 0 ? normalized : DEFAULT_TALK_AGENTS;
+}
+
+function parseFallbackPolicyAgents(llmPolicy: string | null): string[] {
+  return parsePolicyAgentsForExecution(llmPolicy);
+}
 
 function toTalkApiRecord(talk: TalkWithAccessRecord): TalkApiRecord {
+  const agents = listTalkAgents(talk.id);
   return {
     id: talk.id,
     ownerId: talk.owner_id,
     title: talk.topic_title,
-    agents: parseTalkAgents(talk.id, talk.llm_policy),
+    agents:
+      agents.length > 0
+        ? agents.slice(0, MAX_TALK_AGENT_BADGES).map((agent) => agent.name)
+        : parseFallbackAgentBadges(talk.llm_policy),
     status: talk.status,
     version: talk.version,
     createdAt: talk.created_at,
@@ -66,70 +96,42 @@ function toTalkApiRecord(talk: TalkWithAccessRecord): TalkApiRecord {
   };
 }
 
-/**
- * Supported llm_policy shapes:
- * - JSON array of strings
- * - JSON object with agents/models arrays
- * - JSON object with agent/model string
- * - JSON string
- * - non-JSON text split by | or ,
- */
-function parseTalkAgents(talkId: string, llmPolicy: string | null): string[] {
-  const raw = llmPolicy?.trim();
-  if (!raw) return DEFAULT_TALK_AGENTS;
-
-  // Intentionally separate from execution parser:
-  // list badges are capped for density and default to Mock on parse failures.
-  const normalized = parsePolicyAgentsForUiBadges(raw, MAX_TALK_AGENT_BADGES);
-
-  if (normalized.length > 0) {
-    return normalized;
-  }
-
-  const llmPolicyPreview = raw.length > 120 ? `${raw.slice(0, 117)}...` : raw;
-  logger.warn(
-    { talkId, llmPolicyPreview },
-    'Unsupported llm_policy shape; defaulting to Mock agent badge',
-  );
-
-  return DEFAULT_TALK_AGENTS;
-}
-
-function parseTalkPolicyAgents(llmPolicy: string | null): string[] {
-  return parsePolicyAgentsForExecution(llmPolicy);
-}
-
-function normalizePolicyAgents(input: unknown): {
-  agents?: string[];
-  error?: string;
-} {
-  if (!Array.isArray(input)) {
-    return { error: 'agents must be an array of strings' };
-  }
-
-  const normalized = [
-    ...new Set(
-      input
-        .map((entry) => (typeof entry === 'string' ? entry.trim() : ''))
-        .filter(Boolean),
-    ),
-  ];
-
-  if (normalized.some((agent) => agent.length > MAX_POLICY_AGENT_LABEL_CHARS)) {
-    return {
-      error: `each agent label must be ${MAX_POLICY_AGENT_LABEL_CHARS} characters or less`,
-    };
-  }
-  if (normalized.length > TALK_POLICY_MAX_AGENTS) {
-    return { error: `at most ${TALK_POLICY_MAX_AGENTS} agents are allowed` };
-  }
-
-  return { agents: normalized };
+function toTalkAgentApiRecord(agent: {
+  id: string;
+  name: string;
+  persona_role: TalkPersonaRole;
+  route_id: string;
+  is_primary: number;
+  sort_order: number;
+}): TalkAgentApiRecord {
+  return {
+    id: agent.id,
+    name: agent.name,
+    personaRole: agent.persona_role,
+    routeId: agent.route_id,
+    isPrimary: agent.is_primary === 1,
+    sortOrder: agent.sort_order,
+  };
 }
 
 function toTalkMessageApiRecord(
   message: TalkMessageRecord,
 ): TalkMessageApiRecord {
+  let agentId: string | null | undefined;
+  let agentName: string | null | undefined;
+  if (message.metadata_json) {
+    try {
+      const parsed = JSON.parse(message.metadata_json) as {
+        agentId?: unknown;
+        agentName?: unknown;
+      };
+      if (typeof parsed.agentId === 'string') agentId = parsed.agentId;
+      if (typeof parsed.agentName === 'string') agentName = parsed.agentName;
+    } catch {
+      // Ignore metadata parse failures for UI response shaping.
+    }
+  }
+
   return {
     id: message.id,
     role: message.role,
@@ -137,7 +139,96 @@ function toTalkMessageApiRecord(
     createdBy: message.created_by,
     createdAt: message.created_at,
     runId: message.run_id,
+    agentId,
+    agentName,
   };
+}
+
+function validateAgentInputs(input: unknown): {
+  agents?: TalkAgentInput[];
+  error?: string;
+} {
+  if (!Array.isArray(input)) {
+    return { error: 'agents must be an array' };
+  }
+
+  if (input.length === 0) {
+    return { error: 'at least one talk agent is required' };
+  }
+  if (input.length > MAX_TALK_AGENTS) {
+    return { error: `at most ${MAX_TALK_AGENTS} talk agents are allowed` };
+  }
+
+  const normalized: TalkAgentInput[] = [];
+  let primaryCount = 0;
+  const ids = new Set<string>();
+  for (let index = 0; index < input.length; index += 1) {
+    const raw = input[index] as Record<string, unknown>;
+    const name = typeof raw.name === 'string' ? raw.name.trim() : '';
+    const routeId = typeof raw.routeId === 'string' ? raw.routeId.trim() : '';
+    const personaRole =
+      typeof raw.personaRole === 'string'
+        ? (raw.personaRole as TalkPersonaRole)
+        : null;
+    const id =
+      typeof raw.id === 'string' && raw.id.trim()
+        ? raw.id.trim()
+        : `agent_${randomUUID()}`;
+    const isPrimary = raw.isPrimary === true;
+    const sortOrder =
+      typeof raw.sortOrder === 'number' ? Math.max(0, Math.floor(raw.sortOrder)) : index;
+
+    if (!name) return { error: 'each talk agent must have a name' };
+    if (name.length > MAX_TALK_AGENT_NAME_CHARS) {
+      return {
+        error: `each talk agent name must be ${MAX_TALK_AGENT_NAME_CHARS} characters or less`,
+      };
+    }
+    if (!routeId) return { error: 'each talk agent must reference a route' };
+    if (
+      !personaRole ||
+      ![
+        'assistant',
+        'analyst',
+        'critic',
+        'strategist',
+        'devils-advocate',
+        'synthesizer',
+        'editor',
+      ].includes(personaRole)
+    ) {
+      return { error: 'each talk agent must have a valid persona role' };
+    }
+    if (ids.has(id)) return { error: 'talk agent ids must be unique' };
+    ids.add(id);
+    if (isPrimary) primaryCount += 1;
+
+    normalized.push({
+      id,
+      name,
+      personaRole,
+      routeId,
+      isPrimary,
+      sortOrder,
+    });
+  }
+
+  if (primaryCount !== 1) {
+    return { error: 'exactly one talk agent must be marked primary' };
+  }
+
+  for (const agent of normalized) {
+    if (!getTalkRouteById(agent.routeId)) {
+      return { error: `route not found: ${agent.routeId}` };
+    }
+  }
+
+  return { agents: normalized };
+}
+
+function listEffectiveTalkAgents(talkId: string): TalkAgentApiRecord[] {
+  const existing = ensureTalkHasDefaultAgent(talkId);
+  return existing.map(toTalkAgentApiRecord);
 }
 
 export function listTalksRoute(input: {
@@ -203,6 +294,7 @@ export function createTalkRoute(input: { auth: AuthContext; title?: string }): {
     topicTitle: title,
     status: 'active',
   });
+  ensureTalkHasDefaultAgent(talkId);
 
   const talk = getTalkForUser(talkId, input.auth.userId);
   if (!talk) {
@@ -217,17 +309,6 @@ export function createTalkRoute(input: { auth: AuthContext; title?: string }): {
       },
     };
   }
-
-  appendOutboxEvent({
-    topic: `user:${input.auth.userId}`,
-    eventType: 'talk_created',
-    payload: JSON.stringify({
-      talkId,
-      ownerId: input.auth.userId,
-      title,
-      status: 'active',
-    }),
-  });
 
   return {
     statusCode: 201,
@@ -269,6 +350,109 @@ export function getTalkRoute(input: { talkId: string; auth: AuthContext }): {
   };
 }
 
+export function listTalkAgentsRoute(input: {
+  talkId: string;
+  auth: AuthContext;
+}): {
+  statusCode: number;
+  body: ApiEnvelope<{
+    talkId: string;
+    agents: TalkAgentApiRecord[];
+  }>;
+} {
+  const talk = getTalkForUser(input.talkId, input.auth.userId);
+  if (!talk) {
+    return {
+      statusCode: 404,
+      body: {
+        ok: false,
+        error: {
+          code: 'talk_not_found',
+          message: 'Talk not found',
+        },
+      },
+    };
+  }
+
+  return {
+    statusCode: 200,
+    body: {
+      ok: true,
+      data: {
+        talkId: input.talkId,
+        agents: listEffectiveTalkAgents(input.talkId),
+      },
+    },
+  };
+}
+
+export function updateTalkAgentsRoute(input: {
+  talkId: string;
+  auth: AuthContext;
+  agents: unknown;
+}): {
+  statusCode: number;
+  body: ApiEnvelope<{
+    talkId: string;
+    agents: TalkAgentApiRecord[];
+  }>;
+} {
+  const talk = getTalkForUser(input.talkId, input.auth.userId);
+  if (!talk) {
+    return {
+      statusCode: 404,
+      body: {
+        ok: false,
+        error: {
+          code: 'talk_not_found',
+          message: 'Talk not found',
+        },
+      },
+    };
+  }
+
+  if (!canEditTalk(input.talkId, input.auth.userId, input.auth.role)) {
+    return {
+      statusCode: 403,
+      body: {
+        ok: false,
+        error: {
+          code: 'forbidden',
+          message: 'You do not have permission to edit talk agents',
+        },
+      },
+    };
+  }
+
+  const normalized = validateAgentInputs(input.agents);
+  if (!normalized.agents) {
+    return {
+      statusCode: 400,
+      body: {
+        ok: false,
+        error: {
+          code: 'invalid_talk_agents',
+          message: normalized.error || 'talk agents are invalid',
+        },
+      },
+    };
+  }
+
+  const agents = replaceTalkAgents(input.talkId, normalized.agents).map(
+    toTalkAgentApiRecord,
+  );
+  return {
+    statusCode: 200,
+    body: {
+      ok: true,
+      data: {
+        talkId: input.talkId,
+        agents,
+      },
+    },
+  };
+}
+
 export function getTalkPolicyRoute(input: {
   talkId: string;
   auth: AuthContext;
@@ -294,14 +478,21 @@ export function getTalkPolicyRoute(input: {
     };
   }
 
+  const configuredAgents = listTalkAgents(input.talkId);
   return {
     statusCode: 200,
     body: {
       ok: true,
       data: {
         talkId: input.talkId,
-        agents: parseTalkPolicyAgents(talk.llm_policy),
-        limits: TALK_POLICY_LIMITS,
+        agents:
+          configuredAgents.length > 0
+            ? configuredAgents.map((agent) => agent.name)
+            : parseFallbackPolicyAgents(talk.llm_policy),
+        limits: {
+          maxAgents: MAX_TALK_AGENTS,
+          maxAgentChars: MAX_TALK_AGENT_NAME_CHARS,
+        },
       },
     },
   };
@@ -340,43 +531,96 @@ export function updateTalkPolicyRoute(input: {
         ok: false,
         error: {
           code: 'forbidden',
-          message: 'You do not have permission to edit talk policy',
+          message: 'You do not have permission to edit talk agents',
         },
       },
     };
   }
 
-  const normalized = normalizePolicyAgents(input.agents);
-  if (!normalized.agents) {
+  if (!Array.isArray(input.agents)) {
     return {
       statusCode: 400,
       body: {
         ok: false,
         error: {
           code: 'invalid_agents',
-          message: normalized.error || 'agents are invalid',
+          message: 'agents must be an array of strings',
         },
       },
     };
   }
 
-  if (normalized.agents.length === 0) {
+  const currentAgents = ensureTalkHasDefaultAgent(input.talkId);
+  const primary =
+    currentAgents.find((agent) => agent.is_primary === 1) || currentAgents[0];
+  const normalizedNames = [
+    ...new Set(
+      input.agents
+        .map((entry) => (typeof entry === 'string' ? entry.trim() : ''))
+        .filter(Boolean),
+    ),
+  ];
+
+  if (normalizedNames.length === 0) {
     deleteTalkLlmPolicy(input.talkId);
-  } else {
-    upsertTalkLlmPolicy({
-      talkId: input.talkId,
-      llmPolicy: JSON.stringify({ agents: normalized.agents }),
-    });
+    const resetAgents = resetTalkAgentsToDefault(input.talkId);
+    return {
+      statusCode: 200,
+      body: {
+        ok: true,
+        data: {
+          talkId: input.talkId,
+          agents: resetAgents.map((agent) => agent.name),
+          limits: {
+            maxAgents: MAX_TALK_AGENTS,
+            maxAgentChars: MAX_TALK_AGENT_NAME_CHARS,
+          },
+        },
+      },
+    };
   }
 
+  if (normalizedNames.length > MAX_TALK_AGENTS) {
+    return {
+      statusCode: 400,
+      body: {
+        ok: false,
+        error: {
+          code: 'invalid_agents',
+          message: `at most ${MAX_TALK_AGENTS} agents are allowed`,
+        },
+      },
+    };
+  }
+
+  // Legacy compatibility only: typed talk_agents are the execution source of truth,
+  // but we still mirror the simple names list for older policy readers.
+  upsertTalkLlmPolicy({
+    talkId: input.talkId,
+    llmPolicy: JSON.stringify({ agents: normalizedNames }),
+  });
+
+  const agentInputs: TalkAgentInput[] = normalizedNames.map((name, index) => ({
+    id: currentAgents[index]?.id || `agent_${randomUUID()}`,
+    name,
+    personaRole: currentAgents[index]?.persona_role || 'assistant',
+    routeId: currentAgents[index]?.route_id || primary.route_id,
+    isPrimary: index === 0,
+    sortOrder: index,
+  }));
+
+  const agents = replaceTalkAgents(input.talkId, agentInputs);
   return {
     statusCode: 200,
     body: {
       ok: true,
       data: {
         talkId: input.talkId,
-        agents: normalized.agents,
-        limits: TALK_POLICY_LIMITS,
+        agents: agents.map((agent) => agent.name),
+        limits: {
+          maxAgents: MAX_TALK_AGENTS,
+          maxAgentChars: MAX_TALK_AGENT_NAME_CHARS,
+        },
       },
     },
   };
@@ -441,6 +685,7 @@ export function enqueueTalkChat(input: {
   talkId: string;
   auth: AuthContext;
   content: string;
+  targetAgentId?: string | null;
   idempotencyKey?: string | null;
 }): {
   statusCode: number;
@@ -452,6 +697,7 @@ export function enqueueTalkChat(input: {
       status: 'queued' | 'running' | 'cancelled' | 'completed' | 'failed';
       createdAt: string;
       startedAt: string | null;
+      targetAgentId: string | null;
     };
   }>;
 } {
@@ -508,6 +754,25 @@ export function enqueueTalkChat(input: {
     };
   }
 
+  const agents = ensureTalkHasDefaultAgent(input.talkId);
+  const selectedAgent =
+    (input.targetAgentId
+      ? agents.find((agent) => agent.id === input.targetAgentId)
+      : undefined) || agents.find((agent) => agent.is_primary === 1);
+
+  if (!selectedAgent) {
+    return {
+      statusCode: 400,
+      body: {
+        ok: false,
+        error: {
+          code: 'talk_agent_not_found',
+          message: 'No valid talk agent is available for this talk',
+        },
+      },
+    };
+  }
+
   const messageId = `msg_${randomUUID()}`;
   const runId = `run_${randomUUID()}`;
   const persisted = enqueueTalkTurnAtomic({
@@ -516,6 +781,7 @@ export function enqueueTalkChat(input: {
     content,
     messageId,
     runId,
+    targetAgentId: selectedAgent.id,
     idempotencyKey: input.idempotencyKey,
   });
 
@@ -525,19 +791,13 @@ export function enqueueTalkChat(input: {
       ok: true,
       data: {
         talkId: input.talkId,
-        message: {
-          id: persisted.message.id,
-          role: persisted.message.role,
-          content: persisted.message.content,
-          createdBy: persisted.message.created_by,
-          createdAt: persisted.message.created_at,
-          runId: persisted.message.run_id,
-        },
+        message: toTalkMessageApiRecord(persisted.message),
         run: {
           id: persisted.run.id,
           status: persisted.run.status,
           createdAt: persisted.run.created_at,
           startedAt: persisted.run.started_at,
+          targetAgentId: persisted.run.target_agent_id || null,
         },
       },
     },
