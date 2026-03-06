@@ -1,4 +1,5 @@
 import { cleanup, render, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { SettingsPage } from './SettingsPage';
@@ -114,6 +115,104 @@ describe('SettingsPage', () => {
     expect(
       screen.queryByRole('button', { name: 'Restart ClawRocket Service' }),
     ).toBeNull();
+  });
+
+  it('loads structured Talk LLM settings for admin users', async () => {
+    const user = userEvent.setup();
+    mockFetch([
+      jsonResponse(200, {
+        ok: true,
+        data: {
+          configuredAliasMap: {},
+          effectiveAliasMap: { Mock: 'default' },
+          defaultAlias: 'Mock',
+          hasApiKey: false,
+          hasOauthToken: false,
+          hasAuthToken: false,
+          anthropicBaseUrl: '',
+          isConfigured: false,
+          configVersion: 0,
+          lastUpdatedAt: null,
+          lastUpdatedBy: null,
+          configErrors: [],
+        },
+      }),
+      jsonResponse(200, {
+        ok: true,
+        data: {
+          mode: 'mock',
+          restartSupported: false,
+          pendingRestartReasons: [],
+          activeRunCount: 0,
+          hasProviderAuth: false,
+          hasValidAliasMap: true,
+          detectedAuthMethod: 'none',
+          configVersion: 0,
+          isConfigured: false,
+          bootId: 'boot-3',
+          configErrors: [],
+        },
+      }),
+      jsonResponse(200, {
+        ok: true,
+        data: {
+          defaultRouteId: 'route.primary',
+          providers: [
+            {
+              id: 'provider.anthropic',
+              name: 'Anthropic Prod',
+              providerKind: 'anthropic',
+              apiFormat: 'anthropic_messages',
+              baseUrl: 'https://api.anthropic.com',
+              authScheme: 'x_api_key',
+              enabled: true,
+              coreCompatibility: 'claude_sdk_proxy',
+              responseStartTimeoutMs: 60000,
+              streamIdleTimeoutMs: 20000,
+              absoluteTimeoutMs: 300000,
+              hasCredential: true,
+              models: [
+                {
+                  modelId: 'claude-sonnet-4-5',
+                  displayName: 'Sonnet 4.5',
+                  contextWindowTokens: 200000,
+                  defaultMaxOutputTokens: 4096,
+                  enabled: true,
+                },
+              ],
+            },
+          ],
+          routes: [
+            {
+              id: 'route.primary',
+              name: 'Primary Route',
+              enabled: true,
+              assignedAgentCount: 2,
+              assignedTalkCount: 1,
+              steps: [
+                {
+                  position: 0,
+                  providerId: 'provider.anthropic',
+                  modelId: 'claude-sonnet-4-5',
+                },
+              ],
+            },
+          ],
+        },
+      }),
+    ]);
+
+    render(<SettingsPage onUnauthorized={vi.fn()} userRole="admin" />);
+
+    const loadButton = await screen.findByRole('button', {
+      name: 'Load Talk LLM Settings',
+    });
+    await user.click(loadButton);
+
+    expect(await screen.findByRole('heading', { name: 'Providers' })).toBeTruthy();
+    expect((await screen.findAllByText('Anthropic Prod')).length).toBeGreaterThan(0);
+    expect(await screen.findByRole('heading', { name: 'Routes' })).toBeTruthy();
+    expect(await screen.findByDisplayValue('route.primary')).toBeTruthy();
   });
 });
 

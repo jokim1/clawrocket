@@ -7,13 +7,11 @@ import {
   getExecutorSettings,
   getExecutorStatus,
   getHealthStatus,
-  getTalkLlmSettings,
   restartService,
-  TalkLlmSettings,
   UnauthorizedError,
-  updateTalkLlmSettings,
   updateExecutorSettings,
 } from '../lib/api';
+import { TalkLlmSettingsCard } from '../components/TalkLlmSettingsCard';
 
 type AliasRow = {
   id: string;
@@ -96,7 +94,7 @@ export function SettingsPage({ onUnauthorized, userRole }: Props) {
   const [status, setStatus] = useState<ExecutorStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [busySection, setBusySection] = useState<
-    'credentials' | 'runtime' | 'aliases' | 'restart' | 'talk-llm' | null
+    'credentials' | 'runtime' | 'aliases' | 'restart' | null
   >(null);
   const [pageError, setPageError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -111,15 +109,6 @@ export function SettingsPage({ onUnauthorized, userRole }: Props) {
   const [clearBaseUrl, setClearBaseUrl] = useState(false);
   const [aliasRows, setAliasRows] = useState<AliasRow[]>([]);
   const [defaultAliasDraft, setDefaultAliasDraft] = useState('Mock');
-  const [talkLlmJsonDraft, setTalkLlmJsonDraft] = useState('');
-  const [talkLlmLoaded, setTalkLlmLoaded] = useState(false);
-  const [talkLlmError, setTalkLlmError] = useState<string | null>(null);
-  const [talkLlmNotice, setTalkLlmNotice] = useState<string | null>(null);
-
-  const applyTalkLlmDraft = (snapshot: TalkLlmSettings): void => {
-    setTalkLlmJsonDraft(JSON.stringify(snapshot, null, 2));
-    setTalkLlmLoaded(true);
-  };
 
   const applySettingsDrafts = (nextSettings: ExecutorSettings): void => {
     setSettings(nextSettings);
@@ -338,63 +327,6 @@ export function SettingsPage({ onUnauthorized, userRole }: Props) {
       throw new Error('Timed out waiting for the service to restart.');
     } catch (err) {
       handleApiFailure(err, 'Failed to restart the service.');
-    } finally {
-      setBusySection(null);
-    }
-  };
-
-  const loadTalkLlm = async (): Promise<void> => {
-    setBusySection('talk-llm');
-    setTalkLlmError(null);
-    setTalkLlmNotice(null);
-    try {
-      const snapshot = await getTalkLlmSettings();
-      applyTalkLlmDraft(snapshot);
-      setTalkLlmNotice('Talk LLM settings loaded.');
-    } catch (err) {
-      if (err instanceof UnauthorizedError) {
-        onUnauthorized();
-        return;
-      }
-      setTalkLlmError(
-        err instanceof ApiError
-          ? err.message
-          : 'Failed to load Talk LLM settings.',
-      );
-    } finally {
-      setBusySection(null);
-    }
-  };
-
-  const saveTalkLlm = async (): Promise<void> => {
-    setBusySection('talk-llm');
-    setTalkLlmError(null);
-    setTalkLlmNotice(null);
-    try {
-      const parsed = JSON.parse(talkLlmJsonDraft) as TalkLlmSettings & {
-        providers: Array<
-          TalkLlmSettings['providers'][number] & {
-            credential?: { apiKey: string; organizationId?: string } | null;
-          }
-        >;
-      };
-      const next = await updateTalkLlmSettings(parsed);
-      applyTalkLlmDraft(next);
-      setTalkLlmNotice(
-        'Talk LLM settings saved. Provider and route changes apply on the next talk run.',
-      );
-    } catch (err) {
-      if (err instanceof UnauthorizedError) {
-        onUnauthorized();
-        return;
-      }
-      setTalkLlmError(
-        err instanceof SyntaxError
-          ? 'Talk LLM settings JSON is invalid.'
-          : err instanceof ApiError
-            ? err.message
-            : 'Failed to save Talk LLM settings.',
-      );
     } finally {
       setBusySection(null);
     }
@@ -744,71 +676,7 @@ export function SettingsPage({ onUnauthorized, userRole }: Props) {
       </section>
 
       {(userRole === 'owner' || userRole === 'admin') ? (
-        <section className="settings-card">
-          <header>
-            <h2>Talk LLM Settings</h2>
-            <p>
-              Manage provider-neutral Talk routes, providers, and the global default Talk route.
-              Credentials can be included as `credential` objects on provider entries when saving.
-              Loaded snapshots are write-only and will never include stored secret values.
-            </p>
-          </header>
-          {talkLlmError ? (
-            <div className="settings-banner settings-banner-error">{talkLlmError}</div>
-          ) : null}
-          {talkLlmNotice ? (
-            <div className="settings-banner settings-banner-success">{talkLlmNotice}</div>
-          ) : null}
-          {!talkLlmLoaded ? (
-            <div className="settings-section-actions">
-              <button
-                type="button"
-                className="secondary-btn"
-                onClick={() => {
-                  void loadTalkLlm();
-                }}
-                disabled={busySection === 'talk-llm'}
-              >
-                {busySection === 'talk-llm' ? 'Loading…' : 'Load Talk LLM Settings'}
-              </button>
-            </div>
-          ) : (
-            <div className="settings-field-grid">
-              <label className="settings-textarea-label">
-                <span>Talk LLM Settings JSON</span>
-                <textarea
-                  rows={22}
-                  value={talkLlmJsonDraft}
-                  onChange={(event) => setTalkLlmJsonDraft(event.target.value)}
-                  disabled={busySection === 'talk-llm'}
-                  spellCheck={false}
-                />
-              </label>
-              <div className="settings-section-actions">
-                <button
-                  type="button"
-                  className="secondary-btn"
-                  onClick={() => {
-                    void loadTalkLlm();
-                  }}
-                  disabled={busySection === 'talk-llm'}
-                >
-                  Reload Snapshot
-                </button>
-                <button
-                  type="button"
-                  className="primary-btn"
-                  onClick={() => {
-                    void saveTalkLlm();
-                  }}
-                  disabled={busySection === 'talk-llm'}
-                >
-                  {busySection === 'talk-llm' ? 'Saving…' : 'Save Talk LLM Settings'}
-                </button>
-              </div>
-            </div>
-          )}
-        </section>
+        <TalkLlmSettingsCard onUnauthorized={onUnauthorized} />
       ) : null}
     </section>
   );
