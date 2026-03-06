@@ -13,10 +13,13 @@ import {
 
 import { TalkExecutorError } from './executor.js';
 import {
-  getTalkExecutorAliasModelMap,
   RealTalkExecutor,
   type RealTalkExecutorOptions,
 } from './real-executor.js';
+import {
+  computeSessionCompatKey,
+  EXECUTOR_COMPATIBILITY_ALIAS_MODEL_SEEDS,
+} from './executor-settings.js';
 
 function createRunningRun(runId: string, talkId = 'talk-1'): void {
   createTalkRun({
@@ -96,6 +99,9 @@ describe('RealTalkExecutor', () => {
     expect(session?.session_id).toBe('session-1');
     expect(session?.executor_alias).toBe('Mock');
     expect(session?.executor_model).toBe('default');
+    expect(session?.session_compat_key).toBe(
+      computeSessionCompatKey('Mock', 'default'),
+    );
   });
 
   it('uses first policy alias only and maps compatibility aliases', async () => {
@@ -143,7 +149,7 @@ describe('RealTalkExecutor', () => {
   });
 
   it('exposes compatibility seed aliases in default map', () => {
-    const aliasMap = getTalkExecutorAliasModelMap();
+    const aliasMap = EXECUTOR_COMPATIBILITY_ALIAS_MODEL_SEEDS;
     expect(aliasMap.Mock).toBe('default');
     expect(aliasMap.Gemini).toBe('default');
     expect(aliasMap['Opus4.6']).toBe('default');
@@ -181,7 +187,7 @@ describe('RealTalkExecutor', () => {
     ).rejects.toMatchObject({ code: 'executor_alias_unmapped' });
   });
 
-  it('keeps existing session authoritative even if talk policy changes', async () => {
+  it('re-evaluates talk policy before reusing a stored session', async () => {
     createRunningRun('run-4');
     upsertTalkLlmPolicy({
       talkId: 'talk-1',
@@ -192,6 +198,7 @@ describe('RealTalkExecutor', () => {
       sessionId: 'session-existing',
       executorAlias: 'Opus4.6',
       executorModel: 'model-opus',
+      sessionCompatKey: computeSessionCompatKey('Opus4.6', 'model-opus'),
       updatedAt: '2024-01-01T00:00:00.000Z',
     });
 
@@ -230,13 +237,13 @@ describe('RealTalkExecutor', () => {
 
     expect(captured).toEqual([
       {
-        model: 'model-opus',
-        sessionId: 'session-existing',
+        model: 'model-gemini',
+        sessionId: undefined,
       },
     ]);
     const run = getTalkRunById('run-4');
-    expect(run?.executor_alias).toBe('Opus4.6');
-    expect(run?.executor_model).toBe('model-opus');
+    expect(run?.executor_alias).toBe('Gemini');
+    expect(run?.executor_model).toBe('model-gemini');
   });
 
   it('retries once after invalid session and then succeeds with re-resolved alias', async () => {
@@ -248,8 +255,9 @@ describe('RealTalkExecutor', () => {
     upsertTalkExecutorSession({
       talkId: 'talk-1',
       sessionId: 'session-stale',
-      executorAlias: 'Opus4.6',
-      executorModel: 'model-opus',
+      executorAlias: 'Gemini',
+      executorModel: 'model-gemini',
+      sessionCompatKey: computeSessionCompatKey('Gemini', 'model-gemini'),
       updatedAt: '2024-01-01T00:00:00.000Z',
     });
 
@@ -291,7 +299,7 @@ describe('RealTalkExecutor', () => {
 
     expect(output.content).toBe('ok');
     expect(calls).toEqual([
-      { model: 'model-opus', sessionId: 'session-stale' },
+      { model: 'model-gemini', sessionId: 'session-stale' },
       { model: 'model-gemini', sessionId: undefined },
     ]);
     const session = getTalkExecutorSession('talk-1');
@@ -309,8 +317,9 @@ describe('RealTalkExecutor', () => {
     upsertTalkExecutorSession({
       talkId: 'talk-1',
       sessionId: 'session-stale',
-      executorAlias: 'Opus4.6',
-      executorModel: 'model-opus',
+      executorAlias: 'Gemini',
+      executorModel: 'model-gemini',
+      sessionCompatKey: computeSessionCompatKey('Gemini', 'model-gemini'),
       updatedAt: '2024-01-01T00:00:00.000Z',
     });
 

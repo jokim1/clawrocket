@@ -1,7 +1,5 @@
 import { logger } from '../../logger.js';
 import {
-  TALK_EXECUTOR_ALIAS_MODEL_MAP_JSON,
-  TALK_EXECUTOR_HAS_PROVIDER_AUTH,
   TALK_RUN_MAX_CONCURRENCY,
   TALK_RUN_POLL_MS,
   WEB_HOST,
@@ -10,27 +8,42 @@ import {
 import type { TalkExecutor } from '../talks/executor.js';
 import { MockTalkExecutor } from '../talks/mock-executor.js';
 import {
-  hasValidAliasModelMapConfig,
-  RealTalkExecutor,
-} from '../talks/real-executor.js';
+  ExecutorSettingsService,
+  setActiveExecutorSettingsService,
+} from '../talks/executor-settings.js';
+import { RealTalkExecutor } from '../talks/real-executor.js';
 import { TalkRunWorker } from '../talks/run-worker.js';
 
 import { createWebServer, WebServerHandle } from './server.js';
 
 export async function startWebServer(): Promise<WebServerHandle> {
-  const hasValidAliasMap = hasValidAliasModelMapConfig(
-    TALK_EXECUTOR_ALIAS_MODEL_MAP_JSON,
-  );
-  const useRealExecutor = TALK_EXECUTOR_HAS_PROVIDER_AUTH && hasValidAliasMap;
+  const executorSettings = new ExecutorSettingsService();
+  executorSettings.runBootstrapMigration();
+  const effectiveConfig = executorSettings.resolveEffectiveConfig();
+  const useRealExecutor =
+    effectiveConfig.hasProviderAuth &&
+    effectiveConfig.hasValidAliasMap &&
+    effectiveConfig.configErrors.length === 0;
+
   const executor: TalkExecutor = useRealExecutor
-    ? new RealTalkExecutor()
+    ? new RealTalkExecutor({
+        aliasModelMap: effectiveConfig.effectiveAliasMap,
+        defaultAlias: effectiveConfig.defaultAlias,
+      })
     : new MockTalkExecutor();
+
+  executorSettings.captureRunningSnapshot(
+    effectiveConfig,
+    executorSettings.getConfigVersion(),
+  );
+  setActiveExecutorSettingsService(executorSettings);
 
   logger.info(
     {
       mode: useRealExecutor ? 'real' : 'mock',
-      hasProviderAuth: TALK_EXECUTOR_HAS_PROVIDER_AUTH,
-      hasValidAliasMap,
+      hasProviderAuth: effectiveConfig.hasProviderAuth,
+      hasValidAliasMap: effectiveConfig.hasValidAliasMap,
+      configErrors: effectiveConfig.configErrors,
     },
     'Talk executor mode selected',
   );
@@ -46,6 +59,7 @@ export async function startWebServer(): Promise<WebServerHandle> {
     host: WEB_HOST,
     port: WEB_PORT,
     runWorker,
+    executorSettings,
   });
 
   let bound: { host: string; port: number };

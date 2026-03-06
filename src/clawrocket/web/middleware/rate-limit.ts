@@ -12,6 +12,8 @@ interface CounterState {
 }
 
 interface RateLimitCheckInput {
+  // `principalId` is the canonical identifier. `userId` remains a convenience
+  // alias for older call sites that already have an authenticated user.
   userId?: string;
   principalId?: string;
   bucket: RateLimitBucket;

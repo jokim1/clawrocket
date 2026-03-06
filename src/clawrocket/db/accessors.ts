@@ -456,6 +456,7 @@ export interface TalkExecutorSessionRecord {
   session_id: string;
   executor_alias: string;
   executor_model: string;
+  session_compat_key: string;
   updated_at: string;
 }
 
@@ -736,7 +737,13 @@ export function getTalkExecutorSession(
   return getDb()
     .prepare(
       `
-      SELECT talk_id, session_id, executor_alias, executor_model, updated_at
+      SELECT
+        talk_id,
+        session_id,
+        executor_alias,
+        executor_model,
+        session_compat_key,
+        updated_at
       FROM talk_executor_sessions
       WHERE talk_id = ?
       LIMIT 1
@@ -750,18 +757,25 @@ export function upsertTalkExecutorSession(input: {
   sessionId: string;
   executorAlias: string;
   executorModel: string;
+  sessionCompatKey: string;
   updatedAt?: string;
 }): void {
   getDb()
     .prepare(
       `
       INSERT INTO talk_executor_sessions (
-        talk_id, session_id, executor_alias, executor_model, updated_at
-      ) VALUES (?, ?, ?, ?, ?)
+        talk_id,
+        session_id,
+        executor_alias,
+        executor_model,
+        session_compat_key,
+        updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?)
       ON CONFLICT(talk_id) DO UPDATE SET
         session_id = excluded.session_id,
         executor_alias = excluded.executor_alias,
         executor_model = excluded.executor_model,
+        session_compat_key = excluded.session_compat_key,
         updated_at = excluded.updated_at
     `,
     )
@@ -770,6 +784,7 @@ export function upsertTalkExecutorSession(input: {
       input.sessionId,
       input.executorAlias,
       input.executorModel,
+      input.sessionCompatKey,
       input.updatedAt || new Date().toISOString(),
     );
 }
@@ -1389,6 +1404,19 @@ export function listRunningTalkRuns(limit = 50): TalkRunRecord[] {
     `,
     )
     .all(normalizedLimit) as TalkRunRecord[];
+}
+
+export function countRunningTalkRuns(): number {
+  const row = getDb()
+    .prepare(
+      `
+      SELECT COUNT(*) AS count
+      FROM talk_runs
+      WHERE status = 'running'
+    `,
+    )
+    .get() as { count: number };
+  return row.count;
 }
 
 /**

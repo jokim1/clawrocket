@@ -55,6 +55,7 @@ import {
   upsertUser,
   upsertWebSession,
 } from './clawrocket/db/index.js';
+import { computeSessionCompatKey } from './clawrocket/talks/executor-settings.js';
 
 beforeEach(() => {
   _initTestDatabase();
@@ -563,6 +564,7 @@ describe('phase 0 schema and reliability tables', () => {
       sessionId: 'session-1',
       executorAlias: 'Gemini',
       executorModel: 'default',
+      sessionCompatKey: computeSessionCompatKey('Gemini', 'default'),
       updatedAt: '2024-01-01T00:00:00.000Z',
     });
     upsertTalkExecutorSession({
@@ -570,6 +572,7 @@ describe('phase 0 schema and reliability tables', () => {
       sessionId: 'session-2',
       executorAlias: 'Opus4.6',
       executorModel: 'default',
+      sessionCompatKey: computeSessionCompatKey('Opus4.6', 'default'),
       updatedAt: '2024-01-01T00:00:01.000Z',
     });
 
@@ -578,6 +581,9 @@ describe('phase 0 schema and reliability tables', () => {
     expect(session?.session_id).toBe('session-2');
     expect(session?.executor_alias).toBe('Opus4.6');
     expect(session?.executor_model).toBe('default');
+    expect(session?.session_compat_key).toBe(
+      computeSessionCompatKey('Opus4.6', 'default'),
+    );
     expect(session?.updated_at).toBe('2024-01-01T00:00:01.000Z');
 
     deleteTalkExecutorSession('talk-1');
