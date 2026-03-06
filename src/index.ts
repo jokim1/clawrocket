@@ -50,6 +50,7 @@ import { findChannel, formatMessages, formatOutbound } from './router.js';
 import { startSchedulerLoop } from './task-scheduler.js';
 import { Channel, NewMessage, RegisteredGroup } from './types.js';
 import { startWebServer } from './clawrocket/web/index.js';
+import { getActiveExecutorSettingsService } from './clawrocket/talks/executor-settings.js';
 import { InstanceCoordinator } from './instance-coordinator.js';
 import { logger } from './logger.js';
 
@@ -254,12 +255,19 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   return true;
 }
 
-async function runAgent(
+export async function runAgent(
   group: RegisteredGroup,
   prompt: string,
   chatJid: string,
   onOutput?: (output: ContainerOutput) => Promise<void>,
 ): Promise<'success' | 'error'> {
+  const blockedReason =
+    getActiveExecutorSettingsService().getExecutionBlockedReason();
+  if (blockedReason) {
+    logger.error({ group: group.name, reason: blockedReason }, 'Agent error');
+    return 'error';
+  }
+
   const isMain = group.isMain === true;
   const sessionId = sessions[group.folder];
 

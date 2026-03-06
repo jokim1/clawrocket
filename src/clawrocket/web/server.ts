@@ -38,9 +38,13 @@ import {
 import { KeychainBridge, noopKeychainBridge } from '../secrets/keychain.js';
 import type { TalkRunWorkerControl } from '../talks/run-worker.js';
 import {
+  ExecutorAuthMode,
+  ExecutorSubscriptionImportResult,
   ExecutorSettingsService,
   ExecutorSettingsValidationError,
 } from '../talks/executor-settings.js';
+import { ExecutorCredentialVerifier } from '../talks/executor-credentials-verifier.js';
+import { ExecutorSubscriptionHostAuthService } from '../talks/executor-subscription-host-auth.js';
 import { validateCsrfToken } from './middleware/csrf.js';
 import {
   idempotencyPrecheck,
@@ -93,6 +97,8 @@ export interface WebServerOptions {
   runWorker: TalkRunWorkerControl;
   webAppDistDir: string;
   executorSettings: ExecutorSettingsService;
+  executorVerifier: ExecutorCredentialVerifier;
+  subscriptionHostAuth: ExecutorSubscriptionHostAuthService;
 }
 
 export interface WebServerHandle {
@@ -114,13 +120,22 @@ export function createWebServer(
     },
   };
 
+  const executorSettings =
+    input?.executorSettings || new ExecutorSettingsService();
   const opts: WebServerOptions = {
     host: input?.host ?? '127.0.0.1',
     port: input?.port ?? 3210,
     keychain: input?.keychain || noopKeychainBridge,
     runWorker: input?.runWorker || noopRunWorker,
     webAppDistDir: input?.webAppDistDir ?? DEFAULT_WEB_APP_DIST_DIR,
-    executorSettings: input?.executorSettings || new ExecutorSettingsService(),
+    executorSettings,
+    executorVerifier:
+      input?.executorVerifier ||
+      new ExecutorCredentialVerifier({
+        executorSettings,
+      }),
+    subscriptionHostAuth:
+      input?.subscriptionHostAuth || new ExecutorSubscriptionHostAuthService(),
   };
 
   // startWebServer() already runs bootstrap migration in production. Repeat it
@@ -457,6 +472,31 @@ function buildApp(opts: WebServerOptions): Hono {
     );
   });
 
+  app.get('/api/v1/settings/executor/subscription-host-status', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+    if (auth.role !== 'owner' && auth.role !== 'admin') {
+      return forbidden(c, 'Owner or admin role required');
+    }
+
+    const rateResult = checkRateLimit({
+      principalId: auth.userId,
+      bucket: 'write',
+    });
+    if (!rateResult.allowed) {
+      return rateLimitedResponse(c, rateResult);
+    }
+
+    const data = await opts.subscriptionHostAuth.getStatusView();
+    return c.json(
+      {
+        ok: true,
+        data,
+      },
+      200,
+    );
+  });
+
   app.put('/api/v1/settings/executor', async (c) => {
     const auth = requireAuth(c);
     if (!auth) return unauthorized(c);
@@ -524,6 +564,7 @@ function buildApp(opts: WebServerOptions): Hono {
     }
 
     const payload = parseJsonPayload<{
+      executorAuthMode?: ExecutorAuthMode;
       anthropicApiKey?: string | null;
       claudeOauthToken?: string | null;
       anthropicAuthToken?: string | null;
@@ -545,10 +586,17 @@ function buildApp(opts: WebServerOptions): Hono {
     }
 
     try {
-      const data = opts.executorSettings.saveExecutorConfig(
-        payload.data,
-        auth.userId,
-      );
+      opts.executorSettings.saveExecutorConfig(payload.data, auth.userId);
+      const latestSettings = opts.executorSettings.getSettingsView();
+      if (
+        latestSettings.executorAuthMode === 'api_key' ||
+        latestSettings.executorAuthMode === 'advanced_bearer'
+      ) {
+        opts.executorVerifier.scheduleVerification(
+          latestSettings.executorAuthMode,
+        );
+      }
+      const data = opts.executorSettings.getSettingsView();
       const serialized = JSON.stringify({ ok: true, data });
       saveIdempotencyResult({
         userId: auth.userId,
@@ -580,6 +628,233 @@ function buildApp(opts: WebServerOptions): Hono {
       }
       throw err;
     }
+  });
+
+  app.post('/api/v1/settings/executor/verify', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+    if (auth.role !== 'owner' && auth.role !== 'admin') {
+      return forbidden(c, 'Owner or admin role required');
+    }
+
+    const rateResult = checkRateLimit({
+      principalId: auth.userId,
+      bucket: 'write',
+    });
+    if (!rateResult.allowed) {
+      return rateLimitedResponse(c, rateResult);
+    }
+
+    const csrf = validateCsrfToken({
+      method: c.req.method,
+      authType: auth.authType,
+      cookieHeader: c.req.header('cookie'),
+      csrfHeader: c.req.header('x-csrf-token'),
+    });
+    if (!csrf.ok) {
+      return c.json(
+        {
+          ok: false,
+          error: {
+            code: 'csrf_failed',
+            message: csrf.reason,
+          },
+        },
+        403,
+      );
+    }
+
+    const result = opts.executorVerifier.scheduleVerification();
+    if (!result.scheduled && result.code !== 'already_verifying') {
+      return c.json(
+        {
+          ok: false,
+          error: {
+            code: result.code,
+            message: result.message,
+          },
+        },
+        409,
+      );
+    }
+
+    return c.json(
+      {
+        ok: true,
+        data: {
+          scheduled: result.scheduled || result.code === 'already_verifying',
+          code: result.code,
+          message: result.message,
+        },
+      },
+      200,
+    );
+  });
+
+  app.post('/api/v1/settings/executor/subscription/import', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+    if (auth.role !== 'owner' && auth.role !== 'admin') {
+      return forbidden(c, 'Owner or admin role required');
+    }
+
+    const rateResult = checkRateLimit({
+      principalId: auth.userId,
+      bucket: 'write',
+    });
+    if (!rateResult.allowed) {
+      return rateLimitedResponse(c, rateResult);
+    }
+
+    const csrf = validateCsrfToken({
+      method: c.req.method,
+      authType: auth.authType,
+      cookieHeader: c.req.header('cookie'),
+      csrfHeader: c.req.header('x-csrf-token'),
+    });
+    if (!csrf.ok) {
+      return c.json(
+        {
+          ok: false,
+          error: {
+            code: 'csrf_failed',
+            message: csrf.reason,
+          },
+        },
+        403,
+      );
+    }
+
+    const bodyText = await c.req.text();
+    const idempotencyKey = c.req.header('idempotency-key') || null;
+    const precheck = idempotencyPrecheck({
+      userId: auth.userId,
+      idempotencyKey,
+      method: c.req.method,
+      path: c.req.path,
+      bodyText,
+    });
+    if (precheck.error) {
+      return c.json(
+        {
+          ok: false,
+          error: {
+            code: 'idempotency_error',
+            message: precheck.error,
+          },
+        },
+        400,
+      );
+    }
+
+    if (precheck.replay && precheck.response) {
+      return new Response(precheck.response.responseBody, {
+        status: precheck.response.statusCode,
+        headers: {
+          'content-type': 'application/json; charset=utf-8',
+          'x-idempotent-replay': 'true',
+        },
+      });
+    }
+
+    const payload = parseJsonPayload<{
+      expectedFingerprint?: string | null;
+    }>(bodyText);
+    if (!payload.ok) {
+      return c.json(
+        {
+          ok: false,
+          error: {
+            code: 'invalid_json',
+            message: payload.error,
+          },
+        },
+        400,
+      );
+    }
+
+    const expectedFingerprint = payload.data.expectedFingerprint?.trim() || null;
+    const probe = await opts.subscriptionHostAuth.probeImportSource();
+    if (!probe.importAvailable || !probe.importCredential) {
+      const code =
+        probe.hostLoginDetected || probe.serviceEnvOauthPresent
+          ? 'host_import_unavailable'
+          : 'host_login_not_detected';
+      return c.json(
+        {
+          ok: false,
+          error: {
+            code,
+            message: probe.message,
+          },
+        },
+        409,
+      );
+    }
+
+    if (
+      !expectedFingerprint ||
+      !probe.hostCredentialFingerprint ||
+      expectedFingerprint !== probe.hostCredentialFingerprint
+    ) {
+      return c.json(
+        {
+          ok: false,
+          error: {
+            code: 'host_state_changed',
+            message:
+              'Host Claude login changed since the last check. Please check again and retry import.',
+          },
+        },
+        409,
+      );
+    }
+
+    let data: ExecutorSubscriptionImportResult;
+    try {
+      data = opts.executorSettings.importSubscriptionCredential(
+        probe.importCredential,
+        auth.userId,
+      );
+    } catch (err) {
+      if (err instanceof ExecutorSettingsValidationError) {
+        return c.json(
+          {
+            ok: false,
+            error: {
+              code: err.code,
+              message: err.message,
+              details: err.details,
+            },
+          },
+          400,
+        );
+      }
+      throw err;
+    }
+
+    const safeData = {
+      status: data.status,
+      settings: data.settings,
+    };
+    const serialized = JSON.stringify({
+      ok: true,
+      data: safeData,
+    });
+    saveIdempotencyResult({
+      userId: auth.userId,
+      idempotencyKey,
+      method: c.req.method,
+      path: c.req.path,
+      requestHash: precheck.requestHash,
+      statusCode: 200,
+      responseBody: serialized,
+    });
+
+    return new Response(serialized, {
+      status: 200,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
   });
 
   app.get('/api/v1/settings/executor-status', async (c) => {

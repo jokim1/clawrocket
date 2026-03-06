@@ -146,9 +146,20 @@ export type ExecutorSettings = {
   configuredAliasMap: Record<string, string>;
   effectiveAliasMap: Record<string, string>;
   defaultAlias: string;
+  executorAuthMode: 'subscription' | 'api_key' | 'advanced_bearer' | 'none';
   hasApiKey: boolean;
   hasOauthToken: boolean;
   hasAuthToken: boolean;
+  activeCredentialConfigured: boolean;
+  verificationStatus:
+    | 'missing'
+    | 'not_verified'
+    | 'verifying'
+    | 'verified'
+    | 'invalid'
+    | 'unavailable';
+  lastVerifiedAt: string | null;
+  lastVerificationError: string | null;
   anthropicBaseUrl: string;
   isConfigured: boolean;
   configVersion: number;
@@ -158,6 +169,7 @@ export type ExecutorSettings = {
 };
 
 export type ExecutorSettingsUpdate = {
+  executorAuthMode?: 'subscription' | 'api_key' | 'advanced_bearer' | 'none';
   anthropicApiKey?: string | null;
   claudeOauthToken?: string | null;
   anthropicAuthToken?: string | null;
@@ -171,13 +183,42 @@ export type ExecutorStatus = {
   restartSupported: boolean;
   pendingRestartReasons: string[];
   activeRunCount: number;
+  executorAuthMode: 'subscription' | 'api_key' | 'advanced_bearer' | 'none';
+  activeCredentialConfigured: boolean;
+  verificationStatus:
+    | 'missing'
+    | 'not_verified'
+    | 'verifying'
+    | 'verified'
+    | 'invalid'
+    | 'unavailable';
+  lastVerifiedAt: string | null;
+  lastVerificationError: string | null;
   hasProviderAuth: boolean;
   hasValidAliasMap: boolean;
-  detectedAuthMethod: 'oauth' | 'api_key' | 'auth_token' | 'none';
   configVersion: number;
   isConfigured: boolean;
   bootId: string;
   configErrors: string[];
+};
+
+export type ExecutorSubscriptionHostStatus = {
+  serviceUser: string | null;
+  serviceUid: number | null;
+  serviceHomePath: string;
+  runtimeContext: 'host' | 'systemd' | 'container' | 'unknown';
+  claudeCliInstalled: boolean | null;
+  hostLoginDetected: boolean;
+  serviceEnvOauthPresent: boolean;
+  importAvailable: boolean;
+  hostCredentialFingerprint: string | null;
+  message: string;
+  recommendedCommands: string[];
+};
+
+export type ExecutorSubscriptionImportResult = {
+  status: 'imported' | 'no_change';
+  settings: ExecutorSettings;
 };
 
 type ApiEnvelope<T> =
@@ -354,6 +395,42 @@ export async function updateExecutorSettings(
 
 export async function getExecutorStatus(): Promise<ExecutorStatus> {
   return apiRequest<ExecutorStatus>('/api/v1/settings/executor-status');
+}
+
+export async function verifyExecutorCredentials(): Promise<{
+  scheduled: boolean;
+  code: string;
+  message: string;
+}> {
+  return apiRequest<{
+    scheduled: boolean;
+    code: string;
+    message: string;
+  }>('/api/v1/settings/executor/verify', {
+    method: 'POST',
+    headers: buildMutationHeaders({ includeJson: false }),
+  });
+}
+
+export async function getExecutorSubscriptionHostStatus(): Promise<ExecutorSubscriptionHostStatus> {
+  return apiRequest<ExecutorSubscriptionHostStatus>(
+    '/api/v1/settings/executor/subscription-host-status',
+  );
+}
+
+export async function importExecutorSubscriptionFromHost(
+  expectedFingerprint: string,
+): Promise<ExecutorSubscriptionImportResult> {
+  return apiRequest<ExecutorSubscriptionImportResult>(
+    '/api/v1/settings/executor/subscription/import',
+    {
+      method: 'POST',
+      headers: buildMutationHeaders({ includeJson: true }),
+      body: JSON.stringify({
+        expectedFingerprint,
+      }),
+    },
+  );
 }
 
 export async function restartService(): Promise<{

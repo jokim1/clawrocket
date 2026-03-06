@@ -331,6 +331,37 @@ a {
   margin-top: 1rem;
 }
 
+.settings-host-status {
+  margin-top: 1rem;
+  padding: 0.9rem 1rem;
+  border: 1px solid #dde4f2;
+  border-radius: 10px;
+  background: #f6f9ff;
+}
+
+.settings-command-list {
+  display: grid;
+  gap: 0.4rem;
+}
+
+.settings-command-list ul {
+  margin: 0.25rem 0 0;
+  padding-left: 1.2rem;
+}
+
+.settings-command-list code {
+  background: #eef4ff;
+  padding: 0.15rem 0.35rem;
+  border-radius: 8px;
+  word-break: break-all;
+}
+
+.settings-advanced-box {
+  margin-top: 1rem;
+  padding-top: 1rem;
+  border-top: 1px dashed #c8d3e9;
+}
+
 .settings-standby-list {
   margin: 1rem 0;
 }
