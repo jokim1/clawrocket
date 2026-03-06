@@ -3,10 +3,20 @@ import { Link, useNavigate } from 'react-router-dom';
 
 import { createTalk, listTalks, Talk, UnauthorizedError } from '../lib/api';
 
+type ExternalTalkData = {
+  talks: Talk[];
+  loading: boolean;
+  error: string | null;
+};
+
 export function TalkListPage({
   onUnauthorized,
+  externalData,
+  onTalkCreated,
 }: {
   onUnauthorized: () => void;
+  externalData?: ExternalTalkData;
+  onTalkCreated?: (talk: Talk) => void;
 }): JSX.Element {
   const navigate = useNavigate();
   const [talks, setTalks] = useState<Talk[]>([]);
@@ -17,6 +27,10 @@ export function TalkListPage({
   const [createError, setCreateError] = useState<string | null>(null);
 
   useEffect(() => {
+    if (externalData) {
+      return;
+    }
+
     let cancelled = false;
 
     const load = async () => {
@@ -43,7 +57,7 @@ export function TalkListPage({
     return () => {
       cancelled = true;
     };
-  }, [onUnauthorized]);
+  }, [externalData, onUnauthorized]);
 
   const handleCreateTalk = async (event: FormEvent) => {
     event.preventDefault();
@@ -57,6 +71,7 @@ export function TalkListPage({
     setCreateError(null);
     try {
       const talk = await createTalk(title);
+      onTalkCreated?.(talk);
       navigate(`/app/talks/${talk.id}`);
     } catch (err) {
       if (err instanceof UnauthorizedError) {
@@ -69,15 +84,19 @@ export function TalkListPage({
     }
   };
 
-  if (loading) {
+  const effectiveTalks = externalData ? externalData.talks : talks;
+  const effectiveLoading = externalData ? externalData.loading : loading;
+  const effectiveError = externalData ? externalData.error : error;
+
+  if (effectiveLoading) {
     return <p className="page-state">Loading talks…</p>;
   }
 
-  if (error) {
+  if (effectiveError) {
     return (
       <section className="page-state">
         <h2>Talks Unavailable</h2>
-        <p>{error}</p>
+        <p>{effectiveError}</p>
       </section>
     );
   }
@@ -111,11 +130,11 @@ export function TalkListPage({
         </div>
       ) : null}
 
-      {talks.length === 0 ? (
+      {effectiveTalks.length === 0 ? (
         <p className="page-state">No talks yet.</p>
       ) : (
         <ul className="talk-list">
-          {talks.map((talk) => (
+          {effectiveTalks.map((talk) => (
             <li key={talk.id}>
               <Link to={`/app/talks/${talk.id}`}>
                 <div className="talk-list-main">
