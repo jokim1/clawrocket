@@ -41,6 +41,14 @@ const PROVIDER_DOCS_URL: Record<string, string> = {
   'provider.nvidia': 'https://build.nvidia.com/',
 };
 
+const PROVIDER_DOCS_LABEL: Record<string, string> = {
+  'provider.nvidia': 'NVIDIA',
+};
+
+const PROVIDER_KEY_PLACEHOLDER: Record<string, string> = {
+  'provider.nvidia': 'nvapi-...',
+};
+
 function canManageAgents(userRole: string): boolean {
   return userRole === 'owner' || userRole === 'admin';
 }
@@ -774,7 +782,7 @@ export function AiAgentsPage({
                           target="_blank"
                           rel="noreferrer"
                         >
-                          Get key from {provider.name}
+                          Get key from {PROVIDER_DOCS_LABEL[provider.id] || provider.name}
                         </a>
                       ) : (
                         'Configure this provider for additional talk agents.'
@@ -827,7 +835,7 @@ export function AiAgentsPage({
                             apiKey: event.target.value,
                           })
                         }
-                        placeholder="sk-..."
+                        placeholder={PROVIDER_KEY_PLACEHOLDER[provider.id] || 'sk-...'}
                         disabled={!canManage || busySave}
                       />
                     </label>

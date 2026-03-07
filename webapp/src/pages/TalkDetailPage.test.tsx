@@ -531,12 +531,6 @@ function buildAiAgentsData(): AiAgentsPageData {
         contextWindowTokens: 200000,
         defaultMaxOutputTokens: 4096,
       },
-      {
-        modelId: 'claude-opus-4-1',
-        displayName: 'Claude Opus 4.1',
-        contextWindowTokens: 200000,
-        defaultMaxOutputTokens: 4096,
-      },
     ],
     additionalProviders: [
       {

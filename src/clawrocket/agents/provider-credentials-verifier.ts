@@ -33,14 +33,46 @@ function buildHeaders(
   };
 }
 
-function verificationEndpoint(provider: LlmProviderRecord): string {
+type VerificationRequest = {
+  url: string;
+  method: 'GET' | 'POST';
+  body?: string;
+  headers?: Record<string, string>;
+};
+
+function buildVerificationRequest(provider: LlmProviderRecord): VerificationRequest {
+  if (provider.provider_kind === 'nvidia') {
+    return {
+      url: joinUrl(provider.base_url, '/chat/completions'),
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: 'moonshotai/kimi-k2.5',
+        messages: [{ role: 'user', content: 'ping' }],
+        max_tokens: 1,
+        stream: false,
+      }),
+    };
+  }
+
   switch (provider.api_format) {
     case 'anthropic_messages':
-      return joinUrl(provider.base_url, '/v1/models');
+      return {
+        url: joinUrl(provider.base_url, '/v1/models'),
+        method: 'GET',
+      };
     case 'openai_chat_completions':
-      return joinUrl(provider.base_url, '/models');
+      return {
+        url: joinUrl(provider.base_url, '/models'),
+        method: 'GET',
+      };
     default:
-      return provider.base_url;
+      return {
+        url: provider.base_url,
+        method: 'GET',
+      };
   }
 }
 
@@ -79,6 +111,7 @@ export class ProviderCredentialsVerifier {
     }
 
     const secret = decryptProviderSecret(secretRecord.ciphertext);
+    const request = buildVerificationRequest(provider);
     const controller = new AbortController();
     const timer = setTimeout(
       () => controller.abort('provider_verify_timeout'),
@@ -86,9 +119,13 @@ export class ProviderCredentialsVerifier {
     );
 
     try {
-      const response = await this.fetchImpl(verificationEndpoint(provider), {
-        method: 'GET',
-        headers: buildHeaders(provider, secret),
+      const response = await this.fetchImpl(request.url, {
+        method: request.method,
+        headers: {
+          ...buildHeaders(provider, secret),
+          ...(request.headers || {}),
+        },
+        body: request.body,
         signal: controller.signal,
       });
 
