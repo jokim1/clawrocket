@@ -2,13 +2,13 @@ import { randomUUID } from 'crypto';
 
 import { TALK_RUN_MAX_CONCURRENCY, TALK_RUN_POLL_MS } from '../config.js';
 import {
+  claimQueuedTalkRuns,
   appendOutboxEvent,
   completeRunAndPromoteNextAtomic,
   failInterruptedRunsOnStartup,
   failRunAndPromoteNextAtomic,
   getTalkMessageById,
   getTalkRunById,
-  listRunningTalkRuns,
   type TalkRunRecord,
 } from '../db/index.js';
 import { logger } from '../../logger.js';
@@ -58,7 +58,6 @@ export class TalkRunWorker implements TalkRunWorkerControl {
   private sleepResolver: (() => void) | null = null;
 
   private readonly activeRunsById = new Map<string, ActiveRun>();
-  private readonly activeRunIdByTalkId = new Map<string, string>();
   private readonly activeRunTasks = new Map<string, Promise<void>>();
 
   constructor(options: TalkRunWorkerOptions = {}) {
@@ -126,13 +125,10 @@ export class TalkRunWorker implements TalkRunWorkerControl {
   }
 
   abortTalk(talkId: string): void {
-    const activeRunId = this.activeRunIdByTalkId.get(talkId);
-    if (!activeRunId) return;
-
-    const active = this.activeRunsById.get(activeRunId);
-    if (!active) return;
-
-    active.controller.abort(`talk_cancelled:${talkId}`);
+    for (const active of this.activeRunsById.values()) {
+      if (active.run.talk_id !== talkId) continue;
+      active.controller.abort(`talk_cancelled:${talkId}`);
+    }
   }
 
   private async runLoop(): Promise<void> {
@@ -153,20 +149,16 @@ export class TalkRunWorker implements TalkRunWorkerControl {
     const availableSlots = this.maxConcurrency - this.activeRunsById.size;
     if (availableSlots <= 0) return;
 
-    const candidates = listRunningTalkRuns(
-      Math.max(this.maxConcurrency * 2, 10),
-    );
-    for (const candidate of candidates) {
-      if (this.activeRunsById.has(candidate.id)) continue;
+    const claimedRuns = claimQueuedTalkRuns(availableSlots);
+    for (const run of claimedRuns) {
       if (this.activeRunsById.size >= this.maxConcurrency) break;
-      this.startRun(candidate);
+      this.startRun(run);
     }
   }
 
   private startRun(run: TalkRunRecord): void {
     const controller = new AbortController();
     this.activeRunsById.set(run.id, { run, controller });
-    this.activeRunIdByTalkId.set(run.talk_id, run.id);
 
     const task = this.executeRun(run, controller.signal)
       .catch((error) => {
@@ -182,10 +174,6 @@ export class TalkRunWorker implements TalkRunWorkerControl {
       .finally(() => {
         this.activeRunsById.delete(run.id);
         this.activeRunTasks.delete(run.id);
-        const activeForTalk = this.activeRunIdByTalkId.get(run.talk_id);
-        if (activeForTalk === run.id) {
-          this.activeRunIdByTalkId.delete(run.talk_id);
-        }
         this.wake();
       });
     this.activeRunTasks.set(run.id, task);
@@ -234,7 +222,7 @@ export class TalkRunWorker implements TalkRunWorkerControl {
         responseContent: output.content,
         responseMetadataJson: output.metadataJson,
         agentId: output.agentId,
-        agentName: output.agentName,
+        agentNickname: output.agentNickname,
       });
       if (!completed.applied) {
         logger.debug(

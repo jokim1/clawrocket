@@ -26,7 +26,7 @@ import {
   createTalk,
   createTalkMessage,
   createTalkRun,
-  enqueueTalkTurnAtomic,
+  enqueueTalkTurnAtomic as enqueueTalkTurnAtomicRaw,
   failInterruptedRunsOnStartup,
   failRunAndPromoteNextAtomic,
   deleteTalkExecutorSession,
@@ -56,6 +56,32 @@ import {
   upsertWebSession,
 } from './clawrocket/db/index.js';
 import { computeSessionCompatKey } from './clawrocket/talks/executor-settings.js';
+
+function enqueueTalkTurnAtomic(input: {
+  talkId: string;
+  userId: string;
+  content: string;
+  messageId: string;
+  runId: string;
+  targetAgentId?: string;
+  idempotencyKey?: string | null;
+  now?: string;
+}) {
+  const result = enqueueTalkTurnAtomicRaw({
+    talkId: input.talkId,
+    userId: input.userId,
+    content: input.content,
+    messageId: input.messageId,
+    runIds: [input.runId],
+    targetAgentIds: [input.targetAgentId || 'agent-default'],
+    idempotencyKey: input.idempotencyKey,
+    now: input.now,
+  });
+  return {
+    ...result,
+    run: result.runs[0],
+  };
+}
 
 beforeEach(() => {
   _initTestDatabase();
@@ -679,20 +705,20 @@ describe('phase 0 schema and reliability tables', () => {
     expect(result.message.id).toBe('msg-atomic-1');
     expect(result.message.created_at).toBe('2024-01-01T00:00:10.000Z');
     expect(result.run.id).toBe('run-atomic-1');
-    expect(result.run.status).toBe('running');
+    expect(result.run.status).toBe('queued');
 
     const messages = listTalkMessages({ talkId: 'talk-1', limit: 10 });
     expect(messages.map((message) => message.id)).toContain('msg-atomic-1');
 
     const run = getTalkRunById('run-atomic-1');
-    expect(run?.status).toBe('running');
+    expect(run?.status).toBe('queued');
 
     const events = getOutboxEventsForTopics(['talk:talk-1'], 0, 10);
     const messageEvent = events.find(
       (event) => event.event_type === 'message_appended',
     );
     const runEvent = events.find(
-      (event) => event.event_type === 'talk_run_started',
+      (event) => event.event_type === 'talk_run_queued',
     );
 
     expect(messageEvent).toBeDefined();
@@ -713,13 +739,13 @@ describe('phase 0 schema and reliability tables', () => {
     expect(messagePayload).toMatchObject({
       talkId: 'talk-1',
       messageId: 'msg-atomic-1',
-      runId: 'run-atomic-1',
+      runId: null,
     });
     expect(runPayload).toMatchObject({
       talkId: 'talk-1',
       runId: 'run-atomic-1',
       triggerMessageId: 'msg-atomic-1',
-      status: 'running',
+      status: 'queued',
     });
   });
 
@@ -755,7 +781,7 @@ describe('phase 0 schema and reliability tables', () => {
     ).toBeFalsy();
   });
 
-  it('completes a running run, appends assistant message, and promotes one queued run', () => {
+  it('completes a running run and appends the assistant message', () => {
     enqueueTalkTurnAtomic({
       talkId: 'talk-1',
       userId: 'owner-1',
@@ -764,14 +790,13 @@ describe('phase 0 schema and reliability tables', () => {
       runId: 'run-atomic-3a',
       now: '2024-01-01T00:00:30.000Z',
     });
-    enqueueTalkTurnAtomic({
-      talkId: 'talk-1',
-      userId: 'owner-1',
-      content: 'run two',
-      messageId: 'msg-atomic-3b',
-      runId: 'run-atomic-3b',
-      now: '2024-01-01T00:00:31.000Z',
-    });
+    markTalkRunStatus(
+      'run-atomic-3a',
+      'running',
+      null,
+      null,
+      '2024-01-01T00:00:30.500Z',
+    );
 
     const completion = completeRunAndPromoteNextAtomic({
       runId: 'run-atomic-3a',
@@ -782,10 +807,8 @@ describe('phase 0 schema and reliability tables', () => {
 
     expect(completion.applied).toBe(true);
     expect(completion.talkId).toBe('talk-1');
-    expect(completion.promotedRunId).toBe('run-atomic-3b');
 
     expect(getTalkRunById('run-atomic-3a')?.status).toBe('completed');
-    expect(getTalkRunById('run-atomic-3b')?.status).toBe('running');
 
     const messages = listTalkMessages({ talkId: 'talk-1', limit: 20 });
     const responseMessage = messages.find(
@@ -800,16 +823,7 @@ describe('phase 0 schema and reliability tables', () => {
         event.event_type === 'talk_run_completed' &&
         event.payload.includes('\"runId\":\"run-atomic-3a\"'),
     );
-    const promoted = events.find(
-      (event) =>
-        event.event_type === 'talk_run_started' &&
-        event.payload.includes('\"runId\":\"run-atomic-3b\"'),
-    );
     expect(completed).toBeDefined();
-    expect(promoted).toBeDefined();
-    expect(promoted?.payload).toContain(
-      '\"triggerMessageId\":\"msg-atomic-3b\"',
-    );
   });
 
   it('enforces first-writer-wins between cancel and fail transitions', () => {
@@ -848,33 +862,45 @@ describe('phase 0 schema and reliability tables', () => {
     ).toBe(false);
   });
 
-  it('fails interrupted running runs on startup and promotes queued runs', () => {
-    enqueueTalkTurnAtomic({
-      talkId: 'talk-1',
-      userId: 'owner-1',
-      content: 'stale running',
-      messageId: 'msg-atomic-5a',
-      runId: 'run-atomic-5a',
-      now: '2024-01-01T00:00:50.000Z',
+  it('fails interrupted running runs on startup and leaves queued runs queued', () => {
+    createTalkRun({
+      id: 'run-atomic-5a',
+      talk_id: 'talk-1',
+      requested_by: 'owner-1',
+      status: 'running',
+      trigger_message_id: null,
+      idempotency_key: null,
+      executor_alias: null,
+      executor_model: null,
+      created_at: '2024-01-01T00:00:50.000Z',
+      started_at: '2024-01-01T00:00:50.000Z',
+      ended_at: null,
+      cancel_reason: null,
     });
-    enqueueTalkTurnAtomic({
-      talkId: 'talk-1',
-      userId: 'owner-1',
-      content: 'queued stale',
-      messageId: 'msg-atomic-5b',
-      runId: 'run-atomic-5b',
-      now: '2024-01-01T00:00:51.000Z',
+    createTalkRun({
+      id: 'run-atomic-5b',
+      talk_id: 'talk-1',
+      requested_by: 'owner-1',
+      status: 'queued',
+      trigger_message_id: null,
+      idempotency_key: null,
+      executor_alias: null,
+      executor_model: null,
+      created_at: '2024-01-01T00:00:51.000Z',
+      started_at: null,
+      ended_at: null,
+      cancel_reason: null,
     });
 
     const recovered = failInterruptedRunsOnStartup('2024-01-01T00:00:52.000Z');
     expect(recovered.failedRunIds).toEqual(['run-atomic-5a']);
-    expect(recovered.promotedRunIds).toEqual(['run-atomic-5b']);
+    expect(recovered.promotedRunIds).toEqual([]);
 
     expect(getTalkRunById('run-atomic-5a')?.status).toBe('failed');
     expect(getTalkRunById('run-atomic-5a')?.cancel_reason).toBe(
       'interrupted_by_restart',
     );
-    expect(getTalkRunById('run-atomic-5b')?.status).toBe('running');
+    expect(getTalkRunById('run-atomic-5b')?.status).toBe('queued');
   });
 
   it('normalizes talk list pagination consistently', () => {
@@ -999,13 +1025,20 @@ describe('phase 0 schema and reliability tables', () => {
       executorModel: 'default',
     });
 
-    const completion = completeRunAndPromoteNextAtomic({
+    markTalkRunStatus(
+      'run-meta-term-1',
+      'running',
+      null,
+      null,
+      '2024-01-01T00:00:56.500Z',
+    );
+    const completionApplied = completeRunAndPromoteNextAtomic({
       runId: 'run-meta-term-1',
       responseMessageId: 'msg-meta-term-1r',
       responseContent: 'done',
       now: '2024-01-01T00:00:57.000Z',
     });
-    expect(completion.applied).toBe(true);
+    expect(completionApplied.applied).toBe(true);
 
     enqueueTalkTurnAtomic({
       talkId: 'talk-1',
@@ -1021,6 +1054,13 @@ describe('phase 0 schema and reliability tables', () => {
       executorAlias: 'Opus4.6',
       executorModel: 'default',
     });
+    markTalkRunStatus(
+      'run-meta-term-2',
+      'running',
+      null,
+      null,
+      '2024-01-01T00:00:58.500Z',
+    );
 
     const failure = failRunAndPromoteNextAtomic({
       runId: 'run-meta-term-2',

@@ -19,7 +19,7 @@ export type TalkExecutionEvent =
       runId: string;
       talkId: string;
       agentId?: string | null;
-      agentName?: string | null;
+      agentNickname?: string | null;
       routeStepPosition?: number | null;
       providerId?: string | null;
       modelId?: string | null;
@@ -29,7 +29,7 @@ export type TalkExecutionEvent =
       runId: string;
       talkId: string;
       agentId?: string | null;
-      agentName?: string | null;
+      agentNickname?: string | null;
       deltaText: string;
       routeStepPosition?: number | null;
       providerId?: string | null;
@@ -50,7 +50,7 @@ export type TalkExecutionEvent =
       runId: string;
       talkId: string;
       agentId?: string | null;
-      agentName?: string | null;
+      agentNickname?: string | null;
       usage?: TalkExecutionUsage;
       routeStepPosition?: number | null;
       providerId?: string | null;
@@ -78,7 +78,7 @@ export interface TalkExecutorOutput {
   content: string;
   metadataJson?: string | null;
   agentId?: string | null;
-  agentName?: string | null;
+  agentNickname?: string | null;
   providerId?: string | null;
   modelId?: string | null;
   usage?: TalkExecutionUsage;

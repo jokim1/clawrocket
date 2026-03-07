@@ -147,7 +147,7 @@ export function App() {
               }
             />
             <Route
-              path="/app/talks/:talkId"
+              path="/app/talks/:talkId/*"
               element={
                 <TalkDetailPage
                   onUnauthorized={handleUnauthorized}

@@ -5,7 +5,7 @@ import {
   createTalk,
   createTalkMessage,
   createTalkRun,
-  enqueueTalkTurnAtomic,
+  enqueueTalkTurnAtomic as enqueueTalkTurnAtomicRaw,
   getProviderSecretByProviderId,
   getTalkRunById,
   listLlmAttemptsForRun,
@@ -243,6 +243,28 @@ function createNeverStartingResponse(
       },
     },
   );
+}
+
+function enqueueTalkTurnAtomic(input: {
+  talkId: string;
+  userId: string;
+  content: string;
+  messageId: string;
+  runId: string;
+  targetAgentId?: string;
+  idempotencyKey?: string | null;
+  now?: string;
+}) {
+  return enqueueTalkTurnAtomicRaw({
+    talkId: input.talkId,
+    userId: input.userId,
+    content: input.content,
+    messageId: input.messageId,
+    runIds: [input.runId],
+    targetAgentIds: [input.targetAgentId || 'agent-default'],
+    idempotencyKey: input.idempotencyKey,
+    now: input.now,
+  });
 }
 
 describe('DirectTalkExecutor', () => {

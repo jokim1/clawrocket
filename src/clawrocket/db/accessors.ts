@@ -939,31 +939,35 @@ export function enqueueTalkTurnAtomic(input: {
   userId: string;
   content: string;
   messageId: string;
-  runId: string;
-  targetAgentId?: string | null;
+  runIds: string[];
+  targetAgentIds: string[];
   idempotencyKey?: string | null;
   now?: string;
-}): { message: TalkMessageRecord; run: TalkRunRecord } {
+}): { message: TalkMessageRecord; runs: TalkRunRecord[] } {
   const tx = getDb().transaction(
     (
       txInput: typeof input,
     ): {
       message: TalkMessageRecord;
-      run: TalkRunRecord;
+      runs: TalkRunRecord[];
     } => {
       const now = txInput.now || new Date().toISOString();
-      const running = getDb()
+      if (txInput.runIds.length === 0 || txInput.runIds.length !== txInput.targetAgentIds.length) {
+        throw new Error('talk turn requires one run id per target agent');
+      }
+
+      const active = getDb()
         .prepare(
           `
-          SELECT id
+          SELECT COUNT(*) AS count
           FROM talk_runs
-          WHERE talk_id = ? AND status = 'running'
-          ORDER BY created_at ASC
-          LIMIT 1
+          WHERE talk_id = ? AND status IN ('queued', 'running')
         `,
         )
-        .get(txInput.talkId) as { id: string } | undefined;
-      const status: TalkRunStatus = running ? 'queued' : 'running';
+        .get(txInput.talkId) as { count: number };
+      if ((active?.count || 0) > 0) {
+        throw new Error('talk already has an active round');
+      }
 
       const message: TalkMessageRecord = {
         id: txInput.messageId,
@@ -972,27 +976,26 @@ export function enqueueTalkTurnAtomic(input: {
         content: txInput.content,
         created_by: txInput.userId,
         created_at: now,
-        run_id: txInput.runId,
+        run_id: null,
         metadata_json: null,
       };
 
-      const run: TalkRunRecord = {
-        id: txInput.runId,
+      const runs: TalkRunRecord[] = txInput.runIds.map((runId, index) => ({
+        id: runId,
         talk_id: txInput.talkId,
         requested_by: txInput.userId,
-        status,
-        trigger_message_id: null,
-        target_agent_id: txInput.targetAgentId || null,
-        idempotency_key: txInput.idempotencyKey || null,
+        status: 'queued',
+        trigger_message_id: txInput.messageId,
+        target_agent_id: txInput.targetAgentIds[index] || null,
+        idempotency_key:
+          index === 0 ? txInput.idempotencyKey || null : null,
         executor_alias: null,
         executor_model: null,
         created_at: now,
-        started_at: status === 'running' ? now : null,
+        started_at: null,
         ended_at: null,
         cancel_reason: null,
-      };
-
-      createTalkRun(run);
+      }));
 
       createTalkMessage({
         id: message.id,
@@ -1000,19 +1003,12 @@ export function enqueueTalkTurnAtomic(input: {
         role: message.role,
         content: message.content,
         createdBy: message.created_by,
-        runId: message.run_id,
         createdAt: message.created_at,
       });
 
-      getDb()
-        .prepare(
-          `
-          UPDATE talk_runs
-          SET trigger_message_id = ?
-          WHERE id = ?
-        `,
-        )
-        .run(txInput.messageId, txInput.runId);
+      for (const run of runs) {
+        createTalkRun(run);
+      }
 
       touchTalkUpdatedAt(txInput.talkId, now);
 
@@ -1029,7 +1025,7 @@ export function enqueueTalkTurnAtomic(input: {
           JSON.stringify({
             talkId: txInput.talkId,
             messageId: txInput.messageId,
-            runId: txInput.runId,
+            runId: null,
             role: 'user',
             createdBy: txInput.userId,
             content: txInput.content,
@@ -1038,29 +1034,30 @@ export function enqueueTalkTurnAtomic(input: {
           now,
         );
 
-      getDb()
-        .prepare(
-          `
+      const outboxStmt = getDb().prepare(
+        `
         INSERT INTO event_outbox (topic, event_type, payload, created_at)
         VALUES (?, ?, ?, ?)
       `,
-        )
-        .run(
+      );
+      for (const run of runs) {
+        outboxStmt.run(
           `talk:${txInput.talkId}`,
-          status === 'running' ? 'talk_run_started' : 'talk_run_queued',
+          'talk_run_queued',
           JSON.stringify({
             talkId: txInput.talkId,
-            runId: txInput.runId,
+            runId: run.id,
             triggerMessageId: txInput.messageId,
-            targetAgentId: txInput.targetAgentId || null,
-            status,
+            targetAgentId: run.target_agent_id || null,
+            status: 'queued',
             executorAlias: run.executor_alias,
             executorModel: run.executor_model,
           }),
           now,
         );
+      }
 
-      return { message, run };
+      return { message, runs };
     },
   );
 
@@ -1407,6 +1404,21 @@ export function getQueuedTalkRuns(
     .all(talkId) as TalkRunRecord[];
 }
 
+export function listQueuedTalkRuns(limit = 50): TalkRunRecord[] {
+  const normalizedLimit = Math.max(1, Math.floor(limit));
+  return getDb()
+    .prepare(
+      `
+      SELECT *
+      FROM talk_runs
+      WHERE status = 'queued'
+      ORDER BY created_at ASC
+      LIMIT ?
+    `,
+    )
+    .all(normalizedLimit) as TalkRunRecord[];
+}
+
 export function listRunningTalkRuns(limit = 50): TalkRunRecord[] {
   const normalizedLimit = Math.max(1, Math.floor(limit));
   return getDb()
@@ -1435,6 +1447,44 @@ export function countRunningTalkRuns(): number {
   return row.count;
 }
 
+export function hasActiveTalkRuns(talkId: string): boolean {
+  const row = getDb()
+    .prepare(
+      `
+      SELECT COUNT(*) AS count
+      FROM talk_runs
+      WHERE talk_id = ? AND status IN ('queued', 'running')
+    `,
+    )
+    .get(talkId) as { count: number };
+  return row.count > 0;
+}
+
+export function listTalkRunsForTalk(
+  talkId: string,
+  limit = 50,
+): Array<
+  TalkRunRecord & {
+    target_agent_nickname: string | null;
+  }
+> {
+  const normalizedLimit = Math.max(1, Math.floor(limit));
+  return getDb()
+    .prepare(
+      `
+      SELECT r.*, a.name AS target_agent_nickname
+      FROM talk_runs r
+      LEFT JOIN talk_agents a ON a.id = r.target_agent_id
+      WHERE r.talk_id = ?
+      ORDER BY r.created_at DESC
+      LIMIT ?
+    `,
+    )
+    .all(talkId, normalizedLimit) as Array<
+    TalkRunRecord & { target_agent_nickname: string | null }
+  >;
+}
+
 /**
  * Appends an assistant message and related outbox event.
  *
@@ -1448,7 +1498,7 @@ export function appendAssistantMessageWithOutbox(input: {
   content: string;
   metadataJson?: string | null;
   agentId?: string | null;
-  agentName?: string | null;
+  agentNickname?: string | null;
   createdAt?: string;
 }): TalkMessageRecord {
   const tx = getDb().transaction((txInput: typeof input): TalkMessageRecord => {
@@ -1495,7 +1545,7 @@ export function appendAssistantMessageWithOutbox(input: {
           content: txInput.content,
           createdAt,
           agentId: txInput.agentId || null,
-          agentName: txInput.agentName || null,
+          agentNickname: txInput.agentNickname || null,
         }),
         createdAt,
       );
@@ -1506,68 +1556,77 @@ export function appendAssistantMessageWithOutbox(input: {
   return tx(input);
 }
 
-function promoteNextQueuedRunTx(
-  talkId: string,
-  now: string,
-): { id: string; triggerMessageId: string | null } | null {
-  const next = getDb()
-    .prepare(
-      `
-      SELECT id, trigger_message_id, target_agent_id, executor_alias, executor_model
-      FROM talk_runs
-      WHERE talk_id = ? AND status = 'queued'
-      ORDER BY created_at ASC
-      LIMIT 1
-    `,
-    )
-    .get(talkId) as
-    | {
-        id: string;
-        trigger_message_id: string | null;
-        target_agent_id: string | null;
-        executor_alias: string | null;
-        executor_model: string | null;
+export function claimQueuedTalkRuns(
+  limit: number,
+  now?: string,
+): TalkRunRecord[] {
+  const normalizedLimit = Math.max(1, Math.floor(limit));
+  const tx = getDb().transaction(
+    (txLimit: number, txNow?: string): TalkRunRecord[] => {
+      const startedAt = txNow || new Date().toISOString();
+      const queued = getDb()
+        .prepare(
+          `
+          SELECT *
+          FROM talk_runs
+          WHERE status = 'queued'
+          ORDER BY created_at ASC
+          LIMIT ?
+        `,
+        )
+        .all(txLimit) as TalkRunRecord[];
+      if (queued.length === 0) return [];
+
+      const updateStmt = getDb().prepare(
+        `
+        UPDATE talk_runs
+        SET status = 'running',
+            started_at = ?,
+            ended_at = NULL,
+            cancel_reason = NULL
+        WHERE id = ? AND status = 'queued'
+      `,
+      );
+      const outboxStmt = getDb().prepare(
+        `
+        INSERT INTO event_outbox (topic, event_type, payload, created_at)
+        VALUES (?, ?, ?, ?)
+      `,
+      );
+
+      const claimed: TalkRunRecord[] = [];
+      for (const run of queued) {
+        const updated = updateStmt.run(startedAt, run.id);
+        if (updated.changes !== 1) continue;
+        const claimedRun: TalkRunRecord = {
+          ...run,
+          status: 'running',
+          started_at: startedAt,
+          ended_at: null,
+          cancel_reason: null,
+        };
+        claimed.push(claimedRun);
+        outboxStmt.run(
+          `talk:${run.talk_id}`,
+          'talk_run_started',
+          JSON.stringify({
+            talkId: run.talk_id,
+            runId: run.id,
+            triggerMessageId: run.trigger_message_id,
+            targetAgentId: run.target_agent_id || null,
+            status: 'running',
+            executorAlias: run.executor_alias,
+            executorModel: run.executor_model,
+          }),
+          startedAt,
+        );
       }
-    | undefined;
-  if (!next) return null;
 
-  const updated = getDb()
-    .prepare(
-      `
-      UPDATE talk_runs
-      SET status = 'running',
-          started_at = ?,
-          ended_at = NULL,
-          cancel_reason = NULL
-      WHERE id = ? AND status = 'queued'
-    `,
-    )
-    .run(now, next.id);
-  if (updated.changes !== 1) return null;
+      return claimed;
+    },
+  );
 
-  getDb()
-    .prepare(
-      `
-    INSERT INTO event_outbox (topic, event_type, payload, created_at)
-    VALUES (?, ?, ?, ?)
-  `,
-    )
-    .run(
-      `talk:${talkId}`,
-      'talk_run_started',
-      JSON.stringify({
-        talkId,
-        runId: next.id,
-        triggerMessageId: next.trigger_message_id,
-        targetAgentId: next.target_agent_id,
-        status: 'running',
-        executorAlias: next.executor_alias,
-        executorModel: next.executor_model,
-      }),
-      now,
-    );
-
-  return { id: next.id, triggerMessageId: next.trigger_message_id };
+  return tx(normalizedLimit, now);
 }
 
 export function completeRunAndPromoteNextAtomic(input: {
@@ -1576,12 +1635,11 @@ export function completeRunAndPromoteNextAtomic(input: {
   responseContent: string;
   responseMetadataJson?: string | null;
   agentId?: string | null;
-  agentName?: string | null;
+  agentNickname?: string | null;
   now?: string;
 }): {
   applied: boolean;
   talkId: string | null;
-  promotedRunId: string | null;
 } {
   const tx = getDb().transaction(
     (
@@ -1589,7 +1647,6 @@ export function completeRunAndPromoteNextAtomic(input: {
     ): {
       applied: boolean;
       talkId: string | null;
-      promotedRunId: string | null;
     } => {
       const now = txInput.now || new Date().toISOString();
       const run = getDb()
@@ -1612,7 +1669,7 @@ export function completeRunAndPromoteNextAtomic(input: {
           }
         | undefined;
       if (!run) {
-        return { applied: false, talkId: null, promotedRunId: null };
+        return { applied: false, talkId: null };
       }
 
       const completed = getDb()
@@ -1627,7 +1684,7 @@ export function completeRunAndPromoteNextAtomic(input: {
         )
         .run(now, run.id);
       if (completed.changes !== 1) {
-        return { applied: false, talkId: run.talk_id, promotedRunId: null };
+        return { applied: false, talkId: run.talk_id };
       }
 
       const responseMessage = appendAssistantMessageWithOutbox({
@@ -1637,7 +1694,7 @@ export function completeRunAndPromoteNextAtomic(input: {
         content: txInput.responseContent,
         metadataJson: txInput.responseMetadataJson || null,
         agentId: txInput.agentId || run.target_agent_id,
-        agentName: txInput.agentName || null,
+        agentNickname: txInput.agentNickname || null,
         createdAt: now,
       });
 
@@ -1662,11 +1719,9 @@ export function completeRunAndPromoteNextAtomic(input: {
           now,
         );
 
-      const promoted = promoteNextQueuedRunTx(run.talk_id, now);
       return {
         applied: true,
         talkId: run.talk_id,
-        promotedRunId: promoted?.id || null,
       };
     },
   );
@@ -1682,7 +1737,6 @@ export function failRunAndPromoteNextAtomic(input: {
 }): {
   applied: boolean;
   talkId: string | null;
-  promotedRunId: string | null;
 } {
   const tx = getDb().transaction(
     (
@@ -1690,7 +1744,6 @@ export function failRunAndPromoteNextAtomic(input: {
     ): {
       applied: boolean;
       talkId: string | null;
-      promotedRunId: string | null;
     } => {
       const now = txInput.now || new Date().toISOString();
       const run = getDb()
@@ -1713,7 +1766,7 @@ export function failRunAndPromoteNextAtomic(input: {
           }
         | undefined;
       if (!run) {
-        return { applied: false, talkId: null, promotedRunId: null };
+        return { applied: false, talkId: null };
       }
 
       const failed = getDb()
@@ -1732,7 +1785,7 @@ export function failRunAndPromoteNextAtomic(input: {
           run.id,
         );
       if (failed.changes !== 1) {
-        return { applied: false, talkId: run.talk_id, promotedRunId: null };
+        return { applied: false, talkId: run.talk_id };
       }
 
       getDb()
@@ -1757,11 +1810,9 @@ export function failRunAndPromoteNextAtomic(input: {
           now,
         );
 
-      const promoted = promoteNextQueuedRunTx(run.talk_id, now);
       return {
         applied: true,
         talkId: run.talk_id,
-        promotedRunId: promoted?.id || null,
       };
     },
   );
@@ -1787,139 +1838,75 @@ export function cancelTalkRunsAtomic(input: {
       cancelledRunning: boolean;
     } => {
       const now = txInput.now || new Date().toISOString();
-      const running = getDb()
+      const activeRuns = getDb()
         .prepare(
           `
           SELECT id, status, trigger_message_id, target_agent_id, executor_alias, executor_model
           FROM talk_runs
-          WHERE talk_id = ? AND status = 'running'
+          WHERE talk_id = ? AND status IN ('queued', 'running')
           ORDER BY created_at ASC
-          LIMIT 1
         `,
         )
-        .get(txInput.talkId) as
-        | {
-            id: string;
-            status: TalkRunStatus;
-            trigger_message_id: string | null;
-            target_agent_id: string | null;
-            executor_alias: string | null;
-            executor_model: string | null;
-          }
-        | undefined;
+        .all(txInput.talkId) as Array<{
+        id: string;
+        status: TalkRunStatus;
+        trigger_message_id: string | null;
+        target_agent_id: string | null;
+        executor_alias: string | null;
+        executor_model: string | null;
+      }>;
 
       const cancelledRunIds: string[] = [];
       let cancelledRunning = false;
-      if (running) {
-        const updated = getDb()
-          .prepare(
-            `
-            UPDATE talk_runs
-            SET status = 'cancelled',
-                ended_at = ?,
-                cancel_reason = ?
-            WHERE id = ? AND status = 'running'
-          `,
-          )
-          .run(
-            now,
-            `Cancelled by ${txInput.cancelledBy}`.slice(0, 500),
-            running.id,
-          );
-        if (updated.changes === 1) {
-          cancelledRunIds.push(running.id);
+      const cancelStmt = getDb().prepare(
+        `
+        UPDATE talk_runs
+        SET status = 'cancelled',
+            ended_at = ?,
+            cancel_reason = ?
+        WHERE id = ? AND status IN ('queued', 'running')
+      `,
+      );
+      const eventStmt = getDb().prepare(
+        `
+        INSERT INTO event_outbox (topic, event_type, payload, created_at)
+        VALUES (?, ?, ?, ?)
+      `,
+      );
+      for (const run of activeRuns) {
+        const updated = cancelStmt.run(
+          now,
+          `Cancelled by ${txInput.cancelledBy}`.slice(0, 500),
+          run.id,
+        );
+        if (updated.changes !== 1) continue;
+        cancelledRunIds.push(run.id);
+        if (run.status === 'running') {
           cancelledRunning = true;
-        }
-      }
-
-      if (cancelledRunIds.length > 0) {
-        getDb()
-          .prepare(
-            `
-          INSERT INTO event_outbox (topic, event_type, payload, created_at)
-          VALUES (?, ?, ?, ?)
-        `,
-          )
-          .run(
+          eventStmt.run(
             `talk:${txInput.talkId}`,
             'talk_response_cancelled',
             JSON.stringify({
               talkId: txInput.talkId,
-              runId: cancelledRunIds[0],
-              agentId: running?.target_agent_id || null,
+              runId: run.id,
+              agentId: run.target_agent_id || null,
             }),
             now,
           );
-
-        getDb()
-          .prepare(
-            `
-          INSERT INTO event_outbox (topic, event_type, payload, created_at)
-          VALUES (?, ?, ?, ?)
-        `,
-          )
-          .run(
-            `talk:${txInput.talkId}`,
-            'talk_run_cancelled',
-            JSON.stringify({
-              talkId: txInput.talkId,
-              cancelledBy: txInput.cancelledBy,
-              runIds: cancelledRunIds,
-            }),
-            now,
-          );
-
-        promoteNextQueuedRunTx(txInput.talkId, now);
-      } else {
-        const queued = getDb()
-          .prepare(
-            `
-            SELECT id
-            FROM talk_runs
-            WHERE talk_id = ? AND status = 'queued'
-            ORDER BY created_at ASC
-            LIMIT 1
-          `,
-          )
-          .get(txInput.talkId) as { id: string } | undefined;
-
-        if (queued) {
-          const updated = getDb()
-            .prepare(
-              `
-              UPDATE talk_runs
-              SET status = 'cancelled',
-                  ended_at = ?,
-                  cancel_reason = ?
-              WHERE id = ? AND status = 'queued'
-            `,
-            )
-            .run(
-              now,
-              `Cancelled by ${txInput.cancelledBy}`.slice(0, 500),
-              queued.id,
-            );
-          if (updated.changes === 1) {
-            cancelledRunIds.push(queued.id);
-            getDb()
-              .prepare(
-                `
-                INSERT INTO event_outbox (topic, event_type, payload, created_at)
-                VALUES (?, ?, ?, ?)
-              `,
-              )
-              .run(
-                `talk:${txInput.talkId}`,
-                'talk_run_cancelled',
-                JSON.stringify({
-                  talkId: txInput.talkId,
-                  cancelledBy: txInput.cancelledBy,
-                  runIds: cancelledRunIds,
-                }),
-                now,
-              );
-          }
         }
+      }
+
+      if (cancelledRunIds.length > 0) {
+        eventStmt.run(
+          `talk:${txInput.talkId}`,
+          'talk_run_cancelled',
+          JSON.stringify({
+            talkId: txInput.talkId,
+            cancelledBy: txInput.cancelledBy,
+            runIds: cancelledRunIds,
+          }),
+          now,
+        );
       }
 
       return {
@@ -1960,7 +1947,6 @@ export function failInterruptedRunsOnStartup(now?: string): {
       }>;
 
       const failedRunIds: string[] = [];
-      const affectedTalkIds = new Set<string>();
       for (const run of runningRuns) {
         const updated = getDb()
           .prepare(
@@ -1976,7 +1962,6 @@ export function failInterruptedRunsOnStartup(now?: string): {
         if (updated.changes !== 1) continue;
 
         failedRunIds.push(run.id);
-        affectedTalkIds.add(run.talk_id);
         getDb()
           .prepare(
             `
@@ -2000,13 +1985,7 @@ export function failInterruptedRunsOnStartup(now?: string): {
           );
       }
 
-      const promotedRunIds: string[] = [];
-      for (const talkId of affectedTalkIds) {
-        const promoted = promoteNextQueuedRunTx(talkId, currentNow);
-        if (promoted) promotedRunIds.push(promoted.id);
-      }
-
-      return { failedRunIds, promotedRunIds };
+      return { failedRunIds, promotedRunIds: [] };
     },
   );
 

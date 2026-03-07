@@ -21,6 +21,7 @@ import type {
   ProviderSecretPayload,
   RegisteredAgentRecord,
   TalkAgentRecord,
+  TalkAgentNicknameMode,
   TalkAgentSourceKind,
   TalkPersonaRole,
   TalkRouteRecord,
@@ -78,6 +79,7 @@ export interface TalkLlmSettingsSnapshot {
 export interface TalkAgentInput {
   id?: string;
   name: string;
+  nicknameMode?: TalkAgentNicknameMode;
   sourceKind: TalkAgentSourceKind;
   personaRole: TalkPersonaRole;
   routeId: string;
@@ -126,7 +128,8 @@ export interface RegisteredAgentSnapshot {
 
 export interface TalkAgentInstanceSnapshot {
   id: string;
-  name: string;
+  nickname: string;
+  nicknameMode: TalkAgentNicknameMode;
   sourceKind: TalkAgentSourceKind;
   role: TalkPersonaRole;
   isLead: boolean;
@@ -143,6 +146,8 @@ export interface TalkAgentInstanceInput {
   sourceKind: TalkAgentSourceKind;
   providerId?: string | null;
   modelId: string;
+  nickname?: string;
+  nicknameMode?: TalkAgentNicknameMode;
   role: TalkPersonaRole;
   isLead: boolean;
   displayOrder: number;
@@ -190,12 +195,56 @@ function resolveModelDisplayName(
   return getLlmProviderModel(providerId, modelId)?.display_name || modelId;
 }
 
-function buildTalkAgentName(input: {
-  sourceKind: TalkAgentSourceKind;
+function buildTalkAgentAutoNickname(input: {
   providerId: string | null;
+  modelId: string | null;
 }): string {
-  if (input.sourceKind === 'claude_default') return 'Claude';
-  return resolveProviderDisplayName(input.providerId) || 'Provider';
+  return (
+    resolveModelDisplayName(input.providerId, input.modelId) ||
+    resolveProviderDisplayName(input.providerId) ||
+    'Agent'
+  );
+}
+
+function buildUniqueTalkAgentNickname(
+  preferredNickname: string,
+  usedNicknames: Set<string>,
+): string {
+  const base = preferredNickname.trim() || 'Agent';
+  if (!usedNicknames.has(base)) {
+    usedNicknames.add(base);
+    return base;
+  }
+
+  let suffix = 2;
+  while (usedNicknames.has(`${base} ${suffix}`)) {
+    suffix += 1;
+  }
+  const next = `${base} ${suffix}`;
+  usedNicknames.add(next);
+  return next;
+}
+
+function resolveTalkAgentNickname(input: {
+  storedName: string;
+  nicknameMode: TalkAgentNicknameMode;
+  providerId: string | null;
+  modelId: string | null;
+  usedNicknames: Set<string>;
+}): string {
+  if (input.nicknameMode === 'custom' && input.storedName.trim()) {
+    const nickname = input.storedName.trim();
+    input.usedNicknames.add(nickname);
+    return nickname;
+  }
+
+  return buildUniqueTalkAgentNickname(
+    buildTalkAgentAutoNickname({
+      providerId: input.providerId,
+      modelId: input.modelId,
+    }),
+    input.usedNicknames,
+  );
 }
 
 function upsertTalkAgentRoute(input: {
@@ -229,9 +278,9 @@ function upsertTalkAgentRoute(input: {
 
   upsertTalkRoute({
     id: routeId,
-    name: `${buildTalkAgentName({
-      sourceKind: input.sourceKind,
+    name: `${buildTalkAgentAutoNickname({
       providerId,
+      modelId: input.modelId,
     })} Route`,
     enabled: true,
     steps: [
@@ -1575,6 +1624,7 @@ export function replaceTalkAgents(
     id: agent.id || `agent_${randomUUID()}`,
     talkId,
     name: agent.name.trim(),
+    nicknameMode: agent.nicknameMode || 'auto',
     sourceKind: agent.sourceKind,
     personaRole: agent.personaRole,
     routeId: agent.routeId,
@@ -1590,9 +1640,9 @@ export function replaceTalkAgents(
     const stmt = getDb().prepare(
       `
       INSERT INTO talk_agents (
-        id, talk_id, name, source_kind, persona_role, route_id, registered_agent_id,
+        id, talk_id, name, nickname_mode, source_kind, persona_role, route_id, registered_agent_id,
         provider_id, model_id, is_primary, sort_order, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `,
     );
     for (const agent of normalized) {
@@ -1600,6 +1650,7 @@ export function replaceTalkAgents(
         agent.id,
         talkId,
         agent.name,
+        agent.nicknameMode,
         agent.sourceKind,
         agent.personaRole,
         agent.routeId,
@@ -1624,6 +1675,10 @@ export function resetTalkAgentsToDefault(
 ): TalkAgentRecord[] {
   const agentId = `agent_${randomUUID()}`;
   const modelId = getDefaultClaudeModelId();
+  const nickname = buildTalkAgentAutoNickname({
+    providerId: 'provider.anthropic',
+    modelId,
+  });
   const routeId = upsertTalkAgentRoute({
     agentId,
     sourceKind: 'claude_default',
@@ -1637,7 +1692,8 @@ export function resetTalkAgentsToDefault(
     [
       {
         id: agentId,
-        name: 'Claude',
+        name: nickname,
+        nicknameMode: 'auto',
         sourceKind: 'claude_default',
         personaRole: 'assistant',
         routeId,
@@ -1715,6 +1771,7 @@ export function listTalkAgentInstances(
   talkId: string,
 ): TalkAgentInstanceSnapshot[] {
   const existing = ensureTalkHasDefaultAgent(talkId);
+  const usedNicknames = new Set<string>();
   return existing.map((agent) => {
     const { sourceKind, providerId, modelId } =
       resolvePersistedTalkAgentIdentity(agent);
@@ -1722,10 +1779,14 @@ export function listTalkAgentInstances(
     const modelDisplayName = resolveModelDisplayName(providerId, modelId);
     return {
       id: agent.id,
-      name: buildTalkAgentName({
-        sourceKind,
+      nickname: resolveTalkAgentNickname({
+        storedName: agent.name,
+        nicknameMode: agent.nickname_mode || 'auto',
         providerId,
+        modelId,
+        usedNicknames,
       }),
+      nicknameMode: agent.nickname_mode || 'auto',
       sourceKind,
       role: agent.persona_role,
       isLead: agent.is_primary === 1,
@@ -1747,6 +1808,7 @@ export function replaceTalkAgentInstances(
   const existingById = new Map(
     listTalkAgents(talkId).map((agent) => [agent.id, agent]),
   );
+  const usedNicknames = new Set<string>();
   const normalized: TalkAgentInput[] = agents.map((agent, index) => {
     const existing = agent.id ? existingById.get(agent.id) : undefined;
     const id = agent.id || `agent_${randomUUID()}`;
@@ -1769,13 +1831,25 @@ export function replaceTalkAgentInstances(
       modelId: agent.modelId.trim(),
       updatedAt: now,
     });
+    const nicknameMode: TalkAgentNicknameMode =
+      agent.nicknameMode === 'custom' && agent.nickname?.trim()
+        ? 'custom'
+        : 'auto';
+    const nickname =
+      nicknameMode === 'custom'
+        ? buildUniqueTalkAgentNickname(agent.nickname!.trim(), usedNicknames)
+        : buildUniqueTalkAgentNickname(
+            buildTalkAgentAutoNickname({
+              providerId,
+              modelId: agent.modelId.trim(),
+            }),
+            usedNicknames,
+          );
 
     return {
       id,
-      name: buildTalkAgentName({
-        sourceKind,
-        providerId,
-      }),
+      name: nickname,
+      nicknameMode,
       sourceKind,
       personaRole: agent.role,
       routeId,

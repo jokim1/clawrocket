@@ -71,6 +71,7 @@ import {
   getTalkRoute,
   listTalkAgentsRoute,
   listTalkMessagesRoute,
+  listTalkRunsRoute,
   listTalksRoute,
   updateTalkAgentsRoute,
   updateTalkPolicyRoute,
@@ -1616,7 +1617,11 @@ function buildApp(opts: WebServerOptions): Hono {
       );
     }
 
-    const result = listTalkAgentsRoute({ talkId, auth });
+    const result = listTalkAgentsRoute({
+      talkId,
+      auth,
+      executorSettings: opts.executorSettings,
+    });
     return new Response(JSON.stringify(result.body), {
       status: result.statusCode,
       headers: { 'content-type': 'application/json; charset=utf-8' },
@@ -1716,6 +1721,7 @@ function buildApp(opts: WebServerOptions): Hono {
       talkId,
       auth,
       agents: payload.data.agents,
+      executorSettings: opts.executorSettings,
     });
     const serialized = JSON.stringify(result.body);
     saveIdempotencyResult({
@@ -1729,6 +1735,37 @@ function buildApp(opts: WebServerOptions): Hono {
     });
 
     return new Response(serialized, {
+      status: result.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
+  });
+
+  app.get('/api/v1/talks/:talkId/runs', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+
+    const rateResult = checkRateLimit({ userId: auth.userId, bucket: 'read' });
+    if (!rateResult.allowed) {
+      return rateLimitedResponse(c, rateResult);
+    }
+
+    const encodedTalkId = c.req.param('talkId');
+    const talkId = safeDecodePathSegment(encodedTalkId);
+    if (!talkId) {
+      return c.json(
+        {
+          ok: false,
+          error: {
+            code: 'invalid_talk_id',
+            message: 'Talk ID path segment is not valid URL encoding',
+          },
+        },
+        400,
+      );
+    }
+
+    const result = listTalkRunsRoute({ talkId, auth });
+    return new Response(JSON.stringify(result.body), {
       status: result.statusCode,
       headers: { 'content-type': 'application/json; charset=utf-8' },
     });
@@ -1959,7 +1996,7 @@ function buildApp(opts: WebServerOptions): Hono {
 
     const payload = parseJsonPayload<{
       content?: string;
-      targetAgentId?: string | null;
+      targetAgentIds?: unknown;
     }>(bodyText);
     if (!payload.ok) {
       return c.json(
@@ -1978,10 +2015,11 @@ function buildApp(opts: WebServerOptions): Hono {
       talkId,
       auth,
       content: payload.data.content || '',
-      targetAgentId:
-        typeof payload.data.targetAgentId === 'string'
-          ? payload.data.targetAgentId
-          : null,
+      targetAgentIds: Array.isArray(payload.data.targetAgentIds)
+        ? payload.data.targetAgentIds.filter(
+            (entry): entry is string => typeof entry === 'string',
+          )
+        : null,
       idempotencyKey,
     });
     if (result.statusCode === 202 && result.body.ok) {

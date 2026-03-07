@@ -9,9 +9,11 @@ import {
   getPrimaryTalkAgent,
   getTalkForUser,
   getTalkRouteById,
+  listAdditionalProviderCredentialCards,
   listTalkAgentInstances,
   listTalkAgents,
   listTalkMessages,
+  listTalkRunsForTalk,
   listTalksForUser,
   normalizeTalkListPage,
   replaceTalkAgentInstances,
@@ -28,6 +30,7 @@ import {
   parsePolicyAgentsForExecution,
   parsePolicyAgentsForUiBadges,
 } from '../../talks/policy.js';
+import type { ExecutorSettingsService } from '../../talks/executor-settings.js';
 import { canEditTalk } from '../middleware/acl.js';
 import { AuthContext, ApiEnvelope } from '../types.js';
 
@@ -51,21 +54,36 @@ interface TalkMessageApiRecord {
   createdAt: string;
   runId: string | null;
   agentId?: string | null;
-  agentName?: string | null;
+  agentNickname?: string | null;
 }
 
 export interface TalkAgentApiRecord {
   id: string;
-  name: string;
+  nickname: string;
+  nicknameMode: 'auto' | 'custom';
   sourceKind: 'claude_default' | 'provider';
   role: TalkPersonaRole;
-  isLead: boolean;
+  isPrimary: boolean;
   displayOrder: number;
-  status: 'active' | 'archived';
+  health: 'ready' | 'invalid' | 'unknown';
   providerId: string | null;
-  providerName: string | null;
   modelId: string | null;
   modelDisplayName: string | null;
+}
+
+export interface TalkRunApiRecord {
+  id: string;
+  status: 'queued' | 'running' | 'cancelled' | 'completed' | 'failed';
+  createdAt: string;
+  startedAt: string | null;
+  completedAt: string | null;
+  triggerMessageId: string | null;
+  targetAgentId: string | null;
+  targetAgentNickname: string | null;
+  errorCode: string | null;
+  errorMessage: string | null;
+  executorAlias: string | null;
+  executorModel: string | null;
 }
 
 const DEFAULT_TALK_AGENTS = ['Claude'];
@@ -95,7 +113,7 @@ function toTalkApiRecord(talk: TalkWithAccessRecord): TalkApiRecord {
     title: talk.topic_title,
     agents:
       agents.length > 0
-        ? agents.slice(0, MAX_TALK_AGENT_BADGES).map((agent) => agent.name)
+        ? agents.slice(0, MAX_TALK_AGENT_BADGES).map((agent) => agent.nickname)
         : parseFallbackAgentBadges(talk.llm_policy),
     status: talk.status,
     version: talk.version,
@@ -105,29 +123,101 @@ function toTalkApiRecord(talk: TalkWithAccessRecord): TalkApiRecord {
   };
 }
 
-function toTalkAgentApiRecord(agent: {
+function mapVerificationToHealth(
+  verificationStatus:
+    | 'missing'
+    | 'not_verified'
+    | 'verifying'
+    | 'verified'
+    | 'invalid'
+    | 'unavailable'
+    | null
+    | undefined,
+): 'ready' | 'invalid' | 'unknown' {
+  if (verificationStatus === 'verified') return 'ready';
+  if (verificationStatus === 'invalid' || verificationStatus === 'unavailable') {
+    return 'invalid';
+  }
+  return 'unknown';
+}
+
+function buildTalkAgentHealthLookup(
+  executorSettings?: ExecutorSettingsService,
+): {
+  claudeDefaultHealth: 'ready' | 'invalid' | 'unknown';
+  providerHealthById: Map<string, 'ready' | 'invalid' | 'unknown'>;
+} {
+  const providerHealthById = new Map<string, 'ready' | 'invalid' | 'unknown'>(
+    listAdditionalProviderCredentialCards().map((provider) => [
+      provider.id,
+      mapVerificationToHealth(provider.verificationStatus),
+    ]),
+  );
+  const claudeDefaultHealth = executorSettings
+    ? mapVerificationToHealth(executorSettings.getSettingsView().verificationStatus)
+    : 'unknown';
+  return { claudeDefaultHealth, providerHealthById };
+}
+
+function parseTalkRunError(
+  run: Pick<ReturnType<typeof listTalkRunsForTalk>[number], 'status' | 'cancel_reason'>,
+): { errorCode: string | null; errorMessage: string | null } {
+  const raw = run.cancel_reason?.trim() || null;
+  if (!raw) {
+    return { errorCode: null, errorMessage: null };
+  }
+
+  if (run.status === 'cancelled') {
+    return { errorCode: 'cancelled', errorMessage: raw };
+  }
+
+  const prefixed = /^([a-z0-9_]+):\s*(.+)$/i.exec(raw);
+  if (prefixed) {
+    return { errorCode: prefixed[1], errorMessage: prefixed[2] };
+  }
+
+  if (raw === 'interrupted_by_restart') {
+    return {
+      errorCode: 'interrupted_by_restart',
+      errorMessage: 'Run interrupted by process restart',
+    };
+  }
+
+  return { errorCode: raw, errorMessage: raw };
+}
+
+function toTalkAgentApiRecord(
+  agent: {
   id: string;
-  name: string;
+  nickname: string;
+  nicknameMode: 'auto' | 'custom';
   sourceKind: 'claude_default' | 'provider';
   role: TalkPersonaRole;
   isLead: boolean;
   displayOrder: number;
   status: 'active' | 'archived';
   providerId: string | null;
-  providerName: string | null;
   modelId: string | null;
   modelDisplayName: string | null;
-}): TalkAgentApiRecord {
+  },
+  healthLookup: {
+    claudeDefaultHealth: 'ready' | 'invalid' | 'unknown';
+    providerHealthById: Map<string, 'ready' | 'invalid' | 'unknown'>;
+  },
+): TalkAgentApiRecord {
   return {
     id: agent.id,
-    name: agent.name,
+    nickname: agent.nickname,
+    nicknameMode: agent.nicknameMode,
     sourceKind: agent.sourceKind,
     role: agent.role,
-    isLead: agent.isLead,
+    isPrimary: agent.isLead,
     displayOrder: agent.displayOrder,
-    status: agent.status,
+    health:
+      agent.sourceKind === 'claude_default'
+        ? healthLookup.claudeDefaultHealth
+        : healthLookup.providerHealthById.get(agent.providerId || '') || 'unknown',
     providerId: agent.providerId,
-    providerName: agent.providerName,
     modelId: agent.modelId,
     modelDisplayName: agent.modelDisplayName,
   };
@@ -137,15 +227,20 @@ function toTalkMessageApiRecord(
   message: TalkMessageRecord,
 ): TalkMessageApiRecord {
   let agentId: string | null | undefined;
-  let agentName: string | null | undefined;
+  let agentNickname: string | null | undefined;
   if (message.metadata_json) {
     try {
       const parsed = JSON.parse(message.metadata_json) as {
         agentId?: unknown;
+        agentNickname?: unknown;
         agentName?: unknown;
       };
       if (typeof parsed.agentId === 'string') agentId = parsed.agentId;
-      if (typeof parsed.agentName === 'string') agentName = parsed.agentName;
+      if (typeof parsed.agentNickname === 'string') {
+        agentNickname = parsed.agentNickname;
+      } else if (typeof parsed.agentName === 'string') {
+        agentNickname = parsed.agentName;
+      }
     } catch {
       // Ignore metadata parse failures for UI response shaping.
     }
@@ -159,7 +254,7 @@ function toTalkMessageApiRecord(
     createdAt: message.created_at,
     runId: message.run_id,
     agentId,
-    agentName,
+    agentNickname,
   };
 }
 
@@ -193,7 +288,7 @@ function validateAgentInputs(input: unknown): {
       typeof raw.id === 'string' && raw.id.trim()
         ? raw.id.trim()
         : `agent_${randomUUID()}`;
-    const isLead = raw.isLead === true || raw.isPrimary === true;
+    const isLead = raw.isPrimary === true || raw.isLead === true;
     const displayOrder =
       typeof raw.displayOrder === 'number'
         ? Math.max(0, Math.floor(raw.displayOrder))
@@ -212,6 +307,14 @@ function validateAgentInputs(input: unknown): {
       typeof raw.modelId === 'string' && raw.modelId.trim()
         ? raw.modelId.trim()
         : null;
+    const nickname =
+      typeof raw.nickname === 'string' && raw.nickname.trim()
+        ? raw.nickname.trim()
+        : undefined;
+    const nicknameMode =
+      raw.nicknameMode === 'custom' || raw.nicknameMode === 'auto'
+        ? raw.nicknameMode
+        : undefined;
 
     if (
       !role ||
@@ -245,6 +348,8 @@ function validateAgentInputs(input: unknown): {
       sourceKind,
       providerId,
       modelId,
+      nickname,
+      nicknameMode,
       role,
       isLead,
       displayOrder,
@@ -259,7 +364,10 @@ function validateAgentInputs(input: unknown): {
 }
 
 function listEffectiveTalkAgents(talkId: string): TalkAgentApiRecord[] {
-  return listTalkAgentInstances(talkId).map(toTalkAgentApiRecord);
+  const healthLookup = buildTalkAgentHealthLookup();
+  return listTalkAgentInstances(talkId).map((agent) =>
+    toTalkAgentApiRecord(agent, healthLookup),
+  );
 }
 
 export function listTalksRoute(input: {
@@ -384,6 +492,7 @@ export function getTalkRoute(input: { talkId: string; auth: AuthContext }): {
 export function listTalkAgentsRoute(input: {
   talkId: string;
   auth: AuthContext;
+  executorSettings?: ExecutorSettingsService;
 }): {
   statusCode: number;
   body: ApiEnvelope<{
@@ -411,7 +520,9 @@ export function listTalkAgentsRoute(input: {
       ok: true,
       data: {
         talkId: input.talkId,
-        agents: listEffectiveTalkAgents(input.talkId),
+        agents: listTalkAgentInstances(input.talkId).map((agent) =>
+          toTalkAgentApiRecord(agent, buildTalkAgentHealthLookup(input.executorSettings)),
+        ),
       },
     },
   };
@@ -421,6 +532,7 @@ export function updateTalkAgentsRoute(input: {
   talkId: string;
   auth: AuthContext;
   agents: unknown;
+  executorSettings?: ExecutorSettingsService;
 }): {
   statusCode: number;
   body: ApiEnvelope<{
@@ -470,7 +582,10 @@ export function updateTalkAgentsRoute(input: {
   }
 
   replaceTalkAgentInstances(input.talkId, normalized.agents);
-  const agents = listTalkAgentInstances(input.talkId).map(toTalkAgentApiRecord);
+  const healthLookup = buildTalkAgentHealthLookup(input.executorSettings);
+  const agents = listTalkAgentInstances(input.talkId).map((agent) =>
+    toTalkAgentApiRecord(agent, healthLookup),
+  );
   return {
     statusCode: 200,
     body: {
@@ -724,20 +839,27 @@ export function enqueueTalkChat(input: {
   talkId: string;
   auth: AuthContext;
   content: string;
-  targetAgentId?: string | null;
+  targetAgentIds?: string[] | null;
   idempotencyKey?: string | null;
 }): {
   statusCode: number;
   body: ApiEnvelope<{
     talkId: string;
     message: TalkMessageApiRecord;
-    run: {
+    runs: Array<{
       id: string;
       status: 'queued' | 'running' | 'cancelled' | 'completed' | 'failed';
       createdAt: string;
       startedAt: string | null;
+      completedAt: string | null;
+      triggerMessageId: string | null;
       targetAgentId: string | null;
-    };
+      targetAgentNickname: string | null;
+      errorCode: string | null;
+      errorMessage: string | null;
+      executorAlias: string | null;
+      executorModel: string | null;
+    }>;
   }>;
 } {
   const talk = getTalkForUser(input.talkId, input.auth.userId);
@@ -794,12 +916,20 @@ export function enqueueTalkChat(input: {
   }
 
   const agents = ensureTalkHasDefaultAgent(input.talkId);
-  const selectedAgent =
-    (input.targetAgentId
-      ? agents.find((agent) => agent.id === input.targetAgentId)
-      : undefined) || agents.find((agent) => agent.is_primary === 1);
+  const requestedTargetIds = Array.isArray(input.targetAgentIds)
+    ? [...new Set(input.targetAgentIds.map((id) => id.trim()).filter(Boolean))]
+    : [];
+  const selectedAgents =
+    requestedTargetIds.length > 0
+      ? requestedTargetIds
+          .map((targetId) => agents.find((agent) => agent.id === targetId))
+          .filter((agent): agent is NonNullable<typeof agent> => Boolean(agent))
+      : (() => {
+          const primary = agents.find((agent) => agent.is_primary === 1);
+          return primary ? [primary] : [];
+        })();
 
-  if (!selectedAgent) {
+  if (selectedAgents.length === 0) {
     return {
       statusCode: 400,
       body: {
@@ -813,16 +943,37 @@ export function enqueueTalkChat(input: {
   }
 
   const messageId = `msg_${randomUUID()}`;
-  const runId = `run_${randomUUID()}`;
-  const persisted = enqueueTalkTurnAtomic({
-    talkId: input.talkId,
-    userId: input.auth.userId,
-    content,
-    messageId,
-    runId,
-    targetAgentId: selectedAgent.id,
-    idempotencyKey: input.idempotencyKey,
-  });
+  const runIds = selectedAgents.map(() => `run_${randomUUID()}`);
+  let persisted: ReturnType<typeof enqueueTalkTurnAtomic>;
+  try {
+    persisted = enqueueTalkTurnAtomic({
+      talkId: input.talkId,
+      userId: input.auth.userId,
+      content,
+      messageId,
+      runIds,
+      targetAgentIds: selectedAgents.map((agent) => agent.id),
+      idempotencyKey: input.idempotencyKey,
+    });
+  } catch (error) {
+    if (error instanceof Error && error.message === 'talk already has an active round') {
+      return {
+        statusCode: 409,
+        body: {
+          ok: false,
+          error: {
+            code: 'talk_round_active',
+            message: 'Wait for the current round to finish or cancel it before sending another message',
+          },
+        },
+      };
+    }
+    throw error;
+  }
+
+  const agentNicknameById = new Map(
+    selectedAgents.map((agent) => [agent.id, agent.name]),
+  );
 
   return {
     statusCode: 202,
@@ -831,13 +982,77 @@ export function enqueueTalkChat(input: {
       data: {
         talkId: input.talkId,
         message: toTalkMessageApiRecord(persisted.message),
-        run: {
-          id: persisted.run.id,
-          status: persisted.run.status,
-          createdAt: persisted.run.created_at,
-          startedAt: persisted.run.started_at,
-          targetAgentId: persisted.run.target_agent_id || null,
+        runs: persisted.runs.map((run) => ({
+          id: run.id,
+          status: run.status,
+          createdAt: run.created_at,
+          startedAt: run.started_at,
+          completedAt: run.ended_at,
+          triggerMessageId: run.trigger_message_id,
+          targetAgentId: run.target_agent_id || null,
+          targetAgentNickname:
+            (run.target_agent_id && agentNicknameById.get(run.target_agent_id)) || null,
+          errorCode: null,
+          errorMessage: null,
+          executorAlias: run.executor_alias,
+          executorModel: run.executor_model,
+        })),
+      },
+    },
+  };
+}
+
+function toTalkRunApiRecord(
+  run: ReturnType<typeof listTalkRunsForTalk>[number],
+): TalkRunApiRecord {
+  const parsedError = parseTalkRunError(run);
+  return {
+    id: run.id,
+    status: run.status,
+    createdAt: run.created_at,
+    startedAt: run.started_at,
+    completedAt: run.ended_at,
+    triggerMessageId: run.trigger_message_id,
+    targetAgentId: run.target_agent_id || null,
+    targetAgentNickname: run.target_agent_nickname,
+    errorCode: parsedError.errorCode,
+    errorMessage: parsedError.errorMessage,
+    executorAlias: run.executor_alias,
+    executorModel: run.executor_model,
+  };
+}
+
+export function listTalkRunsRoute(input: {
+  talkId: string;
+  auth: AuthContext;
+}): {
+  statusCode: number;
+  body: ApiEnvelope<{
+    talkId: string;
+    runs: TalkRunApiRecord[];
+  }>;
+} {
+  const talk = getTalkForUser(input.talkId, input.auth.userId);
+  if (!talk) {
+    return {
+      statusCode: 404,
+      body: {
+        ok: false,
+        error: {
+          code: 'talk_not_found',
+          message: 'Talk not found',
         },
+      },
+    };
+  }
+
+  return {
+    statusCode: 200,
+    body: {
+      ok: true,
+      data: {
+        talkId: input.talkId,
+        runs: listTalkRunsForTalk(input.talkId, 50).map(toTalkRunApiRecord),
       },
     },
   };
