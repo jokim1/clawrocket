@@ -1298,7 +1298,8 @@ function buildApp(opts: WebServerOptions): Hono {
 
     const result = updateDefaultClaudeModelRoute({
       auth,
-      modelId: typeof payload.data.modelId === 'string' ? payload.data.modelId : '',
+      modelId:
+        typeof payload.data.modelId === 'string' ? payload.data.modelId : '',
     });
     return new Response(JSON.stringify(result.body), {
       status: result.statusCode,

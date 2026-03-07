@@ -643,10 +643,7 @@ export function updateTalkPolicyRoute(input: {
       currentAgents[index]?.provider_id ||
       primary.provider_id ||
       'provider.anthropic',
-    modelId:
-      currentAgents[index]?.model_id ||
-      primary.model_id ||
-      null,
+    modelId: currentAgents[index]?.model_id || primary.model_id || null,
     isPrimary: index === 0,
     sortOrder: index,
   }));

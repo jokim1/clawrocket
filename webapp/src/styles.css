@@ -448,6 +448,35 @@ a {
   grid-column: 1 / -1;
 }
 
+.talk-llm-radio-group {
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.talk-llm-radio-options {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.talk-llm-radio-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid #c8d3e9;
+  border-radius: 999px;
+  background: #fff;
+  color: #31415f;
+  font-size: 0.95rem;
+}
+
+.talk-llm-radio-option input {
+  margin: 0;
+}
+
 .talk-llm-grid input,
 .talk-llm-grid select {
   border: 1px solid #c8d3e9;
@@ -695,6 +724,24 @@ a {
   color: #1d4487;
   font-size: 0.75rem;
   padding: 0.1rem 0.55rem;
+}
+
+.talk-agent-chip-success {
+  border-color: #b9dfc7;
+  background: #edfdf2;
+  color: #1f6e3e;
+}
+
+.talk-agent-chip-warning {
+  border-color: #f0d4a6;
+  background: #fff8ec;
+  color: #85581a;
+}
+
+.talk-agent-chip-error {
+  border-color: #e8b5b5;
+  background: #fff3f3;
+  color: #8d1f1f;
 }
 
 .talk-list li a span {

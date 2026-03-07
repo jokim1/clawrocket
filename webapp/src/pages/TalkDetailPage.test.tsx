@@ -514,6 +514,18 @@ function buildAiAgentsData(): AiAgentsPageData {
     defaultClaudeModelId: 'claude-sonnet-4-5',
     claudeModelSuggestions: [
       {
+        modelId: 'claude-opus-4-6',
+        displayName: 'Claude Opus 4.6',
+        contextWindowTokens: 200000,
+        defaultMaxOutputTokens: 4096,
+      },
+      {
+        modelId: 'claude-sonnet-4-6',
+        displayName: 'Claude Sonnet 4.6',
+        contextWindowTokens: 200000,
+        defaultMaxOutputTokens: 4096,
+      },
+      {
         modelId: 'claude-sonnet-4-5',
         displayName: 'Claude Sonnet 4.5',
         contextWindowTokens: 200000,

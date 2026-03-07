@@ -266,8 +266,20 @@ const KNOWN_PROVIDER_CATALOG: Array<{
     baseUrl: 'https://api.anthropic.com',
     modelSuggestions: [
       {
+        modelId: 'claude-opus-4-6',
+        displayName: 'Claude Opus 4.6',
+        contextWindowTokens: 200000,
+        defaultMaxOutputTokens: 4096,
+      },
+      {
         modelId: 'claude-opus-4-1',
         displayName: 'Claude Opus 4.1',
+        contextWindowTokens: 200000,
+        defaultMaxOutputTokens: 4096,
+      },
+      {
+        modelId: 'claude-sonnet-4-6',
+        displayName: 'Claude Sonnet 4.6',
         contextWindowTokens: 200000,
         defaultMaxOutputTokens: 4096,
       },
@@ -359,12 +371,35 @@ const KNOWN_PROVIDER_CATALOG: Array<{
   },
   {
     id: 'provider.kimi',
-    name: 'Kimi',
+    name: 'Moonshot / Kimi',
     providerKind: 'kimi',
     apiFormat: 'openai_chat_completions',
     authScheme: 'bearer',
     baseUrl: 'https://api.moonshot.cn/v1',
-    modelSuggestions: [],
+    modelSuggestions: [
+      {
+        modelId: 'kimi-k2-0711-preview',
+        displayName: 'Kimi K2 Preview',
+        contextWindowTokens: 128000,
+        defaultMaxOutputTokens: 4096,
+      },
+    ],
+  },
+  {
+    id: 'provider.nvidia',
+    name: 'NVIDIA',
+    providerKind: 'nvidia',
+    apiFormat: 'openai_chat_completions',
+    authScheme: 'bearer',
+    baseUrl: 'https://integrate.api.nvidia.com/v1',
+    modelSuggestions: [
+      {
+        modelId: 'moonshotai/kimi-k2.5',
+        displayName: 'Kimi 2.5 (NVIDIA)',
+        contextWindowTokens: 262144,
+        defaultMaxOutputTokens: 16384,
+      },
+    ],
   },
   {
     id: 'provider.custom',
@@ -1636,7 +1671,8 @@ export function listTalkAgentInstances(
 ): TalkAgentInstanceSnapshot[] {
   const existing = ensureTalkHasDefaultAgent(talkId);
   return existing.map((agent) => {
-    const sourceKind = agent.source_kind as TalkAgentInstanceSnapshot['sourceKind'];
+    const sourceKind =
+      agent.source_kind as TalkAgentInstanceSnapshot['sourceKind'];
     const providerId =
       sourceKind === 'claude_default'
         ? 'provider.anthropic'

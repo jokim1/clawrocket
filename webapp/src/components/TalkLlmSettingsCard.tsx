@@ -67,6 +67,7 @@ const PROVIDER_KIND_OPTIONS: Array<TalkLlmProvider['providerKind']> = [
   'gemini',
   'deepseek',
   'kimi',
+  'nvidia',
   'custom',
 ];
 

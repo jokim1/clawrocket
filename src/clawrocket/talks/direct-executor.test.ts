@@ -46,6 +46,7 @@ function configureTalkRuntime(input: {
       | 'gemini'
       | 'deepseek'
       | 'kimi'
+      | 'nvidia'
       | 'custom';
     apiFormat: 'anthropic_messages' | 'openai_chat_completions';
     baseUrl: string;
