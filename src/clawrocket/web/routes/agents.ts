@@ -42,9 +42,7 @@ function buildAgentsSnapshot(): AiAgentsPageRecord {
   };
 }
 
-export function getAiAgentsRoute(input: {
-  auth: AuthContext;
-}): {
+export function getAiAgentsRoute(input: { auth: AuthContext }): {
   statusCode: number;
   body: ApiEnvelope<AiAgentsPageRecord>;
 } {
@@ -77,7 +75,8 @@ export function saveAiProviderCredentialRoute(input: {
           ok: false,
           error: {
             code: 'forbidden',
-            message: 'You do not have permission to manage provider credentials.',
+            message:
+              'You do not have permission to manage provider credentials.',
           },
         },
       };
@@ -157,7 +156,10 @@ export function createRegisteredAgentRoute(input: {
   setAsDefault?: boolean;
 }): {
   statusCode: number;
-  body: ApiEnvelope<{ agent: RegisteredAgentSnapshot; defaultRegisteredAgentId: string | null }>;
+  body: ApiEnvelope<{
+    agent: RegisteredAgentSnapshot;
+    defaultRegisteredAgentId: string | null;
+  }>;
 } {
   if (!canManageAgents(input.auth)) {
     return {
@@ -178,7 +180,10 @@ export function createRegisteredAgentRoute(input: {
       statusCode: 400,
       body: {
         ok: false,
-        error: { code: 'provider_not_found', message: 'Provider is not configured.' },
+        error: {
+          code: 'provider_not_found',
+          message: 'Provider is not configured.',
+        },
       },
     };
   }
@@ -189,7 +194,8 @@ export function createRegisteredAgentRoute(input: {
         ok: false,
         error: {
           code: 'provider_missing_credential',
-          message: 'Configure the provider credential before creating an agent.',
+          message:
+            'Configure the provider credential before creating an agent.',
         },
       },
     };
@@ -221,7 +227,10 @@ export function createRegisteredAgentRoute(input: {
         ok: false,
         error: {
           code: 'registered_agent_create_failed',
-          message: error instanceof Error ? error.message : 'Failed to create AI agent.',
+          message:
+            error instanceof Error
+              ? error.message
+              : 'Failed to create AI agent.',
         },
       },
     };
@@ -236,12 +245,21 @@ export function updateRegisteredAgentRoute(input: {
   setAsDefault?: boolean;
 }): {
   statusCode: number;
-  body: ApiEnvelope<{ agent: RegisteredAgentSnapshot; defaultRegisteredAgentId: string | null }>;
+  body: ApiEnvelope<{
+    agent: RegisteredAgentSnapshot;
+    defaultRegisteredAgentId: string | null;
+  }>;
 } {
   if (!canManageAgents(input.auth)) {
     return {
       statusCode: 403,
-      body: { ok: false, error: { code: 'forbidden', message: 'You do not have permission to update AI agents.' } },
+      body: {
+        ok: false,
+        error: {
+          code: 'forbidden',
+          message: 'You do not have permission to update AI agents.',
+        },
+      },
     };
   }
 
@@ -249,7 +267,10 @@ export function updateRegisteredAgentRoute(input: {
   if (!existing) {
     return {
       statusCode: 404,
-      body: { ok: false, error: { code: 'agent_not_found', message: 'AI agent not found.' } },
+      body: {
+        ok: false,
+        error: { code: 'agent_not_found', message: 'AI agent not found.' },
+      },
     };
   }
 
@@ -259,10 +280,16 @@ export function updateRegisteredAgentRoute(input: {
       agent = updateRegisteredAgentName(input.agentId, input.name, undefined);
     }
     if (typeof input.enabled === 'boolean') {
-      agent = setRegisteredAgentEnabled(input.agentId, input.enabled, undefined);
+      agent = setRegisteredAgentEnabled(
+        input.agentId,
+        input.enabled,
+        undefined,
+      );
     }
     if (!agent) {
-      agent = listRegisteredAgents().find((entry) => entry.id === input.agentId) || null;
+      agent =
+        listRegisteredAgents().find((entry) => entry.id === input.agentId) ||
+        null;
     }
     if (!agent) {
       throw new Error('AI agent not found after update.');
@@ -287,7 +314,10 @@ export function updateRegisteredAgentRoute(input: {
         ok: false,
         error: {
           code: 'registered_agent_update_failed',
-          message: error instanceof Error ? error.message : 'Failed to update AI agent.',
+          message:
+            error instanceof Error
+              ? error.message
+              : 'Failed to update AI agent.',
         },
       },
     };
@@ -308,7 +338,13 @@ export function duplicateRegisteredAgentRoute(input: {
   if (!canManageAgents(input.auth)) {
     return {
       statusCode: 403,
-      body: { ok: false, error: { code: 'forbidden', message: 'You do not have permission to duplicate AI agents.' } },
+      body: {
+        ok: false,
+        error: {
+          code: 'forbidden',
+          message: 'You do not have permission to duplicate AI agents.',
+        },
+      },
     };
   }
 
@@ -340,7 +376,10 @@ export function duplicateRegisteredAgentRoute(input: {
         ok: false,
         error: {
           code: 'registered_agent_duplicate_failed',
-          message: error instanceof Error ? error.message : 'Failed to duplicate AI agent.',
+          message:
+            error instanceof Error
+              ? error.message
+              : 'Failed to duplicate AI agent.',
         },
       },
     };
@@ -354,7 +393,13 @@ export function deleteRegisteredAgentRoute(input: {
   if (!canManageAgents(input.auth)) {
     return {
       statusCode: 403,
-      body: { ok: false, error: { code: 'forbidden', message: 'You do not have permission to delete AI agents.' } },
+      body: {
+        ok: false,
+        error: {
+          code: 'forbidden',
+          message: 'You do not have permission to delete AI agents.',
+        },
+      },
     };
   }
   try {
@@ -370,7 +415,10 @@ export function deleteRegisteredAgentRoute(input: {
         ok: false,
         error: {
           code: 'registered_agent_delete_failed',
-          message: error instanceof Error ? error.message : 'Failed to delete AI agent.',
+          message:
+            error instanceof Error
+              ? error.message
+              : 'Failed to delete AI agent.',
         },
       },
     };

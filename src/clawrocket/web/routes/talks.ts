@@ -187,8 +187,8 @@ function validateAgentInputs(input: unknown): {
       typeof raw.role === 'string'
         ? (raw.role as TalkPersonaRole)
         : typeof raw.personaRole === 'string'
-        ? (raw.personaRole as TalkPersonaRole)
-        : null;
+          ? (raw.personaRole as TalkPersonaRole)
+          : null;
     const id =
       typeof raw.id === 'string' && raw.id.trim()
         ? raw.id.trim()
@@ -199,7 +199,7 @@ function validateAgentInputs(input: unknown): {
         ? Math.max(0, Math.floor(raw.displayOrder))
         : typeof raw.sortOrder === 'number'
           ? Math.max(0, Math.floor(raw.sortOrder))
-        : index;
+          : index;
     const registeredAgentId =
       typeof raw.registeredAgentId === 'string' && raw.registeredAgentId.trim()
         ? raw.registeredAgentId.trim()

@@ -347,8 +347,7 @@ function isTalkUsableProvider(provider: LlmProviderRecord): boolean {
 
 function maskCredentialSuffix(secret: ProviderSecretPayload): string {
   const value =
-    secret.organizationId?.trim() ||
-    secret.apiKey.replace(/\s+/g, '').trim();
+    secret.organizationId?.trim() || secret.apiKey.replace(/\s+/g, '').trim();
   if (!value) return 'Configured';
   const suffix = value.slice(-4);
   return `••••${suffix || 'set'}`;
@@ -566,7 +565,9 @@ export function clearProviderVerification(providerId: string): void {
 }
 
 export function listKnownProviderCredentialCards(): AgentProviderCardSnapshot[] {
-  const providersById = new Map(listLlmProviders().map((provider) => [provider.id, provider]));
+  const providersById = new Map(
+    listLlmProviders().map((provider) => [provider.id, provider]),
+  );
   const modelsByProvider = new Map<string, LlmProviderModelRecord[]>();
   for (const model of listLlmProviderModels()) {
     const current = modelsByProvider.get(model.provider_id) || [];
@@ -582,7 +583,9 @@ export function listKnownProviderCredentialCards(): AgentProviderCardSnapshot[] 
     const verification = provider
       ? getProviderVerificationByProviderId(provider.id)
       : undefined;
-    const storedModels = provider ? modelsByProvider.get(provider.id) || [] : [];
+    const storedModels = provider
+      ? modelsByProvider.get(provider.id) || []
+      : [];
     const suggestionMap = new Map<string, ProviderModelSuggestion>();
     for (const suggestion of template.modelSuggestions) {
       suggestionMap.set(suggestion.modelId, suggestion);
@@ -636,7 +639,8 @@ export function upsertKnownProviderCredential(input: {
   const baseUrl = normalizeProviderBaseUrl(
     input.baseUrl ?? existing?.base_url ?? template.baseUrl,
   );
-  const authScheme = input.authScheme || existing?.auth_scheme || template.authScheme;
+  const authScheme =
+    input.authScheme || existing?.auth_scheme || template.authScheme;
 
   upsertLlmProvider({
     id: template.id,
@@ -1035,7 +1039,9 @@ function listRegisteredAgentUsageCounts(): Map<string, number> {
   );
 }
 
-function findNextEnabledRegisteredAgentId(excludeAgentId?: string): string | null {
+function findNextEnabledRegisteredAgentId(
+  excludeAgentId?: string,
+): string | null {
   const row = getDb()
     .prepare(
       `
@@ -1054,7 +1060,9 @@ function findNextEnabledRegisteredAgentId(excludeAgentId?: string): string | nul
 }
 
 export function listRegisteredAgents(): RegisteredAgentSnapshot[] {
-  const providersById = new Map(listLlmProviders().map((provider) => [provider.id, provider]));
+  const providersById = new Map(
+    listLlmProviders().map((provider) => [provider.id, provider]),
+  );
   const modelsByKey = new Map(
     listLlmProviderModels().map((model) => [
       `${model.provider_id}:${model.model_id}`,
@@ -1289,7 +1297,9 @@ export function deleteRegisteredAgent(agentId: string): void {
       setDefaultRegisteredAgentId(nextDefault);
     }
     getDb().prepare('DELETE FROM registered_agents WHERE id = ?').run(agentId);
-    getDb().prepare('DELETE FROM talk_routes WHERE id = ?').run(record.route_id);
+    getDb()
+      .prepare('DELETE FROM talk_routes WHERE id = ?')
+      .run(record.route_id);
   });
   tx();
 }
@@ -1479,13 +1489,17 @@ export function replaceTalkAgentInstances(
   agents: TalkAgentInstanceInput[],
   now?: string,
 ): TalkAgentRecord[] {
-  const existingById = new Map(listTalkAgents(talkId).map((agent) => [agent.id, agent]));
+  const existingById = new Map(
+    listTalkAgents(talkId).map((agent) => [agent.id, agent]),
+  );
   const normalized: TalkAgentInput[] = agents.map((agent, index) => {
     const existing = agent.id ? existingById.get(agent.id) : undefined;
     if (agent.registeredAgentId) {
       const registeredAgent = getRegisteredAgentById(agent.registeredAgentId);
       if (!registeredAgent) {
-        throw new Error(`registered agent not found: ${agent.registeredAgentId}`);
+        throw new Error(
+          `registered agent not found: ${agent.registeredAgentId}`,
+        );
       }
       return {
         id: agent.id,

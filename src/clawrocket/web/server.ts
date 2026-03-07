@@ -1297,7 +1297,10 @@ function buildApp(opts: WebServerOptions): Hono {
     }
     if (!payload.data || typeof payload.data !== 'object') {
       return c.json(
-        { ok: false, error: { code: 'invalid_json', message: 'JSON object expected.' } },
+        {
+          ok: false,
+          error: { code: 'invalid_json', message: 'JSON object expected.' },
+        },
         400,
       );
     }
@@ -1315,7 +1318,8 @@ function buildApp(opts: WebServerOptions): Hono {
           ? payload.data.organizationId
           : undefined,
       baseUrl:
-        typeof payload.data.baseUrl === 'string' || payload.data.baseUrl === null
+        typeof payload.data.baseUrl === 'string' ||
+        payload.data.baseUrl === null
           ? payload.data.baseUrl
           : undefined,
       authScheme:
@@ -1408,7 +1412,10 @@ function buildApp(opts: WebServerOptions): Hono {
     }
     if (!payload.data || typeof payload.data !== 'object') {
       return c.json(
-        { ok: false, error: { code: 'invalid_json', message: 'JSON object expected.' } },
+        {
+          ok: false,
+          error: { code: 'invalid_json', message: 'JSON object expected.' },
+        },
         400,
       );
     }
@@ -1466,7 +1473,10 @@ function buildApp(opts: WebServerOptions): Hono {
     }
     if (!payload.data || typeof payload.data !== 'object') {
       return c.json(
-        { ok: false, error: { code: 'invalid_json', message: 'JSON object expected.' } },
+        {
+          ok: false,
+          error: { code: 'invalid_json', message: 'JSON object expected.' },
+        },
         400,
       );
     }
@@ -1474,7 +1484,9 @@ function buildApp(opts: WebServerOptions): Hono {
       auth,
       agentId,
       name:
-        typeof payload.data.name === 'string' ? payload.data.name.trim() : undefined,
+        typeof payload.data.name === 'string'
+          ? payload.data.name.trim()
+          : undefined,
       enabled:
         typeof payload.data.enabled === 'boolean'
           ? payload.data.enabled
@@ -1525,7 +1537,10 @@ function buildApp(opts: WebServerOptions): Hono {
     }
     if (!payload.data || typeof payload.data !== 'object') {
       return c.json(
-        { ok: false, error: { code: 'invalid_json', message: 'JSON object expected.' } },
+        {
+          ok: false,
+          error: { code: 'invalid_json', message: 'JSON object expected.' },
+        },
         400,
       );
     }

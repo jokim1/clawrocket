@@ -1,6 +1,4 @@
-import {
-  decryptProviderSecret,
-} from '../llm/provider-secret-store.js';
+import { decryptProviderSecret } from '../llm/provider-secret-store.js';
 import {
   getLlmProviderById,
   getProviderSecretByProviderId,
@@ -82,7 +80,10 @@ export class ProviderCredentialsVerifier {
 
     const secret = decryptProviderSecret(secretRecord.ciphertext);
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort('provider_verify_timeout'), VERIFY_TIMEOUT_MS);
+    const timer = setTimeout(
+      () => controller.abort('provider_verify_timeout'),
+      VERIFY_TIMEOUT_MS,
+    );
 
     try {
       const response = await this.fetchImpl(verificationEndpoint(provider), {
