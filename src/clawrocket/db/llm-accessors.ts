@@ -1,7 +1,10 @@
 import { randomUUID } from 'crypto';
 
 import { getDb } from '../../db.js';
-import { encryptProviderSecret } from '../llm/provider-secret-store.js';
+import {
+  decryptProviderSecret,
+  encryptProviderSecret,
+} from '../llm/provider-secret-store.js';
 import type {
   LlmApiFormat,
   LlmAttemptRecord,
@@ -13,7 +16,10 @@ import type {
   LlmProviderModelRecord,
   LlmProviderRecord,
   LlmProviderSecretRecord,
+  LlmProviderVerificationRecord,
+  LlmProviderVerificationStatus,
   ProviderSecretPayload,
+  RegisteredAgentRecord,
   TalkAgentRecord,
   TalkPersonaRole,
   TalkRouteRecord,
@@ -22,6 +28,7 @@ import type {
 } from '../llm/types.js';
 
 const TALK_DEFAULT_ROUTE_KEY = 'talkLlm.defaultRouteId';
+const DEFAULT_REGISTERED_AGENT_KEY = 'agents.defaultRegisteredAgentId';
 const BUILTIN_MOCK_PROVIDER_ID = 'builtin.mock';
 const BUILTIN_MOCK_ROUTE_ID = 'route.default.mock';
 
@@ -71,8 +78,67 @@ export interface TalkAgentInput {
   name: string;
   personaRole: TalkPersonaRole;
   routeId: string;
+  registeredAgentId?: string | null;
   isPrimary: boolean;
   sortOrder: number;
+}
+
+export interface ProviderModelSuggestion {
+  modelId: string;
+  displayName: string;
+  contextWindowTokens: number;
+  defaultMaxOutputTokens: number;
+}
+
+export interface AgentProviderCardSnapshot {
+  id: string;
+  name: string;
+  providerKind: LlmProviderKind;
+  apiFormat: LlmApiFormat;
+  baseUrl: string;
+  authScheme: LlmAuthScheme;
+  enabled: boolean;
+  hasCredential: boolean;
+  credentialHint: string | null;
+  verificationStatus: LlmProviderVerificationStatus;
+  lastVerifiedAt: string | null;
+  lastVerificationError: string | null;
+  modelSuggestions: ProviderModelSuggestion[];
+}
+
+export interface RegisteredAgentSnapshot {
+  id: string;
+  name: string;
+  providerId: string;
+  providerName: string;
+  providerKind: LlmProviderKind;
+  modelId: string;
+  modelDisplayName: string;
+  routeId: string;
+  enabled: boolean;
+  usageCount: number;
+}
+
+export interface TalkAgentInstanceSnapshot {
+  id: string;
+  registeredAgentId: string | null;
+  name: string;
+  role: TalkPersonaRole;
+  isLead: boolean;
+  displayOrder: number;
+  status: 'active' | 'archived' | 'legacy';
+  providerId: string | null;
+  providerName: string | null;
+  modelId: string | null;
+  modelDisplayName: string | null;
+}
+
+export interface TalkAgentInstanceInput {
+  id?: string;
+  registeredAgentId?: string | null;
+  role: TalkPersonaRole;
+  isLead: boolean;
+  displayOrder: number;
 }
 
 export interface ResolvedTalkRouteStep {
@@ -88,6 +154,135 @@ export interface ResolvedTalkAgent {
   route: TalkRouteRecord;
   steps: ResolvedTalkRouteStep[];
 }
+
+const KNOWN_PROVIDER_CATALOG: Array<{
+  id: string;
+  name: string;
+  providerKind: LlmProviderKind;
+  apiFormat: LlmApiFormat;
+  authScheme: LlmAuthScheme;
+  baseUrl: string;
+  modelSuggestions: ProviderModelSuggestion[];
+}> = [
+  {
+    id: 'provider.anthropic',
+    name: 'Anthropic',
+    providerKind: 'anthropic',
+    apiFormat: 'anthropic_messages',
+    authScheme: 'x_api_key',
+    baseUrl: 'https://api.anthropic.com',
+    modelSuggestions: [
+      {
+        modelId: 'claude-opus-4-1',
+        displayName: 'Claude Opus 4.1',
+        contextWindowTokens: 200000,
+        defaultMaxOutputTokens: 4096,
+      },
+      {
+        modelId: 'claude-sonnet-4-5',
+        displayName: 'Claude Sonnet 4.5',
+        contextWindowTokens: 200000,
+        defaultMaxOutputTokens: 4096,
+      },
+      {
+        modelId: 'claude-haiku-4-5',
+        displayName: 'Claude Haiku 4.5',
+        contextWindowTokens: 200000,
+        defaultMaxOutputTokens: 4096,
+      },
+    ],
+  },
+  {
+    id: 'provider.openai',
+    name: 'OpenAI',
+    providerKind: 'openai',
+    apiFormat: 'openai_chat_completions',
+    authScheme: 'bearer',
+    baseUrl: 'https://api.openai.com/v1',
+    modelSuggestions: [
+      {
+        modelId: 'gpt-5-mini',
+        displayName: 'GPT-5 Mini',
+        contextWindowTokens: 128000,
+        defaultMaxOutputTokens: 4096,
+      },
+      {
+        modelId: 'gpt-4.1',
+        displayName: 'GPT-4.1',
+        contextWindowTokens: 128000,
+        defaultMaxOutputTokens: 4096,
+      },
+      {
+        modelId: 'gpt-4o-mini',
+        displayName: 'GPT-4o Mini',
+        contextWindowTokens: 128000,
+        defaultMaxOutputTokens: 4096,
+      },
+    ],
+  },
+  {
+    id: 'provider.gemini',
+    name: 'Google / Gemini',
+    providerKind: 'gemini',
+    apiFormat: 'openai_chat_completions',
+    authScheme: 'bearer',
+    baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
+    modelSuggestions: [
+      {
+        modelId: 'gemini-2.5-pro',
+        displayName: 'Gemini 2.5 Pro',
+        contextWindowTokens: 1048576,
+        defaultMaxOutputTokens: 4096,
+      },
+      {
+        modelId: 'gemini-2.5-flash',
+        displayName: 'Gemini 2.5 Flash',
+        contextWindowTokens: 1048576,
+        defaultMaxOutputTokens: 4096,
+      },
+    ],
+  },
+  {
+    id: 'provider.deepseek',
+    name: 'DeepSeek',
+    providerKind: 'deepseek',
+    apiFormat: 'openai_chat_completions',
+    authScheme: 'bearer',
+    baseUrl: 'https://api.deepseek.com',
+    modelSuggestions: [
+      {
+        modelId: 'deepseek-chat',
+        displayName: 'DeepSeek Chat',
+        contextWindowTokens: 128000,
+        defaultMaxOutputTokens: 4096,
+      },
+      {
+        modelId: 'deepseek-reasoner',
+        displayName: 'DeepSeek Reasoner',
+        contextWindowTokens: 128000,
+        defaultMaxOutputTokens: 4096,
+      },
+    ],
+  },
+  {
+    id: 'provider.kimi',
+    name: 'Kimi',
+    providerKind: 'kimi',
+    apiFormat: 'openai_chat_completions',
+    authScheme: 'bearer',
+    baseUrl: 'https://api.moonshot.cn/v1',
+    modelSuggestions: [],
+  },
+  {
+    id: 'provider.custom',
+    name: 'Custom',
+    providerKind: 'custom',
+    apiFormat: 'openai_chat_completions',
+    authScheme: 'bearer',
+    baseUrl: '',
+    modelSuggestions: [],
+  },
+];
 
 function asBoolean(value: number): boolean {
   return value === 1;
@@ -148,6 +343,42 @@ function isTalkUsableProvider(provider: LlmProviderRecord): boolean {
     (provider.api_format === 'anthropic_messages' ||
       provider.api_format === 'openai_chat_completions')
   );
+}
+
+function maskCredentialSuffix(secret: ProviderSecretPayload): string {
+  const value =
+    secret.organizationId?.trim() ||
+    secret.apiKey.replace(/\s+/g, '').trim();
+  if (!value) return 'Configured';
+  const suffix = value.slice(-4);
+  return `••••${suffix || 'set'}`;
+}
+
+function normalizeProviderBaseUrl(input: string): string {
+  return input.trim().replace(/\/+$/, '');
+}
+
+function getKnownProviderTemplate(
+  providerId: string,
+): (typeof KNOWN_PROVIDER_CATALOG)[number] | undefined {
+  return KNOWN_PROVIDER_CATALOG.find((provider) => provider.id === providerId);
+}
+
+function getFallbackModelMetadata(
+  providerId: string,
+  modelId: string,
+  displayName?: string,
+): ProviderModelSuggestion {
+  const suggested =
+    getKnownProviderTemplate(providerId)?.modelSuggestions.find(
+      (model) => model.modelId === modelId,
+    ) || null;
+  return {
+    modelId,
+    displayName: displayName?.trim() || suggested?.displayName || modelId,
+    contextWindowTokens: suggested?.contextWindowTokens || 128000,
+    defaultMaxOutputTokens: suggested?.defaultMaxOutputTokens || 4096,
+  };
 }
 
 export function upsertLlmProvider(input: {
@@ -277,6 +508,181 @@ export function deleteProviderSecret(providerId: string): void {
   getDb()
     .prepare('DELETE FROM llm_provider_secrets WHERE provider_id = ?')
     .run(providerId);
+}
+
+export function getProviderVerificationByProviderId(
+  providerId: string,
+): LlmProviderVerificationRecord | undefined {
+  return getDb()
+    .prepare(
+      `
+      SELECT *
+      FROM llm_provider_verifications
+      WHERE provider_id = ?
+      LIMIT 1
+    `,
+    )
+    .get(providerId) as LlmProviderVerificationRecord | undefined;
+}
+
+export function upsertProviderVerification(input: {
+  providerId: string;
+  status: LlmProviderVerificationStatus;
+  lastVerifiedAt?: string | null;
+  lastError?: string | null;
+  updatedAt?: string;
+}): void {
+  const updatedAt = normalizeTimestamp(input.updatedAt);
+  getDb()
+    .prepare(
+      `
+      INSERT INTO llm_provider_verifications (
+        provider_id,
+        status,
+        last_verified_at,
+        last_error,
+        updated_at
+      ) VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(provider_id) DO UPDATE SET
+        status = excluded.status,
+        last_verified_at = excluded.last_verified_at,
+        last_error = excluded.last_error,
+        updated_at = excluded.updated_at
+    `,
+    )
+    .run(
+      input.providerId,
+      input.status,
+      input.lastVerifiedAt ?? null,
+      input.lastError ?? null,
+      updatedAt,
+    );
+}
+
+export function clearProviderVerification(providerId: string): void {
+  getDb()
+    .prepare('DELETE FROM llm_provider_verifications WHERE provider_id = ?')
+    .run(providerId);
+}
+
+export function listKnownProviderCredentialCards(): AgentProviderCardSnapshot[] {
+  const providersById = new Map(listLlmProviders().map((provider) => [provider.id, provider]));
+  const modelsByProvider = new Map<string, LlmProviderModelRecord[]>();
+  for (const model of listLlmProviderModels()) {
+    const current = modelsByProvider.get(model.provider_id) || [];
+    current.push(model);
+    modelsByProvider.set(model.provider_id, current);
+  }
+
+  return KNOWN_PROVIDER_CATALOG.map((template) => {
+    const provider = providersById.get(template.id);
+    const secretRecord = provider
+      ? getProviderSecretByProviderId(provider.id)
+      : undefined;
+    const verification = provider
+      ? getProviderVerificationByProviderId(provider.id)
+      : undefined;
+    const storedModels = provider ? modelsByProvider.get(provider.id) || [] : [];
+    const suggestionMap = new Map<string, ProviderModelSuggestion>();
+    for (const suggestion of template.modelSuggestions) {
+      suggestionMap.set(suggestion.modelId, suggestion);
+    }
+    for (const model of storedModels) {
+      suggestionMap.set(model.model_id, {
+        modelId: model.model_id,
+        displayName: model.display_name,
+        contextWindowTokens: model.context_window_tokens,
+        defaultMaxOutputTokens: model.default_max_output_tokens,
+      });
+    }
+
+    return {
+      id: template.id,
+      name: provider?.name || template.name,
+      providerKind: provider?.provider_kind || template.providerKind,
+      apiFormat: provider?.api_format || template.apiFormat,
+      baseUrl: provider?.base_url || template.baseUrl,
+      authScheme: provider?.auth_scheme || template.authScheme,
+      enabled: provider ? asBoolean(provider.enabled) : false,
+      hasCredential: Boolean(secretRecord),
+      credentialHint: secretRecord
+        ? maskCredentialSuffix(decryptProviderSecret(secretRecord.ciphertext))
+        : null,
+      verificationStatus: secretRecord
+        ? verification?.status || 'not_verified'
+        : 'missing',
+      lastVerifiedAt: verification?.last_verified_at || null,
+      lastVerificationError: verification?.last_error || null,
+      modelSuggestions: Array.from(suggestionMap.values()),
+    };
+  });
+}
+
+export function upsertKnownProviderCredential(input: {
+  providerId: string;
+  credential: ProviderSecretPayload | null;
+  baseUrl?: string | null;
+  authScheme?: LlmAuthScheme;
+  updatedBy?: string | null;
+  updatedAt?: string;
+}): AgentProviderCardSnapshot {
+  const template = getKnownProviderTemplate(input.providerId);
+  if (!template) {
+    throw new Error(`unknown provider template: ${input.providerId}`);
+  }
+
+  const now = normalizeTimestamp(input.updatedAt);
+  const existing = getLlmProviderById(input.providerId);
+  const baseUrl = normalizeProviderBaseUrl(
+    input.baseUrl ?? existing?.base_url ?? template.baseUrl,
+  );
+  const authScheme = input.authScheme || existing?.auth_scheme || template.authScheme;
+
+  upsertLlmProvider({
+    id: template.id,
+    name: template.name,
+    providerKind: template.providerKind,
+    apiFormat: template.apiFormat,
+    baseUrl,
+    authScheme,
+    enabled: true,
+    coreCompatibility: 'none',
+    updatedBy: input.updatedBy,
+    updatedAt: now,
+  });
+
+  if (input.credential && input.credential.apiKey.trim()) {
+    upsertProviderSecret({
+      providerId: template.id,
+      ciphertext: encryptProviderSecret(input.credential),
+      updatedBy: input.updatedBy,
+      updatedAt: now,
+    });
+    upsertProviderVerification({
+      providerId: template.id,
+      status: 'not_verified',
+      lastVerifiedAt: null,
+      lastError: null,
+      updatedAt: now,
+    });
+  } else {
+    deleteProviderSecret(template.id);
+    upsertProviderVerification({
+      providerId: template.id,
+      status: 'missing',
+      lastVerifiedAt: null,
+      lastError: null,
+      updatedAt: now,
+    });
+  }
+
+  const updated = listKnownProviderCredentialCards().find(
+    (provider) => provider.id === template.id,
+  );
+  if (!updated) {
+    throw new Error('provider save failed');
+  }
+  return updated;
 }
 
 export function listLlmProviders(): LlmProviderRecord[] {
@@ -528,6 +934,366 @@ export function setDefaultTalkRouteId(
     );
 }
 
+export function getDefaultRegisteredAgentId(): string | null {
+  const row = getDb()
+    .prepare(
+      `
+      SELECT value
+      FROM settings_kv
+      WHERE key = ?
+      LIMIT 1
+    `,
+    )
+    .get(DEFAULT_REGISTERED_AGENT_KEY) as { value: string } | undefined;
+  return row?.value || null;
+}
+
+export function setDefaultRegisteredAgentId(
+  registeredAgentId: string | null,
+  updatedBy?: string | null,
+  updatedAt?: string,
+): void {
+  if (!registeredAgentId) {
+    getDb()
+      .prepare('DELETE FROM settings_kv WHERE key = ?')
+      .run(DEFAULT_REGISTERED_AGENT_KEY);
+    return;
+  }
+
+  getDb()
+    .prepare(
+      `
+      INSERT INTO settings_kv (key, value, updated_at, updated_by)
+      VALUES (?, ?, ?, ?)
+      ON CONFLICT(key) DO UPDATE SET
+        value = excluded.value,
+        updated_at = excluded.updated_at,
+        updated_by = excluded.updated_by
+    `,
+    )
+    .run(
+      DEFAULT_REGISTERED_AGENT_KEY,
+      registeredAgentId,
+      normalizeTimestamp(updatedAt),
+      updatedBy || null,
+    );
+}
+
+export function listRegisteredAgentRecords(): RegisteredAgentRecord[] {
+  return getDb()
+    .prepare(
+      `
+      SELECT *
+      FROM registered_agents
+      ORDER BY enabled DESC, name COLLATE NOCASE ASC, id ASC
+    `,
+    )
+    .all() as RegisteredAgentRecord[];
+}
+
+export function getRegisteredAgentById(
+  agentId: string,
+): RegisteredAgentRecord | undefined {
+  return getDb()
+    .prepare(
+      `
+      SELECT *
+      FROM registered_agents
+      WHERE id = ?
+      LIMIT 1
+    `,
+    )
+    .get(agentId) as RegisteredAgentRecord | undefined;
+}
+
+export function getRegisteredAgentUsageCount(agentId: string): number {
+  const row = getDb()
+    .prepare(
+      `
+      SELECT COUNT(DISTINCT talk_id) AS talk_count
+      FROM talk_agents
+      WHERE registered_agent_id = ?
+    `,
+    )
+    .get(agentId) as { talk_count: number } | undefined;
+  return row?.talk_count || 0;
+}
+
+function listRegisteredAgentUsageCounts(): Map<string, number> {
+  const rows = getDb()
+    .prepare(
+      `
+      SELECT registered_agent_id, COUNT(DISTINCT talk_id) AS talk_count
+      FROM talk_agents
+      WHERE registered_agent_id IS NOT NULL
+      GROUP BY registered_agent_id
+    `,
+    )
+    .all() as Array<{ registered_agent_id: string; talk_count: number }>;
+  return new Map(
+    rows.map((row) => [row.registered_agent_id, row.talk_count || 0] as const),
+  );
+}
+
+function findNextEnabledRegisteredAgentId(excludeAgentId?: string): string | null {
+  const row = getDb()
+    .prepare(
+      `
+      SELECT id
+      FROM registered_agents
+      WHERE enabled = 1
+        AND (? IS NULL OR id != ?)
+      ORDER BY name COLLATE NOCASE ASC, id ASC
+      LIMIT 1
+    `,
+    )
+    .get(excludeAgentId || null, excludeAgentId || null) as
+    | { id: string }
+    | undefined;
+  return row?.id || null;
+}
+
+export function listRegisteredAgents(): RegisteredAgentSnapshot[] {
+  const providersById = new Map(listLlmProviders().map((provider) => [provider.id, provider]));
+  const modelsByKey = new Map(
+    listLlmProviderModels().map((model) => [
+      `${model.provider_id}:${model.model_id}`,
+      model,
+    ]),
+  );
+  const usageCounts = listRegisteredAgentUsageCounts();
+
+  return listRegisteredAgentRecords().map((agent) => {
+    const provider = providersById.get(agent.provider_id);
+    const model = modelsByKey.get(`${agent.provider_id}:${agent.model_id}`);
+    return {
+      id: agent.id,
+      name: agent.name,
+      providerId: agent.provider_id,
+      providerName: provider?.name || agent.provider_id,
+      providerKind: provider?.provider_kind || 'custom',
+      modelId: agent.model_id,
+      modelDisplayName: model?.display_name || agent.model_id,
+      routeId: agent.route_id,
+      enabled: asBoolean(agent.enabled),
+      usageCount: usageCounts.get(agent.id) || 0,
+    };
+  });
+}
+
+function ensureProviderModelExists(input: {
+  providerId: string;
+  modelId: string;
+  displayName?: string;
+  updatedAt?: string;
+}): void {
+  const existing = getLlmProviderModel(input.providerId, input.modelId);
+  if (existing) return;
+  const metadata = getFallbackModelMetadata(
+    input.providerId,
+    input.modelId,
+    input.displayName,
+  );
+  const updatedAt = normalizeTimestamp(input.updatedAt);
+  getDb()
+    .prepare(
+      `
+      INSERT INTO llm_provider_models (
+        provider_id,
+        model_id,
+        display_name,
+        context_window_tokens,
+        default_max_output_tokens,
+        enabled,
+        updated_at,
+        updated_by
+      ) VALUES (?, ?, ?, ?, ?, 1, ?, NULL)
+    `,
+    )
+    .run(
+      input.providerId,
+      metadata.modelId,
+      metadata.displayName,
+      metadata.contextWindowTokens,
+      metadata.defaultMaxOutputTokens,
+      updatedAt,
+    );
+}
+
+export function createRegisteredAgent(input: {
+  name: string;
+  providerId: string;
+  modelId: string;
+  modelDisplayName?: string;
+  enabled?: boolean;
+  updatedBy?: string | null;
+  updatedAt?: string;
+  setAsDefault?: boolean;
+}): RegisteredAgentSnapshot {
+  const now = normalizeTimestamp(input.updatedAt);
+  const id = `ragent_${randomUUID()}`;
+  const routeId = `route.agent.${id}`;
+  const provider = getLlmProviderById(input.providerId);
+  if (!provider) {
+    throw new Error(`provider not found: ${input.providerId}`);
+  }
+
+  ensureProviderModelExists({
+    providerId: input.providerId,
+    modelId: input.modelId,
+    displayName: input.modelDisplayName,
+    updatedAt: now,
+  });
+
+  const tx = getDb().transaction(() => {
+    upsertTalkRoute({
+      id: routeId,
+      name: `${input.name.trim()} Route`,
+      enabled: true,
+      steps: [
+        {
+          position: 0,
+          providerId: input.providerId,
+          modelId: input.modelId,
+        },
+      ],
+      updatedBy: input.updatedBy,
+      updatedAt: now,
+    });
+
+    getDb()
+      .prepare(
+        `
+        INSERT INTO registered_agents (
+          id,
+          name,
+          provider_id,
+          model_id,
+          route_id,
+          enabled,
+          created_at,
+          updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `,
+      )
+      .run(
+        id,
+        input.name.trim(),
+        input.providerId,
+        input.modelId,
+        routeId,
+        input.enabled === false ? 0 : 1,
+        now,
+        now,
+      );
+
+    if (input.setAsDefault || !getDefaultRegisteredAgentId()) {
+      setDefaultRegisteredAgentId(id, input.updatedBy, now);
+    }
+  });
+  tx();
+
+  const created = listRegisteredAgents().find((agent) => agent.id === id);
+  if (!created) {
+    throw new Error('registered agent create failed');
+  }
+  return created;
+}
+
+export function updateRegisteredAgentName(
+  agentId: string,
+  name: string,
+  updatedAt?: string,
+): RegisteredAgentSnapshot {
+  const now = normalizeTimestamp(updatedAt);
+  getDb()
+    .prepare(
+      `
+      UPDATE registered_agents
+      SET name = ?, updated_at = ?
+      WHERE id = ?
+    `,
+    )
+    .run(name.trim(), now, agentId);
+
+  const updated = listRegisteredAgents().find((agent) => agent.id === agentId);
+  if (!updated) {
+    throw new Error('registered agent not found');
+  }
+  return updated;
+}
+
+export function setRegisteredAgentEnabled(
+  agentId: string,
+  enabled: boolean,
+  updatedAt?: string,
+): RegisteredAgentSnapshot {
+  const now = normalizeTimestamp(updatedAt);
+  getDb()
+    .prepare(
+      `
+      UPDATE registered_agents
+      SET enabled = ?, updated_at = ?
+      WHERE id = ?
+    `,
+    )
+    .run(enabled ? 1 : 0, now, agentId);
+
+  const updated = listRegisteredAgents().find((agent) => agent.id === agentId);
+  if (!updated) {
+    throw new Error('registered agent not found');
+  }
+
+  if (!enabled && getDefaultRegisteredAgentId() === agentId) {
+    const nextDefault = findNextEnabledRegisteredAgentId(agentId);
+    setDefaultRegisteredAgentId(nextDefault, null, now);
+  }
+
+  return updated;
+}
+
+export function duplicateRegisteredAgent(input: {
+  sourceAgentId: string;
+  name: string;
+  providerId: string;
+  modelId: string;
+  modelDisplayName?: string;
+  updatedBy?: string | null;
+  updatedAt?: string;
+}): RegisteredAgentSnapshot {
+  // v1 registered agents only duplicate name/provider/model. We still require
+  // a sourceAgentId so the duplication flow has an explicit source to validate
+  // against, and this field becomes the natural copy source if per-agent
+  // configuration is added later.
+  return createRegisteredAgent({
+    name: input.name,
+    providerId: input.providerId,
+    modelId: input.modelId,
+    modelDisplayName: input.modelDisplayName,
+    updatedBy: input.updatedBy,
+    updatedAt: input.updatedAt,
+    setAsDefault: false,
+  });
+}
+
+export function deleteRegisteredAgent(agentId: string): void {
+  if (getRegisteredAgentUsageCount(agentId) > 0) {
+    throw new Error('registered agent is still used by talks');
+  }
+  const record = getRegisteredAgentById(agentId);
+  if (!record) return;
+  const defaultAgentId = getDefaultRegisteredAgentId();
+  const tx = getDb().transaction(() => {
+    if (defaultAgentId === agentId) {
+      const nextDefault = findNextEnabledRegisteredAgentId(agentId);
+      setDefaultRegisteredAgentId(nextDefault);
+    }
+    getDb().prepare('DELETE FROM registered_agents WHERE id = ?').run(agentId);
+    getDb().prepare('DELETE FROM talk_routes WHERE id = ?').run(record.route_id);
+  });
+  tx();
+}
+
 export function listTalkAgents(talkId: string): TalkAgentRecord[] {
   return getDb()
     .prepare(
@@ -585,6 +1351,7 @@ export function replaceTalkAgents(
     name: agent.name.trim(),
     personaRole: agent.personaRole,
     routeId: agent.routeId,
+    registeredAgentId: agent.registeredAgentId || null,
     isPrimary: agent.isPrimary,
     sortOrder: normalizeSortOrder(index, agent.sortOrder),
   }));
@@ -594,9 +1361,9 @@ export function replaceTalkAgents(
     const stmt = getDb().prepare(
       `
       INSERT INTO talk_agents (
-        id, talk_id, name, persona_role, route_id, is_primary, sort_order,
-        created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        id, talk_id, name, persona_role, route_id, registered_agent_id,
+        is_primary, sort_order, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `,
     );
     for (const agent of normalized) {
@@ -606,6 +1373,7 @@ export function replaceTalkAgents(
         agent.name,
         agent.personaRole,
         agent.routeId,
+        agent.registeredAgentId,
         agent.isPrimary ? 1 : 0,
         agent.sortOrder,
         updatedAt,
@@ -622,6 +1390,28 @@ export function resetTalkAgentsToDefault(
   talkId: string,
   now?: string,
 ): TalkAgentRecord[] {
+  const defaultRegisteredAgentId = getDefaultRegisteredAgentId();
+  const defaultRegisteredAgent = defaultRegisteredAgentId
+    ? getRegisteredAgentById(defaultRegisteredAgentId)
+    : undefined;
+  if (defaultRegisteredAgent && defaultRegisteredAgent.enabled === 1) {
+    return replaceTalkAgents(
+      talkId,
+      [
+        {
+          id: `agent_${randomUUID()}`,
+          name: defaultRegisteredAgent.name,
+          personaRole: 'assistant',
+          routeId: defaultRegisteredAgent.route_id,
+          registeredAgentId: defaultRegisteredAgent.id,
+          isPrimary: true,
+          sortOrder: 0,
+        },
+      ],
+      now,
+    );
+  }
+
   const fallbackRouteId =
     getDefaultTalkRouteId() ||
     listTalkRoutes().find((route) => route.enabled === 1)?.id ||
@@ -635,6 +1425,7 @@ export function resetTalkAgentsToDefault(
         name: buildDefaultTalkAgentName(fallbackRouteId),
         personaRole: 'assistant',
         routeId: fallbackRouteId,
+        registeredAgentId: null,
         isPrimary: true,
         sortOrder: 0,
       },
@@ -652,6 +1443,79 @@ export function ensureTalkHasDefaultAgent(
   return resetTalkAgentsToDefault(talkId, now);
 }
 
+export function listTalkAgentInstances(
+  talkId: string,
+): TalkAgentInstanceSnapshot[] {
+  const existing = ensureTalkHasDefaultAgent(talkId);
+  const registeredAgentsById = new Map(
+    listRegisteredAgents().map((agent) => [agent.id, agent]),
+  );
+  return existing.map((agent) => {
+    const registeredAgent = agent.registered_agent_id
+      ? registeredAgentsById.get(agent.registered_agent_id)
+      : undefined;
+    return {
+      id: agent.id,
+      registeredAgentId: agent.registered_agent_id,
+      name: registeredAgent?.name || agent.name,
+      role: agent.persona_role,
+      isLead: agent.is_primary === 1,
+      displayOrder: agent.sort_order,
+      status: registeredAgent
+        ? registeredAgent.enabled
+          ? 'active'
+          : 'archived'
+        : 'legacy',
+      providerId: registeredAgent?.providerId || null,
+      providerName: registeredAgent?.providerName || null,
+      modelId: registeredAgent?.modelId || null,
+      modelDisplayName: registeredAgent?.modelDisplayName || null,
+    };
+  });
+}
+
+export function replaceTalkAgentInstances(
+  talkId: string,
+  agents: TalkAgentInstanceInput[],
+  now?: string,
+): TalkAgentRecord[] {
+  const existingById = new Map(listTalkAgents(talkId).map((agent) => [agent.id, agent]));
+  const normalized: TalkAgentInput[] = agents.map((agent, index) => {
+    const existing = agent.id ? existingById.get(agent.id) : undefined;
+    if (agent.registeredAgentId) {
+      const registeredAgent = getRegisteredAgentById(agent.registeredAgentId);
+      if (!registeredAgent) {
+        throw new Error(`registered agent not found: ${agent.registeredAgentId}`);
+      }
+      return {
+        id: agent.id,
+        name: registeredAgent.name,
+        personaRole: agent.role,
+        routeId: registeredAgent.route_id,
+        registeredAgentId: registeredAgent.id,
+        isPrimary: agent.isLead,
+        sortOrder: normalizeSortOrder(index, agent.displayOrder),
+      };
+    }
+
+    if (!existing || existing.registered_agent_id) {
+      throw new Error('legacy talk agents cannot be created manually');
+    }
+
+    return {
+      id: existing.id,
+      name: existing.name,
+      personaRole: agent.role,
+      routeId: existing.route_id,
+      registeredAgentId: null,
+      isPrimary: agent.isLead,
+      sortOrder: normalizeSortOrder(index, agent.displayOrder),
+    };
+  });
+
+  return replaceTalkAgents(talkId, normalized, now);
+}
+
 export function resolveTalkAgent(
   talkId: string,
   targetAgentId?: string | null,
@@ -662,6 +1526,13 @@ export function resolveTalkAgent(
       ? agents.find((entry) => entry.id === targetAgentId)
       : undefined) || agents.find((entry) => entry.is_primary === 1);
   if (!agent) return null;
+
+  const registeredAgent = agent.registered_agent_id
+    ? getRegisteredAgentById(agent.registered_agent_id)
+    : undefined;
+  const effectiveAgent = registeredAgent
+    ? ({ ...agent, name: registeredAgent.name } as TalkAgentRecord)
+    : agent;
 
   const route = getTalkRouteById(agent.route_id);
   if (!route) return null;
@@ -685,7 +1556,7 @@ export function resolveTalkAgent(
     });
   }
 
-  return { agent, route, steps };
+  return { agent: effectiveAgent, route, steps };
 }
 
 export function listTalkLlmSettingsSnapshot(): TalkLlmSettingsSnapshot {

@@ -11,6 +11,7 @@ import {
   Talk,
   UnauthorizedError,
 } from './lib/api';
+import { AiAgentsPage } from './pages/AiAgentsPage';
 import { TalkDetailPage } from './pages/TalkDetailPage';
 import { TalkListPage } from './pages/TalkListPage';
 import { SettingsPage } from './pages/SettingsPage';
@@ -110,6 +111,7 @@ export function App() {
         talks={talks}
         loading={talksLoading}
         error={talksError}
+        userRole={auth.user.role}
         canManageSettings={canManageSettings}
       />
       <div className="app-main">
@@ -146,7 +148,21 @@ export function App() {
             />
             <Route
               path="/app/talks/:talkId"
-              element={<TalkDetailPage onUnauthorized={handleUnauthorized} />}
+              element={
+                <TalkDetailPage
+                  onUnauthorized={handleUnauthorized}
+                  userRole={auth.user.role}
+                />
+              }
+            />
+            <Route
+              path="/app/agents"
+              element={
+                <AiAgentsPage
+                  onUnauthorized={handleUnauthorized}
+                  userRole={auth.user.role}
+                />
+              }
             />
             <Route
               path="/app/settings"

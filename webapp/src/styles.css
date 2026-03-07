@@ -732,17 +732,65 @@ a {
   color: #4b5978;
 }
 
-.policy-editor input {
+.policy-editor input,
+.policy-editor select {
   border: 1px solid #c8d3e9;
   border-radius: 9px;
   padding: 0.55rem 0.65rem;
   font-size: 0.9rem;
 }
 
+.policy-agent-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 0.7rem;
+  align-items: end;
+  padding: 0.75rem;
+  border: 1px solid #dbe4f5;
+  border-radius: 12px;
+  background: #f8fbff;
+}
+
+.policy-agent-grid label {
+  display: grid;
+  gap: 0.3rem;
+}
+
+.policy-primary-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.55rem;
+  min-height: 2.75rem;
+}
+
+.policy-primary-toggle input {
+  margin: 0;
+}
+
+.policy-add-agent {
+  display: grid;
+  gap: 0.3rem;
+}
+
 .policy-editor-controls {
   display: flex;
   gap: 0.55rem;
   justify-content: flex-start;
+  flex-wrap: wrap;
+  align-items: end;
+}
+
+.policy-inline-create {
+  display: grid;
+  gap: 0.75rem;
+  padding: 0.9rem;
+  border: 1px dashed #c8d3e9;
+  border-radius: 12px;
+  background: #fdfefe;
+}
+
+.policy-inline-create h3 {
+  margin: 0;
 }
 
 .run-history-panel {
@@ -932,6 +980,22 @@ a {
   gap: 0.55rem;
 }
 
+.composer-target {
+  display: grid;
+  gap: 0.3rem;
+  max-width: 320px;
+  color: #4b5978;
+  font-size: 0.85rem;
+}
+
+.composer-target select {
+  border: 1px solid #c8d3e9;
+  border-radius: 9px;
+  padding: 0.55rem 0.65rem;
+  font-size: 0.9rem;
+  background: #fff;
+}
+
 .composer textarea {
   width: 100%;
   border: 1px solid #c8d3e9;
@@ -986,6 +1050,12 @@ a {
   color: #1f6e3e;
 }
 
+.settings-nav-link {
+  display: inline-flex;
+  align-items: center;
+  text-decoration: none;
+}
+
 @media (max-width: 960px) {
   .app-shell {
     flex-direction: column;
@@ -1032,6 +1102,10 @@ a {
   .settings-form-grid,
   .settings-alias-row,
   .talk-llm-toolbar {
+    grid-template-columns: 1fr;
+  }
+
+  .policy-agent-grid {
     grid-template-columns: 1fr;
   }
 }

@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-
 import {
   ApiError,
   ExecutorSettings,
@@ -15,8 +14,6 @@ import {
   updateExecutorSettings,
   verifyExecutorCredentials,
 } from '../lib/api';
-import { TalkLlmSettingsCard } from '../components/TalkLlmSettingsCard';
-
 type AliasRow = {
   id: string;
   alias: string;
@@ -127,6 +124,39 @@ function standbyCredentials(settings: ExecutorSettings): string[] {
     items.push('Advanced bearer configured');
   }
   return items;
+}
+
+function fieldDraftState(input: {
+  stored: boolean;
+  cleared: boolean;
+  draftValue: string;
+}): {
+  hasCredential: boolean;
+  message: string;
+} {
+  if (input.cleared) {
+    return {
+      hasCredential: false,
+      message: 'This credential will be cleared when you save.',
+    };
+  }
+  if (input.draftValue.trim()) {
+    return {
+      hasCredential: true,
+      message:
+        'A new credential is entered locally and will be saved when you click Save Credential Settings.',
+    };
+  }
+  if (input.stored) {
+    return {
+      hasCredential: true,
+      message: 'A credential is already stored in settings.',
+    };
+  }
+  return {
+    hasCredential: false,
+    message: 'No credential is currently stored.',
+  };
 }
 
 export function SettingsPage({ onUnauthorized, userRole }: Props) {
@@ -347,7 +377,7 @@ export function SettingsPage({ onUnauthorized, userRole }: Props) {
         );
       } else if (nextSettings.executorAuthMode === 'subscription') {
         setNotice(
-          'Credentials saved. Use Check host Claude login for guided setup, or Verify subscription to confirm the current environment can execute with the selected subscription credential.',
+          'Subscription mode is now active. Use Check host Claude login for guided setup, or Verify subscription to confirm the current environment can execute with the selected subscription credential.',
         );
       } else {
         setNotice(
@@ -537,6 +567,69 @@ export function SettingsPage({ onUnauthorized, userRole }: Props) {
     subscriptionHostStatus?.importAvailable &&
       subscriptionHostStatus.hostCredentialFingerprint,
   );
+  const selectedModeCredentialState =
+    authModeDraft === 'subscription'
+      ? fieldDraftState({
+          stored: settings.hasOauthToken,
+          cleared: clearOauth,
+          draftValue: oauthDraft,
+        })
+      : authModeDraft === 'api_key'
+        ? fieldDraftState({
+            stored: settings.hasApiKey,
+            cleared: clearApiKey,
+            draftValue: apiKeyDraft,
+          })
+        : authModeDraft === 'advanced_bearer'
+          ? fieldDraftState({
+              stored: settings.hasAuthToken,
+              cleared: clearAuthToken,
+              draftValue: authTokenDraft,
+            })
+          : {
+              hasCredential: false,
+              message:
+                'No active Anthropic auth mode is selected. Stored credentials remain on standby until you choose a mode and save.',
+            };
+  const hasUnsavedModeChange = authModeDraft !== settings.executorAuthMode;
+  const hasUnsavedSelectedModeCredentialChange =
+    authModeDraft === 'subscription'
+      ? clearOauth || oauthDraft.trim().length > 0
+      : authModeDraft === 'api_key'
+        ? clearApiKey ||
+          apiKeyDraft.trim().length > 0 ||
+          clearBaseUrl ||
+          baseUrlDraft.trim() !== (settings.anthropicBaseUrl || '')
+        : authModeDraft === 'advanced_bearer'
+          ? clearAuthToken ||
+            authTokenDraft.trim().length > 0 ||
+            clearBaseUrl ||
+            baseUrlDraft.trim() !== (settings.anthropicBaseUrl || '')
+          : false;
+  const hasPendingCredentialState =
+    hasUnsavedModeChange || hasUnsavedSelectedModeCredentialChange;
+  const displayedConfiguredLabel =
+    authModeDraft === 'none'
+      ? 'No'
+      : hasPendingCredentialState
+        ? selectedModeCredentialState.hasCredential
+          ? 'Ready to save'
+          : 'Missing'
+        : status.activeCredentialConfigured
+          ? 'Configured'
+          : 'Missing';
+  const displayedVerificationLabel =
+    authModeDraft === 'none'
+      ? 'Select a mode'
+      : hasPendingCredentialState
+        ? 'Unsaved changes'
+        : formatVerificationStatus(status.verificationStatus);
+  const displayedLastVerifiedLabel =
+    authModeDraft === 'none'
+      ? 'No active mode selected'
+      : hasPendingCredentialState
+        ? 'Will refresh after save'
+        : formatDateTime(status.lastVerifiedAt);
 
   return (
     <section className="page-shell settings-shell">
@@ -588,7 +681,7 @@ export function SettingsPage({ onUnauthorized, userRole }: Props) {
             <strong>{status.mode}</strong>
           </div>
           <div>
-            <span className="settings-label">Selected auth mode</span>
+            <span className="settings-label">Active auth mode</span>
             <strong>{formatAuthMode(status.executorAuthMode)}</strong>
           </div>
           <div>
@@ -756,6 +849,15 @@ export function SettingsPage({ onUnauthorized, userRole }: Props) {
                   setups. You can generate a long-lived token with{' '}
                   <code>claude setup-token</code>, then paste it here.
                 </p>
+                <p className="settings-copy">
+                  {
+                    fieldDraftState({
+                      stored: settings.hasOauthToken,
+                      cleared: clearOauth,
+                      draftValue: oauthDraft,
+                    }).message
+                  }
+                </p>
                 <div className="settings-form-grid">
                   <label>
                     <span>Claude Code OAuth Token</span>
@@ -793,6 +895,15 @@ export function SettingsPage({ onUnauthorized, userRole }: Props) {
               Use an Anthropic Console API key for normal API billing. Saving this
               mode auto-starts verification in the background.
             </p>
+            <p className="settings-copy">
+              {
+                fieldDraftState({
+                  stored: settings.hasApiKey,
+                  cleared: clearApiKey,
+                  draftValue: apiKeyDraft,
+                }).message
+              }
+            </p>
             <div className="settings-form-grid">
               <label>
                 <span>API Key</span>
@@ -828,6 +939,15 @@ export function SettingsPage({ onUnauthorized, userRole }: Props) {
               Advanced bearer mode is intended for custom bearer-token or gateway
               deployments. Saving this mode auto-starts verification in the
               background.
+            </p>
+            <p className="settings-copy">
+              {
+                fieldDraftState({
+                  stored: settings.hasAuthToken,
+                  cleared: clearAuthToken,
+                  draftValue: authTokenDraft,
+                }).message
+              }
             </p>
             <div className="settings-form-grid">
               <label>
@@ -901,24 +1021,36 @@ export function SettingsPage({ onUnauthorized, userRole }: Props) {
 
         <div className="settings-grid settings-status-grid">
           <div>
-            <span className="settings-label">Selected mode</span>
-            <strong>{formatAuthMode(status.executorAuthMode)}</strong>
+            <span className="settings-label">Mode to save</span>
+            <strong>{formatAuthMode(authModeDraft)}</strong>
           </div>
           <div>
             <span className="settings-label">Configured</span>
-            <strong>
-              {status.activeCredentialConfigured ? 'Yes' : 'No'}
-            </strong>
+            <strong>{displayedConfiguredLabel}</strong>
           </div>
           <div>
             <span className="settings-label">Status</span>
-            <strong>{formatVerificationStatus(status.verificationStatus)}</strong>
+            <strong>{displayedVerificationLabel}</strong>
           </div>
           <div>
             <span className="settings-label">Last verified</span>
-            <strong>{formatDateTime(status.lastVerifiedAt)}</strong>
+            <strong>{displayedLastVerifiedLabel}</strong>
           </div>
         </div>
+
+        {hasUnsavedModeChange ? (
+          <p className="settings-copy">
+            <strong>Unsaved change:</strong> saving will switch the active
+            Anthropic auth mode from{' '}
+            <strong>{formatAuthMode(settings.executorAuthMode)}</strong> to{' '}
+            <strong>{formatAuthMode(authModeDraft)}</strong>.
+          </p>
+        ) : null}
+
+        <p className="settings-copy">
+          <strong>Selected mode credential:</strong>{' '}
+          {selectedModeCredentialState.message}
+        </p>
 
         {standby.length > 0 ? (
           <div className="settings-standby-list">
@@ -1112,7 +1244,18 @@ export function SettingsPage({ onUnauthorized, userRole }: Props) {
       </section>
 
       {userRole === 'owner' || userRole === 'admin' ? (
-        <TalkLlmSettingsCard onUnauthorized={onUnauthorized} />
+        <section className="settings-card">
+          <h2>AI Agents</h2>
+          <p className="settings-copy">
+            Provider credentials, registered agents, and the default agent for
+            new talks now live on the AI Agents page.
+          </p>
+          <div className="settings-section-actions">
+            <a className="secondary-btn settings-nav-link" href="/app/agents">
+              Open AI Agents
+            </a>
+          </div>
+        </section>
       ) : null}
     </section>
   );

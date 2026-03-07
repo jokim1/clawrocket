@@ -155,10 +155,7 @@ function buildBaseStatus(input: {
     importAvailable: false,
     hostCredentialFingerprint: null,
     message: '',
-    recommendedCommands: buildRecommendedCommands(
-      input.env,
-      input.serviceUser,
-    ),
+    recommendedCommands: buildRecommendedCommands(input.env, input.serviceUser),
   };
 }
 

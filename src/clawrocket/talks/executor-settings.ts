@@ -922,10 +922,7 @@ export class ExecutorSettingsService {
     credential: string,
     userId: string,
   ): ExecutorSubscriptionImportResult {
-    const normalized = this.validateSecretInput(
-      credential,
-      'OAuth token',
-    );
+    const normalized = this.validateSecretInput(credential, 'OAuth token');
     const rows = this.readStoredRows();
     const authModeResolution = resolveAuthMode(rows);
     if (

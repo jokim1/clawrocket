@@ -66,7 +66,7 @@ describe('SettingsPage', () => {
       await screen.findByText('Configuration errors detected.'),
     ).toBeTruthy();
     expect(await screen.findByText('Alias model map changed')).toBeTruthy();
-    expect(await screen.findByText('Selected auth mode')).toBeTruthy();
+    expect((await screen.findAllByText('Active auth mode')).length).toBeGreaterThan(0);
     expect(
       await screen.findByRole('button', {
         name: 'Restart ClawRocket Service',
@@ -135,8 +135,7 @@ describe('SettingsPage', () => {
     ).toBeNull();
   });
 
-  it('loads structured Talk LLM settings for admin users', async () => {
-    const user = userEvent.setup();
+  it('links admins to the AI Agents page for provider and agent management', async () => {
     mockFetch([
       jsonResponse(200, {
         ok: true,
@@ -180,66 +179,80 @@ describe('SettingsPage', () => {
           configErrors: [],
         },
       }),
-      jsonResponse(200, {
-        ok: true,
-        data: {
-          defaultRouteId: 'route.primary',
-          providers: [
-            {
-              id: 'provider.anthropic',
-              name: 'Anthropic Prod',
-              providerKind: 'anthropic',
-              apiFormat: 'anthropic_messages',
-              baseUrl: 'https://api.anthropic.com',
-              authScheme: 'x_api_key',
-              enabled: true,
-              coreCompatibility: 'claude_sdk_proxy',
-              responseStartTimeoutMs: 60000,
-              streamIdleTimeoutMs: 20000,
-              absoluteTimeoutMs: 300000,
-              hasCredential: true,
-              models: [
-                {
-                  modelId: 'claude-sonnet-4-5',
-                  displayName: 'Sonnet 4.5',
-                  contextWindowTokens: 200000,
-                  defaultMaxOutputTokens: 4096,
-                  enabled: true,
-                },
-              ],
-            },
-          ],
-          routes: [
-            {
-              id: 'route.primary',
-              name: 'Primary Route',
-              enabled: true,
-              assignedAgentCount: 2,
-              assignedTalkCount: 1,
-              steps: [
-                {
-                  position: 0,
-                  providerId: 'provider.anthropic',
-                  modelId: 'claude-sonnet-4-5',
-                },
-              ],
-            },
-          ],
-        },
-      }),
     ]);
 
     render(<SettingsPage onUnauthorized={vi.fn()} userRole="admin" />);
 
-    const loadButton = await screen.findByRole('button', {
-      name: 'Load Talk LLM Settings',
-    });
-    await user.click(loadButton);
+    await screen.findByRole('heading', { name: 'Executor Settings' });
+    expect(await screen.findByRole('heading', { name: 'AI Agents' })).toBeTruthy();
+    const link = await screen.findByRole('link', { name: 'Open AI Agents' });
+    expect(link.getAttribute('href')).toBe('/app/agents');
+  });
 
-    expect(await screen.findByRole('heading', { name: 'Providers' })).toBeTruthy();
-    expect((await screen.findAllByText('Anthropic Prod')).length).toBeGreaterThan(0);
-    expect(await screen.findByRole('heading', { name: 'Routes' })).toBeTruthy();
-    expect(await screen.findByDisplayValue('route.primary')).toBeTruthy();
+  it('shows pending subscription activation clearly before save', async () => {
+    const user = userEvent.setup();
+    mockFetch([
+      jsonResponse(200, {
+        ok: true,
+        data: {
+          configuredAliasMap: {},
+          effectiveAliasMap: { Mock: 'default' },
+          defaultAlias: 'Mock',
+          executorAuthMode: 'none',
+          hasApiKey: true,
+          hasOauthToken: true,
+          hasAuthToken: false,
+          activeCredentialConfigured: false,
+          verificationStatus: 'missing',
+          lastVerifiedAt: null,
+          lastVerificationError: null,
+          anthropicBaseUrl: '',
+          isConfigured: true,
+          configVersion: 2,
+          lastUpdatedAt: null,
+          lastUpdatedBy: null,
+          configErrors: [],
+        },
+      }),
+      jsonResponse(200, {
+        ok: true,
+        data: {
+          mode: 'real',
+          restartSupported: false,
+          pendingRestartReasons: [],
+          activeRunCount: 0,
+          executorAuthMode: 'none',
+          activeCredentialConfigured: false,
+          verificationStatus: 'missing',
+          lastVerifiedAt: null,
+          lastVerificationError: null,
+          hasProviderAuth: false,
+          hasValidAliasMap: true,
+          configVersion: 2,
+          isConfigured: true,
+          bootId: 'boot-pending',
+          configErrors: [],
+        },
+      }),
+    ]);
+
+    render(<SettingsPage onUnauthorized={vi.fn()} userRole="owner" />);
+
+    await screen.findByRole('heading', { name: 'Executor Settings' });
+    await user.selectOptions(
+      screen.getByLabelText('Active auth mode'),
+      'subscription',
+    );
+
+    expect(await screen.findByText('Ready to save')).toBeTruthy();
+    expect(
+      await screen.findByText(
+        /saving will switch the active Anthropic auth mode from/i,
+      ),
+    ).toBeTruthy();
+    expect(
+      await screen.findByText(/A credential is already stored in settings\./i),
+    ).toBeTruthy();
   });
 
   it('preserves explicit credential clears when switching auth modes before save', async () => {
@@ -512,7 +525,7 @@ describe('SettingsPage', () => {
         /Subscription credential imported from the service host/i,
       ),
     ).toBeTruthy();
-    const selectedModeLabel = await screen.findByText('Selected auth mode');
+    const selectedModeLabel = (await screen.findAllByText('Active auth mode'))[0];
     expect(
       within(selectedModeLabel.parentElement as HTMLElement).getByText(
         'Subscription (Claude Pro/Max)',
