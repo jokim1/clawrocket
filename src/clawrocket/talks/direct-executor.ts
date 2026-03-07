@@ -1,6 +1,9 @@
+import { ChildProcess } from 'child_process';
 import { setTimeout as sleep } from 'timers/promises';
 
+import { runContainerAgent, type ContainerOutput } from '../../container-runner.js';
 import { logger } from '../../logger.js';
+import type { RegisteredGroup } from '../../types.js';
 import {
   createLlmAttempt,
   getProviderSecretByProviderId,
@@ -8,6 +11,7 @@ import {
   resolveTalkAgent,
   setTalkRunExecutorProfile,
 } from '../db/index.js';
+import { TALK_EXECUTOR_WEB_GROUP_FOLDER } from '../config.js';
 import { decryptProviderSecret } from '../llm/provider-secret-store.js';
 import type {
   LlmFailureClass,
@@ -28,6 +32,8 @@ import type {
   TalkExecutorOutput,
 } from './executor.js';
 import { TalkExecutorError } from './executor.js';
+import { getActiveExecutorSettingsService } from './executor-settings.js';
+import type { TalkPersonaRole } from '../llm/types.js';
 
 const DEFAULT_RESPONSE_START_TIMEOUT_MS = 60_000;
 const DEFAULT_STREAM_IDLE_TIMEOUT_MS = 20_000;
@@ -68,6 +74,8 @@ interface SseEvent {
 
 export interface DirectTalkExecutorOptions {
   fetchImpl?: typeof fetch;
+  runContainer?: typeof runContainerAgent;
+  groupFolder?: string;
 }
 
 function abortError(reason?: unknown): Error {
@@ -436,6 +444,107 @@ function classifyHttpFailure(response: {
   };
 }
 
+function renderPromptTranscript(
+  promptMessages: PromptMessage[],
+): string {
+  return promptMessages
+    .map((message) => {
+      const label =
+        message.role === 'system'
+          ? 'SYSTEM'
+          : message.role === 'assistant'
+            ? 'ASSISTANT'
+            : 'USER';
+      return `${label}:\n${message.text}`;
+    })
+    .join('\n\n');
+}
+
+function looksLikeClaudeAuthFailure(message: string): boolean {
+  const normalized = message.toLowerCase();
+  return (
+    normalized.includes('oauth') ||
+    normalized.includes('login') ||
+    normalized.includes('credential') ||
+    normalized.includes('api key') ||
+    normalized.includes('authentication') ||
+    normalized.includes('authorization') ||
+    normalized.includes('auth token')
+  );
+}
+
+function classifyClaudeDefaultFailure(error: unknown): ClassifiedTalkError {
+  if (error instanceof ContextAssemblyError) {
+    return {
+      code: error.code,
+      message: error.message,
+      failureClass: 'invalid_request',
+      retryable: false,
+    };
+  }
+
+  if (error instanceof TalkExecutorError) {
+    if (error.code === 'executor_not_configured') {
+      return {
+        code: error.code,
+        message: error.sourceMessage,
+        failureClass: 'configuration',
+        retryable: false,
+      };
+    }
+    if (error.code === 'executor_container_error') {
+      const sourceMessage = error.sourceMessage || error.message;
+      if (looksLikeClaudeAuthFailure(sourceMessage)) {
+        return {
+          code: 'provider_auth_failed',
+          message: sourceMessage,
+          failureClass: 'auth',
+          retryable: false,
+        };
+      }
+      if (sourceMessage.toLowerCase().includes('timeout')) {
+        return {
+          code: 'provider_timeout',
+          message: sourceMessage,
+          failureClass: 'timeout',
+          retryable: true,
+        };
+      }
+      return {
+        code: error.code,
+        message: sourceMessage,
+        failureClass: 'unknown',
+        retryable: false,
+      };
+    }
+    return {
+      code: error.code,
+      message: error.sourceMessage,
+      failureClass: 'unknown',
+      retryable: false,
+    };
+  }
+
+  return {
+    code: 'execution_failed',
+    message:
+      error instanceof Error ? error.message : 'Unknown Claude execution failure',
+    failureClass: 'unknown',
+    retryable: false,
+  };
+}
+
+function createWebTalkGroup(groupFolder: string): RegisteredGroup {
+  return {
+    name: 'Web Talk Executor',
+    folder: groupFolder,
+    trigger: '@web',
+    added_at: '1970-01-01T00:00:00.000Z',
+    requiresTrigger: false,
+    isMain: false,
+  };
+}
+
 function buildAnthropicMessages(promptMessages: PromptMessage[]): {
   system: string;
   messages: Array<{ role: 'user' | 'assistant'; content: string }>;
@@ -470,9 +579,13 @@ function buildOpenAiMessages(promptMessages: PromptMessage[]): Array<{
 
 export class DirectTalkExecutor implements TalkExecutor {
   private readonly fetchImpl: typeof fetch;
+  private readonly runContainer: typeof runContainerAgent;
+  private readonly groupFolder: string;
 
   constructor(options: DirectTalkExecutorOptions = {}) {
     this.fetchImpl = options.fetchImpl || fetch;
+    this.runContainer = options.runContainer || runContainerAgent;
+    this.groupFolder = options.groupFolder || TALK_EXECUTOR_WEB_GROUP_FOLDER;
   }
 
   async execute(
@@ -504,6 +617,34 @@ export class DirectTalkExecutor implements TalkExecutor {
       throw new TalkExecutorError(
         'route_unavailable',
         'The selected talk route does not have any configured steps.',
+      );
+    }
+
+    if (resolved.sourceKind === 'claude_default') {
+      const primaryStep = resolved.steps[0];
+      if (!resolved.modelId && !primaryStep?.model.model_id) {
+        throw new TalkExecutorError(
+          'route_unavailable',
+          'The selected Claude agent does not have a configured model.',
+        );
+      }
+
+      return this.executeClaudeDefaultAttempt(
+        {
+          input,
+          agentId: resolved.agent.id,
+          agentName: resolved.agent.name,
+          routeId: resolved.route.id,
+          routeStepPosition: primaryStep?.routeStep.position ?? 0,
+          providerId: 'provider.anthropic',
+          modelId: resolved.modelId || primaryStep.model.model_id,
+        },
+        talk.topic_title,
+        resolved.agent.persona_role,
+        primaryStep?.model.context_window_tokens ?? 200_000,
+        primaryStep?.model.default_max_output_tokens ?? 4_096,
+        signal,
+        emit,
       );
     }
 
@@ -789,6 +930,243 @@ export class DirectTalkExecutor implements TalkExecutor {
         outputTokens: Math.ceil(content.length / 4),
       },
     };
+  }
+
+  private async executeClaudeDefaultAttempt(
+    context: AttemptContext,
+    talkTitle: string | null,
+    personaRole: TalkPersonaRole,
+    modelContextWindowTokens: number,
+    maxOutputTokens: number,
+    signal: AbortSignal,
+    emit?: (event: TalkExecutionEvent) => void,
+  ): Promise<TalkExecutorOutput> {
+    const settingsService = getActiveExecutorSettingsService();
+    const blockedReason = settingsService.getExecutionBlockedReason();
+    if (blockedReason) {
+      createLlmAttempt({
+        runId: context.input.runId,
+        talkId: context.input.talkId,
+        agentId: context.agentId,
+        routeId: context.routeId,
+        routeStepPosition: context.routeStepPosition,
+        providerId: context.providerId,
+        modelId: context.modelId,
+        status: 'failed',
+        failureClass: 'configuration',
+      });
+      emit?.({
+        type: 'talk_response_failed',
+        runId: context.input.runId,
+        talkId: context.input.talkId,
+        agentId: context.agentId,
+        routeStepPosition: context.routeStepPosition,
+        providerId: context.providerId,
+        modelId: context.modelId,
+        errorCode: 'executor_not_configured',
+        errorMessage: blockedReason,
+      });
+      throw new TalkExecutorError('executor_not_configured', blockedReason);
+    }
+
+    setTalkRunExecutorProfile({
+      runId: context.input.runId,
+      executorAlias: 'Claude',
+      executorModel: context.modelId,
+    });
+
+    const startedAt = Date.now();
+    try {
+      const prompt = assembleTalkPromptContext({
+        talkId: context.input.talkId,
+        talkTitle,
+        currentRunId: context.input.runId,
+        currentUserMessageId: context.input.triggerMessageId,
+        currentUserMessage: context.input.triggerContent,
+        agent: {
+          id: context.agentId,
+          name: context.agentName,
+          personaRole,
+        },
+        modelContextWindowTokens,
+        maxOutputTokens,
+      });
+
+      emit?.({
+        type: 'talk_response_started',
+        runId: context.input.runId,
+        talkId: context.input.talkId,
+        agentId: context.agentId,
+        agentName: context.agentName,
+        routeStepPosition: context.routeStepPosition,
+        providerId: context.providerId,
+        modelId: context.modelId,
+      });
+
+      const group = createWebTalkGroup(this.groupFolder);
+      const chunks: string[] = [];
+      let processRef: ChildProcess | null = null;
+      const onAbort = () => {
+        if (processRef && !processRef.killed) {
+          processRef.kill('SIGTERM');
+        }
+      };
+
+      signal.addEventListener('abort', onAbort, { once: true });
+      try {
+        const result = await this.runContainer(
+          group,
+          {
+            prompt: renderPromptTranscript(prompt.messages),
+            model: context.modelId,
+            toolProfile: 'web_talk',
+            groupFolder: this.groupFolder,
+            chatJid: `talk:${context.input.talkId}`,
+            isMain: false,
+            assistantName: context.agentName,
+            secrets: settingsService.getExecutorSecrets(),
+          },
+          (proc) => {
+            processRef = proc;
+            if (signal.aborted && !proc.killed) {
+              proc.kill('SIGTERM');
+            }
+          },
+          async (streamOutput: ContainerOutput) => {
+            if (!streamOutput.result) return;
+            chunks.push(streamOutput.result);
+            emit?.({
+              type: 'talk_response_delta',
+              runId: context.input.runId,
+              talkId: context.input.talkId,
+              agentId: context.agentId,
+              agentName: context.agentName,
+              deltaText: streamOutput.result,
+              routeStepPosition: context.routeStepPosition,
+              providerId: context.providerId,
+              modelId: context.modelId,
+            });
+          },
+        );
+
+        if (signal.aborted) {
+          throw abortError(signal.reason);
+        }
+
+        if (result.status === 'error') {
+          throw new TalkExecutorError(
+            'executor_container_error',
+            'Claude execution failed.',
+            {
+              sourceMessage:
+                result.error || 'Claude container execution failed.',
+            },
+          );
+        }
+
+        if (chunks.length === 0 && result.result?.trim()) {
+          chunks.push(result.result);
+          emit?.({
+            type: 'talk_response_delta',
+            runId: context.input.runId,
+            talkId: context.input.talkId,
+            agentId: context.agentId,
+            agentName: context.agentName,
+            deltaText: result.result,
+            routeStepPosition: context.routeStepPosition,
+            providerId: context.providerId,
+            modelId: context.modelId,
+          });
+        }
+
+        const content = chunks.join('').trim() || result.result?.trim() || 'No response generated.';
+        createLlmAttempt({
+          runId: context.input.runId,
+          talkId: context.input.talkId,
+          agentId: context.agentId,
+          routeId: context.routeId,
+          routeStepPosition: context.routeStepPosition,
+          providerId: context.providerId,
+          modelId: context.modelId,
+          status: 'success',
+          latencyMs: Date.now() - startedAt,
+          inputTokens: prompt.estimatedInputTokens,
+          outputTokens: null,
+          estimatedCostUsd: null,
+        });
+        emit?.({
+          type: 'talk_response_completed',
+          runId: context.input.runId,
+          talkId: context.input.talkId,
+          agentId: context.agentId,
+          agentName: context.agentName,
+          routeStepPosition: context.routeStepPosition,
+          providerId: context.providerId,
+          modelId: context.modelId,
+        });
+        return {
+          content,
+          metadataJson: JSON.stringify({
+            agentId: context.agentId,
+            agentName: context.agentName,
+            personaRole,
+            routeId: context.routeId,
+            providerId: context.providerId,
+            modelId: context.modelId,
+            sourceKind: 'claude_default',
+          }),
+          agentId: context.agentId,
+          agentName: context.agentName,
+          providerId: context.providerId,
+          modelId: context.modelId,
+        };
+      } finally {
+        signal.removeEventListener('abort', onAbort);
+      }
+    } catch (error) {
+      if (signal.aborted) {
+        createLlmAttempt({
+          runId: context.input.runId,
+          talkId: context.input.talkId,
+          agentId: context.agentId,
+          routeId: context.routeId,
+          routeStepPosition: context.routeStepPosition,
+          providerId: context.providerId,
+          modelId: context.modelId,
+          status: 'cancelled',
+          latencyMs: Date.now() - startedAt,
+        });
+        throw abortError(signal.reason);
+      }
+
+      const classified = classifyClaudeDefaultFailure(error);
+      createLlmAttempt({
+        runId: context.input.runId,
+        talkId: context.input.talkId,
+        agentId: context.agentId,
+        routeId: context.routeId,
+        routeStepPosition: context.routeStepPosition,
+        providerId: context.providerId,
+        modelId: context.modelId,
+        status: 'failed',
+        failureClass: classified.failureClass,
+        latencyMs: Date.now() - startedAt,
+      });
+      emit?.({
+        type: 'talk_response_failed',
+        runId: context.input.runId,
+        talkId: context.input.talkId,
+        agentId: context.agentId,
+        routeStepPosition: context.routeStepPosition,
+        providerId: context.providerId,
+        modelId: context.modelId,
+        errorCode: classified.code,
+        errorMessage: classified.message,
+      });
+      throw new TalkExecutorError(classified.code, classified.message, {
+        sourceMessage: classified.message,
+      });
+    }
   }
 
   private async executeProviderAttempt(

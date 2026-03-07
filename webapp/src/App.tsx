@@ -151,7 +151,6 @@ export function App() {
               element={
                 <TalkDetailPage
                   onUnauthorized={handleUnauthorized}
-                  userRole={auth.user.role}
                 />
               }
             />

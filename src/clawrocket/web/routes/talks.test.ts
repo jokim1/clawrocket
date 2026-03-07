@@ -140,7 +140,7 @@ describe('talk routes', () => {
     const ownTalk = memberBody.data.talks.find(
       (talk: any) => talk.id === 'talk-member',
     );
-    expect(ownTalk.agents).toEqual(['Mock']);
+    expect(ownTalk.agents).toEqual(['Claude']);
     const sharedTalk = memberBody.data.talks.find(
       (talk: any) => talk.id === 'talk-owner',
     );
@@ -221,7 +221,7 @@ describe('talk routes', () => {
     expect(byId['talk-models-array'].agents).toEqual(['GPT-4o', 'Opus']);
     expect(byId['talk-json-string'].agents).toEqual(['Gemini']);
     expect(byId['talk-delimited'].agents).toEqual(['Gemini', 'Opus4.6']);
-    expect(byId['talk-invalid-shape'].agents).toEqual(['Mock']);
+    expect(byId['talk-invalid-shape'].agents).toEqual(['Claude']);
     expect(byId['talk-many-agents'].agents).toEqual([
       'A1',
       'A2',
@@ -406,7 +406,7 @@ describe('talk routes', () => {
     });
     expect(clearRes.status).toBe(200);
     const clearBody = (await clearRes.json()) as any;
-    expect(clearBody.data.agents).toEqual(['Mock']);
+    expect(clearBody.data.agents).toEqual(['Claude']);
 
     const listRes = await server.request('/api/v1/talks', {
       headers: {
@@ -418,7 +418,7 @@ describe('talk routes', () => {
     const talk = listBody.data.talks.find(
       (row: any) => row.id === 'talk-owner',
     );
-    expect(talk.agents).toEqual(['Mock']);
+    expect(talk.agents).toEqual(['Claude']);
   });
 
   it('replays idempotent policy updates', async () => {

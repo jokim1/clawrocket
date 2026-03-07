@@ -11,14 +11,13 @@ import { Link, useParams } from 'react-router-dom';
 
 import {
   AgentProviderCard,
+  AiAgentsPageData,
   ApiError,
   cancelTalkRuns,
-  createRegisteredAgent,
   getAiAgents,
   getTalk,
   getTalkAgents,
   listTalkMessages,
-  RegisteredAgent,
   sendTalkMessage,
   Talk,
   TalkAgent,
@@ -454,10 +453,17 @@ const SCROLL_STICK_THRESHOLD_PX = 120;
 const TALK_MESSAGE_MAX_CHARS = 20_000;
 
 type AgentCreationDraft = {
-  name: string;
-  providerId: string;
+  sourceKind: 'claude_default' | 'provider';
+  providerId: string | null;
   modelId: string;
-  modelDisplayName: string;
+  role: TalkAgent['role'];
+};
+
+type TalkAgentSourceOption = {
+  id: string;
+  label: string;
+  sourceKind: 'claude_default' | 'provider';
+  providerId: string | null;
 };
 
 const TALK_AGENT_ROLE_OPTIONS: TalkAgent['role'][] = [
@@ -473,7 +479,7 @@ const TALK_AGENT_ROLE_OPTIONS: TalkAgent['role'][] = [
 function formatTalkRole(role: TalkAgent['role']): string {
   switch (role) {
     case 'assistant':
-      return 'Assistant';
+      return 'General';
     case 'analyst':
       return 'Analyst';
     case 'critic':
@@ -491,18 +497,34 @@ function formatTalkRole(role: TalkAgent['role']): string {
   }
 }
 
+function buildAgentDisplayName(agent: Pick<
+  TalkAgent,
+  'sourceKind' | 'providerName' | 'modelId' | 'modelDisplayName' | 'name'
+>): string {
+  if (agent.modelDisplayName?.trim()) {
+    return agent.modelDisplayName.trim();
+  }
+  if (agent.modelId?.trim()) {
+    return agent.modelId.trim();
+  }
+  if (agent.sourceKind === 'claude_default') {
+    return 'Claude';
+  }
+  return agent.providerName?.trim() || agent.name || 'Provider';
+}
+
 function buildTalkAgentLabels(agents: TalkAgent[]): Record<string, string> {
   const counts = new Map<string, number>();
   const nextIndex = new Map<string, number>();
 
   for (const agent of agents) {
-    const base = `${agent.name} · ${formatTalkRole(agent.role)}`;
+    const base = `${buildAgentDisplayName(agent)} · ${formatTalkRole(agent.role)}`;
     counts.set(base, (counts.get(base) || 0) + 1);
   }
 
   const labels: Record<string, string> = {};
   for (const agent of agents) {
-    const base = `${agent.name} · ${formatTalkRole(agent.role)}`;
+    const base = `${buildAgentDisplayName(agent)} · ${formatTalkRole(agent.role)}`;
     if ((counts.get(base) || 0) > 1) {
       const index = (nextIndex.get(base) || 0) + 1;
       nextIndex.set(base, index);
@@ -515,18 +537,115 @@ function buildTalkAgentLabels(agents: TalkAgent[]): Record<string, string> {
   return labels;
 }
 
-function buildAgentCreationDraft(
-  providers: AgentProviderCard[],
-  providerId?: string,
-): AgentCreationDraft {
-  const selectedProvider =
-    providers.find((provider) => provider.id === providerId) || providers[0];
-  const firstSuggestion = selectedProvider?.modelSuggestions[0] || null;
+function buildAgentCreationDraft(input: {
+  claudeModelSuggestions: AiAgentsPageData['claudeModelSuggestions'];
+  providers: AgentProviderCard[];
+  sourceKind?: 'claude_default' | 'provider';
+  providerId?: string | null;
+}): AgentCreationDraft {
+  if (input.sourceKind === 'provider') {
+    const selectedProvider =
+      input.providers.find((provider) => provider.id === input.providerId) ||
+      input.providers[0] ||
+      null;
+    const firstSuggestion = selectedProvider?.modelSuggestions[0] || null;
+    return {
+      sourceKind: 'provider',
+      providerId: selectedProvider?.id || null,
+      modelId: firstSuggestion?.modelId || '',
+      role: 'assistant',
+    };
+  }
+
+  const firstClaudeModel = input.claudeModelSuggestions[0] || null;
   return {
-    name: '',
-    providerId: selectedProvider?.id || 'provider.anthropic',
-    modelId: firstSuggestion?.modelId || '',
-    modelDisplayName: firstSuggestion?.displayName || '',
+    sourceKind: 'claude_default',
+    providerId: null,
+    modelId: firstClaudeModel?.modelId || '',
+    role: 'assistant',
+  };
+}
+
+function buildTalkAgentSourceOptions(input: {
+  providers: AgentProviderCard[];
+}): TalkAgentSourceOption[] {
+  return [
+    {
+      id: 'claude_default',
+      label: 'Claude',
+      sourceKind: 'claude_default',
+      providerId: null,
+    },
+    ...input.providers.map((provider) => ({
+      id: provider.id,
+      label: provider.name,
+      sourceKind: 'provider' as const,
+      providerId: provider.id,
+    })),
+  ];
+}
+
+function getModelSuggestionsForSource(input: {
+  sourceKind: 'claude_default' | 'provider';
+  providerId: string | null;
+  aiAgents: AiAgentsPageData | null;
+}): Array<{
+  modelId: string;
+  displayName: string;
+}> {
+  if (!input.aiAgents) return [];
+  if (input.sourceKind === 'claude_default') {
+    return input.aiAgents.claudeModelSuggestions.map((model) => ({
+      modelId: model.modelId,
+      displayName: model.displayName,
+    }));
+  }
+
+  const provider = input.aiAgents.additionalProviders.find(
+    (entry) => entry.id === input.providerId,
+  );
+  return (provider?.modelSuggestions || []).map((model) => ({
+    modelId: model.modelId,
+    displayName: model.displayName,
+  }));
+}
+
+function normalizeAgentSelection(input: {
+  agent: TalkAgent;
+  sourceKind: 'claude_default' | 'provider';
+  providerId: string | null;
+  modelId: string;
+  aiAgents: AiAgentsPageData | null;
+}): Partial<TalkAgent> {
+  const suggestions = getModelSuggestionsForSource({
+    sourceKind: input.sourceKind,
+    providerId: input.providerId,
+    aiAgents: input.aiAgents,
+  });
+  const selectedModel =
+    suggestions.find((entry) => entry.modelId === input.modelId) ||
+    suggestions[0] ||
+    null;
+  const providerName =
+    input.sourceKind === 'provider'
+      ? input.aiAgents?.additionalProviders.find(
+          (provider) => provider.id === input.providerId,
+        )?.name || null
+      : 'Anthropic';
+
+  return {
+    sourceKind: input.sourceKind,
+    providerId: input.sourceKind === 'provider' ? input.providerId : null,
+    providerName,
+    modelId: selectedModel?.modelId || input.modelId || null,
+    modelDisplayName:
+      selectedModel?.displayName ||
+      (input.modelId ? input.modelId : input.agent.modelDisplayName),
+    status: input.agent.status,
+    name:
+      input.sourceKind === 'claude_default'
+        ? 'Claude'
+        : providerName || input.agent.name,
   };
 }
 
@@ -545,19 +664,22 @@ function normalizeTalkAgent(
   },
   index: number,
 ): TalkAgent {
+  const sourceKind =
+    input.sourceKind === 'claude_default' || input.sourceKind === 'provider'
+      ? input.sourceKind
+      : 'claude_default';
   return {
     id:
       typeof input.id === 'string' && input.id.trim()
         ? input.id
-        : `legacy-agent-${index}`,
-    registeredAgentId:
-      typeof input.registeredAgentId === 'string' && input.registeredAgentId.trim()
-        ? input.registeredAgentId
-        : null,
+        : `agent-${index}`,
     name:
       typeof input.name === 'string' && input.name.trim()
         ? input.name
-        : 'Legacy Agent',
+        : sourceKind === 'claude_default'
+          ? 'Claude'
+          : 'Provider',
+    sourceKind,
     role: isTalkAgentRole(input.role)
       ? input.role
       : isTalkAgentRole(input.personaRole)
@@ -574,11 +696,9 @@ function normalizeTalkAgent(
           ? input.sortOrder
           : index,
     status:
-      input.status === 'active' ||
-      input.status === 'archived' ||
-      input.status === 'legacy'
+      input.status === 'active' || input.status === 'archived'
         ? input.status
-        : 'legacy',
+        : 'active',
     providerId: typeof input.providerId === 'string' ? input.providerId : null,
     providerName:
       typeof input.providerName === 'string' ? input.providerName : null,
@@ -596,27 +716,23 @@ function normalizeTalkAgents(input: TalkAgent[]): TalkAgent[] {
 
 export function TalkDetailPage({
   onUnauthorized,
-  userRole,
 }: {
   onUnauthorized: () => void;
-  userRole: string;
 }): JSX.Element {
   const { talkId = '' } = useParams<{ talkId: string }>();
   const [state, dispatch] = useReducer(detailReducer, undefined, createInitialDetailState);
   const [draft, setDraft] = useState('');
   const [agents, setAgents] = useState<TalkAgent[]>([]);
   const [agentDrafts, setAgentDrafts] = useState<TalkAgent[]>([]);
+  const [aiAgentsData, setAiAgentsData] = useState<AiAgentsPageData | null>(null);
   const [agentProviders, setAgentProviders] = useState<AgentProviderCard[]>([]);
   const [targetAgentId, setTargetAgentId] = useState<string | null>(null);
-  const [registeredAgents, setRegisteredAgents] = useState<RegisteredAgent[]>([]);
-  const [registeredAgentsError, setRegisteredAgentsError] = useState<string | null>(null);
-  const [newAgentRegisteredId, setNewAgentRegisteredId] = useState('');
-  const [showCreateAgentInline, setShowCreateAgentInline] = useState(false);
-  const [createAgentDraft, setCreateAgentDraft] = useState<AgentCreationDraft>({
-    name: '',
-    providerId: 'provider.anthropic',
+  const [agentsCatalogError, setAgentsCatalogError] = useState<string | null>(null);
+  const [newAgentDraft, setNewAgentDraft] = useState<AgentCreationDraft>({
+    sourceKind: 'claude_default',
+    providerId: null,
     modelId: '',
-    modelDisplayName: '',
+    role: 'assistant',
   });
   const [agentState, setAgentState] = useState<{
     status: 'idle' | 'saving' | 'error' | 'success';
@@ -651,8 +767,6 @@ export function TalkDetailPage({
   const canCancelRuns =
     accessRole === 'owner' || accessRole === 'admin' || accessRole === 'editor';
   const canEditAgents = canCancelRuns;
-  const canManageRegisteredAgents =
-    userRole === 'owner' || userRole === 'admin';
 
   const isNearBottom = useCallback((): boolean => {
     const container = timelineRef.current;
@@ -852,17 +966,15 @@ export function TalkDetailPage({
     messageElementRefs.current.clear();
     setAgents([]);
     setAgentDrafts([]);
+    setAiAgentsData(null);
     setAgentProviders([]);
-    setRegisteredAgents([]);
-    setRegisteredAgentsError(null);
+    setAgentsCatalogError(null);
     setTargetAgentId(null);
-    setNewAgentRegisteredId('');
-    setShowCreateAgentInline(false);
-    setCreateAgentDraft({
-      name: '',
-      providerId: 'provider.anthropic',
+    setNewAgentDraft({
+      sourceKind: 'claude_default',
+      providerId: null,
       modelId: '',
-      modelDisplayName: '',
+      role: 'assistant',
     });
     setAgentState({ status: 'idle' });
 
@@ -877,9 +989,7 @@ export function TalkDetailPage({
           const nextAgents = normalizeTalkAgents(rawAgents);
           setAgents(nextAgents);
           setAgentDrafts(nextAgents);
-          setTargetAgentId(
-            nextAgents.find((agent) => agent.isLead)?.id || nextAgents[0]?.id || null,
-          );
+          setTargetAgentId(null);
           setAgentState({ status: 'idle' });
           dispatch({ type: 'BOOTSTRAP_READY', talk, messages });
         }
@@ -918,24 +1028,25 @@ export function TalkDetailPage({
   useEffect(() => {
     let cancelled = false;
 
-    const loadRegisteredAgents = async () => {
+    const loadAiAgents = async () => {
       try {
         const next = await getAiAgents();
         if (cancelled) return;
-        const nextProviders = next.providers.filter((provider) => provider.hasCredential);
-        const activeAgents = next.registeredAgents.filter((agent) => agent.enabled);
-        setAgentProviders(nextProviders);
-        setRegisteredAgents(activeAgents);
-        setRegisteredAgentsError(null);
-        setNewAgentRegisteredId((current) =>
-          current && activeAgents.some((agent) => agent.id === current)
-            ? current
-            : activeAgents[0]?.id || '',
+        const nextProviders = next.additionalProviders.filter(
+          (provider) => provider.hasCredential,
         );
-        setCreateAgentDraft((current) =>
-          current.name || current.modelId
+        setAiAgentsData(next);
+        setAgentProviders(nextProviders);
+        setAgentsCatalogError(null);
+        setNewAgentDraft((current) =>
+          current.modelId
             ? current
-            : buildAgentCreationDraft(nextProviders, current.providerId),
+            : buildAgentCreationDraft({
+                claudeModelSuggestions: next.claudeModelSuggestions,
+                providers: nextProviders,
+                sourceKind: current.sourceKind,
+                providerId: current.providerId,
+              }),
         );
       } catch (err) {
         if (err instanceof UnauthorizedError) {
@@ -943,15 +1054,16 @@ export function TalkDetailPage({
           return;
         }
         if (!cancelled) {
-          setRegisteredAgents([]);
-          setRegisteredAgentsError(
+          setAiAgentsData(null);
+          setAgentProviders([]);
+          setAgentsCatalogError(
             err instanceof Error ? err.message : 'Failed to load AI agents.',
           );
         }
       }
     };
 
-    void loadRegisteredAgents();
+    void loadAiAgents();
 
     return () => {
       cancelled = true;
@@ -1138,24 +1250,73 @@ export function TalkDetailPage({
     }
   };
 
+  const applyAgentSourceSelection = (
+    agentId: string,
+    input: {
+      sourceKind: 'claude_default' | 'provider';
+      providerId: string | null;
+      modelId: string;
+    },
+  ) => {
+    setAgentDrafts((current) =>
+      current.map((agent) =>
+        agent.id === agentId
+          ? {
+              ...agent,
+              ...normalizeAgentSelection({
+                agent,
+                sourceKind: input.sourceKind,
+                providerId: input.providerId,
+                modelId: input.modelId,
+                aiAgents: aiAgentsData,
+              }),
+            }
+          : agent,
+      ),
+    );
+    if (agentState.status === 'error' || agentState.status === 'success') {
+      setAgentState({ status: 'idle' });
+    }
+  };
+
   const handleAddAgent = () => {
-    const source = registeredAgents.find((agent) => agent.id === newAgentRegisteredId);
-    if (!source) return;
-    const nextAgent: TalkAgent = {
-      id: globalThis.crypto?.randomUUID?.() || `agent-${Date.now()}`,
-      registeredAgentId: source.id,
-      name: source.name,
-      role: 'assistant',
-      isLead: false,
-      displayOrder: agentDrafts.length,
-      status: 'active',
-      providerId: source.providerId,
-      providerName: source.providerName,
-      modelId: source.modelId,
-      modelDisplayName: source.modelDisplayName,
-    };
+    const nextAgent: TalkAgent = normalizeTalkAgent(
+      {
+        id: globalThis.crypto?.randomUUID?.() || `agent-${Date.now()}`,
+        name: newAgentDraft.sourceKind === 'claude_default' ? 'Claude' : 'Provider',
+        sourceKind: newAgentDraft.sourceKind,
+        providerId: newAgentDraft.providerId,
+        modelId: newAgentDraft.modelId,
+        role: newAgentDraft.role,
+        isLead: false,
+        displayOrder: agentDrafts.length,
+        status: 'active',
+        ...normalizeAgentSelection({
+          agent: {
+            id: '',
+            name: '',
+            sourceKind: newAgentDraft.sourceKind,
+            role: newAgentDraft.role,
+            isLead: false,
+            displayOrder: agentDrafts.length,
+            status: 'active',
+            providerId: newAgentDraft.providerId,
+            providerName: null,
+            modelId: newAgentDraft.modelId,
+            modelDisplayName: null,
+          },
+          sourceKind: newAgentDraft.sourceKind,
+          providerId: newAgentDraft.providerId,
+          modelId: newAgentDraft.modelId,
+          aiAgents: aiAgentsData,
+        }),
+      },
+      agentDrafts.length,
+    );
+    if (!nextAgent.modelId) return;
     setAgentDrafts((current) => [...current, nextAgent]);
-    setTargetAgentId((current) => current || nextAgent.id);
+    setTargetAgentId(null);
+    setAgentState({ status: 'idle' });
   };
 
   const handleRemoveAgent = (agentId: string) => {
@@ -1180,79 +1341,7 @@ export function TalkDetailPage({
         isLead: agent.id === agentId,
       })),
     );
-    setTargetAgentId(agentId);
-  };
-
-  const handleRegisteredAgentSelection = (
-    agentId: string,
-    registeredAgentId: string,
-  ) => {
-    const source = registeredAgents.find((agent) => agent.id === registeredAgentId);
-    if (!source) return;
-    handleAgentDraftChange(agentId, {
-      registeredAgentId: source.id,
-      name: source.name,
-      status: 'active',
-      providerId: source.providerId,
-      providerName: source.providerName,
-      modelId: source.modelId,
-      modelDisplayName: source.modelDisplayName,
-    });
-  };
-
-  const refreshRegisteredAgents = useCallback(async () => {
-    const next = await getAiAgents();
-    const nextProviders = next.providers.filter((provider) => provider.hasCredential);
-    const activeAgents = next.registeredAgents.filter((agent) => agent.enabled);
-    setAgentProviders(nextProviders);
-    setRegisteredAgents(activeAgents);
-    setRegisteredAgentsError(null);
-    setNewAgentRegisteredId((current) =>
-      current && activeAgents.some((agent) => agent.id === current)
-        ? current
-        : activeAgents[0]?.id || '',
-    );
-    return activeAgents;
-  }, []);
-
-  const handleCreateRegisteredAgentInline = async (event: FormEvent) => {
-    event.preventDefault();
-    if (!canManageRegisteredAgents) return;
-
-    setAgentState({ status: 'saving' });
-    try {
-      if (
-        !createAgentDraft.name.trim() ||
-        !createAgentDraft.providerId ||
-        !createAgentDraft.modelId.trim()
-      ) {
-        throw new Error('Agent name, provider, and model are required.');
-      }
-      const result = await createRegisteredAgent({
-        name: createAgentDraft.name.trim(),
-        providerId: createAgentDraft.providerId,
-        modelId: createAgentDraft.modelId.trim(),
-        modelDisplayName: createAgentDraft.modelDisplayName.trim() || null,
-      });
-      await refreshRegisteredAgents();
-      setShowCreateAgentInline(false);
-      setCreateAgentDraft(buildAgentCreationDraft(agentProviders));
-      setNewAgentRegisteredId(result.agent.id);
-      setAgentState({
-        status: 'success',
-        message: 'AI agent created. You can add it to this talk now.',
-      });
-    } catch (err) {
-      if (err instanceof UnauthorizedError) {
-        handleUnauthorized();
-        return;
-      }
-      setAgentState({
-        status: 'error',
-        message:
-          err instanceof Error ? err.message : 'Failed to create AI agent.',
-      });
-    }
+    setTargetAgentId(null);
   };
 
   const handleSaveAgents = async () => {
@@ -1262,22 +1351,25 @@ export function TalkDetailPage({
     try {
       const normalized = agentDrafts.map((agent, index) => ({
         id: agent.id,
-        registeredAgentId: agent.registeredAgentId,
+        sourceKind:
+          agent.sourceKind === 'claude_default' || agent.sourceKind === 'provider'
+            ? agent.sourceKind
+            : 'claude_default',
+        providerId: agent.sourceKind === 'provider' ? agent.providerId : null,
+        modelId: agent.modelId,
         role: agent.role,
         isLead: agent.isLead,
         displayOrder: index,
       }));
       const saved = normalizeTalkAgents(
         await updateTalkAgents({
-        talkId: state.talk!.id,
-        agents: normalized as TalkAgent[],
-      }),
+          talkId: state.talk!.id,
+          agents: normalized as TalkAgent[],
+        }),
       );
       setAgents(saved);
       setAgentDrafts(saved);
-      setTargetAgentId(
-        saved.find((agent) => agent.isLead)?.id || saved[0]?.id || null,
-      );
+      setTargetAgentId(null);
       setAgentState({
         status: 'success',
         message: 'Talk agents updated.',
@@ -1316,15 +1408,18 @@ export function TalkDetailPage({
     () => buildTalkAgentLabels(agentDrafts),
     [agentDrafts],
   );
-  const configuredProviderChoices = useMemo(
-    () => agentProviders.map((provider) => ({ id: provider.id, name: provider.name })),
+  const sourceOptions = useMemo(
+    () => buildTalkAgentSourceOptions({ providers: agentProviders }),
     [agentProviders],
   );
-  const selectedCreateProvider = useMemo(
+  const newAgentModelOptions = useMemo(
     () =>
-      agentProviders.find((provider) => provider.id === createAgentDraft.providerId) ||
-      null,
-    [agentProviders, createAgentDraft.providerId],
+      getModelSuggestionsForSource({
+        sourceKind: newAgentDraft.sourceKind,
+        providerId: newAgentDraft.providerId,
+        aiAgents: aiAgentsData,
+      }),
+    [aiAgentsData, newAgentDraft.modelId, newAgentDraft.providerId, newAgentDraft.sourceKind],
   );
   const manageAgentsHref = `/app/agents?returnTo=${encodeURIComponent(
     `/app/talks/${talkId}`,
@@ -1404,14 +1499,14 @@ export function TalkDetailPage({
         <Link to="/app/talks">Back</Link>
       </header>
 
-      <section className="policy-panel" aria-label="Talk policy">
+      <section className="policy-panel" aria-label="Talk agents">
         <h2>Talk Agents</h2>
         {agents.length > 0 ? (
           <div className="talk-agent-row">
             {agents.map((agent) => (
               <span key={agent.id} className="talk-agent-chip">
                 {savedAgentLabels[agent.id] || agent.name}
-                {agent.isLead ? ' · Lead' : ''}
+                {agent.isLead ? ' · Primary' : ''}
                 {agent.status !== 'active' ? ` · ${agent.status}` : ''}
               </span>
             ))}
@@ -1420,35 +1515,87 @@ export function TalkDetailPage({
         {canEditAgents ? (
           <div className="policy-editor">
             <p className="policy-muted">
-              Roles are talk-specific. Global AI agents are configured on the AI
-              Agents page.
+              The primary agent responds to normal user messages. Any other
+              agents are only used when you explicitly call them.
             </p>
             {agentDrafts.map((agent) => (
               <div key={agent.id} className="policy-agent-grid">
-                {agent.status === 'legacy' ? (
+                <>
                   <label>
-                    <span>Legacy agent</span>
-                    <input type="text" value={agent.name} disabled />
-                  </label>
-                ) : (
-                  <label>
-                    <span>AI Agent</span>
+                    <span>Agent source</span>
                     <select
-                      value={agent.registeredAgentId || ''}
-                      onChange={(event) =>
-                        handleRegisteredAgentSelection(agent.id, event.target.value)
+                      value={
+                        agent.sourceKind === 'claude_default'
+                          ? 'claude_default'
+                          : agent.providerId || ''
                       }
+                      onChange={(event) => {
+                        const selected = sourceOptions.find(
+                          (option) => option.id === event.target.value,
+                        );
+                        if (!selected) return;
+                        const suggestions = getModelSuggestionsForSource({
+                          sourceKind: selected.sourceKind,
+                          providerId: selected.providerId,
+                          aiAgents: aiAgentsData,
+                        });
+                        applyAgentSourceSelection(agent.id, {
+                          sourceKind: selected.sourceKind,
+                          providerId: selected.providerId,
+                          modelId:
+                            suggestions.find(
+                              (entry) => entry.modelId === agent.modelId,
+                            )?.modelId ||
+                            suggestions[0]?.modelId ||
+                            '',
+                        });
+                      }}
                       disabled={agentState.status === 'saving'}
                     >
-                      {registeredAgents.map((registeredAgent) => (
-                        <option key={registeredAgent.id} value={registeredAgent.id}>
-                          {registeredAgent.name} · {registeredAgent.providerName} ·{' '}
-                          {registeredAgent.modelDisplayName}
+                      {sourceOptions.map((option) => (
+                        <option key={option.id} value={option.id}>
+                          {option.label}
                         </option>
                       ))}
                     </select>
                   </label>
-                )}
+                  <label>
+                    <span>Model</span>
+                    <select
+                      value={agent.modelId || ''}
+                      onChange={(event) =>
+                        applyAgentSourceSelection(agent.id, {
+                          sourceKind:
+                            agent.sourceKind === 'provider'
+                              ? 'provider'
+                              : 'claude_default',
+                          providerId:
+                            agent.sourceKind === 'provider'
+                              ? agent.providerId
+                              : null,
+                          modelId: event.target.value,
+                        })
+                      }
+                      disabled={agentState.status === 'saving'}
+                    >
+                      {getModelSuggestionsForSource({
+                        sourceKind:
+                          agent.sourceKind === 'provider'
+                            ? 'provider'
+                            : 'claude_default',
+                        providerId:
+                          agent.sourceKind === 'provider'
+                            ? agent.providerId
+                            : null,
+                        aiAgents: aiAgentsData,
+                      }).map((model) => (
+                        <option key={model.modelId} value={model.modelId}>
+                          {model.displayName}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                </>
                 <label>
                   <span>Role</span>
                   <select
@@ -1478,12 +1625,12 @@ export function TalkDetailPage({
                 <label className="policy-primary-toggle">
                   <input
                     type="radio"
-                    name="lead-talk-agent"
+                    name="primary-talk-agent"
                     checked={agent.isLead}
                     onChange={() => handleSetLeadAgent(agent.id)}
                     disabled={agentState.status === 'saving'}
                   />
-                  <span>Lead Agent</span>
+                  <span>Primary Agent</span>
                 </label>
                 <button
                   type="button"
@@ -1497,17 +1644,71 @@ export function TalkDetailPage({
             ))}
             <div className="policy-editor-controls">
               <label className="policy-add-agent">
-                <span>Add registered agent</span>
+                <span>Source</span>
                 <select
-                  value={newAgentRegisteredId}
-                  onChange={(event) => setNewAgentRegisteredId(event.target.value)}
-                  disabled={
-                    agentState.status === 'saving' || registeredAgents.length === 0
+                  value={
+                    newAgentDraft.sourceKind === 'claude_default'
+                      ? 'claude_default'
+                      : newAgentDraft.providerId || ''
                   }
+                  onChange={(event) => {
+                    const selected = sourceOptions.find(
+                      (option) => option.id === event.target.value,
+                    );
+                    if (!selected) return;
+                    setNewAgentDraft(
+                      buildAgentCreationDraft({
+                        claudeModelSuggestions:
+                          aiAgentsData?.claudeModelSuggestions || [],
+                        providers: agentProviders,
+                        sourceKind: selected.sourceKind,
+                        providerId: selected.providerId,
+                      }),
+                    );
+                  }}
+                  disabled={agentState.status === 'saving'}
                 >
-                  {registeredAgents.map((agent) => (
-                    <option key={agent.id} value={agent.id}>
-                      {agent.name} · {agent.providerName} · {agent.modelDisplayName}
+                  {sourceOptions.map((option) => (
+                    <option key={option.id} value={option.id}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="policy-add-agent">
+                <span>Model</span>
+                <select
+                  value={newAgentDraft.modelId}
+                  onChange={(event) =>
+                    setNewAgentDraft((current) => ({
+                      ...current,
+                      modelId: event.target.value,
+                    }))
+                  }
+                  disabled={agentState.status === 'saving'}
+                >
+                  {newAgentModelOptions.map((model) => (
+                    <option key={model.modelId} value={model.modelId}>
+                      {model.displayName}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="policy-add-agent">
+                <span>Role</span>
+                <select
+                  value={newAgentDraft.role}
+                  onChange={(event) =>
+                    setNewAgentDraft((current) => ({
+                      ...current,
+                      role: event.target.value as TalkAgent['role'],
+                    }))
+                  }
+                  disabled={agentState.status === 'saving'}
+                >
+                  {TALK_AGENT_ROLE_OPTIONS.map((role) => (
+                    <option key={role} value={role}>
+                      {formatTalkRole(role)}
                     </option>
                   ))}
                 </select>
@@ -1517,35 +1718,11 @@ export function TalkDetailPage({
                 className="secondary-btn"
                 onClick={handleAddAgent}
                 disabled={
-                  agentState.status === 'saving' || registeredAgents.length === 0
+                  agentState.status === 'saving' || !newAgentDraft.modelId
                 }
               >
                 Add Agent
               </button>
-              {canManageRegisteredAgents ? (
-                <button
-                  type="button"
-                  className="secondary-btn"
-                  onClick={() => {
-                    setShowCreateAgentInline((current) => !current);
-                    setCreateAgentDraft(
-                      buildAgentCreationDraft(
-                        agentProviders,
-                        createAgentDraft.providerId,
-                      ),
-                    );
-                  }}
-                  disabled={
-                    agentState.status === 'saving' || agentProviders.length === 0
-                  }
-                >
-                  Create new AI Agent…
-                </button>
-              ) : (
-                <Link className="secondary-btn" to={manageAgentsHref}>
-                  Open AI Agents
-                </Link>
-              )}
               <button
                 type="button"
                 className="secondary-btn"
@@ -1554,129 +1731,23 @@ export function TalkDetailPage({
               >
                 {agentState.status === 'saving' ? 'Saving…' : 'Save Agents'}
               </button>
+              <Link className="secondary-btn" to={manageAgentsHref}>
+                Manage AI Agents
+              </Link>
             </div>
-            {registeredAgentsError ? (
+            {agentsCatalogError ? (
               <div className="inline-banner inline-banner-error" role="alert">
-                {registeredAgentsError}
+                {agentsCatalogError}
               </div>
             ) : null}
-            {registeredAgents.length === 0 ? (
+            {sourceOptions.length <= 1 ? (
               <div className="inline-banner inline-banner-warning" role="status">
-                <span>No active AI agents are configured yet.</span>
-                <Link to={manageAgentsHref}>Set up AI Agents</Link>
+                <span>
+                  Claude is ready, but no additional provider keys are
+                  configured yet.
+                </span>
+                <Link to={manageAgentsHref}>Open AI Agents</Link>
               </div>
-            ) : null}
-            {showCreateAgentInline && canManageRegisteredAgents ? (
-              <form
-                className="policy-inline-create"
-                onSubmit={handleCreateRegisteredAgentInline}
-              >
-                <h3>Create new AI Agent</h3>
-                <p className="policy-muted">
-                  Create a global agent identity, then add it to this talk.
-                </p>
-                <div className="policy-agent-grid">
-                  <label>
-                    <span>Name</span>
-                    <input
-                      type="text"
-                      value={createAgentDraft.name}
-                      onChange={(event) =>
-                        setCreateAgentDraft((current) => ({
-                          ...current,
-                          name: event.target.value,
-                        }))
-                      }
-                      disabled={agentState.status === 'saving'}
-                    />
-                  </label>
-                  <label>
-                    <span>Provider</span>
-                    <select
-                      value={createAgentDraft.providerId}
-                      onChange={(event) => {
-                        const providerId = event.target.value;
-                        const nextDraft = buildAgentCreationDraft(
-                          agentProviders,
-                          providerId,
-                        );
-                        setCreateAgentDraft((current) => ({
-                          ...current,
-                          providerId,
-                          modelId: nextDraft.modelId,
-                          modelDisplayName: nextDraft.modelDisplayName,
-                        }));
-                      }}
-                      disabled={agentState.status === 'saving'}
-                    >
-                      {configuredProviderChoices.map((provider) => (
-                        <option key={provider.id} value={provider.id}>
-                          {provider.name}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <label>
-                    <span>Model</span>
-                    <input
-                      list="talk-create-agent-models"
-                      value={createAgentDraft.modelId}
-                      onChange={(event) =>
-                        setCreateAgentDraft((current) => ({
-                          ...current,
-                          modelId: event.target.value,
-                          modelDisplayName: event.target.value,
-                        }))
-                      }
-                      disabled={agentState.status === 'saving'}
-                    />
-                  </label>
-                  <label>
-                    <span>Display name</span>
-                    <input
-                      type="text"
-                      value={createAgentDraft.modelDisplayName}
-                      onChange={(event) =>
-                        setCreateAgentDraft((current) => ({
-                          ...current,
-                          modelDisplayName: event.target.value,
-                        }))
-                      }
-                      disabled={agentState.status === 'saving'}
-                    />
-                  </label>
-                </div>
-                <datalist id="talk-create-agent-models">
-                  {(selectedCreateProvider?.modelSuggestions || []).map((model) => (
-                    <option
-                      key={`${createAgentDraft.providerId}:${model.modelId}`}
-                      value={model.modelId}
-                    >
-                      {model.displayName}
-                    </option>
-                  ))}
-                </datalist>
-                <div className="policy-editor-controls">
-                  <button
-                    type="submit"
-                    className="primary-btn"
-                    disabled={
-                      agentState.status === 'saving' ||
-                      configuredProviderChoices.length === 0
-                    }
-                  >
-                    {agentState.status === 'saving' ? 'Creating…' : 'Create AI Agent'}
-                  </button>
-                  <button
-                    type="button"
-                    className="secondary-btn"
-                    onClick={() => setShowCreateAgentInline(false)}
-                    disabled={agentState.status === 'saving'}
-                  >
-                    Cancel
-                  </button>
-                </div>
-              </form>
             ) : null}
             {agentState.status === 'error' ? (
               <div className="inline-banner inline-banner-error" role="alert">
@@ -1824,16 +1895,17 @@ export function TalkDetailPage({
 
       <form className="composer" onSubmit={handleSend}>
         <label className="composer-target">
-          <span>Reply agent</span>
+          <span>Called agent</span>
           <select
             value={targetAgentId || ''}
             onChange={(event) => setTargetAgentId(event.target.value || null)}
             disabled={state.sendState.status === 'posting' || agents.length === 0}
           >
+            <option value="">Primary Agent (default)</option>
             {agents.map((agent) => (
               <option key={agent.id} value={agent.id}>
                 {savedAgentLabels[agent.id] || agent.name}
-                {agent.isLead ? ' (Lead)' : ''}
+                {agent.isLead ? ' (Primary)' : ''}
               </option>
             ))}
           </select>

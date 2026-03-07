@@ -722,382 +722,47 @@ export function SettingsPage({ onUnauthorized, userRole }: Props) {
         ) : null}
       </section>
 
-      <section className="settings-card">
-        <h2>Anthropic Credentials</h2>
-        <p className="settings-copy">
-          Choose the active auth mode for the core executor. Stored standby
-          credentials remain visible but are not exported unless their mode is
-          selected.
-        </p>
-
-        <label className="settings-field-span">
-          <span>Active auth mode</span>
-          <select
-            value={authModeDraft}
-            onChange={(event) => setAuthModeDraft(event.target.value as AuthMode)}
-          >
-            <option value="subscription">Subscription (Claude Pro/Max)</option>
-            <option value="api_key">API Key (Anthropic Console)</option>
-            <option value="advanced_bearer">Advanced bearer / gateway</option>
-            <option value="none">None</option>
-          </select>
-        </label>
-
-        {authModeDraft === 'subscription' ? (
-          <>
-            <p className="settings-copy">
-              Use the Claude Code / Claude.ai subscription path for Claude Pro or
-              Max. Run Claude login on the machine running ClawRocket, as the
-              same OS user that runs the ClawRocket process. API-key mode takes
-              precedence over subscription usage when it is selected.
-            </p>
-            <div className="settings-grid settings-status-grid">
-              <div>
-                <span className="settings-label">Checked as user</span>
-                <strong>
-                  {subscriptionHostStatus?.serviceUser || 'Unknown service user'}
-                </strong>
-              </div>
-              <div>
-                <span className="settings-label">Home</span>
-                <strong>
-                  {subscriptionHostStatus?.serviceHomePath || 'Unknown'}
-                </strong>
-              </div>
-              <div>
-                <span className="settings-label">Host CLI</span>
-                <strong>
-                  {subscriptionHostStatus
-                    ? subscriptionHostStatus.claudeCliInstalled === true
-                      ? 'Installed'
-                      : subscriptionHostStatus.claudeCliInstalled === false
-                        ? 'Not found'
-                        : 'Unavailable'
-                    : 'Not checked'}
-                </strong>
-              </div>
-              <div>
-                <span className="settings-label">Host login</span>
-                <strong>
-                  {subscriptionHostStatus
-                    ? subscriptionHostStatus.hostLoginDetected
-                      ? 'Detected'
-                      : 'Not detected'
-                    : 'Not checked'}
-                </strong>
-              </div>
-            </div>
-
-            <div className="settings-button-row">
-              <button
-                type="button"
-                className="secondary-btn"
-                disabled={subscriptionHostBusy === 'checking'}
-                onClick={() => void checkSubscriptionHostLogin()}
-              >
-                {subscriptionHostBusy === 'checking'
-                  ? 'Checking…'
-                  : 'Check host Claude login'}
-              </button>
-              {showSubscriptionImportButton ? (
-                <button
-                  type="button"
-                  className="secondary-btn"
-                  disabled={subscriptionHostBusy === 'importing'}
-                  onClick={() => void importSubscriptionFromHost()}
-                >
-                  {subscriptionHostBusy === 'importing'
-                    ? 'Importing…'
-                    : 'Import from host'}
-                </button>
-              ) : null}
-              <button
-                type="button"
-                className="secondary-btn"
-                onClick={() =>
-                  setShowSubscriptionAdvanced((current) => !current)
-                }
-              >
-                {showSubscriptionAdvanced
-                  ? 'Hide manual token entry'
-                  : 'Paste Claude Code OAuth token manually'}
-              </button>
-            </div>
-
-            {subscriptionHostStatus ? (
-              <div className="settings-host-status">
-                <p className="settings-copy">{subscriptionHostStatus.message}</p>
-                {subscriptionHostStatus.recommendedCommands.length > 0 ? (
-                  <div className="settings-command-list">
-                    <strong>Recommended commands</strong>
-                    <ul>
-                      {subscriptionHostStatus.recommendedCommands.map((command) => (
-                        <li key={command}>
-                          <code>{command}</code>
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-                ) : null}
-              </div>
-            ) : null}
-
-            {showSubscriptionAdvanced ? (
-              <div className="settings-advanced-box">
-                <p className="settings-copy">
-                  Manual fallback is intended for headless or unsupported host
-                  setups. You can generate a long-lived token with{' '}
-                  <code>claude setup-token</code>, then paste it here.
-                </p>
-                <p className="settings-copy">
-                  {
-                    fieldDraftState({
-                      stored: settings.hasOauthToken,
-                      cleared: clearOauth,
-                      draftValue: oauthDraft,
-                    }).message
-                  }
-                </p>
-                <div className="settings-form-grid">
-                  <label>
-                    <span>Claude Code OAuth Token</span>
-                    <input
-                      type="password"
-                      value={oauthDraft}
-                      onChange={(event) => {
-                        setOauthDraft(event.target.value);
-                        setClearOauth(false);
-                      }}
-                      placeholder={
-                        settings.hasOauthToken ? 'Configured' : 'Not configured'
-                      }
-                    />
-                  </label>
-                  <button
-                    type="button"
-                    className="secondary-btn"
-                    onClick={() => {
-                      setOauthDraft('');
-                      setClearOauth(true);
-                    }}
-                  >
-                    Clear OAuth Token
-                  </button>
-                </div>
-              </div>
-            ) : null}
-          </>
-        ) : null}
-
-        {authModeDraft === 'api_key' ? (
-          <>
-            <p className="settings-copy">
-              Use an Anthropic Console API key for normal API billing. Saving this
-              mode auto-starts verification in the background.
-            </p>
-            <p className="settings-copy">
-              {
-                fieldDraftState({
-                  stored: settings.hasApiKey,
-                  cleared: clearApiKey,
-                  draftValue: apiKeyDraft,
-                }).message
-              }
-            </p>
-            <div className="settings-form-grid">
-              <label>
-                <span>API Key</span>
-                <input
-                  type="password"
-                  value={apiKeyDraft}
-                  onChange={(event) => {
-                    setApiKeyDraft(event.target.value);
-                    setClearApiKey(false);
-                  }}
-                  placeholder={
-                    settings.hasApiKey ? 'Configured' : 'Not configured'
-                  }
-                />
-              </label>
-              <button
-                type="button"
-                className="secondary-btn"
-                onClick={() => {
-                  setApiKeyDraft('');
-                  setClearApiKey(true);
-                }}
-              >
-                Clear API Key
-              </button>
-            </div>
-          </>
-        ) : null}
-
-        {authModeDraft === 'advanced_bearer' ? (
-          <>
-            <p className="settings-copy">
-              Advanced bearer mode is intended for custom bearer-token or gateway
-              deployments. Saving this mode auto-starts verification in the
-              background.
-            </p>
-            <p className="settings-copy">
-              {
-                fieldDraftState({
-                  stored: settings.hasAuthToken,
-                  cleared: clearAuthToken,
-                  draftValue: authTokenDraft,
-                }).message
-              }
-            </p>
-            <div className="settings-form-grid">
-              <label>
-                <span>Auth Token</span>
-                <input
-                  type="password"
-                  value={authTokenDraft}
-                  onChange={(event) => {
-                    setAuthTokenDraft(event.target.value);
-                    setClearAuthToken(false);
-                  }}
-                  placeholder={
-                    settings.hasAuthToken ? 'Configured' : 'Not configured'
-                  }
-                />
-              </label>
-              <button
-                type="button"
-                className="secondary-btn"
-                onClick={() => {
-                  setAuthTokenDraft('');
-                  setClearAuthToken(true);
-                }}
-              >
-                Clear Auth Token
-              </button>
-            </div>
-          </>
-        ) : null}
-
-        {authModeDraft === 'none' ? (
+      {userRole === 'owner' || userRole === 'admin' ? (
+        <section className="settings-card">
+          <h2>AI Agents</h2>
           <p className="settings-copy">
-            The core executor will not export Anthropic credentials while None is
-            selected. Real core runs will fail fast until you choose a mode and
-            configure its credential.
+            Configure the default Claude agent and any additional provider keys
+            on the AI Agents page. Roles and primary-agent behavior are managed
+            inside each talk.
           </p>
-        ) : null}
-
-        {showBaseUrl ? (
-          <>
-            <p className="settings-copy">
-              Anthropic/Gateway Base URL applies to API Key and Advanced bearer
-              modes only.
-            </p>
-            <div className="settings-form-grid">
-              <label>
-                <span>Anthropic/Gateway Base URL</span>
-                <input
-                  type="text"
-                  value={baseUrlDraft}
-                  onChange={(event) => {
-                    setBaseUrlDraft(event.target.value);
-                    setClearBaseUrl(false);
-                  }}
-                  placeholder="https://api.anthropic.com"
-                />
-              </label>
-              <button
-                type="button"
-                className="secondary-btn"
-                onClick={() => {
-                  setBaseUrlDraft('');
-                  setClearBaseUrl(true);
-                }}
-              >
-                Clear Base URL
-              </button>
+          <div className="settings-grid settings-status-grid">
+            <div>
+              <span className="settings-label">Current Claude mode</span>
+              <strong>{formatAuthMode(status.executorAuthMode)}</strong>
             </div>
-          </>
-        ) : null}
-
-        <div className="settings-grid settings-status-grid">
-          <div>
-            <span className="settings-label">Mode to save</span>
-            <strong>{formatAuthMode(authModeDraft)}</strong>
+            <div>
+              <span className="settings-label">Credential</span>
+              <strong>
+                {status.activeCredentialConfigured ? 'Configured' : 'Missing'}
+              </strong>
+            </div>
+            <div>
+              <span className="settings-label">Verification</span>
+              <strong>{formatVerificationStatus(status.verificationStatus)}</strong>
+            </div>
+            <div>
+              <span className="settings-label">Last verified</span>
+              <strong>{formatDateTime(status.lastVerifiedAt)}</strong>
+            </div>
           </div>
-          <div>
-            <span className="settings-label">Configured</span>
-            <strong>{displayedConfiguredLabel}</strong>
-          </div>
-          <div>
-            <span className="settings-label">Status</span>
-            <strong>{displayedVerificationLabel}</strong>
-          </div>
-          <div>
-            <span className="settings-label">Last verified</span>
-            <strong>{displayedLastVerifiedLabel}</strong>
-          </div>
-        </div>
-
-        {hasUnsavedModeChange ? (
-          <p className="settings-copy">
-            <strong>Unsaved change:</strong> saving will switch the active
-            Anthropic auth mode from{' '}
-            <strong>{formatAuthMode(settings.executorAuthMode)}</strong> to{' '}
-            <strong>{formatAuthMode(authModeDraft)}</strong>.
-          </p>
-        ) : null}
-
-        <p className="settings-copy">
-          <strong>Selected mode credential:</strong>{' '}
-          {selectedModeCredentialState.message}
-        </p>
-
-        {standby.length > 0 ? (
-          <div className="settings-standby-list">
-            <strong>Stored standby credentials</strong>
-            <ul>
-              {standby.map((item) => (
-                <li key={item}>{item}</li>
-              ))}
-            </ul>
-          </div>
-        ) : null}
-
-        {status.lastVerificationError ? (
-          <p className="settings-copy">
-            <strong>Current verification note:</strong>{' '}
-            {status.lastVerificationError}
-          </p>
-        ) : null}
-
-        <div className="settings-button-row">
-          <button
-            type="button"
-            className="primary-btn"
-            disabled={busySection === 'credentials'}
-            onClick={() => void saveCredentials()}
-          >
-            {busySection === 'credentials'
-              ? 'Saving…'
-              : 'Save Credential Settings'}
-          </button>
-          {authModeDraft !== 'none' ? (
-            <button
-              type="button"
-              className="secondary-btn"
-              disabled={
-                busySection === 'verification' ||
-                status.verificationStatus === 'verifying'
-              }
-              onClick={() => void handleVerify()}
-            >
-              {busySection === 'verification'
-                ? 'Starting…'
-                : verifyButtonLabel}
-            </button>
+          {status.lastVerificationError ? (
+            <p className="settings-copy">
+              <strong>Current verification note:</strong>{' '}
+              {status.lastVerificationError}
+            </p>
           ) : null}
-        </div>
-      </section>
+          <div className="settings-section-actions">
+            <a className="secondary-btn settings-nav-link" href="/app/agents">
+              Open AI Agents
+            </a>
+          </div>
+        </section>
+      ) : null}
 
       <section className="settings-card">
         <h2>Model Alias Map</h2>
@@ -1243,20 +908,6 @@ export function SettingsPage({ onUnauthorized, userRole }: Props) {
         </p>
       </section>
 
-      {userRole === 'owner' || userRole === 'admin' ? (
-        <section className="settings-card">
-          <h2>AI Agents</h2>
-          <p className="settings-copy">
-            Provider credentials, registered agents, and the default agent for
-            new talks now live on the AI Agents page.
-          </p>
-          <div className="settings-section-actions">
-            <a className="secondary-btn settings-nav-link" href="/app/agents">
-              Open AI Agents
-            </a>
-          </div>
-        </section>
-      ) : null}
     </section>
   );
 }

@@ -85,13 +85,18 @@ export type TalkPersonaRole =
   | 'synthesizer'
   | 'editor';
 
+export type TalkAgentSourceKind = 'claude_default' | 'provider';
+
 export interface TalkAgentRecord {
   id: string;
   talk_id: string;
   name: string;
+  source_kind: TalkAgentSourceKind;
   persona_role: TalkPersonaRole;
   route_id: string;
   registered_agent_id: string | null;
+  provider_id: string | null;
+  model_id: string | null;
   is_primary: number;
   sort_order: number;
   created_at: string;

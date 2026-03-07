@@ -1,18 +1,24 @@
-import { FormEvent, useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 
 import {
   AgentProviderCard,
   AiAgentsPageData,
   ApiError,
-  createRegisteredAgent,
-  deleteRegisteredAgent,
-  duplicateRegisteredAgent,
+  ExecutorSettings,
+  ExecutorStatus,
+  ExecutorSubscriptionHostStatus,
   getAiAgents,
+  getExecutorSettings,
+  getExecutorStatus,
+  getExecutorSubscriptionHostStatus,
+  importExecutorSubscriptionFromHost,
   saveAiProviderCredential,
   UnauthorizedError,
-  updateRegisteredAgent,
+  updateDefaultClaudeModel,
+  updateExecutorSettings,
   verifyAiProviderCredential,
+  verifyExecutorCredentials,
 } from '../lib/api';
 
 type Props = {
@@ -20,34 +26,22 @@ type Props = {
   userRole: string;
 };
 
+type ClaudeAuthMode = 'subscription' | 'api_key';
+
 type ProviderDraft = {
   apiKey: string;
-  organizationId: string;
-  baseUrl: string;
-  authScheme: 'x_api_key' | 'bearer';
   expanded: boolean;
 };
 
-type AgentDraft = {
-  name: string;
-  providerId: string;
-  modelId: string;
-  modelDisplayName: string;
-  setAsDefault: boolean;
+const PROVIDER_DOCS_URL: Record<string, string> = {
+  'provider.openai': 'https://platform.openai.com/api-keys',
+  'provider.gemini': 'https://aistudio.google.com/app/apikey',
+  'provider.deepseek': 'https://platform.deepseek.com/api_keys',
+  'provider.kimi': 'https://platform.moonshot.ai/console/api-keys',
 };
 
 function canManageAgents(userRole: string): boolean {
   return userRole === 'owner' || userRole === 'admin';
-}
-
-function buildProviderDraft(provider: AgentProviderCard): ProviderDraft {
-  return {
-    apiKey: '',
-    organizationId: '',
-    baseUrl: provider.baseUrl,
-    authScheme: provider.authScheme,
-    expanded: provider.hasCredential,
-  };
 }
 
 function validateReturnTo(value: string | null): string | null {
@@ -57,22 +51,95 @@ function validateReturnTo(value: string | null): string | null {
   return value;
 }
 
+function formatClaudeAuthMode(mode: ExecutorSettings['executorAuthMode']): string {
+  switch (mode) {
+    case 'subscription':
+      return 'Subscription (Claude Pro/Max)';
+    case 'api_key':
+      return 'API';
+    case 'advanced_bearer':
+      return 'Advanced bearer / gateway';
+    default:
+      return 'None';
+  }
+}
+
 function formatVerificationStatus(
-  status: AgentProviderCard['verificationStatus'],
+  status: ExecutorStatus['verificationStatus'] | AgentProviderCard['verificationStatus'],
 ): string {
   switch (status) {
     case 'missing':
       return 'Missing';
     case 'not_verified':
       return 'Not verified';
+    case 'verifying':
+      return 'Verifying…';
     case 'verified':
-      return 'Verified';
+      return 'Configured';
     case 'invalid':
       return 'Invalid';
     case 'unavailable':
       return 'Unavailable';
     default:
       return status;
+  }
+}
+
+function formatDateTime(value: string | null): string {
+  if (!value) return 'Never';
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.valueOf())) return value;
+  return parsed.toLocaleString();
+}
+
+function buildProviderDraft(provider: AgentProviderCard): ProviderDraft {
+  return {
+    apiKey: '',
+    expanded: !provider.hasCredential,
+  };
+}
+
+function currentClaudeHint(
+  settings: ExecutorSettings,
+  mode: ClaudeAuthMode,
+): string | null {
+  return mode === 'subscription' ? settings.oauthTokenHint : settings.apiKeyHint;
+}
+
+function currentClaudeStored(
+  settings: ExecutorSettings,
+  mode: ClaudeAuthMode,
+): boolean {
+  return mode === 'subscription' ? settings.hasOauthToken : settings.hasApiKey;
+}
+
+function formatProviderVerificationSummary(
+  provider: AgentProviderCard,
+): string {
+  switch (provider.verificationStatus) {
+    case 'verified':
+      return 'Configured';
+    case 'invalid':
+      return 'Invalid';
+    case 'unavailable':
+      return 'Unavailable';
+    case 'not_verified':
+      return 'Needs verification';
+    case 'missing':
+    default:
+      return 'Not configured';
+  }
+}
+
+function formatProviderSaveNotice(provider: AgentProviderCard): string {
+  switch (provider.verificationStatus) {
+    case 'verified':
+      return `${provider.name} credential saved and verified.`;
+    case 'invalid':
+    case 'unavailable':
+      return `${provider.name} credential saved. Verification status: ${provider.verificationStatus}.`;
+    default:
+      return `${provider.name} credential saved.`;
   }
 }
 
@@ -83,42 +150,67 @@ export function AiAgentsPage({
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
   const [data, setData] = useState<AiAgentsPageData | null>(null);
+  const [settings, setSettings] = useState<ExecutorSettings | null>(null);
+  const [status, setStatus] = useState<ExecutorStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [busyKey, setBusyKey] = useState<string | null>(null);
   const [providerDrafts, setProviderDrafts] = useState<Record<string, ProviderDraft>>(
     {},
   );
-  const [busyKey, setBusyKey] = useState<string | null>(null);
-  const [agentDraft, setAgentDraft] = useState<AgentDraft>({
-    name: '',
-    providerId: 'provider.anthropic',
-    modelId: '',
-    modelDisplayName: '',
-    setAsDefault: false,
-  });
-  const [duplicateSourceId, setDuplicateSourceId] = useState<string | null>(null);
+  const [claudeModeDraft, setClaudeModeDraft] = useState<ClaudeAuthMode>('subscription');
+  const [claudeModelDraft, setClaudeModelDraft] = useState('');
+  const [claudeApiKeyDraft, setClaudeApiKeyDraft] = useState('');
+  const [claudeOauthDraft, setClaudeOauthDraft] = useState('');
+  const [clearClaudeApiKey, setClearClaudeApiKey] = useState(false);
+  const [clearClaudeOauth, setClearClaudeOauth] = useState(false);
+  const [showSubscriptionAdvanced, setShowSubscriptionAdvanced] = useState(false);
+  const [subscriptionHostStatus, setSubscriptionHostStatus] =
+    useState<ExecutorSubscriptionHostStatus | null>(null);
+  const [subscriptionHostBusy, setSubscriptionHostBusy] = useState<
+    'checking' | 'importing' | null
+  >(null);
+  const verificationPollAttemptsRef = useRef(0);
 
   const returnTo = validateReturnTo(searchParams.get('returnTo'));
-  const focus = searchParams.get('focus');
   const canManage = canManageAgents(userRole);
+
+  const syncDrafts = (
+    nextData: AiAgentsPageData,
+    nextSettings: ExecutorSettings,
+  ): void => {
+    setData(nextData);
+    setSettings(nextSettings);
+    setClaudeModeDraft(
+      nextSettings.executorAuthMode === 'api_key' ? 'api_key' : 'subscription',
+    );
+    setClaudeModelDraft(nextData.defaultClaudeModelId);
+    setClaudeApiKeyDraft('');
+    setClaudeOauthDraft('');
+    setClearClaudeApiKey(false);
+    setClearClaudeOauth(false);
+    setProviderDrafts((current) => {
+      const nextDrafts: Record<string, ProviderDraft> = {};
+      for (const provider of nextData.additionalProviders) {
+        nextDrafts[provider.id] = {
+          ...buildProviderDraft(provider),
+          expanded: current[provider.id]?.expanded || !provider.hasCredential,
+        };
+      }
+      return nextDrafts;
+    });
+  };
 
   const load = async (): Promise<void> => {
     try {
-      const next = await getAiAgents();
-      setData(next);
-      setProviderDrafts((current) => {
-        const nextDrafts: Record<string, ProviderDraft> = {};
-        for (const provider of next.providers) {
-          nextDrafts[provider.id] = {
-            ...buildProviderDraft(provider),
-            expanded:
-              current[provider.id]?.expanded ||
-              (focus === 'providers' && provider.id === 'provider.anthropic'),
-          };
-        }
-        return nextDrafts;
-      });
+      const [nextData, nextSettings, nextStatus] = await Promise.all([
+        getAiAgents(),
+        getExecutorSettings(),
+        getExecutorStatus(),
+      ]);
+      syncDrafts(nextData, nextSettings);
+      setStatus(nextStatus);
       setError(null);
     } catch (err) {
       if (err instanceof UnauthorizedError) {
@@ -135,33 +227,49 @@ export function AiAgentsPage({
     void load();
   }, []);
 
-  const configuredProviders = useMemo(
-    () => (data?.providers || []).filter((provider) => provider.hasCredential),
-    [data?.providers],
-  );
-
-  const selectedProvider =
-    data?.providers.find((provider) => provider.id === agentDraft.providerId) || null;
-
-  const modelSuggestions = selectedProvider?.modelSuggestions || [];
-
   useEffect(() => {
-    if (!data) return;
-    if (data.registeredAgents.length === 0) {
-      setAgentDraft((current) => ({
-        ...current,
-        providerId: 'provider.anthropic',
-      }));
-    } else if (
-      currentProviderMissing(data.providers, agentDraft.providerId) &&
-      configuredProviders[0]
-    ) {
-      setAgentDraft((current) => ({
-        ...current,
-        providerId: configuredProviders[0].id,
-      }));
+    if (status?.verificationStatus !== 'verifying') {
+      verificationPollAttemptsRef.current = 0;
+      return;
     }
-  }, [agentDraft.providerId, configuredProviders, data]);
+
+    let cancelled = false;
+    let timer: number | null = null;
+
+    const scheduleNext = (): void => {
+      const attempt = verificationPollAttemptsRef.current;
+      const delayMs = attempt < 5 ? 2_000 : attempt < 15 ? 5_000 : 10_000;
+      timer = window.setTimeout(() => {
+        void getExecutorStatus()
+          .then((nextStatus) => {
+            if (cancelled) return;
+            verificationPollAttemptsRef.current += 1;
+            setStatus(nextStatus);
+            if (nextStatus.verificationStatus === 'verifying') {
+              scheduleNext();
+            }
+          })
+          .catch((err) => {
+            if (cancelled) return;
+            if (err instanceof UnauthorizedError) {
+              onUnauthorized();
+              return;
+            }
+            setError(
+              err instanceof ApiError
+                ? err.message
+                : 'Failed to refresh Claude verification status.',
+            );
+          });
+      }, delayMs);
+    };
+
+    scheduleNext();
+    return () => {
+      cancelled = true;
+      if (timer !== null) clearTimeout(timer);
+    };
+  }, [status?.verificationStatus, onUnauthorized]);
 
   const updateProviderDraft = (
     providerId: string,
@@ -170,13 +278,7 @@ export function AiAgentsPage({
     setProviderDrafts((current) => ({
       ...current,
       [providerId]: {
-        ...(current[providerId] || {
-          apiKey: '',
-          organizationId: '',
-          baseUrl: '',
-          authScheme: 'bearer',
-          expanded: false,
-        }),
+        ...(current[providerId] || { apiKey: '', expanded: false }),
         ...patch,
       },
     }));
@@ -187,7 +289,7 @@ export function AiAgentsPage({
       current
         ? {
             ...current,
-            providers: current.providers.map((entry) =>
+            additionalProviders: current.additionalProviders.map((entry) =>
               entry.id === provider.id ? provider : entry,
             ),
           }
@@ -195,11 +297,123 @@ export function AiAgentsPage({
     );
     updateProviderDraft(provider.id, {
       apiKey: '',
-      organizationId: '',
-      baseUrl: provider.baseUrl,
-      authScheme: provider.authScheme,
-      expanded: provider.hasCredential,
+      expanded: !provider.hasCredential,
     });
+  };
+
+  const handleApiFailure = (err: unknown, fallback: string): void => {
+    if (err instanceof UnauthorizedError) {
+      onUnauthorized();
+      return;
+    }
+    setError(err instanceof ApiError ? err.message : fallback);
+  };
+
+  const handleSaveClaude = async (): Promise<void> => {
+    if (!data || !settings) return;
+
+    setBusyKey('claude-save');
+    setNotice(null);
+    setError(null);
+    try {
+      const update: Record<string, string | null> = {
+        executorAuthMode: claudeModeDraft,
+      };
+      if (claudeModeDraft === 'subscription') {
+        if (clearClaudeOauth) {
+          update.claudeOauthToken = null;
+        } else if (claudeOauthDraft.trim()) {
+          update.claudeOauthToken = claudeOauthDraft.trim();
+        }
+      } else if (clearClaudeApiKey) {
+        update.anthropicApiKey = null;
+      } else if (claudeApiKeyDraft.trim()) {
+        update.anthropicApiKey = claudeApiKeyDraft.trim();
+      }
+
+      const [nextSettings, nextAgents] = await Promise.all([
+        updateExecutorSettings(update),
+        claudeModelDraft !== data.defaultClaudeModelId
+          ? updateDefaultClaudeModel(claudeModelDraft)
+          : Promise.resolve(data),
+      ]);
+      syncDrafts(nextAgents, nextSettings);
+      const nextStatus = await getExecutorStatus();
+      setStatus(nextStatus);
+      setNotice(
+        claudeModeDraft === 'subscription'
+          ? 'Default Claude Agent updated for subscription mode.'
+          : 'Default Claude Agent updated for API mode.',
+      );
+    } catch (err) {
+      handleApiFailure(err, 'Failed to save Claude settings.');
+    } finally {
+      setBusyKey(null);
+    }
+  };
+
+  const handleVerifyClaude = async (): Promise<void> => {
+    setBusyKey('claude-verify');
+    setNotice(null);
+    setError(null);
+    try {
+      const result = await verifyExecutorCredentials();
+      const nextStatus = await getExecutorStatus();
+      setStatus(nextStatus);
+      setNotice(result.message || 'Claude verification started.');
+    } catch (err) {
+      handleApiFailure(err, 'Failed to verify Claude credentials.');
+    } finally {
+      setBusyKey(null);
+    }
+  };
+
+  const handleCheckSubscriptionHost = async (): Promise<void> => {
+    setSubscriptionHostBusy('checking');
+    setNotice(null);
+    setError(null);
+    try {
+      const nextHostStatus = await getExecutorSubscriptionHostStatus();
+      setSubscriptionHostStatus(nextHostStatus);
+      if (
+        !nextHostStatus.importAvailable &&
+        !nextHostStatus.serviceEnvOauthPresent &&
+        (!nextHostStatus.claudeCliInstalled || nextHostStatus.hostLoginDetected)
+      ) {
+        setShowSubscriptionAdvanced(true);
+      }
+    } catch (err) {
+      handleApiFailure(err, 'Failed to check Claude host login.');
+    } finally {
+      setSubscriptionHostBusy(null);
+    }
+  };
+
+  const handleImportSubscription = async (): Promise<void> => {
+    if (!subscriptionHostStatus?.hostCredentialFingerprint) return;
+    setSubscriptionHostBusy('importing');
+    setNotice(null);
+    setError(null);
+    try {
+      const result = await importExecutorSubscriptionFromHost(
+        subscriptionHostStatus.hostCredentialFingerprint,
+      );
+      const [nextAgents, nextStatus] = await Promise.all([
+        getAiAgents(),
+        getExecutorStatus(),
+      ]);
+      syncDrafts(nextAgents, result.settings);
+      setStatus(nextStatus);
+      setNotice(
+        result.status === 'no_change'
+          ? 'Claude subscription was already imported.'
+          : 'Claude subscription imported from the service host.',
+      );
+    } catch (err) {
+      handleApiFailure(err, 'Failed to import Claude subscription.');
+    } finally {
+      setSubscriptionHostBusy(null);
+    }
   };
 
   const handleSaveProvider = async (providerId: string): Promise<void> => {
@@ -212,28 +426,29 @@ export function AiAgentsPage({
       const provider = await saveAiProviderCredential({
         providerId,
         apiKey: draft.apiKey.trim() || null,
-        organizationId: draft.organizationId.trim() || null,
-        baseUrl: draft.baseUrl.trim() || null,
-        authScheme: draft.authScheme,
       });
       refreshProvider(provider);
-      if (!provider.hasCredential) {
-        setNotice(`${provider.name} credential cleared.`);
-      } else if (provider.verificationStatus === 'verified') {
-        setNotice(`${provider.name} credential saved and verified.`);
-      } else {
-        setNotice(
-          `${provider.name} credential saved. Verification status: ${formatVerificationStatus(
-            provider.verificationStatus,
-          ).toLowerCase()}.`,
-        );
-      }
+      setNotice(formatProviderSaveNotice(provider));
     } catch (err) {
-      if (err instanceof UnauthorizedError) {
-        onUnauthorized();
-        return;
-      }
-      setError(err instanceof ApiError ? err.message : 'Failed to save provider.');
+      handleApiFailure(err, 'Failed to save provider credential.');
+    } finally {
+      setBusyKey(null);
+    }
+  };
+
+  const handleClearProvider = async (providerId: string): Promise<void> => {
+    setBusyKey(`provider-save:${providerId}`);
+    setNotice(null);
+    setError(null);
+    try {
+      const provider = await saveAiProviderCredential({
+        providerId,
+        apiKey: null,
+      });
+      refreshProvider(provider);
+      setNotice(`${provider.name} credential deleted.`);
+    } catch (err) {
+      handleApiFailure(err, 'Failed to delete provider credential.');
     } finally {
       setBusyKey(null);
     }
@@ -248,152 +463,34 @@ export function AiAgentsPage({
       refreshProvider(provider);
       setNotice(`${provider.name} verification updated.`);
     } catch (err) {
-      if (err instanceof UnauthorizedError) {
-        onUnauthorized();
-        return;
-      }
-      setError(err instanceof ApiError ? err.message : 'Failed to verify provider.');
+      handleApiFailure(err, 'Failed to verify provider credential.');
     } finally {
       setBusyKey(null);
     }
   };
 
-  const handleCreateAgent = async (event: FormEvent) => {
-    event.preventDefault();
-    setBusyKey('agent-create');
-    setNotice(null);
-    setError(null);
-    try {
-      if (!agentDraft.name.trim() || !agentDraft.providerId || !agentDraft.modelId.trim()) {
-        throw new Error('Agent name, provider, and model are required.');
-      }
-      const result = duplicateSourceId
-        ? await duplicateRegisteredAgent({
-            sourceAgentId: duplicateSourceId,
-            name: agentDraft.name.trim(),
-            providerId: agentDraft.providerId,
-            modelId: agentDraft.modelId.trim(),
-            modelDisplayName: agentDraft.modelDisplayName.trim() || null,
-          })
-        : await createRegisteredAgent({
-            name: agentDraft.name.trim(),
-            providerId: agentDraft.providerId,
-            modelId: agentDraft.modelId.trim(),
-            modelDisplayName: agentDraft.modelDisplayName.trim() || null,
-            setAsDefault: agentDraft.setAsDefault,
-          });
+  const additionalProviders = data?.additionalProviders || [];
+  const selectedClaudeHint = settings ? currentClaudeHint(settings, claudeModeDraft) : null;
+  const selectedClaudeStored = settings
+    ? currentClaudeStored(settings, claudeModeDraft)
+    : false;
 
-      const next = await getAiAgents();
-      setData(next);
-      setAgentDraft({
-        name: '',
-        providerId: configuredProviders[0]?.id || 'provider.anthropic',
-        modelId: '',
-        modelDisplayName: '',
-        setAsDefault: false,
-      });
-      setDuplicateSourceId(null);
-      setNotice(
-        duplicateSourceId
-          ? 'AI agent duplicated successfully.'
-          : 'AI agent created successfully.',
-      );
-      if ('defaultRegisteredAgentId' in result) {
-        // noop; subsequent reload already applied the latest default.
-      }
-    } catch (err) {
-      if (err instanceof UnauthorizedError) {
-        onUnauthorized();
-        return;
-      }
-      setError(err instanceof ApiError ? err.message : err instanceof Error ? err.message : 'Failed to save AI agent.');
-    } finally {
-      setBusyKey(null);
+  const selectedClaudeStatus = useMemo(() => {
+    if (!settings || !status) return 'Loading…';
+    if (status.executorAuthMode !== claudeModeDraft) {
+      return 'Ready to save';
     }
-  };
-
-  const handleSetDefaultAgent = async (agentId: string): Promise<void> => {
-    setBusyKey(`default:${agentId}`);
-    setNotice(null);
-    setError(null);
-    try {
-      await updateRegisteredAgent({ agentId, setAsDefault: true });
-      const next = await getAiAgents();
-      setData(next);
-      setNotice('Default agent updated.');
-    } catch (err) {
-      if (err instanceof UnauthorizedError) {
-        onUnauthorized();
-        return;
-      }
-      setError(err instanceof ApiError ? err.message : 'Failed to update default agent.');
-    } finally {
-      setBusyKey(null);
+    if (!selectedClaudeStored) {
+      return 'Not configured';
     }
-  };
-
-  const handleToggleAgent = async (
-    agentId: string,
-    enabled: boolean,
-  ): Promise<void> => {
-    setBusyKey(`toggle:${agentId}`);
-    setNotice(null);
-    setError(null);
-    try {
-      await updateRegisteredAgent({ agentId, enabled });
-      const next = await getAiAgents();
-      setData(next);
-      setNotice(enabled ? 'AI agent re-enabled.' : 'AI agent archived.');
-    } catch (err) {
-      if (err instanceof UnauthorizedError) {
-        onUnauthorized();
-        return;
-      }
-      setError(err instanceof ApiError ? err.message : 'Failed to update AI agent.');
-    } finally {
-      setBusyKey(null);
-    }
-  };
-
-  const handleDeleteAgent = async (agentId: string): Promise<void> => {
-    if (!window.confirm('Delete this AI agent?')) return;
-    setBusyKey(`delete:${agentId}`);
-    setNotice(null);
-    setError(null);
-    try {
-      await deleteRegisteredAgent(agentId);
-      const next = await getAiAgents();
-      setData(next);
-      setNotice('AI agent deleted.');
-    } catch (err) {
-      if (err instanceof UnauthorizedError) {
-        onUnauthorized();
-        return;
-      }
-      setError(err instanceof ApiError ? err.message : 'Failed to delete AI agent.');
-    } finally {
-      setBusyKey(null);
-    }
-  };
-
-  const startDuplicate = (agentId: string): void => {
-    const agent = data?.registeredAgents.find((entry) => entry.id === agentId);
-    if (!agent) return;
-    setDuplicateSourceId(agent.id);
-    setAgentDraft({
-      name: `${agent.name} (copy)`,
-      providerId: agent.providerId,
-      modelId: agent.modelId,
-      modelDisplayName: agent.modelDisplayName,
-      setAsDefault: false,
-    });
-  };
+    return formatVerificationStatus(status.verificationStatus);
+  }, [claudeModeDraft, selectedClaudeStored, settings, status]);
 
   if (loading) {
     return <section className="page-state">Loading AI agents…</section>;
   }
 
-  if (!data) {
+  if (!data || !settings || !status) {
     return <section className="page-state">AI agents are unavailable.</section>;
   }
 
@@ -402,7 +499,7 @@ export function AiAgentsPage({
       <header className="page-header">
         <div>
           <h1>AI Agents</h1>
-          <p>Register provider credentials, create reusable agents, and choose the default for new talks.</p>
+          <p>Set up your default Claude agent and any additional provider keys you want available in talks.</p>
         </div>
         {returnTo ? (
           <button
@@ -429,70 +526,246 @@ export function AiAgentsPage({
       <section className="talk-llm-section">
         <div className="talk-llm-section-header">
           <div>
-            <h3>Default Agent</h3>
+            <h3>Default Claude Agent</h3>
             <p className="talk-llm-meta">
-              {data.defaultRegisteredAgentId
-                ? 'This agent seeds new talks.'
-                : 'No default agent is configured yet.'}
+              Every new talk starts with Claude as the default agent. You can add other agents and roles inside the talk itself.
             </p>
           </div>
         </div>
-        {data.registeredAgents.length > 0 ? (
-          <label className="talk-llm-field-span">
-            <span>Default for new talks</span>
-            <select
-              value={data.defaultRegisteredAgentId || ''}
-              onChange={(event) => void handleSetDefaultAgent(event.target.value)}
-              disabled={!canManage}
-            >
-              {data.registeredAgents
-                .filter((agent) => agent.enabled)
-                .map((agent) => (
-                  <option key={agent.id} value={agent.id}>
-                    {agent.name} · {agent.providerName} · {agent.modelDisplayName}
-                  </option>
-                ))}
-            </select>
-          </label>
-        ) : (
-          <p className="talk-llm-meta">Set up your first provider credential and agent below.</p>
-        )}
-      </section>
 
-      {data.onboardingRequired ? (
-        <section className="talk-llm-section">
-          <div className="talk-llm-section-header">
+        <article className="talk-llm-card">
+          <div className="talk-llm-card-header">
             <div>
-              <h3>First Agent Setup</h3>
+              <h4>Claude</h4>
               <p className="talk-llm-meta">
-                Configure Anthropic first, then create the initial agent that new talks will use by default.
+                Configure the Claude capability every new talk starts with.
               </p>
             </div>
+            <span className="talk-agent-chip">{selectedClaudeStatus}</span>
           </div>
-          <button
-            type="button"
-            className="secondary-btn"
-            onClick={() =>
-              updateProviderDraft('provider.anthropic', { expanded: true })
-            }
-          >
-            Configure Anthropic
-          </button>
-        </section>
-      ) : null}
+
+          <div className="talk-llm-grid">
+            <label className="talk-llm-field-span">
+              <span>Billing model</span>
+              <select
+                value={claudeModeDraft}
+                onChange={(event) =>
+                  setClaudeModeDraft(event.target.value as ClaudeAuthMode)
+                }
+                disabled={!canManage || busyKey === 'claude-save'}
+              >
+                <option value="subscription">Subscription (Claude Pro/Max)</option>
+                <option value="api_key">API</option>
+              </select>
+            </label>
+
+            <label className="talk-llm-field-span">
+              <span>Default Claude model</span>
+              <select
+                value={claudeModelDraft}
+                onChange={(event) => setClaudeModelDraft(event.target.value)}
+                disabled={!canManage || busyKey === 'claude-save'}
+              >
+                {data.claudeModelSuggestions.map((model) => (
+                  <option key={model.modelId} value={model.modelId}>
+                    {model.displayName}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+
+          {claudeModeDraft === 'subscription' ? (
+            <div className="talk-llm-grid">
+              <div className="talk-llm-field-span">
+                <span>Subscription credential</span>
+                {selectedClaudeStored ? (
+                  <div className="talk-llm-stored-key">
+                    <div>
+                      <strong>{selectedClaudeHint || 'Stored in settings'}</strong>
+                      <p className="talk-llm-meta">
+                        Last verified {formatDateTime(status.lastVerifiedAt)}
+                      </p>
+                    </div>
+                    <span className="talk-agent-chip">
+                      {formatVerificationStatus(status.verificationStatus)}
+                    </span>
+                  </div>
+                ) : (
+                  <p className="talk-llm-meta">
+                    No Claude subscription credential is stored yet.
+                  </p>
+                )}
+                <p className="talk-llm-meta">
+                  Use Claude Code on the same machine and OS user as ClawRocket. Run:
+                  <code> claude config set -g forceLoginMethod claudeai </code>
+                  then
+                  <code> claude login</code>.
+                </p>
+                <p className="talk-llm-meta">
+                  If host import is unavailable, you can run <code>claude setup-token</code> and paste the token manually below.
+                </p>
+                <div className="talk-llm-inline-actions">
+                  <button
+                    type="button"
+                    className="secondary-btn"
+                    onClick={() => void handleCheckSubscriptionHost()}
+                    disabled={!canManage || subscriptionHostBusy === 'checking'}
+                  >
+                    {subscriptionHostBusy === 'checking'
+                      ? 'Checking…'
+                      : 'Check host Claude login'}
+                  </button>
+                  {subscriptionHostStatus?.importAvailable ? (
+                    <button
+                      type="button"
+                      className="secondary-btn"
+                      onClick={() => void handleImportSubscription()}
+                      disabled={!canManage || subscriptionHostBusy === 'importing'}
+                    >
+                      {subscriptionHostBusy === 'importing'
+                        ? 'Importing…'
+                        : 'Import from host'}
+                    </button>
+                  ) : null}
+                  <button
+                    type="button"
+                    className="secondary-btn"
+                    onClick={() => setShowSubscriptionAdvanced((current) => !current)}
+                  >
+                    {showSubscriptionAdvanced
+                      ? 'Hide manual token entry'
+                      : 'Paste Claude Code OAuth token manually'}
+                  </button>
+                </div>
+                {subscriptionHostStatus ? (
+                  <div className="talk-llm-host-status">
+                    <p className="talk-llm-meta">
+                      Checked as user {subscriptionHostStatus.serviceUser || 'unknown'} · Home{' '}
+                      {subscriptionHostStatus.serviceHomePath}
+                    </p>
+                    <p className="talk-llm-meta">{subscriptionHostStatus.message}</p>
+                    {subscriptionHostStatus.recommendedCommands.length > 0 ? (
+                      <div className="talk-llm-command-list">
+                        {subscriptionHostStatus.recommendedCommands.map((command) => (
+                          <code key={command}>{command}</code>
+                        ))}
+                      </div>
+                    ) : null}
+                  </div>
+                ) : null}
+                {showSubscriptionAdvanced ? (
+                  <label className="talk-llm-field-span">
+                    <span>Claude Code OAuth token</span>
+                    <input
+                      type="password"
+                      value={claudeOauthDraft}
+                      onChange={(event) => {
+                        setClaudeOauthDraft(event.target.value);
+                        setClearClaudeOauth(false);
+                      }}
+                      placeholder="Paste token from claude setup-token"
+                      disabled={!canManage || busyKey === 'claude-save'}
+                    />
+                  </label>
+                ) : null}
+              </div>
+            </div>
+          ) : (
+            <div className="talk-llm-grid">
+              <div className="talk-llm-field-span">
+                <span>Anthropic API credential</span>
+                {selectedClaudeStored ? (
+                  <div className="talk-llm-stored-key">
+                    <div>
+                      <strong>{selectedClaudeHint || 'Stored in settings'}</strong>
+                      <p className="talk-llm-meta">
+                        Get a key from{' '}
+                        <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noreferrer">
+                          Anthropic Console
+                        </a>
+                        .
+                      </p>
+                    </div>
+                    <span className="talk-agent-chip">
+                      {formatVerificationStatus(status.verificationStatus)}
+                    </span>
+                  </div>
+                ) : (
+                  <p className="talk-llm-meta">
+                    Use an Anthropic Console API key for Claude in talks.
+                  </p>
+                )}
+                <label className="talk-llm-field-span">
+                  <span>Anthropic API key</span>
+                  <input
+                    type="password"
+                    value={claudeApiKeyDraft}
+                    onChange={(event) => {
+                      setClaudeApiKeyDraft(event.target.value);
+                      setClearClaudeApiKey(false);
+                    }}
+                    placeholder="sk-ant-..."
+                    disabled={!canManage || busyKey === 'claude-save'}
+                  />
+                </label>
+              </div>
+            </div>
+          )}
+
+          <div className="talk-llm-inline-actions">
+            {claudeModeDraft === 'subscription' && settings.hasOauthToken ? (
+              <button
+                type="button"
+                className="secondary-btn"
+                onClick={() => setClearClaudeOauth(true)}
+                disabled={!canManage || busyKey === 'claude-save'}
+              >
+                Clear stored subscription token
+              </button>
+            ) : null}
+            {claudeModeDraft === 'api_key' && settings.hasApiKey ? (
+              <button
+                type="button"
+                className="secondary-btn"
+                onClick={() => setClearClaudeApiKey(true)}
+                disabled={!canManage || busyKey === 'claude-save'}
+              >
+                Clear stored API key
+              </button>
+            ) : null}
+            <button
+              type="button"
+              className="secondary-btn"
+              onClick={() => void handleVerifyClaude()}
+              disabled={!canManage || busyKey === 'claude-verify'}
+            >
+              {busyKey === 'claude-verify' ? 'Verifying…' : 'Re-verify'}
+            </button>
+            <button
+              type="button"
+              className="primary-btn"
+              onClick={() => void handleSaveClaude()}
+              disabled={!canManage || busyKey === 'claude-save'}
+            >
+              {busyKey === 'claude-save' ? 'Saving…' : 'Save Claude Settings'}
+            </button>
+          </div>
+        </article>
+      </section>
 
       <section className="talk-llm-section">
         <div className="talk-llm-section-header">
           <div>
-            <h3>Provider Credentials</h3>
+            <h3>Additional Providers</h3>
             <p className="talk-llm-meta">
-              Provider credentials are stored once per provider account and reused by registered agents.
+              Add any other provider keys you want available when inviting extra agents into a talk.
             </p>
           </div>
         </div>
 
         <div className="talk-llm-card-list">
-          {data.providers.map((provider) => {
+          {additionalProviders.map((provider) => {
             const draft = providerDrafts[provider.id] || buildProviderDraft(provider);
             const busySave = busyKey === `provider-save:${provider.id}`;
             const busyVerify = busyKey === `provider-verify:${provider.id}`;
@@ -502,42 +775,57 @@ export function AiAgentsPage({
                   <div>
                     <h4>{provider.name}</h4>
                     <p className="talk-llm-meta">
-                      {provider.hasCredential
-                        ? `${provider.credentialHint || 'Configured'} · ${formatVerificationStatus(
-                            provider.verificationStatus,
-                          )}`
-                        : 'Not configured'}
+                      {PROVIDER_DOCS_URL[provider.id] ? (
+                        <a
+                          href={PROVIDER_DOCS_URL[provider.id]}
+                          target="_blank"
+                          rel="noreferrer"
+                        >
+                          Get key from {provider.name}
+                        </a>
+                      ) : (
+                        'Configure this provider for additional talk agents.'
+                      )}
                     </p>
                   </div>
-                  <div className="talk-llm-inline-actions">
-                    <button
-                      type="button"
-                      className="secondary-btn"
-                      onClick={() =>
-                        updateProviderDraft(provider.id, {
-                          expanded: !draft.expanded,
-                        })
-                      }
-                    >
-                      {draft.expanded ? 'Collapse' : provider.hasCredential ? 'Update' : 'Configure'}
-                    </button>
-                    {provider.hasCredential ? (
-                      <button
-                        type="button"
-                        className="secondary-btn"
-                        onClick={() => void handleVerifyProvider(provider.id)}
-                        disabled={!canManage || busyVerify}
-                      >
-                        {busyVerify ? 'Verifying…' : 'Re-verify'}
-                      </button>
-                    ) : null}
-                  </div>
+                  <span className="talk-agent-chip">
+                    {formatProviderVerificationSummary(provider)}
+                  </span>
                 </div>
 
-                {draft.expanded ? (
+                {provider.hasCredential ? (
+                  <div className="talk-llm-stored-key">
+                    <div>
+                      <strong>{provider.credentialHint || 'Stored in settings'}</strong>
+                      <p className="talk-llm-meta">
+                        Last verified {formatDateTime(provider.lastVerifiedAt)}
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      className="icon-btn danger-btn"
+                      onClick={() => void handleClearProvider(provider.id)}
+                      disabled={!canManage || busySave}
+                      aria-label={`Delete ${provider.name} credential`}
+                    >
+                      ×
+                    </button>
+                  </div>
+                ) : null}
+
+                <details
+                  className="talk-llm-update-disclosure"
+                  open={draft.expanded}
+                  onToggle={(event) =>
+                    updateProviderDraft(provider.id, {
+                      expanded: (event.currentTarget as HTMLDetailsElement).open,
+                    })
+                  }
+                >
+                  <summary>{provider.hasCredential ? 'Update key' : 'Configure'}</summary>
                   <div className="talk-llm-grid">
                     <label className="talk-llm-field-span">
-                      <span>{provider.authScheme === 'x_api_key' ? 'API key' : 'Token'}</span>
+                      <span>API key</span>
                       <input
                         type="password"
                         value={draft.apiKey}
@@ -546,57 +834,10 @@ export function AiAgentsPage({
                             apiKey: event.target.value,
                           })
                         }
-                        placeholder={
-                          provider.authScheme === 'x_api_key' ? 'sk-ant-…' : 'Bearer token'
-                        }
+                        placeholder="sk-..."
                         disabled={!canManage || busySave}
                       />
                     </label>
-                    {provider.id === 'provider.openai' ? (
-                      <label>
-                        <span>Organization ID</span>
-                        <input
-                          type="text"
-                          value={draft.organizationId}
-                          onChange={(event) =>
-                            updateProviderDraft(provider.id, {
-                              organizationId: event.target.value,
-                            })
-                          }
-                          disabled={!canManage || busySave}
-                        />
-                      </label>
-                    ) : null}
-                    <label className="talk-llm-field-span">
-                      <span>Base URL</span>
-                      <input
-                        type="text"
-                        value={draft.baseUrl}
-                        onChange={(event) =>
-                          updateProviderDraft(provider.id, {
-                            baseUrl: event.target.value,
-                          })
-                        }
-                        disabled={!canManage || busySave}
-                      />
-                    </label>
-                    {provider.id === 'provider.custom' ? (
-                      <label>
-                        <span>Auth Scheme</span>
-                        <select
-                          value={draft.authScheme}
-                          onChange={(event) =>
-                            updateProviderDraft(provider.id, {
-                              authScheme: event.target.value as 'x_api_key' | 'bearer',
-                            })
-                          }
-                          disabled={!canManage || busySave}
-                        >
-                          <option value="bearer">Bearer</option>
-                          <option value="x_api_key">X-API-Key</option>
-                        </select>
-                      </label>
-                    ) : null}
                     <div className="talk-llm-inline-actions">
                       <button
                         type="button"
@@ -604,210 +845,42 @@ export function AiAgentsPage({
                         onClick={() => void handleSaveProvider(provider.id)}
                         disabled={!canManage || busySave}
                       >
-                        {busySave ? 'Saving…' : 'Save'}
+                        {busySave ? 'Saving…' : provider.hasCredential ? 'Update' : 'Save'}
                       </button>
+                      {provider.hasCredential ? (
+                        <button
+                          type="button"
+                          className="secondary-btn"
+                          onClick={() => void handleVerifyProvider(provider.id)}
+                          disabled={!canManage || busyVerify}
+                        >
+                          {busyVerify ? 'Verifying…' : 'Re-verify'}
+                        </button>
+                      ) : null}
                     </div>
                   </div>
-                ) : null}
+                </details>
               </article>
             );
           })}
         </div>
       </section>
 
-      <section className="talk-llm-section">
-        <div className="talk-llm-section-header">
-          <div>
-            <h3>Registered Agents</h3>
-            <p className="talk-llm-meta">
-              Registered agents are reusable identities backed by one provider and model. Role stays talk-local.
-            </p>
-          </div>
-        </div>
-
-        <form className="talk-llm-card" onSubmit={handleCreateAgent}>
-          <div className="talk-llm-card-header">
+      {returnTo ? (
+        <section className="talk-llm-section">
+          <div className="talk-llm-section-header">
             <div>
-              <h4>{duplicateSourceId ? 'Duplicate as new' : 'Create AI Agent'}</h4>
+              <h3>Back to Talk</h3>
               <p className="talk-llm-meta">
-                {duplicateSourceId
-                  ? 'Create a new agent with a different provider or model.'
-                  : 'Create a global agent identity to invite into talks.'}
+                After updating Claude or provider keys, return to your talk and invite additional agents there.
               </p>
             </div>
           </div>
-          <div className="talk-llm-grid">
-            <label>
-              <span>Name</span>
-              <input
-                type="text"
-                value={agentDraft.name}
-                onChange={(event) =>
-                  setAgentDraft((current) => ({ ...current, name: event.target.value }))
-                }
-                disabled={!canManage || busyKey === 'agent-create'}
-              />
-            </label>
-            <label>
-              <span>Provider</span>
-              <select
-                value={agentDraft.providerId}
-                onChange={(event) =>
-                  setAgentDraft((current) => ({
-                    ...current,
-                    providerId: event.target.value,
-                    modelId: '',
-                    modelDisplayName: '',
-                  }))
-                }
-                disabled={!canManage || busyKey === 'agent-create'}
-              >
-                {configuredProviders.map((provider) => (
-                  <option key={provider.id} value={provider.id}>
-                    {provider.name}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label>
-              <span>Model</span>
-              <input
-                list="registered-agent-model-suggestions"
-                value={agentDraft.modelId}
-                onChange={(event) =>
-                  setAgentDraft((current) => ({
-                    ...current,
-                    modelId: event.target.value,
-                    modelDisplayName: event.target.value,
-                  }))
-                }
-                disabled={!canManage || busyKey === 'agent-create'}
-              />
-            </label>
-            <label>
-              <span>Display name</span>
-              <input
-                type="text"
-                value={agentDraft.modelDisplayName}
-                onChange={(event) =>
-                  setAgentDraft((current) => ({
-                    ...current,
-                    modelDisplayName: event.target.value,
-                  }))
-                }
-                disabled={!canManage || busyKey === 'agent-create'}
-              />
-            </label>
-            <label className="talk-llm-checkbox">
-              <input
-                type="checkbox"
-                checked={agentDraft.setAsDefault}
-                onChange={(event) =>
-                  setAgentDraft((current) => ({
-                    ...current,
-                    setAsDefault: event.target.checked,
-                  }))
-                }
-                disabled={!canManage || busyKey === 'agent-create'}
-              />
-              <span>Default for new talks</span>
-            </label>
-          </div>
-
-          <datalist id="registered-agent-model-suggestions">
-            {modelSuggestions.map((model) => (
-              <option key={model.modelId} value={model.modelId}>
-                {model.displayName}
-              </option>
-            ))}
-          </datalist>
-
-          <div className="talk-llm-inline-actions">
-            <button
-              type="submit"
-              className="primary-btn"
-              disabled={!canManage || configuredProviders.length === 0 || busyKey === 'agent-create'}
-            >
-              {busyKey === 'agent-create'
-                ? 'Saving…'
-                : duplicateSourceId
-                  ? 'Duplicate agent'
-                  : 'Create agent'}
-            </button>
-            {duplicateSourceId ? (
-              <button
-                type="button"
-                className="secondary-btn"
-                onClick={() => {
-                  setDuplicateSourceId(null);
-                  setAgentDraft((current) => ({ ...current, name: '' }));
-                }}
-              >
-                Cancel duplicate
-              </button>
-            ) : null}
-          </div>
-        </form>
-
-        {data.registeredAgents.length === 0 ? (
-          <p className="talk-llm-meta">Create your first agent once a provider credential is configured.</p>
-        ) : (
-          <div className="talk-llm-card-list">
-            {data.registeredAgents.map((agent) => (
-              <article key={agent.id} className="talk-llm-card">
-                <div className="talk-llm-card-header">
-                  <div>
-                    <h4>{agent.name}</h4>
-                    <p className="talk-llm-meta">
-                      {agent.providerName} · {agent.modelDisplayName} · Used in {agent.usageCount}{' '}
-                      talk{agent.usageCount === 1 ? '' : 's'}
-                      {!agent.enabled ? ' · Archived' : ''}
-                    </p>
-                  </div>
-                  <div className="talk-llm-inline-actions">
-                    {data.defaultRegisteredAgentId === agent.id ? (
-                      <span className="talk-agent-chip">Default</span>
-                    ) : null}
-                    <button
-                      type="button"
-                      className="secondary-btn"
-                      onClick={() => startDuplicate(agent.id)}
-                      disabled={!canManage}
-                    >
-                      Duplicate as new
-                    </button>
-                    <button
-                      type="button"
-                      className="secondary-btn"
-                      onClick={() => void handleToggleAgent(agent.id, !agent.enabled)}
-                      disabled={!canManage || busyKey === `toggle:${agent.id}`}
-                    >
-                      {agent.enabled ? 'Archive' : 'Restore'}
-                    </button>
-                    {agent.usageCount === 0 ? (
-                      <button
-                        type="button"
-                        className="secondary-btn"
-                        onClick={() => void handleDeleteAgent(agent.id)}
-                        disabled={!canManage || busyKey === `delete:${agent.id}`}
-                      >
-                        Delete
-                      </button>
-                    ) : null}
-                  </div>
-                </div>
-              </article>
-            ))}
-          </div>
-        )}
-      </section>
+          <Link to={returnTo} className="primary-btn">
+            Return to talk
+          </Link>
+        </section>
+      ) : null}
     </section>
   );
-}
-
-function currentProviderMissing(
-  providers: AgentProviderCard[],
-  providerId: string,
-): boolean {
-  return !providers.some((provider) => provider.id === providerId);
 }
