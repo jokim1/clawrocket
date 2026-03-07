@@ -40,18 +40,23 @@ type VerificationRequest = {
   headers?: Record<string, string>;
 };
 
-function buildVerificationRequest(provider: LlmProviderRecord): VerificationRequest {
+function buildVerificationRequest(
+  provider: LlmProviderRecord,
+): VerificationRequest {
   if (provider.provider_kind === 'nvidia') {
     return {
       url: joinUrl(provider.base_url, '/chat/completions'),
       method: 'POST',
       headers: {
+        accept: 'application/json',
         'content-type': 'application/json',
       },
       body: JSON.stringify({
         model: 'moonshotai/kimi-k2.5',
         messages: [{ role: 'user', content: 'ping' }],
-        max_tokens: 1,
+        max_tokens: 16,
+        temperature: 1.0,
+        top_p: 1.0,
         stream: false,
       }),
     };

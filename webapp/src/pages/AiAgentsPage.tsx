@@ -31,6 +31,7 @@ type ClaudeAuthMode = 'subscription' | 'api_key';
 type ProviderDraft = {
   apiKey: string;
   expanded: boolean;
+  showApiKey: boolean;
 };
 
 const PROVIDER_DOCS_URL: Record<string, string> = {
@@ -120,6 +121,7 @@ function buildProviderDraft(provider: AgentProviderCard): ProviderDraft {
   return {
     apiKey: '',
     expanded: !provider.hasCredential,
+    showApiKey: false,
   };
 }
 
@@ -159,6 +161,8 @@ function formatProviderSaveNotice(provider: AgentProviderCard): string {
   switch (provider.verificationStatus) {
     case 'verified':
       return `${provider.name} credential saved and verified.`;
+    case 'not_verified':
+      return `${provider.name} credential saved. Verification is running in the background.`;
     case 'invalid':
     case 'unavailable':
       return `${provider.name} credential saved. Verification status: ${provider.verificationStatus}.`;
@@ -187,6 +191,8 @@ export function AiAgentsPage({
   const [claudeModelDraft, setClaudeModelDraft] = useState('');
   const [claudeApiKeyDraft, setClaudeApiKeyDraft] = useState('');
   const [claudeOauthDraft, setClaudeOauthDraft] = useState('');
+  const [showClaudeApiKey, setShowClaudeApiKey] = useState(false);
+  const [showClaudeOauthToken, setShowClaudeOauthToken] = useState(false);
   const [subscriptionHostStatus, setSubscriptionHostStatus] =
     useState<ExecutorSubscriptionHostStatus | null>(null);
   const [subscriptionHostBusy, setSubscriptionHostBusy] = useState<
@@ -209,12 +215,15 @@ export function AiAgentsPage({
     setClaudeModelDraft(nextData.defaultClaudeModelId);
     setClaudeApiKeyDraft('');
     setClaudeOauthDraft('');
+    setShowClaudeApiKey(false);
+    setShowClaudeOauthToken(false);
     setProviderDrafts((current) => {
       const nextDrafts: Record<string, ProviderDraft> = {};
       for (const provider of nextData.additionalProviders) {
         nextDrafts[provider.id] = {
           ...buildProviderDraft(provider),
           expanded: current[provider.id]?.expanded || !provider.hasCredential,
+          showApiKey: current[provider.id]?.showApiKey || false,
         };
       }
       return nextDrafts;
@@ -684,15 +693,30 @@ export function AiAgentsPage({
                 ) : null}
                 <label className="talk-llm-field-span">
                   <span>Claude Code OAuth token</span>
-                  <input
-                    type="password"
-                    value={claudeOauthDraft}
-                    onChange={(event) => {
-                      setClaudeOauthDraft(event.target.value);
-                    }}
-                    placeholder="Paste token from claude setup-token"
-                    disabled={!canManage || busyKey === 'claude-save'}
-                  />
+                  <div className="talk-llm-secret-input">
+                    <input
+                      type={showClaudeOauthToken ? 'text' : 'password'}
+                      value={claudeOauthDraft}
+                      onChange={(event) => {
+                        setClaudeOauthDraft(event.target.value);
+                      }}
+                      placeholder="Paste token from claude setup-token"
+                      disabled={!canManage || busyKey === 'claude-save'}
+                    />
+                    <button
+                      type="button"
+                      className="talk-llm-eye-toggle"
+                      onClick={() => setShowClaudeOauthToken((current) => !current)}
+                      disabled={!canManage || busyKey === 'claude-save'}
+                      aria-label={
+                        showClaudeOauthToken
+                          ? 'Hide Claude Code OAuth token'
+                          : 'Show Claude Code OAuth token'
+                      }
+                    >
+                      {showClaudeOauthToken ? 'Hide' : 'Show'}
+                    </button>
+                  </div>
                 </label>
               </div>
             </div>
@@ -720,15 +744,30 @@ export function AiAgentsPage({
                 )}
                 <label className="talk-llm-field-span">
                   <span>Anthropic API key</span>
-                  <input
-                    type="password"
-                    value={claudeApiKeyDraft}
-                    onChange={(event) => {
-                      setClaudeApiKeyDraft(event.target.value);
-                    }}
-                    placeholder="sk-ant-..."
-                    disabled={!canManage || busyKey === 'claude-save'}
-                  />
+                  <div className="talk-llm-secret-input">
+                    <input
+                      type={showClaudeApiKey ? 'text' : 'password'}
+                      value={claudeApiKeyDraft}
+                      onChange={(event) => {
+                        setClaudeApiKeyDraft(event.target.value);
+                      }}
+                      placeholder="sk-ant-..."
+                      disabled={!canManage || busyKey === 'claude-save'}
+                    />
+                    <button
+                      type="button"
+                      className="talk-llm-eye-toggle"
+                      onClick={() => setShowClaudeApiKey((current) => !current)}
+                      disabled={!canManage || busyKey === 'claude-save'}
+                      aria-label={
+                        showClaudeApiKey
+                          ? 'Hide Anthropic API key'
+                          : 'Show Anthropic API key'
+                      }
+                    >
+                      {showClaudeApiKey ? 'Hide' : 'Show'}
+                    </button>
+                  </div>
                 </label>
               </div>
             </div>
@@ -827,17 +866,36 @@ export function AiAgentsPage({
                   <div className="talk-llm-grid">
                     <label className="talk-llm-field-span">
                       <span>API key</span>
-                      <input
-                        type="password"
-                        value={draft.apiKey}
-                        onChange={(event) =>
-                          updateProviderDraft(provider.id, {
-                            apiKey: event.target.value,
-                          })
-                        }
-                        placeholder={PROVIDER_KEY_PLACEHOLDER[provider.id] || 'sk-...'}
-                        disabled={!canManage || busySave}
-                      />
+                      <div className="talk-llm-secret-input">
+                        <input
+                          type={draft.showApiKey ? 'text' : 'password'}
+                          value={draft.apiKey}
+                          onChange={(event) =>
+                            updateProviderDraft(provider.id, {
+                              apiKey: event.target.value,
+                            })
+                          }
+                          placeholder={PROVIDER_KEY_PLACEHOLDER[provider.id] || 'sk-...'}
+                          disabled={!canManage || busySave}
+                        />
+                        <button
+                          type="button"
+                          className="talk-llm-eye-toggle"
+                          onClick={() =>
+                            updateProviderDraft(provider.id, {
+                              showApiKey: !draft.showApiKey,
+                            })
+                          }
+                          disabled={!canManage || busySave}
+                          aria-label={
+                            draft.showApiKey
+                              ? `Hide ${provider.name} API key`
+                              : `Show ${provider.name} API key`
+                          }
+                        >
+                          {draft.showApiKey ? 'Hide' : 'Show'}
+                        </button>
+                      </div>
                     </label>
                     <div className="talk-llm-inline-actions">
                       <button

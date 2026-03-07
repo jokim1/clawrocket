@@ -135,16 +135,18 @@ export function saveAiProviderCredentialRoute(input: {
       updatedBy: input.auth.userId,
     });
 
-    const verified = credential
-      ? await input.verifier.verify(provider.id)
-      : provider;
+    if (credential) {
+      // Persist first, then verify in the background so a slow provider probe
+      // does not make the save itself look broken in the UI.
+      void input.verifier.verify(provider.id).catch(() => undefined);
+    }
 
     return {
       statusCode: 200,
       body: {
         ok: true,
         data: {
-          provider: verified,
+          provider,
         },
       },
     };
