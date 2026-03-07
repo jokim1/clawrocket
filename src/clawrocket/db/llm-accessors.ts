@@ -272,12 +272,6 @@ const KNOWN_PROVIDER_CATALOG: Array<{
         defaultMaxOutputTokens: 4096,
       },
       {
-        modelId: 'claude-opus-4-1',
-        displayName: 'Claude Opus 4.1',
-        contextWindowTokens: 200000,
-        defaultMaxOutputTokens: 4096,
-      },
-      {
         modelId: 'claude-sonnet-4-6',
         displayName: 'Claude Sonnet 4.6',
         contextWindowTokens: 200000,
@@ -387,7 +381,7 @@ const KNOWN_PROVIDER_CATALOG: Array<{
   },
   {
     id: 'provider.nvidia',
-    name: 'NVIDIA',
+    name: 'NVIDIA Kimi2.5',
     providerKind: 'nvidia',
     apiFormat: 'openai_chat_completions',
     authScheme: 'bearer',
@@ -1666,19 +1660,46 @@ export function ensureTalkHasDefaultAgent(
   return resetTalkAgentsToDefault(talkId, now);
 }
 
+function resolvePersistedTalkAgentIdentity(agent: TalkAgentRecord): {
+  sourceKind: TalkAgentSourceKind;
+  providerId: string | null;
+  modelId: string | null;
+} {
+  const route = getTalkRouteById(agent.route_id);
+  const primaryStep = route ? listTalkRouteSteps(route.id)[0] : undefined;
+  let sourceKind =
+    agent.source_kind === 'claude_default' || agent.source_kind === 'provider'
+      ? (agent.source_kind as TalkAgentSourceKind)
+      : 'claude_default';
+  let providerId =
+    sourceKind === 'claude_default'
+      ? 'provider.anthropic'
+      : agent.provider_id || primaryStep?.provider_id || null;
+  let modelId = agent.model_id || primaryStep?.model_id || null;
+
+  // Older malformed rows can lose provider/model columns even though the route
+  // still points at Claude. Rehydrate those rows as the default Claude agent.
+  if (providerId === 'provider.anthropic') {
+    sourceKind = 'claude_default';
+  }
+  if (sourceKind === 'claude_default') {
+    providerId = 'provider.anthropic';
+    if (!modelId) {
+      modelId = getDefaultClaudeModelId();
+    }
+  }
+
+  return { sourceKind, providerId, modelId };
+}
+
 export function listTalkAgentInstances(
   talkId: string,
 ): TalkAgentInstanceSnapshot[] {
   const existing = ensureTalkHasDefaultAgent(talkId);
   return existing.map((agent) => {
-    const sourceKind =
-      agent.source_kind as TalkAgentInstanceSnapshot['sourceKind'];
-    const providerId =
-      sourceKind === 'claude_default'
-        ? 'provider.anthropic'
-        : agent.provider_id || null;
+    const { sourceKind, providerId, modelId } =
+      resolvePersistedTalkAgentIdentity(agent);
     const providerName = resolveProviderDisplayName(providerId);
-    const modelId = agent.model_id || null;
     const modelDisplayName = resolveModelDisplayName(providerId, modelId);
     return {
       id: agent.id,
@@ -1761,7 +1782,8 @@ export function resolveTalkAgent(
       : undefined) || agents.find((entry) => entry.is_primary === 1);
   if (!agent) return null;
 
-  const sourceKind = agent.source_kind as TalkAgentSourceKind;
+  const { sourceKind, providerId, modelId } =
+    resolvePersistedTalkAgentIdentity(agent);
 
   const route = getTalkRouteById(agent.route_id);
   if (!route) return null;
@@ -1790,11 +1812,8 @@ export function resolveTalkAgent(
     route,
     steps,
     sourceKind,
-    providerId:
-      sourceKind === 'claude_default'
-        ? 'provider.anthropic'
-        : agent.provider_id || null,
-    modelId: agent.model_id || null,
+    providerId,
+    modelId,
   };
 }
 

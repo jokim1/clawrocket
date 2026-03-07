@@ -56,6 +56,17 @@ describe('AiAgentsPage', () => {
     expect(
       within(openAiCard).getByRole('link', { name: 'Get key from OpenAI' }),
     ).toHaveAttribute('href', 'https://platform.openai.com/api-keys');
+
+    const nvidiaCard = screen
+      .getByRole('heading', { name: 'NVIDIA Kimi2.5' })
+      .closest('article');
+    if (!nvidiaCard) {
+      throw new Error('Expected NVIDIA provider card');
+    }
+    expect(
+      within(nvidiaCard).getByRole('link', { name: 'Get key from NVIDIA' }),
+    ).toHaveAttribute('href', 'https://build.nvidia.com/');
+    expect(within(nvidiaCard).getByPlaceholderText('nvapi-...')).toBeTruthy();
   });
 
   it('reports saved provider credentials honestly when verification does not pass', async () => {
@@ -188,12 +199,6 @@ function buildAiAgentsData(): AiAgentsPageData {
         contextWindowTokens: 200000,
         defaultMaxOutputTokens: 4096,
       },
-      {
-        modelId: 'claude-opus-4-1',
-        displayName: 'Claude Opus 4.1',
-        contextWindowTokens: 200000,
-        defaultMaxOutputTokens: 4096,
-      },
     ],
     additionalProviders: [
       {
@@ -237,6 +242,28 @@ function buildAiAgentsData(): AiAgentsPageData {
             displayName: 'Gemini 2.5 Flash',
             contextWindowTokens: 1000000,
             defaultMaxOutputTokens: 8192,
+          },
+        ],
+      },
+      {
+        id: 'provider.nvidia',
+        name: 'NVIDIA Kimi2.5',
+        providerKind: 'nvidia',
+        apiFormat: 'openai_chat_completions',
+        baseUrl: 'https://integrate.api.nvidia.com/v1',
+        authScheme: 'bearer',
+        enabled: true,
+        hasCredential: false,
+        credentialHint: null,
+        verificationStatus: 'missing',
+        lastVerifiedAt: null,
+        lastVerificationError: null,
+        modelSuggestions: [
+          {
+            modelId: 'moonshotai/kimi-k2.5',
+            displayName: 'Kimi 2.5 (NVIDIA)',
+            contextWindowTokens: 262144,
+            defaultMaxOutputTokens: 16384,
           },
         ],
       },
