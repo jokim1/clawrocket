@@ -87,11 +87,13 @@ export type TalkPersonaRole =
   | 'editor';
 
 export type TalkAgentSourceKind = 'claude_default' | 'provider';
+export type TalkAgentNicknameMode = 'auto' | 'custom';
 
 export interface TalkAgentRecord {
   id: string;
   talk_id: string;
   name: string;
+  nickname_mode: TalkAgentNicknameMode;
   source_kind: TalkAgentSourceKind;
   persona_role: TalkPersonaRole;
   route_id: string;

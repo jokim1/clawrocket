@@ -262,6 +262,16 @@ describe('App', () => {
           },
         }),
       ],
+      '/api/v1/talks/talk-missing/runs': [
+        jsonResponse(200, {
+          ok: true,
+          data: {
+            talkId: 'talk-missing',
+            runs: [],
+            page: { limit: 50, count: 0, offset: 0 },
+          },
+        }),
+      ],
     });
 
     renderWithRouter('/app/talks/talk-missing');

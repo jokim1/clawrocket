@@ -2,6 +2,8 @@ import { beforeEach, describe, expect, it } from 'vitest';
 
 import {
   _initTestDatabase,
+  createTalkMessage,
+  createTalkRun,
   getQueuedTalkRuns,
   getRunningTalkRun,
   upsertTalk,
@@ -406,7 +408,7 @@ describe('talk routes', () => {
     });
     expect(clearRes.status).toBe(200);
     const clearBody = (await clearRes.json()) as any;
-    expect(clearBody.data.agents).toEqual(['Claude']);
+    expect(clearBody.data.agents).toEqual(['Claude Opus 4.6']);
 
     const listRes = await server.request('/api/v1/talks', {
       headers: {
@@ -418,7 +420,7 @@ describe('talk routes', () => {
     const talk = listBody.data.talks.find(
       (row: any) => row.id === 'talk-owner',
     );
-    expect(talk.agents).toEqual(['Claude']);
+    expect(talk.agents).toEqual(['Claude Opus 4.6']);
   });
 
   it('replays idempotent policy updates', async () => {
@@ -499,7 +501,9 @@ describe('talk routes', () => {
     expect(first.status).toBe(202);
     const firstBody = (await first.json()) as any;
     expect(firstBody.ok).toBe(true);
-    expect(firstBody.data.run.status).toBe('running');
+    expect(firstBody.data.runs).toHaveLength(1);
+    expect(firstBody.data.runs[0].status).toBe('queued');
+    expect(firstBody.data.runs[0].targetAgentNickname).toBeTruthy();
 
     const second = await server.request('/api/v1/talks/talk-owner/chat', {
       method: 'POST',
@@ -509,9 +513,10 @@ describe('talk routes', () => {
       },
       body: JSON.stringify({ content: 'Second message' }),
     });
-    expect(second.status).toBe(202);
+    expect(second.status).toBe(409);
     const secondBody = (await second.json()) as any;
-    expect(secondBody.data.run.status).toBe('queued');
+    expect(secondBody.ok).toBe(false);
+    expect(secondBody.error.code).toBe('talk_round_active');
 
     const messagesRes = await server.request(
       '/api/v1/talks/talk-owner/messages',
@@ -525,14 +530,63 @@ describe('talk routes', () => {
     const messagesBody = (await messagesRes.json()) as any;
     expect(messagesBody.data.messages.map((m: any) => m.content)).toEqual([
       'First message',
-      'Second message',
     ]);
 
-    expect(getRunningTalkRun('talk-owner')?.id).toBe(firstBody.data.run.id);
+    expect(getRunningTalkRun('talk-owner')).toBeNull();
     expect(getQueuedTalkRuns('talk-owner').map((row) => row.id)).toEqual([
-      secondBody.data.run.id,
+      firstBody.data.runs[0].id,
     ]);
-    expect(wakeCalls).toBe(2);
+    expect(wakeCalls).toBe(1);
+  });
+
+  it('returns real run error codes and target nicknames in run history', async () => {
+    const agentsRes = await server.request('/api/v1/talks/talk-owner/agents', {
+      headers: {
+        Authorization: 'Bearer owner-token',
+      },
+    });
+    expect(agentsRes.status).toBe(200);
+    const agentsBody = (await agentsRes.json()) as any;
+    const targetAgent = agentsBody.data.agents[0];
+
+    createTalkMessage({
+      id: 'msg-run-history',
+      talkId: 'talk-owner',
+      role: 'user',
+      content: 'Show me the run history error',
+      createdBy: 'owner-1',
+      createdAt: '2026-03-07T00:00:00.000Z',
+    });
+    createTalkRun({
+      id: 'run-history-failed',
+      talk_id: 'talk-owner',
+      requested_by: 'owner-1',
+      status: 'failed',
+      trigger_message_id: 'msg-run-history',
+      target_agent_id: targetAgent.id,
+      idempotency_key: null,
+      executor_alias: 'claude',
+      executor_model: 'claude-sonnet-4-6',
+      created_at: '2026-03-07T00:00:01.000Z',
+      started_at: '2026-03-07T00:00:01.500Z',
+      ended_at: '2026-03-07T00:00:02.000Z',
+      cancel_reason: 'trigger_message_missing: Trigger message not found',
+    });
+
+    const runsRes = await server.request('/api/v1/talks/talk-owner/runs', {
+      headers: {
+        Authorization: 'Bearer owner-token',
+      },
+    });
+    expect(runsRes.status).toBe(200);
+    const runsBody = (await runsRes.json()) as any;
+    const failedRun = runsBody.data.runs.find(
+      (run: any) => run.id === 'run-history-failed',
+    );
+    expect(failedRun).toBeDefined();
+    expect(failedRun.errorCode).toBe('trigger_message_missing');
+    expect(failedRun.errorMessage).toBe('Trigger message not found');
+    expect(failedRun.targetAgentNickname).toBe(targetAgent.nickname);
   });
 
   it('requires editor permission to enqueue chat', async () => {
@@ -639,7 +693,7 @@ describe('talk routes', () => {
       },
     );
     expect(cancelRes.status).toBe(200);
-    expect(abortCalls).toEqual(['talk-owner']);
+    expect(abortCalls).toEqual([]);
 
     const badTalkRes = await server.request('/api/v1/talks/%ZZ/chat', {
       method: 'POST',

@@ -52,7 +52,7 @@ interface ClassifiedTalkError {
 interface AttemptContext {
   input: TalkExecutorInput;
   agentId: string;
-  agentName: string;
+  agentNickname: string;
   routeId: string;
   routeStepPosition: number;
   providerId: string;
@@ -632,11 +632,11 @@ export class DirectTalkExecutor implements TalkExecutor {
         );
       }
 
-      return this.executeClaudeDefaultAttempt(
+        return this.executeClaudeDefaultAttempt(
         {
           input,
           agentId: resolved.agent.id,
-          agentName: resolved.agent.name,
+          agentNickname: resolved.agent.name,
           routeId: resolved.route.id,
           routeStepPosition: primaryStep?.routeStep.position ?? 0,
           providerId: 'provider.anthropic',
@@ -657,7 +657,7 @@ export class DirectTalkExecutor implements TalkExecutor {
       const attemptContext: AttemptContext = {
         input,
         agentId: resolved.agent.id,
-        agentName: resolved.agent.name,
+        agentNickname: resolved.agent.name,
         routeId: resolved.route.id,
         routeStepPosition: step.routeStep.position,
         providerId: step.provider.id,
@@ -705,12 +705,12 @@ export class DirectTalkExecutor implements TalkExecutor {
         return {
           ...result,
           agentId: resolved.agent.id,
-          agentName: resolved.agent.name,
+          agentNickname: resolved.agent.name,
           providerId: step.provider.id,
           modelId: step.model.model_id,
           metadataJson: JSON.stringify({
             agentId: resolved.agent.id,
-            agentName: resolved.agent.name,
+            agentNickname: resolved.agent.name,
             personaRole: resolved.agent.persona_role,
             routeId: resolved.route.id,
             providerId: step.provider.id,
@@ -800,7 +800,7 @@ export class DirectTalkExecutor implements TalkExecutor {
           runId: input.runId,
           talkId: input.talkId,
           agentId: resolved.agent.id,
-          agentName: resolved.agent.name,
+          agentNickname: resolved.agent.name,
           usage: result.usage,
           routeStepPosition: step.routeStep.position,
           providerId: step.provider.id,
@@ -811,14 +811,14 @@ export class DirectTalkExecutor implements TalkExecutor {
           content: result.content,
           metadataJson: JSON.stringify({
             agentId: resolved.agent.id,
-            agentName: resolved.agent.name,
+            agentNickname: resolved.agent.name,
             personaRole: resolved.agent.persona_role,
             routeId: resolved.route.id,
             providerId: step.provider.id,
             modelId: step.model.model_id,
           }),
           agentId: resolved.agent.id,
-          agentName: resolved.agent.name,
+          agentNickname: resolved.agent.name,
           providerId: step.provider.id,
           modelId: step.model.model_id,
           usage: result.usage,
@@ -906,7 +906,7 @@ export class DirectTalkExecutor implements TalkExecutor {
       runId: context.input.runId,
       talkId: context.input.talkId,
       agentId: context.agentId,
-      agentName: context.agentName,
+      agentNickname: context.agentNickname,
       routeStepPosition: context.routeStepPosition,
       providerId: context.providerId,
       modelId: context.modelId,
@@ -920,7 +920,7 @@ export class DirectTalkExecutor implements TalkExecutor {
       runId: context.input.runId,
       talkId: context.input.talkId,
       agentId: context.agentId,
-      agentName: context.agentName,
+      agentNickname: context.agentNickname,
       deltaText: content,
       routeStepPosition: context.routeStepPosition,
       providerId: context.providerId,
@@ -988,7 +988,7 @@ export class DirectTalkExecutor implements TalkExecutor {
         currentUserMessage: context.input.triggerContent,
         agent: {
           id: context.agentId,
-          name: context.agentName,
+          name: context.agentNickname,
           personaRole,
         },
         modelContextWindowTokens,
@@ -1000,7 +1000,7 @@ export class DirectTalkExecutor implements TalkExecutor {
         runId: context.input.runId,
         talkId: context.input.talkId,
         agentId: context.agentId,
-        agentName: context.agentName,
+        agentNickname: context.agentNickname,
         routeStepPosition: context.routeStepPosition,
         providerId: context.providerId,
         modelId: context.modelId,
@@ -1026,7 +1026,7 @@ export class DirectTalkExecutor implements TalkExecutor {
             groupFolder: this.groupFolder,
             chatJid: `talk:${context.input.talkId}`,
             isMain: false,
-            assistantName: context.agentName,
+            assistantName: context.agentNickname,
             secrets: settingsService.getExecutorSecrets(),
           },
           (proc) => {
@@ -1043,7 +1043,7 @@ export class DirectTalkExecutor implements TalkExecutor {
               runId: context.input.runId,
               talkId: context.input.talkId,
               agentId: context.agentId,
-              agentName: context.agentName,
+              agentNickname: context.agentNickname,
               deltaText: streamOutput.result,
               routeStepPosition: context.routeStepPosition,
               providerId: context.providerId,
@@ -1074,7 +1074,7 @@ export class DirectTalkExecutor implements TalkExecutor {
             runId: context.input.runId,
             talkId: context.input.talkId,
             agentId: context.agentId,
-            agentName: context.agentName,
+            agentNickname: context.agentNickname,
             deltaText: result.result,
             routeStepPosition: context.routeStepPosition,
             providerId: context.providerId,
@@ -1105,7 +1105,7 @@ export class DirectTalkExecutor implements TalkExecutor {
           runId: context.input.runId,
           talkId: context.input.talkId,
           agentId: context.agentId,
-          agentName: context.agentName,
+          agentNickname: context.agentNickname,
           routeStepPosition: context.routeStepPosition,
           providerId: context.providerId,
           modelId: context.modelId,
@@ -1114,7 +1114,7 @@ export class DirectTalkExecutor implements TalkExecutor {
           content,
           metadataJson: JSON.stringify({
             agentId: context.agentId,
-            agentName: context.agentName,
+            agentNickname: context.agentNickname,
             personaRole,
             routeId: context.routeId,
             providerId: context.providerId,
@@ -1122,7 +1122,7 @@ export class DirectTalkExecutor implements TalkExecutor {
             sourceKind: 'claude_default',
           }),
           agentId: context.agentId,
-          agentName: context.agentName,
+          agentNickname: context.agentNickname,
           providerId: context.providerId,
           modelId: context.modelId,
         };
@@ -1277,7 +1277,7 @@ export class DirectTalkExecutor implements TalkExecutor {
               runId: context.input.runId,
               talkId: context.input.talkId,
               agentId: context.agentId,
-              agentName: context.agentName,
+              agentNickname: context.agentNickname,
               routeStepPosition: context.routeStepPosition,
               providerId: context.providerId,
               modelId: context.modelId,
@@ -1299,7 +1299,7 @@ export class DirectTalkExecutor implements TalkExecutor {
               runId: context.input.runId,
               talkId: context.input.talkId,
               agentId: context.agentId,
-              agentName: context.agentName,
+              agentNickname: context.agentNickname,
               deltaText,
               routeStepPosition: context.routeStepPosition,
               providerId: context.providerId,
@@ -1441,7 +1441,7 @@ export class DirectTalkExecutor implements TalkExecutor {
               runId: context.input.runId,
               talkId: context.input.talkId,
               agentId: context.agentId,
-              agentName: context.agentName,
+              agentNickname: context.agentNickname,
               routeStepPosition: context.routeStepPosition,
               providerId: context.providerId,
               modelId: context.modelId,
@@ -1456,7 +1456,7 @@ export class DirectTalkExecutor implements TalkExecutor {
               runId: context.input.runId,
               talkId: context.input.talkId,
               agentId: context.agentId,
-              agentName: context.agentName,
+              agentNickname: context.agentNickname,
               deltaText,
               routeStepPosition: context.routeStepPosition,
               providerId: context.providerId,

@@ -4,7 +4,9 @@ import {
   _initTestDatabase,
   cancelTalkRunsAtomic,
   createTalk,
-  enqueueTalkTurnAtomic,
+  createTalkMessage,
+  createTalkRun,
+  enqueueTalkTurnAtomic as enqueueTalkTurnAtomicRaw,
   getOutboxEventsForTopics,
   getTalkRunById,
   listTalkMessages,
@@ -80,6 +82,51 @@ async function waitFor(
   throw new Error('Timed out waiting for condition');
 }
 
+function enqueueTalkTurnAtomic(input: {
+  talkId: string;
+  userId: string;
+  content: string;
+  messageId: string;
+  runId: string;
+  targetAgentId?: string;
+  idempotencyKey?: string | null;
+  now?: string;
+}) {
+  return enqueueTalkTurnAtomicRaw({
+    talkId: input.talkId,
+    userId: input.userId,
+    content: input.content,
+    messageId: input.messageId,
+    runIds: [input.runId],
+    targetAgentIds: [input.targetAgentId || 'agent-default'],
+    idempotencyKey: input.idempotencyKey,
+    now: input.now,
+  });
+}
+
+function enqueueTalkRoundAtomic(input: {
+  talkId: string;
+  userId: string;
+  content: string;
+  messageId: string;
+  runIds: string[];
+  targetAgentIds?: string[];
+  idempotencyKey?: string | null;
+  now?: string;
+}) {
+  return enqueueTalkTurnAtomicRaw({
+    talkId: input.talkId,
+    userId: input.userId,
+    content: input.content,
+    messageId: input.messageId,
+    runIds: input.runIds,
+    targetAgentIds:
+      input.targetAgentIds ?? input.runIds.map(() => 'agent-default'),
+    idempotencyKey: input.idempotencyKey,
+    now: input.now,
+  });
+}
+
 describe('TalkRunWorker', () => {
   beforeEach(() => {
     _initTestDatabase();
@@ -113,9 +160,6 @@ describe('TalkRunWorker', () => {
       messageId: 'msg-1',
       runId: 'run-1',
     });
-
-    await new Promise((resolve) => setTimeout(resolve, 50));
-    expect(getTalkRunById('run-1')?.status).toBe('running');
 
     const startedAt = Date.now();
     worker.wake();
@@ -175,7 +219,7 @@ describe('TalkRunWorker', () => {
     await worker.stop();
   });
 
-  it('completes runs sequentially and preserves run/message correlation fields', async () => {
+  it('completes parallel round runs and preserves run/message correlation fields', async () => {
     const worker = new TalkRunWorker({
       executor: new MockTalkExecutor({ executionMs: 5 }),
       pollMs: 10_000,
@@ -183,19 +227,12 @@ describe('TalkRunWorker', () => {
     });
     await worker.start();
 
-    enqueueTalkTurnAtomic({
+    enqueueTalkRoundAtomic({
       talkId: 'talk-1',
       userId: 'owner-1',
-      content: 'first user prompt',
+      content: 'round prompt',
       messageId: 'msg-3',
-      runId: 'run-3',
-    });
-    enqueueTalkTurnAtomic({
-      talkId: 'talk-1',
-      userId: 'owner-1',
-      content: 'second user prompt',
-      messageId: 'msg-4',
-      runId: 'run-4',
+      runIds: ['run-3', 'run-4'],
     });
 
     worker.wake();
@@ -209,8 +246,8 @@ describe('TalkRunWorker', () => {
       (message) => message.role === 'assistant',
     );
 
-    expect(userMessages).toHaveLength(2);
-    expect(userMessages.every((message) => message.run_id !== null)).toBe(true);
+    expect(userMessages).toHaveLength(1);
+    expect(userMessages.every((message) => message.run_id === null)).toBe(true);
     expect(assistantMessages).toHaveLength(2);
     expect(assistantMessages.every((message) => message.run_id !== null)).toBe(
       true,
@@ -230,27 +267,55 @@ describe('TalkRunWorker', () => {
 
     expect(queuedEvent).toBeDefined();
     expect(startedEvent).toBeDefined();
-    expect(startedEvent?.payload).toContain('"triggerMessageId":"msg-4"');
+    expect(startedEvent?.payload).toContain('"triggerMessageId":"msg-3"');
 
     await worker.stop();
   });
 
-  it('fails interrupted running work on startup and promotes queued runs', async () => {
-    enqueueTalkTurnAtomic({
+  it('fails interrupted running work on startup and starts the next queued run', async () => {
+    createTalkMessage({
+      id: 'msg-5',
       talkId: 'talk-1',
-      userId: 'owner-1',
+      role: 'user',
       content: 'stale running work',
-      messageId: 'msg-5',
-      runId: 'run-5',
-      now: '2024-01-01T00:00:01.000Z',
+      createdBy: 'owner-1',
+      createdAt: '2024-01-01T00:00:01.000Z',
     });
-    enqueueTalkTurnAtomic({
+    createTalkMessage({
+      id: 'msg-6',
       talkId: 'talk-1',
-      userId: 'owner-1',
+      role: 'user',
       content: 'queued recovery work',
-      messageId: 'msg-6',
-      runId: 'run-6',
-      now: '2024-01-01T00:00:02.000Z',
+      createdBy: 'owner-1',
+      createdAt: '2024-01-01T00:00:02.000Z',
+    });
+    createTalkRun({
+      id: 'run-5',
+      talk_id: 'talk-1',
+      requested_by: 'owner-1',
+      status: 'running',
+      trigger_message_id: 'msg-5',
+      idempotency_key: null,
+      executor_alias: null,
+      executor_model: null,
+      created_at: '2024-01-01T00:00:01.000Z',
+      started_at: '2024-01-01T00:00:01.000Z',
+      ended_at: null,
+      cancel_reason: null,
+    });
+    createTalkRun({
+      id: 'run-6',
+      talk_id: 'talk-1',
+      requested_by: 'owner-1',
+      status: 'queued',
+      trigger_message_id: 'msg-6',
+      idempotency_key: null,
+      executor_alias: null,
+      executor_model: null,
+      created_at: '2024-01-01T00:00:02.000Z',
+      started_at: null,
+      ended_at: null,
+      cancel_reason: null,
     });
 
     const worker = new TalkRunWorker({
@@ -262,10 +327,11 @@ describe('TalkRunWorker', () => {
     await worker.start();
 
     await waitFor(() => getTalkRunById('run-5')?.status === 'failed');
-    await waitFor(() => getTalkRunById('run-6')?.status === 'running');
 
     const staleRun = getTalkRunById('run-5');
     expect(staleRun?.cancel_reason).toBe('interrupted_by_restart');
+    await waitFor(() => getTalkRunById('run-6')?.status === 'running');
+    expect(getTalkRunById('run-6')?.status).toBe('running');
 
     await worker.stop();
   });

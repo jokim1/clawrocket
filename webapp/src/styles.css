@@ -864,6 +864,205 @@ a {
   margin: 0;
 }
 
+.talk-detail-shell {
+  display: grid;
+  gap: 1rem;
+}
+
+.talk-status-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.55rem;
+  margin-top: 0.75rem;
+}
+
+.talk-status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  padding: 0.25rem 0.6rem;
+  font-size: 0.82rem;
+  color: #2d3954;
+}
+
+.talk-status-pill-ready {
+  border-color: #c9e6d4;
+  background: #f3fff7;
+}
+
+.talk-status-pill-invalid {
+  border-color: #f2c9c9;
+  background: #fff5f5;
+}
+
+.talk-status-pill-unknown {
+  border-color: #d7dfef;
+  background: #f7f9ff;
+}
+
+.talk-status-dot {
+  width: 0.58rem;
+  height: 0.58rem;
+  border-radius: 999px;
+  display: inline-block;
+  flex: 0 0 auto;
+}
+
+.talk-status-dot-ready {
+  background: #33a35c;
+}
+
+.talk-status-dot-invalid {
+  background: #d85757;
+}
+
+.talk-status-dot-unknown {
+  background: #8e99b3;
+}
+
+.talk-status-primary {
+  border-radius: 999px;
+  background: rgba(38, 89, 188, 0.12);
+  color: #1f4da3;
+  padding: 0.1rem 0.45rem;
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+
+.talk-tabs {
+  display: flex;
+  gap: 0.55rem;
+  margin-top: 0.85rem;
+  flex-wrap: wrap;
+}
+
+.talk-tab {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid #d7dfef;
+  border-radius: 999px;
+  padding: 0.45rem 0.85rem;
+  font-size: 0.9rem;
+  color: #36548d;
+  text-decoration: none;
+  background: #fff;
+}
+
+.talk-tab:hover {
+  background: #f7faff;
+}
+
+.talk-tab-active {
+  border-color: #abc2f2;
+  background: #eef5ff;
+  color: #1849a3;
+  font-weight: 700;
+}
+
+.talk-tab-panel {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.agents-panel-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.agents-panel-header h2 {
+  margin: 0;
+}
+
+.agent-editor-card {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 0.75rem;
+  border: 1px solid #dde4f2;
+  border-radius: 12px;
+  padding: 0.85rem;
+  background: #fbfdff;
+}
+
+.agent-editor-card label,
+.agent-editor-footer label {
+  display: grid;
+  gap: 0.3rem;
+}
+
+.agent-editor-card input,
+.agent-editor-card select,
+.agent-editor-footer input,
+.agent-editor-footer select {
+  width: 100%;
+}
+
+.agent-editor-actions {
+  grid-column: 1 / -1;
+  display: flex;
+  gap: 0.55rem;
+  justify-content: flex-start;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.agent-editor-footer {
+  display: flex;
+  gap: 0.55rem;
+  justify-content: flex-start;
+  flex-wrap: wrap;
+  align-items: end;
+}
+
+.composer-targets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.55rem;
+}
+
+.composer-target-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  border: 1px solid #d2dced;
+  border-radius: 999px;
+  padding: 0.45rem 0.75rem;
+  background: #fff;
+  color: #2d3954;
+  cursor: pointer;
+}
+
+.composer-target-chip-selected {
+  border-color: #aec4f0;
+  background: #eef5ff;
+  color: #1d4ca1;
+}
+
+.composer-target-chip:disabled {
+  opacity: 0.7;
+  cursor: default;
+}
+
+.composer-target-help {
+  margin: 0;
+  color: #5b6887;
+  font-size: 0.84rem;
+}
+
+.message-live {
+  border-style: dashed;
+}
+
+.message-error {
+  border-color: #edb0b0;
+  background: #fff8f8;
+}
+
 .run-history-panel {
   border: 1px solid #dde4f2;
   border-radius: 10px;
@@ -1119,6 +1318,12 @@ a {
   border-color: #c4e8d0;
   background: #f3fff8;
   color: #1f6e3e;
+}
+
+.inline-banner-warning {
+  border-color: #ead7a9;
+  background: #fffaf0;
+  color: #7f5a18;
 }
 
 .settings-nav-link {

@@ -444,6 +444,8 @@ function createClawrocketSchema(database: Database.Database): void {
       id TEXT PRIMARY KEY,
       talk_id TEXT NOT NULL REFERENCES talks(id) ON DELETE CASCADE,
       name TEXT NOT NULL,
+      nickname_mode TEXT NOT NULL DEFAULT 'auto'
+        CHECK(nickname_mode IN ('auto', 'custom')),
       source_kind TEXT NOT NULL DEFAULT 'provider'
         CHECK(source_kind IN ('claude_default', 'provider')),
       persona_role TEXT NOT NULL
@@ -584,6 +586,14 @@ function createClawrocketSchema(database: Database.Database): void {
 
   try {
     database.exec(`ALTER TABLE talk_agents ADD COLUMN model_id TEXT`);
+  } catch {
+    /* column already exists */
+  }
+
+  try {
+    database.exec(
+      `ALTER TABLE talk_agents ADD COLUMN nickname_mode TEXT NOT NULL DEFAULT 'auto' CHECK(nickname_mode IN ('auto', 'custom'))`,
+    );
   } catch {
     /* column already exists */
   }

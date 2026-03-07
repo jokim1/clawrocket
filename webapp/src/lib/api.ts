@@ -44,7 +44,7 @@ export type TalkMessage = {
   createdAt: string;
   runId: string | null;
   agentId?: string | null;
-  agentName?: string | null;
+  agentNickname?: string | null;
 };
 
 export type TalkRun = {
@@ -52,7 +52,14 @@ export type TalkRun = {
   status: 'queued' | 'running' | 'cancelled' | 'completed' | 'failed';
   createdAt: string;
   startedAt: string | null;
+  completedAt: string | null;
+  triggerMessageId: string | null;
   targetAgentId: string | null;
+  targetAgentNickname: string | null;
+  errorCode: string | null;
+  errorMessage: string | null;
+  executorAlias: string | null;
+  executorModel: string | null;
 };
 
 export type TalkPolicy = {
@@ -66,7 +73,8 @@ export type TalkPolicy = {
 
 export type TalkAgent = {
   id: string;
-  name: string;
+  nickname: string;
+  nicknameMode: 'auto' | 'custom';
   sourceKind: 'claude_default' | 'provider';
   role:
     | 'assistant'
@@ -76,11 +84,10 @@ export type TalkAgent = {
     | 'devils-advocate'
     | 'synthesizer'
     | 'editor';
-  isLead: boolean;
+  isPrimary: boolean;
   displayOrder: number;
-  status: 'active' | 'archived';
+  health: 'ready' | 'invalid' | 'unknown';
   providerId: string | null;
-  providerName: string | null;
   modelId: string | null;
   modelDisplayName: string | null;
 };
@@ -403,6 +410,14 @@ export async function getTalkAgents(talkId: string): Promise<TalkAgent[]> {
   return envelope.agents;
 }
 
+export async function getTalkRuns(talkId: string): Promise<TalkRun[]> {
+  const envelope = await apiRequest<{
+    talkId: string;
+    runs: TalkRun[];
+  }>(`/api/v1/talks/${encodeURIComponent(talkId)}/runs`);
+  return envelope.runs;
+}
+
 export async function updateTalkAgents(input: {
   talkId: string;
   agents: TalkAgent[];
@@ -562,16 +577,16 @@ export async function getHealthStatus(): Promise<boolean> {
 export async function sendTalkMessage(input: {
   talkId: string;
   content: string;
-  targetAgentId?: string | null;
-}): Promise<{ talkId: string; message: TalkMessage; run: TalkRun }> {
-  return apiRequest<{ talkId: string; message: TalkMessage; run: TalkRun }>(
+  targetAgentIds?: string[];
+}): Promise<{ talkId: string; message: TalkMessage; runs: TalkRun[] }> {
+  return apiRequest<{ talkId: string; message: TalkMessage; runs: TalkRun[] }>(
     `/api/v1/talks/${encodeURIComponent(input.talkId)}/chat`,
     {
       method: 'POST',
       headers: buildMutationHeaders({ includeJson: true }),
       body: JSON.stringify({
         content: input.content,
-        targetAgentId: input.targetAgentId ?? null,
+        targetAgentIds: input.targetAgentIds ?? [],
       }),
     },
   );

@@ -83,7 +83,7 @@ describe('registered agent accessors', () => {
       )?.displayName || expectedModelId;
     const [agent] = listTalkAgentInstances('talk-1');
     expect(agent).toMatchObject({
-      name: 'Claude',
+      nickname: expectedModelDisplayName,
       sourceKind: 'claude_default',
       providerId: 'provider.anthropic',
       modelId: expectedModelId,
@@ -141,10 +141,14 @@ describe('registered agent accessors', () => {
       );
 
     const expectedModelId = getDefaultClaudeModelId();
+    const expectedModelDisplayName =
+      listClaudeModelSuggestions().find(
+        (model) => model.modelId === expectedModelId,
+      )?.displayName || expectedModelId;
     const [agent] = listTalkAgentInstances('talk-2');
 
     expect(agent).toMatchObject({
-      name: 'Claude',
+      nickname: expectedModelDisplayName,
       sourceKind: 'claude_default',
       providerId: 'provider.anthropic',
       modelId: expectedModelId,

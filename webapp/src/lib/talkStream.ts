@@ -13,7 +13,7 @@ export type MessageAppendedEvent = {
   content?: string;
   createdAt?: string;
   agentId?: string | null;
-  agentName?: string | null;
+  agentNickname?: string | null;
 };
 
 export type TalkRunStartedEvent = {
@@ -38,7 +38,7 @@ export type TalkResponseStartedEvent = {
   talkId: string;
   runId: string;
   agentId?: string | null;
-  agentName?: string | null;
+  agentNickname?: string | null;
   routeStepPosition?: number | null;
   providerId?: string | null;
   modelId?: string | null;
@@ -48,7 +48,7 @@ export type TalkResponseDeltaEvent = {
   talkId: string;
   runId: string;
   agentId?: string | null;
-  agentName?: string | null;
+  agentNickname?: string | null;
   deltaText: string;
   routeStepPosition?: number | null;
   providerId?: string | null;
@@ -73,7 +73,7 @@ export type TalkResponseTerminalEvent = {
   talkId: string;
   runId: string;
   agentId?: string | null;
-  agentName?: string | null;
+  agentNickname?: string | null;
   routeStepPosition?: number | null;
   providerId?: string | null;
   modelId?: string | null;
