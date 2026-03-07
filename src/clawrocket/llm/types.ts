@@ -10,6 +10,7 @@ export type LlmProviderKind =
   | 'gemini'
   | 'deepseek'
   | 'kimi'
+  | 'nvidia'
   | 'custom';
 
 export interface LlmProviderRecord {

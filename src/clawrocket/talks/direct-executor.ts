@@ -1,7 +1,10 @@
 import { ChildProcess } from 'child_process';
 import { setTimeout as sleep } from 'timers/promises';
 
-import { runContainerAgent, type ContainerOutput } from '../../container-runner.js';
+import {
+  runContainerAgent,
+  type ContainerOutput,
+} from '../../container-runner.js';
 import { logger } from '../../logger.js';
 import type { RegisteredGroup } from '../../types.js';
 import {
@@ -444,9 +447,7 @@ function classifyHttpFailure(response: {
   };
 }
 
-function renderPromptTranscript(
-  promptMessages: PromptMessage[],
-): string {
+function renderPromptTranscript(promptMessages: PromptMessage[]): string {
   return promptMessages
     .map((message) => {
       const label =
@@ -528,7 +529,9 @@ function classifyClaudeDefaultFailure(error: unknown): ClassifiedTalkError {
   return {
     code: 'execution_failed',
     message:
-      error instanceof Error ? error.message : 'Unknown Claude execution failure',
+      error instanceof Error
+        ? error.message
+        : 'Unknown Claude execution failure',
     failureClass: 'unknown',
     retryable: false,
   };
@@ -1079,7 +1082,10 @@ export class DirectTalkExecutor implements TalkExecutor {
           });
         }
 
-        const content = chunks.join('').trim() || result.result?.trim() || 'No response generated.';
+        const content =
+          chunks.join('').trim() ||
+          result.result?.trim() ||
+          'No response generated.';
         createLlmAttempt({
           runId: context.input.runId,
           talkId: context.input.talkId,

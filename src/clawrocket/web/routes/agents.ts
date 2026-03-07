@@ -60,7 +60,8 @@ export function updateDefaultClaudeModelRoute(input: {
         ok: false,
         error: {
           code: 'forbidden',
-          message: 'You do not have permission to update the default Claude model.',
+          message:
+            'You do not have permission to update the default Claude model.',
         },
       },
     };

@@ -283,7 +283,7 @@ function createClawrocketSchema(database: Database.Database): void {
       id TEXT PRIMARY KEY,
       name TEXT NOT NULL,
       provider_kind TEXT NOT NULL
-        CHECK(provider_kind IN ('anthropic', 'openai', 'gemini', 'deepseek', 'kimi', 'custom')),
+        CHECK(provider_kind IN ('anthropic', 'openai', 'gemini', 'deepseek', 'kimi', 'nvidia', 'custom')),
       api_format TEXT NOT NULL
         CHECK(api_format IN ('anthropic_messages', 'openai_chat_completions')),
       base_url TEXT NOT NULL,

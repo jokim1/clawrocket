@@ -33,11 +33,20 @@ describe('AiAgentsPage', () => {
     expect(
       screen.getByRole('heading', { name: 'Additional Providers' }),
     ).toBeTruthy();
-    expect(screen.getByText('Subscription (Claude Pro/Max)')).toBeTruthy();
     expect(
       screen.getByText(
         /Every new talk starts with Claude as the default agent/i,
       ),
+    ).toBeTruthy();
+    expect(screen.getByLabelText('Subscription')).toBeChecked();
+    expect(screen.getByLabelText('API')).not.toBeChecked();
+    expect(screen.getByText('Model for new talks')).toBeTruthy();
+    expect(
+      screen.queryByRole('button', { name: /Check host Claude login/i }),
+    ).toBeNull();
+    expect(screen.getByLabelText('Claude Code OAuth token')).toBeTruthy();
+    expect(
+      await screen.findByText(/Checked as user k1min8r/i),
     ).toBeTruthy();
 
     const openAiCard = screen.getByRole('heading', { name: 'OpenAI' }).closest('article');
@@ -105,6 +114,32 @@ function installAiAgentsFetch() {
         return jsonResponse(200, { ok: true, data: status });
       }
 
+      if (
+        url.endsWith('/api/v1/settings/executor/subscription-host-status') &&
+        method === 'GET'
+      ) {
+        return jsonResponse(200, {
+          ok: true,
+          data: {
+            serviceUser: 'k1min8r',
+            serviceUid: 1000,
+            serviceHomePath: '/home/k1min8r',
+            runtimeContext: 'host',
+            claudeCliInstalled: true,
+            hostLoginDetected: true,
+            serviceEnvOauthPresent: false,
+            importAvailable: false,
+            hostCredentialFingerprint: null,
+            message:
+              'Claude Code login was detected for this service user, but the current authenticated state could not be imported automatically. Use the advanced manual token flow with `claude setup-token`.',
+            recommendedCommands: [
+              'claude config set -g forceLoginMethod claudeai',
+              'claude login',
+            ],
+          },
+        });
+      }
+
       if (url.endsWith('/api/v1/agents/providers/provider.openai') && method === 'PUT') {
         snapshot = {
           ...snapshot,
@@ -135,6 +170,18 @@ function buildAiAgentsData(): AiAgentsPageData {
   return {
     defaultClaudeModelId: 'claude-sonnet-4-5',
     claudeModelSuggestions: [
+      {
+        modelId: 'claude-opus-4-6',
+        displayName: 'Claude Opus 4.6',
+        contextWindowTokens: 200000,
+        defaultMaxOutputTokens: 4096,
+      },
+      {
+        modelId: 'claude-sonnet-4-6',
+        displayName: 'Claude Sonnet 4.6',
+        contextWindowTokens: 200000,
+        defaultMaxOutputTokens: 4096,
+      },
       {
         modelId: 'claude-sonnet-4-5',
         displayName: 'Claude Sonnet 4.5',

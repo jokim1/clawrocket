@@ -38,6 +38,7 @@ const PROVIDER_DOCS_URL: Record<string, string> = {
   'provider.gemini': 'https://aistudio.google.com/app/apikey',
   'provider.deepseek': 'https://platform.deepseek.com/api_keys',
   'provider.kimi': 'https://platform.moonshot.ai/console/api-keys',
+  'provider.nvidia': 'https://build.nvidia.com/',
 };
 
 function canManageAgents(userRole: string): boolean {
@@ -82,6 +83,21 @@ function formatVerificationStatus(
       return 'Unavailable';
     default:
       return status;
+  }
+}
+
+function verificationStatusClass(
+  status: ExecutorStatus['verificationStatus'] | AgentProviderCard['verificationStatus'],
+): string {
+  switch (status) {
+    case 'verified':
+      return 'talk-agent-chip talk-agent-chip-success';
+    case 'invalid':
+      return 'talk-agent-chip talk-agent-chip-error';
+    case 'unavailable':
+      return 'talk-agent-chip talk-agent-chip-warning';
+    default:
+      return 'talk-agent-chip';
   }
 }
 
@@ -163,9 +179,6 @@ export function AiAgentsPage({
   const [claudeModelDraft, setClaudeModelDraft] = useState('');
   const [claudeApiKeyDraft, setClaudeApiKeyDraft] = useState('');
   const [claudeOauthDraft, setClaudeOauthDraft] = useState('');
-  const [clearClaudeApiKey, setClearClaudeApiKey] = useState(false);
-  const [clearClaudeOauth, setClearClaudeOauth] = useState(false);
-  const [showSubscriptionAdvanced, setShowSubscriptionAdvanced] = useState(false);
   const [subscriptionHostStatus, setSubscriptionHostStatus] =
     useState<ExecutorSubscriptionHostStatus | null>(null);
   const [subscriptionHostBusy, setSubscriptionHostBusy] = useState<
@@ -188,8 +201,6 @@ export function AiAgentsPage({
     setClaudeModelDraft(nextData.defaultClaudeModelId);
     setClaudeApiKeyDraft('');
     setClaudeOauthDraft('');
-    setClearClaudeApiKey(false);
-    setClearClaudeOauth(false);
     setProviderDrafts((current) => {
       const nextDrafts: Record<string, ProviderDraft> = {};
       for (const provider of nextData.additionalProviders) {
@@ -271,6 +282,34 @@ export function AiAgentsPage({
     };
   }, [status?.verificationStatus, onUnauthorized]);
 
+  useEffect(() => {
+    if (claudeModeDraft !== 'subscription') {
+      setSubscriptionHostStatus(null);
+      return;
+    }
+
+    let cancelled = false;
+    setSubscriptionHostBusy('checking');
+    void getExecutorSubscriptionHostStatus()
+      .then((nextHostStatus) => {
+        if (cancelled) return;
+        setSubscriptionHostStatus(nextHostStatus);
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        handleApiFailure(err, 'Failed to check Claude host login.');
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setSubscriptionHostBusy(null);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [claudeModeDraft, onUnauthorized]);
+
   const updateProviderDraft = (
     providerId: string,
     patch: Partial<ProviderDraft>,
@@ -320,13 +359,9 @@ export function AiAgentsPage({
         executorAuthMode: claudeModeDraft,
       };
       if (claudeModeDraft === 'subscription') {
-        if (clearClaudeOauth) {
-          update.claudeOauthToken = null;
-        } else if (claudeOauthDraft.trim()) {
+        if (claudeOauthDraft.trim()) {
           update.claudeOauthToken = claudeOauthDraft.trim();
         }
-      } else if (clearClaudeApiKey) {
-        update.anthropicApiKey = null;
       } else if (claudeApiKeyDraft.trim()) {
         update.anthropicApiKey = claudeApiKeyDraft.trim();
       }
@@ -365,27 +400,6 @@ export function AiAgentsPage({
       handleApiFailure(err, 'Failed to verify Claude credentials.');
     } finally {
       setBusyKey(null);
-    }
-  };
-
-  const handleCheckSubscriptionHost = async (): Promise<void> => {
-    setSubscriptionHostBusy('checking');
-    setNotice(null);
-    setError(null);
-    try {
-      const nextHostStatus = await getExecutorSubscriptionHostStatus();
-      setSubscriptionHostStatus(nextHostStatus);
-      if (
-        !nextHostStatus.importAvailable &&
-        !nextHostStatus.serviceEnvOauthPresent &&
-        (!nextHostStatus.claudeCliInstalled || nextHostStatus.hostLoginDetected)
-      ) {
-        setShowSubscriptionAdvanced(true);
-      }
-    } catch (err) {
-      handleApiFailure(err, 'Failed to check Claude host login.');
-    } finally {
-      setSubscriptionHostBusy(null);
     }
   };
 
@@ -541,26 +555,48 @@ export function AiAgentsPage({
                 Configure the Claude capability every new talk starts with.
               </p>
             </div>
-            <span className="talk-agent-chip">{selectedClaudeStatus}</span>
+            <span
+              className={verificationStatusClass(
+                status.executorAuthMode !== claudeModeDraft || !selectedClaudeStored
+                  ? 'not_verified'
+                  : status.verificationStatus,
+              )}
+            >
+              {selectedClaudeStatus}
+            </span>
           </div>
 
           <div className="talk-llm-grid">
-            <label className="talk-llm-field-span">
+            <fieldset className="talk-llm-field-span talk-llm-radio-group">
               <span>Billing model</span>
-              <select
-                value={claudeModeDraft}
-                onChange={(event) =>
-                  setClaudeModeDraft(event.target.value as ClaudeAuthMode)
-                }
-                disabled={!canManage || busyKey === 'claude-save'}
-              >
-                <option value="subscription">Subscription (Claude Pro/Max)</option>
-                <option value="api_key">API</option>
-              </select>
-            </label>
+              <div className="talk-llm-radio-options">
+                <label className="talk-llm-radio-option">
+                  <input
+                    type="radio"
+                    name="claude-billing-model"
+                    value="subscription"
+                    checked={claudeModeDraft === 'subscription'}
+                    onChange={() => setClaudeModeDraft('subscription')}
+                    disabled={!canManage || busyKey === 'claude-save'}
+                  />
+                  <span>Subscription</span>
+                </label>
+                <label className="talk-llm-radio-option">
+                  <input
+                    type="radio"
+                    name="claude-billing-model"
+                    value="api_key"
+                    checked={claudeModeDraft === 'api_key'}
+                    onChange={() => setClaudeModeDraft('api_key')}
+                    disabled={!canManage || busyKey === 'claude-save'}
+                  />
+                  <span>API</span>
+                </label>
+              </div>
+            </fieldset>
 
             <label className="talk-llm-field-span">
-              <span>Default Claude model</span>
+              <span>Model for new talks</span>
               <select
                 value={claudeModelDraft}
                 onChange={(event) => setClaudeModelDraft(event.target.value)}
@@ -587,9 +623,6 @@ export function AiAgentsPage({
                         Last verified {formatDateTime(status.lastVerifiedAt)}
                       </p>
                     </div>
-                    <span className="talk-agent-chip">
-                      {formatVerificationStatus(status.verificationStatus)}
-                    </span>
                   </div>
                 ) : (
                   <p className="talk-llm-meta">
@@ -605,17 +638,10 @@ export function AiAgentsPage({
                 <p className="talk-llm-meta">
                   If host import is unavailable, you can run <code>claude setup-token</code> and paste the token manually below.
                 </p>
+                <p className="talk-llm-meta">
+                  Re-verify uses the stored subscription login/token. Paste a new token only if the stored one is expired, revoked, or incorrect.
+                </p>
                 <div className="talk-llm-inline-actions">
-                  <button
-                    type="button"
-                    className="secondary-btn"
-                    onClick={() => void handleCheckSubscriptionHost()}
-                    disabled={!canManage || subscriptionHostBusy === 'checking'}
-                  >
-                    {subscriptionHostBusy === 'checking'
-                      ? 'Checking…'
-                      : 'Check host Claude login'}
-                  </button>
                   {subscriptionHostStatus?.importAvailable ? (
                     <button
                       type="button"
@@ -628,16 +654,10 @@ export function AiAgentsPage({
                         : 'Import from host'}
                     </button>
                   ) : null}
-                  <button
-                    type="button"
-                    className="secondary-btn"
-                    onClick={() => setShowSubscriptionAdvanced((current) => !current)}
-                  >
-                    {showSubscriptionAdvanced
-                      ? 'Hide manual token entry'
-                      : 'Paste Claude Code OAuth token manually'}
-                  </button>
                 </div>
+                {subscriptionHostBusy === 'checking' ? (
+                  <p className="talk-llm-meta">Checking Claude login on this host…</p>
+                ) : null}
                 {subscriptionHostStatus ? (
                   <div className="talk-llm-host-status">
                     <p className="talk-llm-meta">
@@ -654,21 +674,18 @@ export function AiAgentsPage({
                     ) : null}
                   </div>
                 ) : null}
-                {showSubscriptionAdvanced ? (
-                  <label className="talk-llm-field-span">
-                    <span>Claude Code OAuth token</span>
-                    <input
-                      type="password"
-                      value={claudeOauthDraft}
-                      onChange={(event) => {
-                        setClaudeOauthDraft(event.target.value);
-                        setClearClaudeOauth(false);
-                      }}
-                      placeholder="Paste token from claude setup-token"
-                      disabled={!canManage || busyKey === 'claude-save'}
-                    />
-                  </label>
-                ) : null}
+                <label className="talk-llm-field-span">
+                  <span>Claude Code OAuth token</span>
+                  <input
+                    type="password"
+                    value={claudeOauthDraft}
+                    onChange={(event) => {
+                      setClaudeOauthDraft(event.target.value);
+                    }}
+                    placeholder="Paste token from claude setup-token"
+                    disabled={!canManage || busyKey === 'claude-save'}
+                  />
+                </label>
               </div>
             </div>
           ) : (
@@ -687,9 +704,6 @@ export function AiAgentsPage({
                         .
                       </p>
                     </div>
-                    <span className="talk-agent-chip">
-                      {formatVerificationStatus(status.verificationStatus)}
-                    </span>
                   </div>
                 ) : (
                   <p className="talk-llm-meta">
@@ -703,7 +717,6 @@ export function AiAgentsPage({
                     value={claudeApiKeyDraft}
                     onChange={(event) => {
                       setClaudeApiKeyDraft(event.target.value);
-                      setClearClaudeApiKey(false);
                     }}
                     placeholder="sk-ant-..."
                     disabled={!canManage || busyKey === 'claude-save'}
@@ -714,26 +727,6 @@ export function AiAgentsPage({
           )}
 
           <div className="talk-llm-inline-actions">
-            {claudeModeDraft === 'subscription' && settings.hasOauthToken ? (
-              <button
-                type="button"
-                className="secondary-btn"
-                onClick={() => setClearClaudeOauth(true)}
-                disabled={!canManage || busyKey === 'claude-save'}
-              >
-                Clear stored subscription token
-              </button>
-            ) : null}
-            {claudeModeDraft === 'api_key' && settings.hasApiKey ? (
-              <button
-                type="button"
-                className="secondary-btn"
-                onClick={() => setClearClaudeApiKey(true)}
-                disabled={!canManage || busyKey === 'claude-save'}
-              >
-                Clear stored API key
-              </button>
-            ) : null}
             <button
               type="button"
               className="secondary-btn"
@@ -788,9 +781,9 @@ export function AiAgentsPage({
                       )}
                     </p>
                   </div>
-                  <span className="talk-agent-chip">
-                    {formatProviderVerificationSummary(provider)}
-                  </span>
+                    <span className={verificationStatusClass(provider.verificationStatus)}>
+                      {formatProviderVerificationSummary(provider)}
+                    </span>
                 </div>
 
                 {provider.hasCredential ? (

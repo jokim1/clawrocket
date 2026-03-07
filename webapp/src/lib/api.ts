@@ -94,6 +94,7 @@ export type AgentProviderCard = {
     | 'gemini'
     | 'deepseek'
     | 'kimi'
+    | 'nvidia'
     | 'custom';
   apiFormat: 'anthropic_messages' | 'openai_chat_completions';
   baseUrl: string;
@@ -137,6 +138,7 @@ export type TalkLlmProvider = {
     | 'gemini'
     | 'deepseek'
     | 'kimi'
+    | 'nvidia'
     | 'custom';
   apiFormat: 'anthropic_messages' | 'openai_chat_completions';
   baseUrl: string;
