@@ -381,8 +381,6 @@ function createClawrocketSchema(database: Database.Database): void {
       ON talk_agents(talk_id, sort_order, created_at);
     CREATE INDEX IF NOT EXISTS idx_talk_agents_route_id
       ON talk_agents(route_id);
-    CREATE INDEX IF NOT EXISTS idx_talk_agents_registered_agent_id
-      ON talk_agents(registered_agent_id);
 
     CREATE TABLE IF NOT EXISTS llm_attempts (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -484,6 +482,11 @@ function createClawrocketSchema(database: Database.Database): void {
   } catch {
     /* column already exists */
   }
+
+  database.exec(`
+    CREATE INDEX IF NOT EXISTS idx_talk_agents_registered_agent_id
+      ON talk_agents(registered_agent_id)
+  `);
 
   const staleSessions = database
     .prepare(
