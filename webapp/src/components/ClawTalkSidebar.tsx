@@ -6,6 +6,7 @@ type Props = {
   talks: Talk[];
   loading: boolean;
   error: string | null;
+  userRole: string;
   canManageSettings: boolean;
 };
 
@@ -23,8 +24,10 @@ export function ClawTalkSidebar({
   talks,
   loading,
   error,
+  userRole,
   canManageSettings,
 }: Props): JSX.Element {
+  const canManageAgents = userRole === 'owner' || userRole === 'admin';
   return (
     <aside className="clawtalk-sidebar" aria-label="Primary navigation">
       <div className="clawtalk-sidebar-brand">
@@ -45,6 +48,16 @@ export function ClawTalkSidebar({
         >
           Home
         </NavLink>
+        {canManageAgents ? (
+          <NavLink
+            to="/app/agents"
+            className={({ isActive }) =>
+              `clawtalk-sidebar-link${isActive ? ' active' : ''}`
+            }
+          >
+            AI Agents
+          </NavLink>
+        ) : null}
         {canManageSettings ? (
           <NavLink
             to="/app/settings"

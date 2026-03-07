@@ -45,6 +45,7 @@ import {
 } from '../talks/executor-settings.js';
 import { ExecutorCredentialVerifier } from '../talks/executor-credentials-verifier.js';
 import { ExecutorSubscriptionHostAuthService } from '../talks/executor-subscription-host-auth.js';
+import { ProviderCredentialsVerifier } from '../agents/provider-credentials-verifier.js';
 import { validateCsrfToken } from './middleware/csrf.js';
 import {
   idempotencyPrecheck,
@@ -74,6 +75,15 @@ import {
   updateTalkAgentsRoute,
   updateTalkPolicyRoute,
 } from './routes/talks.js';
+import {
+  createRegisteredAgentRoute,
+  deleteRegisteredAgentRoute,
+  duplicateRegisteredAgentRoute,
+  getAiAgentsRoute,
+  saveAiProviderCredentialRoute,
+  updateRegisteredAgentRoute,
+  verifyAiProviderCredentialRoute,
+} from './routes/agents.js';
 import {
   getTalkLlmSettingsRoute,
   updateTalkLlmSettingsRoute,
@@ -219,6 +229,7 @@ export function createWebServer(
 function buildApp(opts: WebServerOptions): Hono {
   const app = new Hono();
   const liveSseConnectionsByUser = new Map<string, number>();
+  const providerVerifier = new ProviderCredentialsVerifier();
 
   const tryAcquireLiveSseConnection = (userId: string): boolean => {
     const active = liveSseConnectionsByUser.get(userId) || 0;
@@ -773,7 +784,8 @@ function buildApp(opts: WebServerOptions): Hono {
       );
     }
 
-    const expectedFingerprint = payload.data.expectedFingerprint?.trim() || null;
+    const expectedFingerprint =
+      payload.data.expectedFingerprint?.trim() || null;
     const probe = await opts.subscriptionHostAuth.probeImportSource();
     if (!probe.importAvailable || !probe.importCredential) {
       const code =
@@ -1219,6 +1231,360 @@ function buildApp(opts: WebServerOptions): Hono {
       limit: limit ?? undefined,
       offset: offset ?? undefined,
     });
+    return new Response(JSON.stringify(result.body), {
+      status: result.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
+  });
+
+  app.get('/api/v1/agents', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+
+    const rateResult = checkRateLimit({
+      principalId: auth.userId,
+      bucket: 'read',
+    });
+    if (!rateResult.allowed) {
+      return rateLimitedResponse(c, rateResult);
+    }
+
+    const result = getAiAgentsRoute({ auth });
+    return new Response(JSON.stringify(result.body), {
+      status: result.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
+  });
+
+  app.put('/api/v1/agents/providers/:providerId', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+
+    const rateResult = checkRateLimit({
+      principalId: auth.userId,
+      bucket: 'write',
+    });
+    if (!rateResult.allowed) {
+      return rateLimitedResponse(c, rateResult);
+    }
+
+    const csrf = validateCsrfToken({
+      method: c.req.method,
+      authType: auth.authType,
+      cookieHeader: c.req.header('cookie'),
+      csrfHeader: c.req.header('x-csrf-token'),
+    });
+    if (!csrf.ok) {
+      return c.json(
+        { ok: false, error: { code: 'csrf_failed', message: csrf.reason } },
+        403,
+      );
+    }
+
+    const providerId = c.req.param('providerId');
+    const bodyText = await c.req.text();
+    const payload = parseJsonPayload<{
+      apiKey?: string | null;
+      organizationId?: string | null;
+      baseUrl?: string | null;
+      authScheme?: 'x_api_key' | 'bearer';
+    }>(bodyText);
+    if (!payload.ok) {
+      return c.json(
+        { ok: false, error: { code: 'invalid_json', message: payload.error } },
+        400,
+      );
+    }
+    if (!payload.data || typeof payload.data !== 'object') {
+      return c.json(
+        {
+          ok: false,
+          error: { code: 'invalid_json', message: 'JSON object expected.' },
+        },
+        400,
+      );
+    }
+
+    const result = await saveAiProviderCredentialRoute({
+      auth,
+      providerId,
+      apiKey:
+        typeof payload.data.apiKey === 'string' || payload.data.apiKey === null
+          ? payload.data.apiKey
+          : undefined,
+      organizationId:
+        typeof payload.data.organizationId === 'string' ||
+        payload.data.organizationId === null
+          ? payload.data.organizationId
+          : undefined,
+      baseUrl:
+        typeof payload.data.baseUrl === 'string' ||
+        payload.data.baseUrl === null
+          ? payload.data.baseUrl
+          : undefined,
+      authScheme:
+        payload.data.authScheme === 'x_api_key' ||
+        payload.data.authScheme === 'bearer'
+          ? payload.data.authScheme
+          : undefined,
+      verifier: providerVerifier,
+    });
+
+    return new Response(JSON.stringify(result.body), {
+      status: result.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
+  });
+
+  app.post('/api/v1/agents/providers/:providerId/verify', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+
+    const rateResult = checkRateLimit({
+      principalId: auth.userId,
+      bucket: 'write',
+    });
+    if (!rateResult.allowed) {
+      return rateLimitedResponse(c, rateResult);
+    }
+
+    const csrf = validateCsrfToken({
+      method: c.req.method,
+      authType: auth.authType,
+      cookieHeader: c.req.header('cookie'),
+      csrfHeader: c.req.header('x-csrf-token'),
+    });
+    if (!csrf.ok) {
+      return c.json(
+        { ok: false, error: { code: 'csrf_failed', message: csrf.reason } },
+        403,
+      );
+    }
+
+    const providerId = c.req.param('providerId');
+    const result = await verifyAiProviderCredentialRoute({
+      auth,
+      providerId,
+      verifier: providerVerifier,
+    });
+    return new Response(JSON.stringify(result.body), {
+      status: result.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
+  });
+
+  app.post('/api/v1/agents/registered', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+    const rateResult = checkRateLimit({
+      principalId: auth.userId,
+      bucket: 'write',
+    });
+    if (!rateResult.allowed) {
+      return rateLimitedResponse(c, rateResult);
+    }
+    const csrf = validateCsrfToken({
+      method: c.req.method,
+      authType: auth.authType,
+      cookieHeader: c.req.header('cookie'),
+      csrfHeader: c.req.header('x-csrf-token'),
+    });
+    if (!csrf.ok) {
+      return c.json(
+        { ok: false, error: { code: 'csrf_failed', message: csrf.reason } },
+        403,
+      );
+    }
+
+    const bodyText = await c.req.text();
+    const payload = parseJsonPayload<{
+      name?: string;
+      providerId?: string;
+      modelId?: string;
+      modelDisplayName?: string | null;
+      setAsDefault?: boolean;
+    }>(bodyText);
+    if (!payload.ok) {
+      return c.json(
+        { ok: false, error: { code: 'invalid_json', message: payload.error } },
+        400,
+      );
+    }
+    if (!payload.data || typeof payload.data !== 'object') {
+      return c.json(
+        {
+          ok: false,
+          error: { code: 'invalid_json', message: 'JSON object expected.' },
+        },
+        400,
+      );
+    }
+    const result = createRegisteredAgentRoute({
+      auth,
+      name: payload.data.name?.trim() || '',
+      providerId: payload.data.providerId?.trim() || '',
+      modelId: payload.data.modelId?.trim() || '',
+      modelDisplayName:
+        typeof payload.data.modelDisplayName === 'string'
+          ? payload.data.modelDisplayName
+          : undefined,
+      setAsDefault: payload.data.setAsDefault === true,
+    });
+    return new Response(JSON.stringify(result.body), {
+      status: result.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
+  });
+
+  app.patch('/api/v1/agents/registered/:agentId', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+    const rateResult = checkRateLimit({
+      principalId: auth.userId,
+      bucket: 'write',
+    });
+    if (!rateResult.allowed) {
+      return rateLimitedResponse(c, rateResult);
+    }
+    const csrf = validateCsrfToken({
+      method: c.req.method,
+      authType: auth.authType,
+      cookieHeader: c.req.header('cookie'),
+      csrfHeader: c.req.header('x-csrf-token'),
+    });
+    if (!csrf.ok) {
+      return c.json(
+        { ok: false, error: { code: 'csrf_failed', message: csrf.reason } },
+        403,
+      );
+    }
+    const agentId = c.req.param('agentId');
+    const bodyText = await c.req.text();
+    const payload = parseJsonPayload<{
+      name?: string;
+      enabled?: boolean;
+      setAsDefault?: boolean;
+    }>(bodyText);
+    if (!payload.ok) {
+      return c.json(
+        { ok: false, error: { code: 'invalid_json', message: payload.error } },
+        400,
+      );
+    }
+    if (!payload.data || typeof payload.data !== 'object') {
+      return c.json(
+        {
+          ok: false,
+          error: { code: 'invalid_json', message: 'JSON object expected.' },
+        },
+        400,
+      );
+    }
+    const result = updateRegisteredAgentRoute({
+      auth,
+      agentId,
+      name:
+        typeof payload.data.name === 'string'
+          ? payload.data.name.trim()
+          : undefined,
+      enabled:
+        typeof payload.data.enabled === 'boolean'
+          ? payload.data.enabled
+          : undefined,
+      setAsDefault: payload.data.setAsDefault === true,
+    });
+    return new Response(JSON.stringify(result.body), {
+      status: result.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
+  });
+
+  app.post('/api/v1/agents/registered/:agentId/duplicate', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+    const rateResult = checkRateLimit({
+      principalId: auth.userId,
+      bucket: 'write',
+    });
+    if (!rateResult.allowed) {
+      return rateLimitedResponse(c, rateResult);
+    }
+    const csrf = validateCsrfToken({
+      method: c.req.method,
+      authType: auth.authType,
+      cookieHeader: c.req.header('cookie'),
+      csrfHeader: c.req.header('x-csrf-token'),
+    });
+    if (!csrf.ok) {
+      return c.json(
+        { ok: false, error: { code: 'csrf_failed', message: csrf.reason } },
+        403,
+      );
+    }
+    const agentId = c.req.param('agentId');
+    const bodyText = await c.req.text();
+    const payload = parseJsonPayload<{
+      name?: string;
+      providerId?: string;
+      modelId?: string;
+      modelDisplayName?: string | null;
+    }>(bodyText);
+    if (!payload.ok) {
+      return c.json(
+        { ok: false, error: { code: 'invalid_json', message: payload.error } },
+        400,
+      );
+    }
+    if (!payload.data || typeof payload.data !== 'object') {
+      return c.json(
+        {
+          ok: false,
+          error: { code: 'invalid_json', message: 'JSON object expected.' },
+        },
+        400,
+      );
+    }
+    const result = duplicateRegisteredAgentRoute({
+      auth,
+      sourceAgentId: agentId,
+      name: payload.data.name?.trim() || '',
+      providerId: payload.data.providerId?.trim() || '',
+      modelId: payload.data.modelId?.trim() || '',
+      modelDisplayName:
+        typeof payload.data.modelDisplayName === 'string'
+          ? payload.data.modelDisplayName
+          : undefined,
+    });
+    return new Response(JSON.stringify(result.body), {
+      status: result.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
+  });
+
+  app.delete('/api/v1/agents/registered/:agentId', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+    const rateResult = checkRateLimit({
+      principalId: auth.userId,
+      bucket: 'write',
+    });
+    if (!rateResult.allowed) {
+      return rateLimitedResponse(c, rateResult);
+    }
+    const csrf = validateCsrfToken({
+      method: c.req.method,
+      authType: auth.authType,
+      cookieHeader: c.req.header('cookie'),
+      csrfHeader: c.req.header('x-csrf-token'),
+    });
+    if (!csrf.ok) {
+      return c.json(
+        { ok: false, error: { code: 'csrf_failed', message: csrf.reason } },
+        403,
+      );
+    }
+    const agentId = c.req.param('agentId');
+    const result = deleteRegisteredAgentRoute({ auth, agentId });
     return new Response(JSON.stringify(result.body), {
       status: result.statusCode,
       headers: { 'content-type': 'application/json; charset=utf-8' },

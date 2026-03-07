@@ -10,11 +10,15 @@ import {
 import { Link, useParams } from 'react-router-dom';
 
 import {
+  AgentProviderCard,
   ApiError,
   cancelTalkRuns,
+  createRegisteredAgent,
+  getAiAgents,
   getTalk,
   getTalkAgents,
   listTalkMessages,
+  RegisteredAgent,
   sendTalkMessage,
   Talk,
   TalkAgent,
@@ -448,47 +452,172 @@ function detailReducer(state: DetailState, action: DetailAction): DetailState {
 
 const SCROLL_STICK_THRESHOLD_PX = 120;
 const TALK_MESSAGE_MAX_CHARS = 20_000;
-function normalizeAgentNames(draft: string): string[] {
-  return [
-    ...new Set(
-      draft
-        .split(',')
-        .map((entry) => entry.trim())
-        .filter(Boolean),
-    ),
-  ];
+
+type AgentCreationDraft = {
+  name: string;
+  providerId: string;
+  modelId: string;
+  modelDisplayName: string;
+};
+
+const TALK_AGENT_ROLE_OPTIONS: TalkAgent['role'][] = [
+  'assistant',
+  'analyst',
+  'critic',
+  'strategist',
+  'devils-advocate',
+  'synthesizer',
+  'editor',
+];
+
+function formatTalkRole(role: TalkAgent['role']): string {
+  switch (role) {
+    case 'assistant':
+      return 'Assistant';
+    case 'analyst':
+      return 'Analyst';
+    case 'critic':
+      return 'Critic';
+    case 'strategist':
+      return 'Strategist';
+    case 'devils-advocate':
+      return "Devil's Advocate";
+    case 'synthesizer':
+      return 'Synthesizer';
+    case 'editor':
+      return 'Editor';
+    default:
+      return role;
+  }
 }
 
-function coerceAgents(
-  input: TalkAgent[] | string[],
-  fallbackRouteId: string,
-): TalkAgent[] {
-  if (!Array.isArray(input)) return [];
-  if (input.length === 0) return [];
-  if (typeof input[0] !== 'string') {
-    return input as TalkAgent[];
+function buildTalkAgentLabels(agents: TalkAgent[]): Record<string, string> {
+  const counts = new Map<string, number>();
+  const nextIndex = new Map<string, number>();
+
+  for (const agent of agents) {
+    const base = `${agent.name} · ${formatTalkRole(agent.role)}`;
+    counts.set(base, (counts.get(base) || 0) + 1);
   }
-  return (input as string[]).map((name, index) => ({
-    id: `legacy-${index}`,
-    name,
-    personaRole: 'assistant',
-    routeId: fallbackRouteId,
-    isPrimary: index === 0,
-    sortOrder: index,
-  }));
+
+  const labels: Record<string, string> = {};
+  for (const agent of agents) {
+    const base = `${agent.name} · ${formatTalkRole(agent.role)}`;
+    if ((counts.get(base) || 0) > 1) {
+      const index = (nextIndex.get(base) || 0) + 1;
+      nextIndex.set(base, index);
+      labels[agent.id] = `${base} #${index}`;
+    } else {
+      labels[agent.id] = base;
+    }
+  }
+
+  return labels;
+}
+
+function buildAgentCreationDraft(
+  providers: AgentProviderCard[],
+  providerId?: string,
+): AgentCreationDraft {
+  const selectedProvider =
+    providers.find((provider) => provider.id === providerId) || providers[0];
+  const firstSuggestion = selectedProvider?.modelSuggestions[0] || null;
+  return {
+    name: '',
+    providerId: selectedProvider?.id || 'provider.anthropic',
+    modelId: firstSuggestion?.modelId || '',
+    modelDisplayName: firstSuggestion?.displayName || '',
+  };
+}
+
+function isTalkAgentRole(value: unknown): value is TalkAgent['role'] {
+  return (
+    typeof value === 'string' &&
+    TALK_AGENT_ROLE_OPTIONS.includes(value as TalkAgent['role'])
+  );
+}
+
+function normalizeTalkAgent(
+  input: Partial<TalkAgent> & {
+    personaRole?: unknown;
+    isPrimary?: unknown;
+    sortOrder?: unknown;
+  },
+  index: number,
+): TalkAgent {
+  return {
+    id:
+      typeof input.id === 'string' && input.id.trim()
+        ? input.id
+        : `legacy-agent-${index}`,
+    registeredAgentId:
+      typeof input.registeredAgentId === 'string' && input.registeredAgentId.trim()
+        ? input.registeredAgentId
+        : null,
+    name:
+      typeof input.name === 'string' && input.name.trim()
+        ? input.name
+        : 'Legacy Agent',
+    role: isTalkAgentRole(input.role)
+      ? input.role
+      : isTalkAgentRole(input.personaRole)
+        ? input.personaRole
+        : 'assistant',
+    isLead:
+      input.isLead === true ||
+      input.isPrimary === true ||
+      (index === 0 && input.isLead !== false && input.isPrimary !== false),
+    displayOrder:
+      typeof input.displayOrder === 'number'
+        ? input.displayOrder
+        : typeof input.sortOrder === 'number'
+          ? input.sortOrder
+          : index,
+    status:
+      input.status === 'active' ||
+      input.status === 'archived' ||
+      input.status === 'legacy'
+        ? input.status
+        : 'legacy',
+    providerId: typeof input.providerId === 'string' ? input.providerId : null,
+    providerName:
+      typeof input.providerName === 'string' ? input.providerName : null,
+    modelId: typeof input.modelId === 'string' ? input.modelId : null,
+    modelDisplayName:
+      typeof input.modelDisplayName === 'string' ? input.modelDisplayName : null,
+  };
+}
+
+function normalizeTalkAgents(input: TalkAgent[]): TalkAgent[] {
+  return input
+    .map((agent, index) => normalizeTalkAgent(agent, index))
+    .sort((left, right) => left.displayOrder - right.displayOrder);
 }
 
 export function TalkDetailPage({
   onUnauthorized,
+  userRole,
 }: {
   onUnauthorized: () => void;
+  userRole: string;
 }): JSX.Element {
   const { talkId = '' } = useParams<{ talkId: string }>();
   const [state, dispatch] = useReducer(detailReducer, undefined, createInitialDetailState);
   const [draft, setDraft] = useState('');
   const [agents, setAgents] = useState<TalkAgent[]>([]);
   const [agentDrafts, setAgentDrafts] = useState<TalkAgent[]>([]);
+  const [agentProviders, setAgentProviders] = useState<AgentProviderCard[]>([]);
   const [targetAgentId, setTargetAgentId] = useState<string | null>(null);
+  const [registeredAgents, setRegisteredAgents] = useState<RegisteredAgent[]>([]);
+  const [registeredAgentsError, setRegisteredAgentsError] = useState<string | null>(null);
+  const [newAgentRegisteredId, setNewAgentRegisteredId] = useState('');
+  const [showCreateAgentInline, setShowCreateAgentInline] = useState(false);
+  const [createAgentDraft, setCreateAgentDraft] = useState<AgentCreationDraft>({
+    name: '',
+    providerId: 'provider.anthropic',
+    modelId: '',
+    modelDisplayName: '',
+  });
   const [agentState, setAgentState] = useState<{
     status: 'idle' | 'saving' | 'error' | 'success';
     message?: string;
@@ -522,6 +651,8 @@ export function TalkDetailPage({
   const canCancelRuns =
     accessRole === 'owner' || accessRole === 'admin' || accessRole === 'editor';
   const canEditAgents = canCancelRuns;
+  const canManageRegisteredAgents =
+    userRole === 'owner' || userRole === 'admin';
 
   const isNearBottom = useCallback((): boolean => {
     const container = timelineRef.current;
@@ -721,7 +852,18 @@ export function TalkDetailPage({
     messageElementRefs.current.clear();
     setAgents([]);
     setAgentDrafts([]);
+    setAgentProviders([]);
+    setRegisteredAgents([]);
+    setRegisteredAgentsError(null);
     setTargetAgentId(null);
+    setNewAgentRegisteredId('');
+    setShowCreateAgentInline(false);
+    setCreateAgentDraft({
+      name: '',
+      providerId: 'provider.anthropic',
+      modelId: '',
+      modelDisplayName: '',
+    });
     setAgentState({ status: 'idle' });
 
     const load = async () => {
@@ -732,11 +874,11 @@ export function TalkDetailPage({
           getTalkAgents(talkId),
         ]);
         if (!cancelled) {
-          const nextAgents = coerceAgents(rawAgents as TalkAgent[] | string[], 'route.default.mock');
+          const nextAgents = normalizeTalkAgents(rawAgents);
           setAgents(nextAgents);
           setAgentDrafts(nextAgents);
           setTargetAgentId(
-            nextAgents.find((agent) => agent.isPrimary)?.id || nextAgents[0]?.id || null,
+            nextAgents.find((agent) => agent.isLead)?.id || nextAgents[0]?.id || null,
           );
           setAgentState({ status: 'idle' });
           dispatch({ type: 'BOOTSTRAP_READY', talk, messages });
@@ -768,6 +910,49 @@ export function TalkDetailPage({
     };
 
     void load();
+    return () => {
+      cancelled = true;
+    };
+  }, [handleUnauthorized, talkId]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadRegisteredAgents = async () => {
+      try {
+        const next = await getAiAgents();
+        if (cancelled) return;
+        const nextProviders = next.providers.filter((provider) => provider.hasCredential);
+        const activeAgents = next.registeredAgents.filter((agent) => agent.enabled);
+        setAgentProviders(nextProviders);
+        setRegisteredAgents(activeAgents);
+        setRegisteredAgentsError(null);
+        setNewAgentRegisteredId((current) =>
+          current && activeAgents.some((agent) => agent.id === current)
+            ? current
+            : activeAgents[0]?.id || '',
+        );
+        setCreateAgentDraft((current) =>
+          current.name || current.modelId
+            ? current
+            : buildAgentCreationDraft(nextProviders, current.providerId),
+        );
+      } catch (err) {
+        if (err instanceof UnauthorizedError) {
+          handleUnauthorized();
+          return;
+        }
+        if (!cancelled) {
+          setRegisteredAgents([]);
+          setRegisteredAgentsError(
+            err instanceof Error ? err.message : 'Failed to load AI agents.',
+          );
+        }
+      }
+    };
+
+    void loadRegisteredAgents();
+
     return () => {
       cancelled = true;
     };
@@ -954,40 +1139,120 @@ export function TalkDetailPage({
   };
 
   const handleAddAgent = () => {
-    const fallbackRouteId =
-      agentDrafts.find((agent) => agent.isPrimary)?.routeId ||
-      agentDrafts[0]?.routeId ||
-      'route.default.mock';
+    const source = registeredAgents.find((agent) => agent.id === newAgentRegisteredId);
+    if (!source) return;
     const nextAgent: TalkAgent = {
       id: globalThis.crypto?.randomUUID?.() || `agent-${Date.now()}`,
-      name: `Agent ${agentDrafts.length + 1}`,
-      personaRole: 'assistant',
-      routeId: fallbackRouteId,
-      isPrimary: false,
-      sortOrder: agentDrafts.length,
+      registeredAgentId: source.id,
+      name: source.name,
+      role: 'assistant',
+      isLead: false,
+      displayOrder: agentDrafts.length,
+      status: 'active',
+      providerId: source.providerId,
+      providerName: source.providerName,
+      modelId: source.modelId,
+      modelDisplayName: source.modelDisplayName,
     };
     setAgentDrafts((current) => [...current, nextAgent]);
+    setTargetAgentId((current) => current || nextAgent.id);
   };
 
   const handleRemoveAgent = (agentId: string) => {
     setAgentDrafts((current) => {
       const remaining = current.filter((agent) => agent.id !== agentId);
       if (remaining.length === 0) return current;
-      if (!remaining.some((agent) => agent.isPrimary)) {
-        remaining[0] = { ...remaining[0], isPrimary: true };
+      if (!remaining.some((agent) => agent.isLead)) {
+        remaining[0] = { ...remaining[0], isLead: true };
       }
-      return remaining.map((agent, index) => ({ ...agent, sortOrder: index }));
+      return remaining.map((agent, index) => ({
+        ...agent,
+        displayOrder: index,
+      }));
     });
+    setTargetAgentId((current) => (current === agentId ? null : current));
   };
 
-  const handleSetPrimaryAgent = (agentId: string) => {
+  const handleSetLeadAgent = (agentId: string) => {
     setAgentDrafts((current) =>
       current.map((agent) => ({
         ...agent,
-        isPrimary: agent.id === agentId,
+        isLead: agent.id === agentId,
       })),
     );
     setTargetAgentId(agentId);
+  };
+
+  const handleRegisteredAgentSelection = (
+    agentId: string,
+    registeredAgentId: string,
+  ) => {
+    const source = registeredAgents.find((agent) => agent.id === registeredAgentId);
+    if (!source) return;
+    handleAgentDraftChange(agentId, {
+      registeredAgentId: source.id,
+      name: source.name,
+      status: 'active',
+      providerId: source.providerId,
+      providerName: source.providerName,
+      modelId: source.modelId,
+      modelDisplayName: source.modelDisplayName,
+    });
+  };
+
+  const refreshRegisteredAgents = useCallback(async () => {
+    const next = await getAiAgents();
+    const nextProviders = next.providers.filter((provider) => provider.hasCredential);
+    const activeAgents = next.registeredAgents.filter((agent) => agent.enabled);
+    setAgentProviders(nextProviders);
+    setRegisteredAgents(activeAgents);
+    setRegisteredAgentsError(null);
+    setNewAgentRegisteredId((current) =>
+      current && activeAgents.some((agent) => agent.id === current)
+        ? current
+        : activeAgents[0]?.id || '',
+    );
+    return activeAgents;
+  }, []);
+
+  const handleCreateRegisteredAgentInline = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!canManageRegisteredAgents) return;
+
+    setAgentState({ status: 'saving' });
+    try {
+      if (
+        !createAgentDraft.name.trim() ||
+        !createAgentDraft.providerId ||
+        !createAgentDraft.modelId.trim()
+      ) {
+        throw new Error('Agent name, provider, and model are required.');
+      }
+      const result = await createRegisteredAgent({
+        name: createAgentDraft.name.trim(),
+        providerId: createAgentDraft.providerId,
+        modelId: createAgentDraft.modelId.trim(),
+        modelDisplayName: createAgentDraft.modelDisplayName.trim() || null,
+      });
+      await refreshRegisteredAgents();
+      setShowCreateAgentInline(false);
+      setCreateAgentDraft(buildAgentCreationDraft(agentProviders));
+      setNewAgentRegisteredId(result.agent.id);
+      setAgentState({
+        status: 'success',
+        message: 'AI agent created. You can add it to this talk now.',
+      });
+    } catch (err) {
+      if (err instanceof UnauthorizedError) {
+        handleUnauthorized();
+        return;
+      }
+      setAgentState({
+        status: 'error',
+        message:
+          err instanceof Error ? err.message : 'Failed to create AI agent.',
+      });
+    }
   };
 
   const handleSaveAgents = async () => {
@@ -996,28 +1261,26 @@ export function TalkDetailPage({
     setAgentState({ status: 'saving' });
     try {
       const normalized = agentDrafts.map((agent, index) => ({
-        ...agent,
-        name: agent.name.trim(),
-        routeId: agent.routeId.trim(),
-        sortOrder: index,
+        id: agent.id,
+        registeredAgentId: agent.registeredAgentId,
+        role: agent.role,
+        isLead: agent.isLead,
+        displayOrder: index,
       }));
-      const saved = coerceAgents(
-        (await updateTalkAgents({
-          talkId: state.talk!.id,
-          agents: normalized,
-        })) as TalkAgent[] | string[],
-        normalized.find((agent) => agent.isPrimary)?.routeId ||
-          normalized[0]?.routeId ||
-          'route.default.mock',
+      const saved = normalizeTalkAgents(
+        await updateTalkAgents({
+        talkId: state.talk!.id,
+        agents: normalized as TalkAgent[],
+      }),
       );
       setAgents(saved);
       setAgentDrafts(saved);
       setTargetAgentId(
-        saved.find((agent) => agent.isPrimary)?.id || saved[0]?.id || null,
+        saved.find((agent) => agent.isLead)?.id || saved[0]?.id || null,
       );
       setAgentState({
         status: 'success',
-        message: 'Talk policy updated.',
+        message: 'Talk agents updated.',
       });
     } catch (err) {
       if (err instanceof UnauthorizedError) {
@@ -1048,6 +1311,24 @@ export function TalkDetailPage({
     state.kind === 'ready'
       ? Object.values(state.runsById).sort((a, b) => b.updatedAt - a.updatedAt)
       : [];
+  const savedAgentLabels = useMemo(() => buildTalkAgentLabels(agents), [agents]);
+  const draftAgentLabels = useMemo(
+    () => buildTalkAgentLabels(agentDrafts),
+    [agentDrafts],
+  );
+  const configuredProviderChoices = useMemo(
+    () => agentProviders.map((provider) => ({ id: provider.id, name: provider.name })),
+    [agentProviders],
+  );
+  const selectedCreateProvider = useMemo(
+    () =>
+      agentProviders.find((provider) => provider.id === createAgentDraft.providerId) ||
+      null,
+    [agentProviders, createAgentDraft.providerId],
+  );
+  const manageAgentsHref = `/app/agents?returnTo=${encodeURIComponent(
+    `/app/talks/${talkId}`,
+  )}&focus=providers`;
 
   const jumpToMessage = (messageId: string) => {
     const element = messageElementRefs.current.get(messageId);
@@ -1108,8 +1389,12 @@ export function TalkDetailPage({
               role="list"
               aria-label="Effective agents"
             >
-              {talk.agents.map((agent) => (
-                <span key={agent} className="talk-agent-chip" role="listitem">
+              {talk.agents.map((agent, index) => (
+                <span
+                  key={`${agent}-${index}`}
+                  className="talk-agent-chip"
+                  role="listitem"
+                >
                   {agent}
                 </span>
               ))}
@@ -1125,100 +1410,80 @@ export function TalkDetailPage({
           <div className="talk-agent-row">
             {agents.map((agent) => (
               <span key={agent.id} className="talk-agent-chip">
-                {agent.name}
+                {savedAgentLabels[agent.id] || agent.name}
+                {agent.isLead ? ' · Lead' : ''}
+                {agent.status !== 'active' ? ` · ${agent.status}` : ''}
               </span>
             ))}
           </div>
         ) : null}
         {canEditAgents ? (
           <div className="policy-editor">
-            <label htmlFor="talk-policy-input">Comma-separated agents</label>
-            <input
-              id="talk-policy-input"
-              type="text"
-              value={agentDrafts.map((agent) => agent.name).join(', ')}
-              onChange={(event) => {
-                const names = normalizeAgentNames(event.target.value);
-                setAgentDrafts((current) => {
-                  const primaryId =
-                    current.find((agent) => agent.isPrimary)?.id || current[0]?.id || null;
-                  return names.map((name, index) => ({
-                    id:
-                      current[index]?.id ||
-                      globalThis.crypto?.randomUUID?.() ||
-                      `agent-${Date.now()}-${index}`,
-                    name,
-                    personaRole: current[index]?.personaRole || 'assistant',
-                    routeId:
-                      current[index]?.routeId ||
-                      current.find((agent) => agent.isPrimary)?.routeId ||
-                      current[0]?.routeId ||
-                      'route.default.mock',
-                    isPrimary:
-                      current[index]?.id === primaryId || (!primaryId && index === 0),
-                    sortOrder: index,
-                  }));
-                });
-                if (agentState.status === 'error' || agentState.status === 'success') {
-                  setAgentState({ status: 'idle' });
-                }
-              }}
-              placeholder="Gemini, Opus4.6"
-              disabled={agentState.status === 'saving'}
-            />
+            <p className="policy-muted">
+              Roles are talk-specific. Global AI agents are configured on the AI
+              Agents page.
+            </p>
             {agentDrafts.map((agent) => (
               <div key={agent.id} className="policy-agent-grid">
+                {agent.status === 'legacy' ? (
+                  <label>
+                    <span>Legacy agent</span>
+                    <input type="text" value={agent.name} disabled />
+                  </label>
+                ) : (
+                  <label>
+                    <span>AI Agent</span>
+                    <select
+                      value={agent.registeredAgentId || ''}
+                      onChange={(event) =>
+                        handleRegisteredAgentSelection(agent.id, event.target.value)
+                      }
+                      disabled={agentState.status === 'saving'}
+                    >
+                      {registeredAgents.map((registeredAgent) => (
+                        <option key={registeredAgent.id} value={registeredAgent.id}>
+                          {registeredAgent.name} · {registeredAgent.providerName} ·{' '}
+                          {registeredAgent.modelDisplayName}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                )}
                 <label>
-                  <span>Name</span>
-                  <input
-                    type="text"
-                    value={agent.name}
-                    onChange={(event) =>
-                      handleAgentDraftChange(agent.id, { name: event.target.value })
-                    }
-                    disabled={agentState.status === 'saving'}
-                  />
-                </label>
-                <label>
-                  <span>Persona</span>
+                  <span>Role</span>
                   <select
-                    value={agent.personaRole}
+                    value={agent.role}
                     onChange={(event) =>
                       handleAgentDraftChange(agent.id, {
-                        personaRole: event.target.value as TalkAgent['personaRole'],
+                        role: event.target.value as TalkAgent['role'],
                       })
                     }
                     disabled={agentState.status === 'saving'}
                   >
-                    <option value="assistant">Assistant</option>
-                    <option value="analyst">Analyst</option>
-                    <option value="critic">Critic</option>
-                    <option value="strategist">Strategist</option>
-                    <option value="devils-advocate">Devil&apos;s Advocate</option>
-                    <option value="synthesizer">Synthesizer</option>
-                    <option value="editor">Editor</option>
+                    {TALK_AGENT_ROLE_OPTIONS.map((role) => (
+                      <option key={role} value={role}>
+                        {formatTalkRole(role)}
+                      </option>
+                    ))}
                   </select>
                 </label>
                 <label>
-                  <span>Route ID</span>
+                  <span>Preview</span>
                   <input
                     type="text"
-                    value={agent.routeId}
-                    onChange={(event) =>
-                      handleAgentDraftChange(agent.id, { routeId: event.target.value })
-                    }
-                    disabled={agentState.status === 'saving'}
+                    value={draftAgentLabels[agent.id] || agent.name}
+                    disabled
                   />
                 </label>
                 <label className="policy-primary-toggle">
                   <input
                     type="radio"
-                    name="primary-talk-agent"
-                    checked={agent.isPrimary}
-                    onChange={() => handleSetPrimaryAgent(agent.id)}
+                    name="lead-talk-agent"
+                    checked={agent.isLead}
+                    onChange={() => handleSetLeadAgent(agent.id)}
                     disabled={agentState.status === 'saving'}
                   />
-                  <span>Primary</span>
+                  <span>Lead Agent</span>
                 </label>
                 <button
                   type="button"
@@ -1231,14 +1496,56 @@ export function TalkDetailPage({
               </div>
             ))}
             <div className="policy-editor-controls">
+              <label className="policy-add-agent">
+                <span>Add registered agent</span>
+                <select
+                  value={newAgentRegisteredId}
+                  onChange={(event) => setNewAgentRegisteredId(event.target.value)}
+                  disabled={
+                    agentState.status === 'saving' || registeredAgents.length === 0
+                  }
+                >
+                  {registeredAgents.map((agent) => (
+                    <option key={agent.id} value={agent.id}>
+                      {agent.name} · {agent.providerName} · {agent.modelDisplayName}
+                    </option>
+                  ))}
+                </select>
+              </label>
               <button
                 type="button"
                 className="secondary-btn"
                 onClick={handleAddAgent}
-                disabled={agentState.status === 'saving'}
+                disabled={
+                  agentState.status === 'saving' || registeredAgents.length === 0
+                }
               >
                 Add Agent
               </button>
+              {canManageRegisteredAgents ? (
+                <button
+                  type="button"
+                  className="secondary-btn"
+                  onClick={() => {
+                    setShowCreateAgentInline((current) => !current);
+                    setCreateAgentDraft(
+                      buildAgentCreationDraft(
+                        agentProviders,
+                        createAgentDraft.providerId,
+                      ),
+                    );
+                  }}
+                  disabled={
+                    agentState.status === 'saving' || agentProviders.length === 0
+                  }
+                >
+                  Create new AI Agent…
+                </button>
+              ) : (
+                <Link className="secondary-btn" to={manageAgentsHref}>
+                  Open AI Agents
+                </Link>
+              )}
               <button
                 type="button"
                 className="secondary-btn"
@@ -1248,6 +1555,129 @@ export function TalkDetailPage({
                 {agentState.status === 'saving' ? 'Saving…' : 'Save Agents'}
               </button>
             </div>
+            {registeredAgentsError ? (
+              <div className="inline-banner inline-banner-error" role="alert">
+                {registeredAgentsError}
+              </div>
+            ) : null}
+            {registeredAgents.length === 0 ? (
+              <div className="inline-banner inline-banner-warning" role="status">
+                <span>No active AI agents are configured yet.</span>
+                <Link to={manageAgentsHref}>Set up AI Agents</Link>
+              </div>
+            ) : null}
+            {showCreateAgentInline && canManageRegisteredAgents ? (
+              <form
+                className="policy-inline-create"
+                onSubmit={handleCreateRegisteredAgentInline}
+              >
+                <h3>Create new AI Agent</h3>
+                <p className="policy-muted">
+                  Create a global agent identity, then add it to this talk.
+                </p>
+                <div className="policy-agent-grid">
+                  <label>
+                    <span>Name</span>
+                    <input
+                      type="text"
+                      value={createAgentDraft.name}
+                      onChange={(event) =>
+                        setCreateAgentDraft((current) => ({
+                          ...current,
+                          name: event.target.value,
+                        }))
+                      }
+                      disabled={agentState.status === 'saving'}
+                    />
+                  </label>
+                  <label>
+                    <span>Provider</span>
+                    <select
+                      value={createAgentDraft.providerId}
+                      onChange={(event) => {
+                        const providerId = event.target.value;
+                        const nextDraft = buildAgentCreationDraft(
+                          agentProviders,
+                          providerId,
+                        );
+                        setCreateAgentDraft((current) => ({
+                          ...current,
+                          providerId,
+                          modelId: nextDraft.modelId,
+                          modelDisplayName: nextDraft.modelDisplayName,
+                        }));
+                      }}
+                      disabled={agentState.status === 'saving'}
+                    >
+                      {configuredProviderChoices.map((provider) => (
+                        <option key={provider.id} value={provider.id}>
+                          {provider.name}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
+                    <span>Model</span>
+                    <input
+                      list="talk-create-agent-models"
+                      value={createAgentDraft.modelId}
+                      onChange={(event) =>
+                        setCreateAgentDraft((current) => ({
+                          ...current,
+                          modelId: event.target.value,
+                          modelDisplayName: event.target.value,
+                        }))
+                      }
+                      disabled={agentState.status === 'saving'}
+                    />
+                  </label>
+                  <label>
+                    <span>Display name</span>
+                    <input
+                      type="text"
+                      value={createAgentDraft.modelDisplayName}
+                      onChange={(event) =>
+                        setCreateAgentDraft((current) => ({
+                          ...current,
+                          modelDisplayName: event.target.value,
+                        }))
+                      }
+                      disabled={agentState.status === 'saving'}
+                    />
+                  </label>
+                </div>
+                <datalist id="talk-create-agent-models">
+                  {(selectedCreateProvider?.modelSuggestions || []).map((model) => (
+                    <option
+                      key={`${createAgentDraft.providerId}:${model.modelId}`}
+                      value={model.modelId}
+                    >
+                      {model.displayName}
+                    </option>
+                  ))}
+                </datalist>
+                <div className="policy-editor-controls">
+                  <button
+                    type="submit"
+                    className="primary-btn"
+                    disabled={
+                      agentState.status === 'saving' ||
+                      configuredProviderChoices.length === 0
+                    }
+                  >
+                    {agentState.status === 'saving' ? 'Creating…' : 'Create AI Agent'}
+                  </button>
+                  <button
+                    type="button"
+                    className="secondary-btn"
+                    onClick={() => setShowCreateAgentInline(false)}
+                    disabled={agentState.status === 'saving'}
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </form>
+            ) : null}
             {agentState.status === 'error' ? (
               <div className="inline-banner inline-banner-error" role="alert">
                 {agentState.message}
@@ -1400,10 +1830,10 @@ export function TalkDetailPage({
             onChange={(event) => setTargetAgentId(event.target.value || null)}
             disabled={state.sendState.status === 'posting' || agents.length === 0}
           >
-            {agentDrafts.map((agent) => (
+            {agents.map((agent) => (
               <option key={agent.id} value={agent.id}>
-                {agent.name}
-                {agent.isPrimary ? ' (Primary)' : ''}
+                {savedAgentLabels[agent.id] || agent.name}
+                {agent.isLead ? ' (Lead)' : ''}
               </option>
             ))}
           </select>

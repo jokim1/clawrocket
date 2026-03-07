@@ -318,6 +318,15 @@ function createClawrocketSchema(database: Database.Database): void {
       updated_by TEXT REFERENCES users(id)
     );
 
+    CREATE TABLE IF NOT EXISTS llm_provider_verifications (
+      provider_id TEXT PRIMARY KEY REFERENCES llm_providers(id) ON DELETE CASCADE,
+      status TEXT NOT NULL
+        CHECK(status IN ('missing', 'not_verified', 'verified', 'invalid', 'unavailable')),
+      last_verified_at TEXT,
+      last_error TEXT,
+      updated_at TEXT NOT NULL
+    );
+
     CREATE TABLE IF NOT EXISTS talk_routes (
       id TEXT PRIMARY KEY,
       name TEXT NOT NULL,
@@ -337,6 +346,23 @@ function createClawrocketSchema(database: Database.Database): void {
         ON DELETE CASCADE
     );
 
+    CREATE TABLE IF NOT EXISTS registered_agents (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL UNIQUE,
+      provider_id TEXT NOT NULL REFERENCES llm_providers(id) ON DELETE RESTRICT,
+      model_id TEXT NOT NULL,
+      route_id TEXT NOT NULL UNIQUE REFERENCES talk_routes(id) ON DELETE RESTRICT,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      UNIQUE(provider_id, model_id),
+      FOREIGN KEY (provider_id, model_id)
+        REFERENCES llm_provider_models(provider_id, model_id)
+        ON DELETE RESTRICT
+    );
+    CREATE INDEX IF NOT EXISTS idx_registered_agents_enabled_name
+      ON registered_agents(enabled, name);
+
     CREATE TABLE IF NOT EXISTS talk_agents (
       id TEXT PRIMARY KEY,
       talk_id TEXT NOT NULL REFERENCES talks(id) ON DELETE CASCADE,
@@ -345,6 +371,7 @@ function createClawrocketSchema(database: Database.Database): void {
         CHECK(persona_role IN ('assistant', 'analyst', 'critic', 'strategist', 'devils-advocate', 'synthesizer', 'editor')),
       -- Prevent deleting a route while Talk agents still reference it.
       route_id TEXT NOT NULL REFERENCES talk_routes(id) ON DELETE RESTRICT,
+      registered_agent_id TEXT REFERENCES registered_agents(id) ON DELETE SET NULL,
       is_primary INTEGER NOT NULL DEFAULT 0,
       sort_order INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL,
@@ -354,6 +381,8 @@ function createClawrocketSchema(database: Database.Database): void {
       ON talk_agents(talk_id, sort_order, created_at);
     CREATE INDEX IF NOT EXISTS idx_talk_agents_route_id
       ON talk_agents(route_id);
+    CREATE INDEX IF NOT EXISTS idx_talk_agents_registered_agent_id
+      ON talk_agents(registered_agent_id);
 
     CREATE TABLE IF NOT EXISTS llm_attempts (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -444,6 +473,14 @@ function createClawrocketSchema(database: Database.Database): void {
 
   try {
     database.exec(`ALTER TABLE talk_runs ADD COLUMN target_agent_id TEXT`);
+  } catch {
+    /* column already exists */
+  }
+
+  try {
+    database.exec(
+      `ALTER TABLE talk_agents ADD COLUMN registered_agent_id TEXT REFERENCES registered_agents(id) ON DELETE SET NULL`,
+    );
   } catch {
     /* column already exists */
   }

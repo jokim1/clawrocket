@@ -7,14 +7,16 @@ import {
   enqueueTalkTurnAtomic,
   ensureTalkHasDefaultAgent,
   getPrimaryTalkAgent,
-  getTalkAgentById,
   getTalkForUser,
   getTalkRouteById,
+  listTalkAgentInstances,
   listTalkAgents,
   listTalkMessages,
   listTalksForUser,
   normalizeTalkListPage,
+  replaceTalkAgentInstances,
   replaceTalkAgents,
+  type TalkAgentInstanceInput,
   resetTalkAgentsToDefault,
   upsertTalkLlmPolicy,
   type TalkAgentInput,
@@ -54,11 +56,16 @@ interface TalkMessageApiRecord {
 
 export interface TalkAgentApiRecord {
   id: string;
+  registeredAgentId: string | null;
   name: string;
-  personaRole: TalkPersonaRole;
-  routeId: string;
-  isPrimary: boolean;
-  sortOrder: number;
+  role: TalkPersonaRole;
+  isLead: boolean;
+  displayOrder: number;
+  status: 'active' | 'archived' | 'legacy';
+  providerId: string | null;
+  providerName: string | null;
+  modelId: string | null;
+  modelDisplayName: string | null;
 }
 
 const DEFAULT_TALK_AGENTS = ['Mock'];
@@ -79,7 +86,9 @@ function parseFallbackPolicyAgents(llmPolicy: string | null): string[] {
 }
 
 function toTalkApiRecord(talk: TalkWithAccessRecord): TalkApiRecord {
-  const agents = listTalkAgents(talk.id);
+  const persistedAgents = listTalkAgents(talk.id);
+  const agents =
+    persistedAgents.length > 0 ? listTalkAgentInstances(talk.id) : [];
   return {
     id: talk.id,
     ownerId: talk.owner_id,
@@ -98,19 +107,29 @@ function toTalkApiRecord(talk: TalkWithAccessRecord): TalkApiRecord {
 
 function toTalkAgentApiRecord(agent: {
   id: string;
+  registeredAgentId: string | null;
   name: string;
-  persona_role: TalkPersonaRole;
-  route_id: string;
-  is_primary: number;
-  sort_order: number;
+  role: TalkPersonaRole;
+  isLead: boolean;
+  displayOrder: number;
+  status: 'active' | 'archived' | 'legacy';
+  providerId: string | null;
+  providerName: string | null;
+  modelId: string | null;
+  modelDisplayName: string | null;
 }): TalkAgentApiRecord {
   return {
     id: agent.id,
+    registeredAgentId: agent.registeredAgentId,
     name: agent.name,
-    personaRole: agent.persona_role,
-    routeId: agent.route_id,
-    isPrimary: agent.is_primary === 1,
-    sortOrder: agent.sort_order,
+    role: agent.role,
+    isLead: agent.isLead,
+    displayOrder: agent.displayOrder,
+    status: agent.status,
+    providerId: agent.providerId,
+    providerName: agent.providerName,
+    modelId: agent.modelId,
+    modelDisplayName: agent.modelDisplayName,
   };
 }
 
@@ -145,7 +164,7 @@ function toTalkMessageApiRecord(
 }
 
 function validateAgentInputs(input: unknown): {
-  agents?: TalkAgentInput[];
+  agents?: TalkAgentInstanceInput[];
   error?: string;
 } {
   if (!Array.isArray(input)) {
@@ -159,36 +178,35 @@ function validateAgentInputs(input: unknown): {
     return { error: `at most ${MAX_TALK_AGENTS} talk agents are allowed` };
   }
 
-  const normalized: TalkAgentInput[] = [];
-  let primaryCount = 0;
+  const normalized: TalkAgentInstanceInput[] = [];
+  let leadCount = 0;
   const ids = new Set<string>();
   for (let index = 0; index < input.length; index += 1) {
     const raw = input[index] as Record<string, unknown>;
-    const name = typeof raw.name === 'string' ? raw.name.trim() : '';
-    const routeId = typeof raw.routeId === 'string' ? raw.routeId.trim() : '';
-    const personaRole =
-      typeof raw.personaRole === 'string'
-        ? (raw.personaRole as TalkPersonaRole)
-        : null;
+    const role =
+      typeof raw.role === 'string'
+        ? (raw.role as TalkPersonaRole)
+        : typeof raw.personaRole === 'string'
+          ? (raw.personaRole as TalkPersonaRole)
+          : null;
     const id =
       typeof raw.id === 'string' && raw.id.trim()
         ? raw.id.trim()
         : `agent_${randomUUID()}`;
-    const isPrimary = raw.isPrimary === true;
-    const sortOrder =
-      typeof raw.sortOrder === 'number'
-        ? Math.max(0, Math.floor(raw.sortOrder))
-        : index;
+    const isLead = raw.isLead === true || raw.isPrimary === true;
+    const displayOrder =
+      typeof raw.displayOrder === 'number'
+        ? Math.max(0, Math.floor(raw.displayOrder))
+        : typeof raw.sortOrder === 'number'
+          ? Math.max(0, Math.floor(raw.sortOrder))
+          : index;
+    const registeredAgentId =
+      typeof raw.registeredAgentId === 'string' && raw.registeredAgentId.trim()
+        ? raw.registeredAgentId.trim()
+        : null;
 
-    if (!name) return { error: 'each talk agent must have a name' };
-    if (name.length > MAX_TALK_AGENT_NAME_CHARS) {
-      return {
-        error: `each talk agent name must be ${MAX_TALK_AGENT_NAME_CHARS} characters or less`,
-      };
-    }
-    if (!routeId) return { error: 'each talk agent must reference a route' };
     if (
-      !personaRole ||
+      !role ||
       ![
         'assistant',
         'analyst',
@@ -197,40 +215,32 @@ function validateAgentInputs(input: unknown): {
         'devils-advocate',
         'synthesizer',
         'editor',
-      ].includes(personaRole)
+      ].includes(role)
     ) {
-      return { error: 'each talk agent must have a valid persona role' };
+      return { error: 'each talk agent must have a valid role' };
     }
     if (ids.has(id)) return { error: 'talk agent ids must be unique' };
     ids.add(id);
-    if (isPrimary) primaryCount += 1;
+    if (isLead) leadCount += 1;
 
     normalized.push({
       id,
-      name,
-      personaRole,
-      routeId,
-      isPrimary,
-      sortOrder,
+      registeredAgentId,
+      role,
+      isLead,
+      displayOrder,
     });
   }
 
-  if (primaryCount !== 1) {
-    return { error: 'exactly one talk agent must be marked primary' };
-  }
-
-  for (const agent of normalized) {
-    if (!getTalkRouteById(agent.routeId)) {
-      return { error: `route not found: ${agent.routeId}` };
-    }
+  if (leadCount !== 1) {
+    return { error: 'exactly one talk agent must be marked lead' };
   }
 
   return { agents: normalized };
 }
 
 function listEffectiveTalkAgents(talkId: string): TalkAgentApiRecord[] {
-  const existing = ensureTalkHasDefaultAgent(talkId);
-  return existing.map(toTalkAgentApiRecord);
+  return listTalkAgentInstances(talkId).map(toTalkAgentApiRecord);
 }
 
 export function listTalksRoute(input: {
@@ -440,9 +450,8 @@ export function updateTalkAgentsRoute(input: {
     };
   }
 
-  const agents = replaceTalkAgents(input.talkId, normalized.agents).map(
-    toTalkAgentApiRecord,
-  );
+  replaceTalkAgentInstances(input.talkId, normalized.agents);
+  const agents = listTalkAgentInstances(input.talkId).map(toTalkAgentApiRecord);
   return {
     statusCode: 200,
     body: {

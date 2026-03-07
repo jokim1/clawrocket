@@ -46,6 +46,21 @@ export interface LlmProviderSecretRecord {
   updated_by: string | null;
 }
 
+export type LlmProviderVerificationStatus =
+  | 'missing'
+  | 'not_verified'
+  | 'verified'
+  | 'invalid'
+  | 'unavailable';
+
+export interface LlmProviderVerificationRecord {
+  provider_id: string;
+  status: LlmProviderVerificationStatus;
+  last_verified_at: string | null;
+  last_error: string | null;
+  updated_at: string;
+}
+
 export interface TalkRouteRecord {
   id: string;
   name: string;
@@ -76,8 +91,20 @@ export interface TalkAgentRecord {
   name: string;
   persona_role: TalkPersonaRole;
   route_id: string;
+  registered_agent_id: string | null;
   is_primary: number;
   sort_order: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface RegisteredAgentRecord {
+  id: string;
+  name: string;
+  provider_id: string;
+  model_id: string;
+  route_id: string;
+  enabled: number;
   created_at: string;
   updated_at: string;
 }
