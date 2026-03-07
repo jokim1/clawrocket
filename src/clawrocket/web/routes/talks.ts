@@ -56,19 +56,19 @@ interface TalkMessageApiRecord {
 
 export interface TalkAgentApiRecord {
   id: string;
-  registeredAgentId: string | null;
   name: string;
+  sourceKind: 'claude_default' | 'provider';
   role: TalkPersonaRole;
   isLead: boolean;
   displayOrder: number;
-  status: 'active' | 'archived' | 'legacy';
+  status: 'active' | 'archived';
   providerId: string | null;
   providerName: string | null;
   modelId: string | null;
   modelDisplayName: string | null;
 }
 
-const DEFAULT_TALK_AGENTS = ['Mock'];
+const DEFAULT_TALK_AGENTS = ['Claude'];
 const MAX_TALK_AGENT_BADGES = 6;
 const MAX_TALK_AGENTS = 12;
 const MAX_TALK_AGENT_NAME_CHARS = 80;
@@ -107,12 +107,12 @@ function toTalkApiRecord(talk: TalkWithAccessRecord): TalkApiRecord {
 
 function toTalkAgentApiRecord(agent: {
   id: string;
-  registeredAgentId: string | null;
   name: string;
+  sourceKind: 'claude_default' | 'provider';
   role: TalkPersonaRole;
   isLead: boolean;
   displayOrder: number;
-  status: 'active' | 'archived' | 'legacy';
+  status: 'active' | 'archived';
   providerId: string | null;
   providerName: string | null;
   modelId: string | null;
@@ -120,8 +120,8 @@ function toTalkAgentApiRecord(agent: {
 }): TalkAgentApiRecord {
   return {
     id: agent.id,
-    registeredAgentId: agent.registeredAgentId,
     name: agent.name,
+    sourceKind: agent.sourceKind,
     role: agent.role,
     isLead: agent.isLead,
     displayOrder: agent.displayOrder,
@@ -200,9 +200,17 @@ function validateAgentInputs(input: unknown): {
         : typeof raw.sortOrder === 'number'
           ? Math.max(0, Math.floor(raw.sortOrder))
           : index;
-    const registeredAgentId =
-      typeof raw.registeredAgentId === 'string' && raw.registeredAgentId.trim()
-        ? raw.registeredAgentId.trim()
+    const sourceKind =
+      raw.sourceKind === 'claude_default' || raw.sourceKind === 'provider'
+        ? raw.sourceKind
+        : null;
+    const providerId =
+      typeof raw.providerId === 'string' && raw.providerId.trim()
+        ? raw.providerId.trim()
+        : null;
+    const modelId =
+      typeof raw.modelId === 'string' && raw.modelId.trim()
+        ? raw.modelId.trim()
         : null;
 
     if (
@@ -219,13 +227,24 @@ function validateAgentInputs(input: unknown): {
     ) {
       return { error: 'each talk agent must have a valid role' };
     }
+    if (!sourceKind) {
+      return { error: 'each talk agent must have a valid source' };
+    }
+    if (!modelId) {
+      return { error: 'each talk agent must have a model' };
+    }
+    if (sourceKind === 'provider' && !providerId) {
+      return { error: 'provider talk agents must include a provider' };
+    }
     if (ids.has(id)) return { error: 'talk agent ids must be unique' };
     ids.add(id);
     if (isLead) leadCount += 1;
 
     normalized.push({
       id,
-      registeredAgentId,
+      sourceKind,
+      providerId,
+      modelId,
       role,
       isLead,
       displayOrder,
@@ -614,8 +633,20 @@ export function updateTalkPolicyRoute(input: {
   const agentInputs: TalkAgentInput[] = normalizedNames.map((name, index) => ({
     id: currentAgents[index]?.id || `agent_${randomUUID()}`,
     name,
+    sourceKind:
+      currentAgents[index]?.source_kind === 'claude_default'
+        ? 'claude_default'
+        : 'provider',
     personaRole: currentAgents[index]?.persona_role || 'assistant',
     routeId: currentAgents[index]?.route_id || primary.route_id,
+    providerId:
+      currentAgents[index]?.provider_id ||
+      primary.provider_id ||
+      'provider.anthropic',
+    modelId:
+      currentAgents[index]?.model_id ||
+      primary.model_id ||
+      null,
     isPrimary: index === 0,
     sortOrder: index,
   }));

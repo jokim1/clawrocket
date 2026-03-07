@@ -74,6 +74,9 @@ function configureTalkRuntime(input: {
   agentName?: string;
 }): void {
   const routeId = input.agentRouteId || input.routes[0]?.id || 'route.primary';
+  const selectedRoute =
+    input.routes.find((route) => route.id === routeId) || input.routes[0];
+  const selectedStep = selectedRoute?.steps[0];
   replaceTalkLlmSettingsSnapshot({
     defaultRouteId: routeId,
     providers: input.providers,
@@ -82,8 +85,11 @@ function configureTalkRuntime(input: {
   replaceTalkAgents(TALK_ID, [
     {
       name: input.agentName || 'Primary Agent',
+      sourceKind: 'provider',
       personaRole: 'assistant',
       routeId,
+      providerId: selectedStep?.providerId || null,
+      modelId: selectedStep?.modelId || null,
       isPrimary: true,
       sortOrder: 0,
     },

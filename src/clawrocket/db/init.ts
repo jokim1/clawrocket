@@ -367,11 +367,15 @@ function createClawrocketSchema(database: Database.Database): void {
       id TEXT PRIMARY KEY,
       talk_id TEXT NOT NULL REFERENCES talks(id) ON DELETE CASCADE,
       name TEXT NOT NULL,
+      source_kind TEXT NOT NULL DEFAULT 'provider'
+        CHECK(source_kind IN ('claude_default', 'provider')),
       persona_role TEXT NOT NULL
         CHECK(persona_role IN ('assistant', 'analyst', 'critic', 'strategist', 'devils-advocate', 'synthesizer', 'editor')),
       -- Prevent deleting a route while Talk agents still reference it.
       route_id TEXT NOT NULL REFERENCES talk_routes(id) ON DELETE RESTRICT,
       registered_agent_id TEXT REFERENCES registered_agents(id) ON DELETE SET NULL,
+      provider_id TEXT REFERENCES llm_providers(id) ON DELETE SET NULL,
+      model_id TEXT,
       is_primary INTEGER NOT NULL DEFAULT 0,
       sort_order INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL,
@@ -479,6 +483,28 @@ function createClawrocketSchema(database: Database.Database): void {
     database.exec(
       `ALTER TABLE talk_agents ADD COLUMN registered_agent_id TEXT REFERENCES registered_agents(id) ON DELETE SET NULL`,
     );
+  } catch {
+    /* column already exists */
+  }
+
+  try {
+    database.exec(
+      `ALTER TABLE talk_agents ADD COLUMN source_kind TEXT NOT NULL DEFAULT 'provider' CHECK(source_kind IN ('claude_default', 'provider'))`,
+    );
+  } catch {
+    /* column already exists */
+  }
+
+  try {
+    database.exec(
+      `ALTER TABLE talk_agents ADD COLUMN provider_id TEXT REFERENCES llm_providers(id) ON DELETE SET NULL`,
+    );
+  } catch {
+    /* column already exists */
+  }
+
+  try {
+    database.exec(`ALTER TABLE talk_agents ADD COLUMN model_id TEXT`);
   } catch {
     /* column already exists */
   }

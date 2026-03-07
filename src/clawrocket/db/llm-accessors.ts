@@ -21,6 +21,7 @@ import type {
   ProviderSecretPayload,
   RegisteredAgentRecord,
   TalkAgentRecord,
+  TalkAgentSourceKind,
   TalkPersonaRole,
   TalkRouteRecord,
   TalkRouteStepRecord,
@@ -29,6 +30,7 @@ import type {
 
 const TALK_DEFAULT_ROUTE_KEY = 'talkLlm.defaultRouteId';
 const DEFAULT_REGISTERED_AGENT_KEY = 'agents.defaultRegisteredAgentId';
+const DEFAULT_CLAUDE_MODEL_KEY = 'agents.defaultClaudeModelId';
 const BUILTIN_MOCK_PROVIDER_ID = 'builtin.mock';
 const BUILTIN_MOCK_ROUTE_ID = 'route.default.mock';
 
@@ -76,9 +78,12 @@ export interface TalkLlmSettingsSnapshot {
 export interface TalkAgentInput {
   id?: string;
   name: string;
+  sourceKind: TalkAgentSourceKind;
   personaRole: TalkPersonaRole;
   routeId: string;
   registeredAgentId?: string | null;
+  providerId?: string | null;
+  modelId?: string | null;
   isPrimary: boolean;
   sortOrder: number;
 }
@@ -121,12 +126,12 @@ export interface RegisteredAgentSnapshot {
 
 export interface TalkAgentInstanceSnapshot {
   id: string;
-  registeredAgentId: string | null;
   name: string;
+  sourceKind: TalkAgentSourceKind;
   role: TalkPersonaRole;
   isLead: boolean;
   displayOrder: number;
-  status: 'active' | 'archived' | 'legacy';
+  status: 'active' | 'archived';
   providerId: string | null;
   providerName: string | null;
   modelId: string | null;
@@ -135,7 +140,9 @@ export interface TalkAgentInstanceSnapshot {
 
 export interface TalkAgentInstanceInput {
   id?: string;
-  registeredAgentId?: string | null;
+  sourceKind: TalkAgentSourceKind;
+  providerId?: string | null;
+  modelId: string;
   role: TalkPersonaRole;
   isLead: boolean;
   displayOrder: number;
@@ -153,6 +160,92 @@ export interface ResolvedTalkAgent {
   agent: TalkAgentRecord;
   route: TalkRouteRecord;
   steps: ResolvedTalkRouteStep[];
+  sourceKind: TalkAgentSourceKind;
+  providerId: string | null;
+  modelId: string | null;
+}
+
+function buildTalkAgentRouteId(agentId: string): string {
+  return `route.talk-agent.${agentId}`;
+}
+
+function resolveProviderDisplayName(providerId: string | null): string | null {
+  if (!providerId) return null;
+  if (providerId === 'provider.anthropic') return 'Claude';
+  return getLlmProviderById(providerId)?.name || null;
+}
+
+function resolveModelDisplayName(
+  providerId: string | null,
+  modelId: string | null,
+): string | null {
+  if (!providerId || !modelId) return null;
+  const knownProvider = KNOWN_PROVIDER_CATALOG.find(
+    (provider) => provider.id === providerId,
+  );
+  const knownModel = knownProvider?.modelSuggestions.find(
+    (model) => model.modelId === modelId,
+  );
+  if (knownModel) return knownModel.displayName;
+  return getLlmProviderModel(providerId, modelId)?.display_name || modelId;
+}
+
+function buildTalkAgentName(input: {
+  sourceKind: TalkAgentSourceKind;
+  providerId: string | null;
+}): string {
+  if (input.sourceKind === 'claude_default') return 'Claude';
+  return resolveProviderDisplayName(input.providerId) || 'Provider';
+}
+
+function upsertTalkAgentRoute(input: {
+  agentId: string;
+  sourceKind: TalkAgentSourceKind;
+  providerId: string | null;
+  modelId: string | null;
+  updatedBy?: string | null;
+  updatedAt?: string;
+}): string {
+  const routeId = buildTalkAgentRouteId(input.agentId);
+  const providerId =
+    input.sourceKind === 'claude_default'
+      ? 'provider.anthropic'
+      : input.providerId;
+  if (!providerId || !input.modelId) {
+    throw new Error('talk agent route requires provider and model');
+  }
+
+  ensureKnownProviderExists(providerId, input.updatedAt);
+  const provider = getLlmProviderById(providerId);
+  if (!provider) {
+    throw new Error(`provider not found: ${providerId}`);
+  }
+
+  ensureProviderModelExists({
+    providerId,
+    modelId: input.modelId,
+    updatedAt: input.updatedAt,
+  });
+
+  upsertTalkRoute({
+    id: routeId,
+    name: `${buildTalkAgentName({
+      sourceKind: input.sourceKind,
+      providerId,
+    })} Route`,
+    enabled: true,
+    steps: [
+      {
+        position: 0,
+        providerId,
+        modelId: input.modelId,
+      },
+    ],
+    updatedBy: input.updatedBy,
+    updatedAt: input.updatedAt,
+  });
+
+  return routeId;
 }
 
 const KNOWN_PROVIDER_CATALOG: Array<{
@@ -361,6 +454,29 @@ function getKnownProviderTemplate(
   providerId: string,
 ): (typeof KNOWN_PROVIDER_CATALOG)[number] | undefined {
   return KNOWN_PROVIDER_CATALOG.find((provider) => provider.id === providerId);
+}
+
+function ensureKnownProviderExists(
+  providerId: string,
+  updatedAt?: string,
+): void {
+  // Built-in providers are seeded from the static known-provider catalog.
+  if (getLlmProviderById(providerId)) return;
+  const template = getKnownProviderTemplate(providerId);
+  if (!template) {
+    throw new Error(`unknown provider template: ${providerId}`);
+  }
+  upsertLlmProvider({
+    id: template.id,
+    name: template.name,
+    providerKind: template.providerKind,
+    apiFormat: template.apiFormat,
+    baseUrl: template.baseUrl,
+    authScheme: template.authScheme,
+    enabled: true,
+    coreCompatibility: 'none',
+    updatedAt,
+  });
 }
 
 function getFallbackModelMetadata(
@@ -952,6 +1068,77 @@ export function getDefaultRegisteredAgentId(): string | null {
   return row?.value || null;
 }
 
+export function listAdditionalProviderCredentialCards(): AgentProviderCardSnapshot[] {
+  return listKnownProviderCredentialCards().filter(
+    (provider) =>
+      provider.id !== 'provider.anthropic' && provider.id !== 'provider.custom',
+  );
+}
+
+export function listClaudeModelSuggestions(): ProviderModelSuggestion[] {
+  const anthropic = listKnownProviderCredentialCards().find(
+    (provider) => provider.id === 'provider.anthropic',
+  );
+  return anthropic?.modelSuggestions || [];
+}
+
+export function getDefaultClaudeModelId(): string {
+  const configured = getDb()
+    .prepare(
+      `
+      SELECT value
+      FROM settings_kv
+      WHERE key = ?
+      LIMIT 1
+    `,
+    )
+    .get(DEFAULT_CLAUDE_MODEL_KEY) as { value: string } | undefined;
+  if (configured?.value) return configured.value;
+
+  const fallback = listClaudeModelSuggestions()[0];
+  return fallback?.modelId || 'claude-sonnet-4-5';
+}
+
+export function setDefaultClaudeModelId(
+  modelId: string,
+  updatedBy?: string | null,
+  updatedAt?: string,
+): void {
+  const normalized = modelId.trim();
+  if (!normalized) {
+    throw new Error('default Claude model is required');
+  }
+
+  const knownSuggestion = listClaudeModelSuggestions().find(
+    (suggestion) => suggestion.modelId === normalized,
+  );
+  ensureKnownProviderExists('provider.anthropic', updatedAt);
+  ensureProviderModelExists({
+    providerId: 'provider.anthropic',
+    modelId: normalized,
+    displayName: knownSuggestion?.displayName,
+    updatedAt,
+  });
+
+  getDb()
+    .prepare(
+      `
+      INSERT INTO settings_kv (key, value, updated_at, updated_by)
+      VALUES (?, ?, ?, ?)
+      ON CONFLICT(key) DO UPDATE SET
+        value = excluded.value,
+        updated_at = excluded.updated_at,
+        updated_by = excluded.updated_by
+    `,
+    )
+    .run(
+      DEFAULT_CLAUDE_MODEL_KEY,
+      normalized,
+      normalizeTimestamp(updatedAt),
+      updatedBy || null,
+    );
+}
+
 export function setDefaultRegisteredAgentId(
   registeredAgentId: string | null,
   updatedBy?: string | null,
@@ -1359,9 +1546,12 @@ export function replaceTalkAgents(
     id: agent.id || `agent_${randomUUID()}`,
     talkId,
     name: agent.name.trim(),
+    sourceKind: agent.sourceKind,
     personaRole: agent.personaRole,
     routeId: agent.routeId,
     registeredAgentId: agent.registeredAgentId || null,
+    providerId: agent.providerId || null,
+    modelId: agent.modelId || null,
     isPrimary: agent.isPrimary,
     sortOrder: normalizeSortOrder(index, agent.sortOrder),
   }));
@@ -1371,9 +1561,9 @@ export function replaceTalkAgents(
     const stmt = getDb().prepare(
       `
       INSERT INTO talk_agents (
-        id, talk_id, name, persona_role, route_id, registered_agent_id,
-        is_primary, sort_order, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        id, talk_id, name, source_kind, persona_role, route_id, registered_agent_id,
+        provider_id, model_id, is_primary, sort_order, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `,
     );
     for (const agent of normalized) {
@@ -1381,9 +1571,12 @@ export function replaceTalkAgents(
         agent.id,
         talkId,
         agent.name,
+        agent.sourceKind,
         agent.personaRole,
         agent.routeId,
         agent.registeredAgentId,
+        agent.providerId,
+        agent.modelId,
         agent.isPrimary ? 1 : 0,
         agent.sortOrder,
         updatedAt,
@@ -1400,42 +1593,27 @@ export function resetTalkAgentsToDefault(
   talkId: string,
   now?: string,
 ): TalkAgentRecord[] {
-  const defaultRegisteredAgentId = getDefaultRegisteredAgentId();
-  const defaultRegisteredAgent = defaultRegisteredAgentId
-    ? getRegisteredAgentById(defaultRegisteredAgentId)
-    : undefined;
-  if (defaultRegisteredAgent && defaultRegisteredAgent.enabled === 1) {
-    return replaceTalkAgents(
-      talkId,
-      [
-        {
-          id: `agent_${randomUUID()}`,
-          name: defaultRegisteredAgent.name,
-          personaRole: 'assistant',
-          routeId: defaultRegisteredAgent.route_id,
-          registeredAgentId: defaultRegisteredAgent.id,
-          isPrimary: true,
-          sortOrder: 0,
-        },
-      ],
-      now,
-    );
-  }
-
-  const fallbackRouteId =
-    getDefaultTalkRouteId() ||
-    listTalkRoutes().find((route) => route.enabled === 1)?.id ||
-    BUILTIN_MOCK_ROUTE_ID;
+  const agentId = `agent_${randomUUID()}`;
+  const modelId = getDefaultClaudeModelId();
+  const routeId = upsertTalkAgentRoute({
+    agentId,
+    sourceKind: 'claude_default',
+    providerId: 'provider.anthropic',
+    modelId,
+    updatedAt: now,
+  });
 
   return replaceTalkAgents(
     talkId,
     [
       {
-        id: `agent_${randomUUID()}`,
-        name: buildDefaultTalkAgentName(fallbackRouteId),
+        id: agentId,
+        name: 'Claude',
+        sourceKind: 'claude_default',
         personaRole: 'assistant',
-        routeId: fallbackRouteId,
-        registeredAgentId: null,
+        routeId,
+        providerId: 'provider.anthropic',
+        modelId,
         isPrimary: true,
         sortOrder: 0,
       },
@@ -1457,29 +1635,30 @@ export function listTalkAgentInstances(
   talkId: string,
 ): TalkAgentInstanceSnapshot[] {
   const existing = ensureTalkHasDefaultAgent(talkId);
-  const registeredAgentsById = new Map(
-    listRegisteredAgents().map((agent) => [agent.id, agent]),
-  );
   return existing.map((agent) => {
-    const registeredAgent = agent.registered_agent_id
-      ? registeredAgentsById.get(agent.registered_agent_id)
-      : undefined;
+    const sourceKind = agent.source_kind as TalkAgentInstanceSnapshot['sourceKind'];
+    const providerId =
+      sourceKind === 'claude_default'
+        ? 'provider.anthropic'
+        : agent.provider_id || null;
+    const providerName = resolveProviderDisplayName(providerId);
+    const modelId = agent.model_id || null;
+    const modelDisplayName = resolveModelDisplayName(providerId, modelId);
     return {
       id: agent.id,
-      registeredAgentId: agent.registered_agent_id,
-      name: registeredAgent?.name || agent.name,
+      name: buildTalkAgentName({
+        sourceKind,
+        providerId,
+      }),
+      sourceKind,
       role: agent.persona_role,
       isLead: agent.is_primary === 1,
       displayOrder: agent.sort_order,
-      status: registeredAgent
-        ? registeredAgent.enabled
-          ? 'active'
-          : 'archived'
-        : 'legacy',
-      providerId: registeredAgent?.providerId || null,
-      providerName: registeredAgent?.providerName || null,
-      modelId: registeredAgent?.modelId || null,
-      modelDisplayName: registeredAgent?.modelDisplayName || null,
+      status: 'active',
+      providerId,
+      providerName,
+      modelId,
+      modelDisplayName,
     };
   });
 }
@@ -1494,34 +1673,39 @@ export function replaceTalkAgentInstances(
   );
   const normalized: TalkAgentInput[] = agents.map((agent, index) => {
     const existing = agent.id ? existingById.get(agent.id) : undefined;
-    if (agent.registeredAgentId) {
-      const registeredAgent = getRegisteredAgentById(agent.registeredAgentId);
-      if (!registeredAgent) {
-        throw new Error(
-          `registered agent not found: ${agent.registeredAgentId}`,
-        );
-      }
-      return {
-        id: agent.id,
-        name: registeredAgent.name,
-        personaRole: agent.role,
-        routeId: registeredAgent.route_id,
-        registeredAgentId: registeredAgent.id,
-        isPrimary: agent.isLead,
-        sortOrder: normalizeSortOrder(index, agent.displayOrder),
-      };
-    }
+    const id = agent.id || `agent_${randomUUID()}`;
+    const sourceKind = agent.sourceKind;
+    const providerId =
+      sourceKind === 'claude_default'
+        ? 'provider.anthropic'
+        : agent.providerId || null;
 
-    if (!existing || existing.registered_agent_id) {
-      throw new Error('legacy talk agents cannot be created manually');
+    if (!agent.modelId?.trim()) {
+      throw new Error('talk agent model is required');
     }
+    if (sourceKind === 'provider' && !providerId) {
+      throw new Error('provider-backed talk agents require a provider');
+    }
+    const routeId = upsertTalkAgentRoute({
+      agentId: id,
+      sourceKind,
+      providerId,
+      modelId: agent.modelId.trim(),
+      updatedAt: now,
+    });
 
     return {
-      id: existing.id,
-      name: existing.name,
+      id,
+      name: buildTalkAgentName({
+        sourceKind,
+        providerId,
+      }),
+      sourceKind,
       personaRole: agent.role,
-      routeId: existing.route_id,
+      routeId,
       registeredAgentId: null,
+      providerId,
+      modelId: agent.modelId.trim(),
       isPrimary: agent.isLead,
       sortOrder: normalizeSortOrder(index, agent.displayOrder),
     };
@@ -1541,12 +1725,7 @@ export function resolveTalkAgent(
       : undefined) || agents.find((entry) => entry.is_primary === 1);
   if (!agent) return null;
 
-  const registeredAgent = agent.registered_agent_id
-    ? getRegisteredAgentById(agent.registered_agent_id)
-    : undefined;
-  const effectiveAgent = registeredAgent
-    ? ({ ...agent, name: registeredAgent.name } as TalkAgentRecord)
-    : agent;
+  const sourceKind = agent.source_kind as TalkAgentSourceKind;
 
   const route = getTalkRouteById(agent.route_id);
   if (!route) return null;
@@ -1570,7 +1749,17 @@ export function resolveTalkAgent(
     });
   }
 
-  return { agent: effectiveAgent, route, steps };
+  return {
+    agent,
+    route,
+    steps,
+    sourceKind,
+    providerId:
+      sourceKind === 'claude_default'
+        ? 'provider.anthropic'
+        : agent.provider_id || null,
+    modelId: agent.model_id || null,
+  };
 }
 
 export function listTalkLlmSettingsSnapshot(): TalkLlmSettingsSnapshot {

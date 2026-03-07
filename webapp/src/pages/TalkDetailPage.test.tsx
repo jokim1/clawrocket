@@ -22,7 +22,9 @@ type StreamCallbacks = Parameters<typeof openTalkStream>[0];
 type SavedAgentRequest = {
   agents: Array<{
     id: string;
-    registeredAgentId: string | null;
+    sourceKind: 'claude_default' | 'provider';
+    providerId: string | null;
+    modelId: string;
     role: string;
     isLead: boolean;
     displayOrder: number;
@@ -60,7 +62,7 @@ describe('TalkDetailPage', () => {
       talk: buildTalk({ accessRole: 'viewer' }),
     });
 
-    const { unmount } = renderDetailPage({ accessRole: 'viewer' });
+    const { unmount } = renderDetailPage();
     await screen.findByRole('heading', { name: /Smoke Talk/i });
     expect(screen.queryByRole('button', { name: 'Cancel Runs' })).toBeNull();
     expect(
@@ -71,18 +73,18 @@ describe('TalkDetailPage', () => {
     installTalkDetailFetch({
       talk: buildTalk({ accessRole: 'editor' }),
     });
-    renderDetailPage({ accessRole: 'editor' });
+    renderDetailPage();
     await screen.findByRole('heading', { name: /Smoke Talk/i });
     expect(screen.getByRole('button', { name: 'Cancel Runs' })).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Save Agents' })).toBeTruthy();
-    expect(screen.getByLabelText('Add registered agent')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Add Agent' })).toBeTruthy();
   });
 
   it('renders effective agent badges from the talk payload', async () => {
     installTalkDetailFetch({
       talk: buildTalk({
         accessRole: 'owner',
-        agents: ['Gemini Fast', 'Claude Opus', 'Claude Sonnet'],
+        agents: ['Claude', 'Gemini 2.5 Flash', 'OpenAI GPT-5 Mini'],
       }),
     });
 
@@ -92,12 +94,12 @@ describe('TalkDetailPage', () => {
     const effectiveAgents = screen.getByRole('list', {
       name: 'Effective agents',
     });
-    expect(within(effectiveAgents).getByText('Gemini Fast')).toBeTruthy();
-    expect(within(effectiveAgents).getByText('Claude Opus')).toBeTruthy();
-    expect(within(effectiveAgents).getByText('Claude Sonnet')).toBeTruthy();
+    expect(within(effectiveAgents).getByText('Claude')).toBeTruthy();
+    expect(within(effectiveAgents).getByText('Gemini 2.5 Flash')).toBeTruthy();
+    expect(within(effectiveAgents).getByText('OpenAI GPT-5 Mini')).toBeTruthy();
   });
 
-  it('updates talk agents from the registered-agent editor', async () => {
+  it('updates talk agents from the source, model, and role editor', async () => {
     const user = userEvent.setup();
     let savedRequestBody: SavedAgentRequest | undefined;
 
@@ -109,8 +111,8 @@ describe('TalkDetailPage', () => {
           agents: [
             buildTalkAgent({
               id: body.agents[0].id,
-              registeredAgentId: 'ragent-gemini',
-              name: 'Gemini Fast',
+              name: 'Gemini',
+              sourceKind: 'provider',
               role: 'analyst',
               isLead: false,
               displayOrder: 0,
@@ -121,15 +123,15 @@ describe('TalkDetailPage', () => {
             }),
             buildTalkAgent({
               id: body.agents[1].id,
-              registeredAgentId: 'ragent-opus',
-              name: 'Claude Opus',
+              name: 'Claude',
+              sourceKind: 'claude_default',
               role: 'assistant',
               isLead: true,
               displayOrder: 1,
               providerId: 'provider.anthropic',
               providerName: 'Anthropic',
-              modelId: 'claude-opus-4-1',
-              modelDisplayName: 'Claude Opus 4.1',
+              modelId: 'claude-sonnet-4-5',
+              modelDisplayName: 'Claude Sonnet 4.5',
             }),
           ],
         };
@@ -140,89 +142,53 @@ describe('TalkDetailPage', () => {
     await screen.findByRole('heading', { name: /Smoke Talk/i });
 
     await user.selectOptions(screen.getAllByLabelText('Role')[0], 'analyst');
+
+    const controls = screen
+      .getByRole('button', { name: 'Add Agent' })
+      .closest('.policy-editor-controls') as HTMLElement | null;
+    if (!controls) {
+      throw new Error('Expected talk agent controls');
+    }
+
+    await user.selectOptions(within(controls).getByLabelText('Source'), 'claude_default');
     await user.selectOptions(
-      screen.getByLabelText('Add registered agent'),
-      'ragent-opus',
+      within(controls).getByLabelText('Model'),
+      'claude-sonnet-4-5',
     );
-    await user.click(screen.getByRole('button', { name: 'Add Agent' }));
-    await user.click(screen.getAllByLabelText('Lead Agent')[1]);
+    await user.click(within(controls).getByRole('button', { name: 'Add Agent' }));
+    await user.click(screen.getAllByLabelText('Primary Agent')[1]);
     await user.click(screen.getByRole('button', { name: 'Save Agents' }));
 
     expect(await screen.findByText('Talk agents updated.')).toBeTruthy();
     if (!savedRequestBody) {
       throw new Error('Expected talk agent update request payload');
     }
-    const requestBody = savedRequestBody;
-    expect(requestBody.agents).toHaveLength(2);
-    expect(requestBody.agents[0]).toMatchObject({
-      registeredAgentId: 'ragent-gemini',
+
+    expect(savedRequestBody.agents).toHaveLength(2);
+    expect(savedRequestBody.agents[0]).toMatchObject({
+      sourceKind: 'provider',
+      providerId: 'provider.gemini',
+      modelId: 'gemini-2.5-flash',
       role: 'analyst',
       isLead: false,
       displayOrder: 0,
     });
-    expect(requestBody.agents[1]).toMatchObject({
-      registeredAgentId: 'ragent-opus',
+    expect(savedRequestBody.agents[1]).toMatchObject({
+      sourceKind: 'claude_default',
+      providerId: null,
+      modelId: 'claude-sonnet-4-5',
       role: 'assistant',
       isLead: true,
       displayOrder: 1,
     });
 
-    const policyPanel = screen.getByLabelText('Talk policy');
-    expect(within(policyPanel).getByText('Gemini Fast · Analyst')).toBeTruthy();
-    expect(within(policyPanel).getByText('Claude Opus · Assistant · Lead')).toBeTruthy();
-  });
-
-  it('renders legacy talk agents without forcing a registered-agent selection', async () => {
-    installTalkDetailFetch({
-      talkAgents: [
-        {
-          id: 'legacy-1',
-          registeredAgentId: null,
-          name: 'Imported Legacy',
-          personaRole: 'critic',
-          isPrimary: true,
-          sortOrder: 0,
-          status: 'legacy',
-          providerId: null,
-          providerName: null,
-          modelId: null,
-          modelDisplayName: null,
-        } as unknown as TalkAgent,
-      ],
-    });
-
-    renderDetailPage();
-    await screen.findByRole('heading', { name: /Smoke Talk/i });
-
-    expect(screen.getByDisplayValue('Imported Legacy')).toBeTruthy();
-    expect(screen.getByText('Legacy agent')).toBeTruthy();
-  });
-
-  it('creates a new AI agent inline and makes it available to add to the talk', async () => {
-    const user = userEvent.setup();
-
-    installTalkDetailFetch();
-
-    renderDetailPage();
-    await screen.findByRole('heading', { name: /Smoke Talk/i });
-
-    await user.click(
-      screen.getByRole('button', { name: 'Create new AI Agent…' }),
-    );
-
-    await user.type(screen.getByLabelText('Name'), 'Claude Sonnet');
-    await user.clear(screen.getByLabelText('Model'));
-    await user.type(screen.getByLabelText('Model'), 'claude-sonnet-4-5');
-    await user.clear(screen.getByLabelText('Display name'));
-    await user.type(screen.getByLabelText('Display name'), 'Claude Sonnet 4.5');
-    await user.click(screen.getByRole('button', { name: 'Create AI Agent' }));
-
+    const talkAgentsPanel = screen.getByLabelText('Talk agents');
     expect(
-      await screen.findByText('AI agent created. You can add it to this talk now.'),
+      within(talkAgentsPanel).getByText('Gemini 2.5 Flash · Analyst'),
     ).toBeTruthy();
-
-    const addSelect = screen.getByLabelText('Add registered agent');
-    expect(within(addSelect).getByRole('option', { name: /Claude Sonnet/i })).toBeTruthy();
+    expect(
+      within(talkAgentsPanel).getByText('Claude Sonnet 4.5 · General · Primary'),
+    ).toBeTruthy();
   });
 
   it('shows send and cancel inline error states and clears send error on typing', async () => {
@@ -480,21 +446,13 @@ describe('TalkDetailPage', () => {
   });
 });
 
-function renderDetailPage(options?: {
-  accessRole?: 'owner' | 'admin' | 'editor' | 'viewer';
-  userRole?: 'owner' | 'admin' | 'member';
-}): ReturnType<typeof render> {
+function renderDetailPage(): ReturnType<typeof render> {
   return render(
     <MemoryRouter initialEntries={['/app/talks/talk-1']}>
       <Routes>
         <Route
           path="/app/talks/:talkId"
-          element={
-            <TalkDetailPage
-              onUnauthorized={vi.fn()}
-              userRole={options?.userRole || 'owner'}
-            />
-          }
+          element={<TalkDetailPage onUnauthorized={vi.fn()} />}
         />
       </Routes>
     </MemoryRouter>,
@@ -509,7 +467,7 @@ function buildTalk(input: {
     id: 'talk-1',
     ownerId: 'owner-1',
     title: 'Smoke Talk',
-    agents: input.agents || ['Gemini Fast'],
+    agents: input.agents || ['Claude'],
     status: 'active',
     version: 1,
     createdAt: '2026-03-04T00:00:00.000Z',
@@ -518,11 +476,13 @@ function buildTalk(input: {
   };
 }
 
-function buildTalkAgent(input: Partial<TalkAgent> & Pick<TalkAgent, 'id' | 'name'>): TalkAgent {
+function buildTalkAgent(
+  input: Partial<TalkAgent> & Pick<TalkAgent, 'id' | 'name'>,
+): TalkAgent {
   return {
     id: input.id,
-    registeredAgentId: input.registeredAgentId ?? null,
     name: input.name,
+    sourceKind: input.sourceKind ?? 'provider',
     role: input.role ?? 'assistant',
     isLead: input.isLead ?? false,
     displayOrder: input.displayOrder ?? 0,
@@ -534,7 +494,9 @@ function buildTalkAgent(input: Partial<TalkAgent> & Pick<TalkAgent, 'id' | 'name
   };
 }
 
-function buildMessage(input: Partial<TalkMessage> & Pick<TalkMessage, 'id' | 'role' | 'content' | 'createdAt'>): TalkMessage {
+function buildMessage(
+  input: Partial<TalkMessage> & Pick<TalkMessage, 'id' | 'role' | 'content' | 'createdAt'>,
+): TalkMessage {
   return {
     id: input.id,
     role: input.role,
@@ -549,31 +511,22 @@ function buildMessage(input: Partial<TalkMessage> & Pick<TalkMessage, 'id' | 'ro
 
 function buildAiAgentsData(): AiAgentsPageData {
   return {
-    defaultRegisteredAgentId: 'ragent-gemini',
-    onboardingRequired: false,
-    providers: [
+    defaultClaudeModelId: 'claude-sonnet-4-5',
+    claudeModelSuggestions: [
       {
-        id: 'provider.anthropic',
-        name: 'Anthropic',
-        providerKind: 'anthropic',
-        apiFormat: 'anthropic_messages',
-        baseUrl: 'https://api.anthropic.com',
-        authScheme: 'x_api_key',
-        enabled: true,
-        hasCredential: true,
-        credentialHint: '••••OPUS',
-        verificationStatus: 'verified',
-        lastVerifiedAt: '2026-03-05T12:00:00.000Z',
-        lastVerificationError: null,
-        modelSuggestions: [
-          {
-            modelId: 'claude-opus-4-1',
-            displayName: 'Claude Opus 4.1',
-            contextWindowTokens: 200000,
-            defaultMaxOutputTokens: 4096,
-          },
-        ],
+        modelId: 'claude-sonnet-4-5',
+        displayName: 'Claude Sonnet 4.5',
+        contextWindowTokens: 200000,
+        defaultMaxOutputTokens: 4096,
       },
+      {
+        modelId: 'claude-opus-4-1',
+        displayName: 'Claude Opus 4.1',
+        contextWindowTokens: 200000,
+        defaultMaxOutputTokens: 4096,
+      },
+    ],
+    additionalProviders: [
       {
         id: 'provider.gemini',
         name: 'Google / Gemini',
@@ -596,31 +549,27 @@ function buildAiAgentsData(): AiAgentsPageData {
           },
         ],
       },
-    ],
-    registeredAgents: [
       {
-        id: 'ragent-gemini',
-        name: 'Gemini Fast',
-        providerId: 'provider.gemini',
-        providerName: 'Google / Gemini',
-        providerKind: 'gemini',
-        modelId: 'gemini-2.5-flash',
-        modelDisplayName: 'Gemini 2.5 Flash',
-        routeId: 'route.agent.ragent-gemini',
+        id: 'provider.openai',
+        name: 'OpenAI',
+        providerKind: 'openai',
+        apiFormat: 'openai_chat_completions',
+        baseUrl: 'https://api.openai.com/v1',
+        authScheme: 'bearer',
         enabled: true,
-        usageCount: 1,
-      },
-      {
-        id: 'ragent-opus',
-        name: 'Claude Opus',
-        providerId: 'provider.anthropic',
-        providerName: 'Anthropic',
-        providerKind: 'anthropic',
-        modelId: 'claude-opus-4-1',
-        modelDisplayName: 'Claude Opus 4.1',
-        routeId: 'route.agent.ragent-opus',
-        enabled: true,
-        usageCount: 0,
+        hasCredential: true,
+        credentialHint: '••••MINI',
+        verificationStatus: 'verified',
+        lastVerifiedAt: '2026-03-05T12:00:00.000Z',
+        lastVerificationError: null,
+        modelSuggestions: [
+          {
+            modelId: 'gpt-5-mini',
+            displayName: 'GPT-5 Mini',
+            contextWindowTokens: 128000,
+            defaultMaxOutputTokens: 4096,
+          },
+        ],
       },
     ],
   };
@@ -633,38 +582,9 @@ function installTalkDetailFetch(input?: {
     messages: TalkMessage[];
     page: { limit: number; count: number; beforeCreatedAt: string | null };
   }>;
-  talkAgents?: Array<Partial<TalkAgent>>;
-  aiAgents?: ReturnType<typeof buildAiAgentsData>;
-  onCreateRegisteredAgent?: (body: {
-    name: string;
-    providerId: string;
-    modelId: string;
-    modelDisplayName?: string | null;
-    setAsDefault?: boolean;
-  }) => {
-    agent: {
-      id: string;
-      name: string;
-      providerId: string;
-      providerName: string;
-      providerKind: 'anthropic' | 'openai' | 'gemini' | 'deepseek' | 'kimi' | 'custom';
-      modelId: string;
-      modelDisplayName: string;
-      routeId: string;
-      enabled: boolean;
-      usageCount: number;
-    };
-    defaultRegisteredAgentId: string | null;
-  };
-  onPutAgents?: (body: {
-    agents: Array<{
-      id: string;
-      registeredAgentId: string | null;
-      role: string;
-      isLead: boolean;
-      displayOrder: number;
-    }>;
-  }) => { talkId: string; agents: TalkAgent[] };
+  talkAgents?: TalkAgent[];
+  aiAgents?: AiAgentsPageData;
+  onPutAgents?: (body: SavedAgentRequest) => { talkId: string; agents: TalkAgent[] };
   onSendMessage?: () => { status: number; body: unknown };
   onCancelRuns?: () => { status: number; body: unknown };
 }) {
@@ -678,14 +598,14 @@ function installTalkDetailFetch(input?: {
       },
     ]),
   ];
-  let aiAgents = input?.aiAgents || buildAiAgentsData();
+  const aiAgents = input?.aiAgents || buildAiAgentsData();
   const initialAgents =
     input?.talkAgents ||
     [
       buildTalkAgent({
         id: 'talk-agent-1',
-        registeredAgentId: 'ragent-gemini',
-        name: 'Gemini Fast',
+        name: 'Gemini',
+        sourceKind: 'provider',
         role: 'assistant',
         isLead: true,
         displayOrder: 0,
@@ -732,71 +652,51 @@ function installTalkDetailFetch(input?: {
         return jsonResponse(200, { ok: true, data: aiAgents });
       }
 
-      if (url.endsWith('/api/v1/agents/registered') && method === 'POST') {
-        const parsed = JSON.parse(String(init?.body || '{}')) as {
-          name: string;
-          providerId: string;
-          modelId: string;
-          modelDisplayName?: string | null;
-          setAsDefault?: boolean;
-        };
-        const created = input?.onCreateRegisteredAgent
-          ? input.onCreateRegisteredAgent(parsed)
-          : {
-              agent: {
-                id: 'ragent-sonnet',
-                name: parsed.name,
-                providerId: parsed.providerId,
-                providerName:
-                  aiAgents.providers.find((provider) => provider.id === parsed.providerId)
-                    ?.name || parsed.providerId,
-                providerKind:
-                  aiAgents.providers.find((provider) => provider.id === parsed.providerId)
-                    ?.providerKind || 'custom',
-                modelId: parsed.modelId,
-                modelDisplayName: parsed.modelDisplayName || parsed.modelId,
-                routeId: 'route.agent.ragent-sonnet',
-                enabled: true,
-                usageCount: 0,
-              },
-              defaultRegisteredAgentId: aiAgents.defaultRegisteredAgentId,
-            };
-        aiAgents = {
-          ...aiAgents,
-          defaultRegisteredAgentId: created.defaultRegisteredAgentId,
-          registeredAgents: [...aiAgents.registeredAgents, created.agent],
-        };
-        return jsonResponse(201, { ok: true, data: created });
-      }
-
       if (url.endsWith('/api/v1/talks/talk-1/agents') && method === 'PUT') {
-        const parsed = JSON.parse(String(init?.body || '{}')) as {
-          agents: Array<{
-            id: string;
-            registeredAgentId: string | null;
-            role: string;
-            isLead: boolean;
-            displayOrder: number;
-          }>;
-        };
+        const parsed = JSON.parse(String(init?.body || '{}')) as SavedAgentRequest;
         const payload = input?.onPutAgents
           ? input.onPutAgents(parsed)
           : {
               talkId: 'talk-1',
-              agents: parsed.agents.map((agent) =>
-                buildTalkAgent({
+              agents: parsed.agents.map((agent) => {
+                if (agent.sourceKind === 'claude_default') {
+                  const model =
+                    aiAgents.claudeModelSuggestions.find(
+                      (entry) => entry.modelId === agent.modelId,
+                    ) || null;
+                  return buildTalkAgent({
+                    id: agent.id,
+                    name: 'Claude',
+                    sourceKind: 'claude_default',
+                    role: agent.role as TalkAgent['role'],
+                    isLead: agent.isLead,
+                    displayOrder: agent.displayOrder,
+                    providerId: 'provider.anthropic',
+                    providerName: 'Anthropic',
+                    modelId: agent.modelId,
+                    modelDisplayName: model?.displayName || agent.modelId,
+                  });
+                }
+
+                const provider = aiAgents.additionalProviders.find(
+                  (entry) => entry.id === agent.providerId,
+                );
+                const model = provider?.modelSuggestions.find(
+                  (entry) => entry.modelId === agent.modelId,
+                );
+                return buildTalkAgent({
                   id: agent.id,
-                  registeredAgentId: agent.registeredAgentId,
-                  name:
-                    aiAgents.registeredAgents.find(
-                      (entry) => entry.id === agent.registeredAgentId,
-                    )?.name || 'Legacy Agent',
+                  name: provider?.name || 'Provider',
+                  sourceKind: 'provider',
                   role: agent.role as TalkAgent['role'],
                   isLead: agent.isLead,
                   displayOrder: agent.displayOrder,
-                  status: 'active',
-                }),
-              ),
+                  providerId: agent.providerId,
+                  providerName: provider?.name || null,
+                  modelId: agent.modelId,
+                  modelDisplayName: model?.displayName || agent.modelId,
+                });
+              }),
             };
         return jsonResponse(200, { ok: true, data: payload });
       }

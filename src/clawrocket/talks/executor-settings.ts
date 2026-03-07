@@ -165,6 +165,9 @@ export interface ExecutorSettingsView {
   hasApiKey: boolean;
   hasOauthToken: boolean;
   hasAuthToken: boolean;
+  apiKeyHint: string | null;
+  oauthTokenHint: string | null;
+  authTokenHint: string | null;
   activeCredentialConfigured: boolean;
   verificationStatus: ExecutorVerificationStatus;
   lastVerifiedAt: string | null;
@@ -175,6 +178,13 @@ export interface ExecutorSettingsView {
   lastUpdatedAt: string | null;
   lastUpdatedBy: SettingsActor | null;
   configErrors: string[];
+}
+
+function maskStoredCredential(value: string | null): string | null {
+  if (!value?.trim()) return null;
+  const trimmed = value.trim();
+  const suffix = trimmed.slice(-4);
+  return `••••${suffix}`;
 }
 
 export interface ExecutorStatusView {
@@ -1191,6 +1201,9 @@ export class ExecutorSettingsService {
       hasApiKey: Boolean(rows.apiKey),
       hasOauthToken: Boolean(rows.oauthToken),
       hasAuthToken: Boolean(rows.authToken),
+      apiKeyHint: maskStoredCredential(rows.apiKey),
+      oauthTokenHint: maskStoredCredential(rows.oauthToken),
+      authTokenHint: maskStoredCredential(rows.authToken),
       activeCredentialConfigured: config.activeCredentialConfigured,
       verificationStatus: config.verificationStatus,
       lastVerifiedAt: config.lastVerifiedAt,

@@ -66,8 +66,8 @@ export type TalkPolicy = {
 
 export type TalkAgent = {
   id: string;
-  registeredAgentId: string | null;
   name: string;
+  sourceKind: 'claude_default' | 'provider';
   role:
     | 'assistant'
     | 'analyst'
@@ -78,7 +78,7 @@ export type TalkAgent = {
     | 'editor';
   isLead: boolean;
   displayOrder: number;
-  status: 'active' | 'archived' | 'legacy';
+  status: 'active' | 'archived';
   providerId: string | null;
   providerName: string | null;
   modelId: string | null;
@@ -117,30 +117,15 @@ export type AgentProviderCard = {
   }>;
 };
 
-export type RegisteredAgent = {
-  id: string;
-  name: string;
-  providerId: string;
-  providerName: string;
-  providerKind:
-    | 'anthropic'
-    | 'openai'
-    | 'gemini'
-    | 'deepseek'
-    | 'kimi'
-    | 'custom';
-  modelId: string;
-  modelDisplayName: string;
-  routeId: string;
-  enabled: boolean;
-  usageCount: number;
-};
-
 export type AiAgentsPageData = {
-  defaultRegisteredAgentId: string | null;
-  providers: AgentProviderCard[];
-  registeredAgents: RegisteredAgent[];
-  onboardingRequired: boolean;
+  defaultClaudeModelId: string;
+  claudeModelSuggestions: Array<{
+    modelId: string;
+    displayName: string;
+    contextWindowTokens: number;
+    defaultMaxOutputTokens: number;
+  }>;
+  additionalProviders: AgentProviderCard[];
 };
 
 export type TalkLlmProvider = {
@@ -213,6 +198,9 @@ export type ExecutorSettings = {
   hasApiKey: boolean;
   hasOauthToken: boolean;
   hasAuthToken: boolean;
+  apiKeyHint: string | null;
+  oauthTokenHint: string | null;
+  authTokenHint: string | null;
   activeCredentialConfigured: boolean;
   verificationStatus:
     | 'missing'
@@ -432,6 +420,16 @@ export async function getAiAgents(): Promise<AiAgentsPageData> {
   return apiRequest<AiAgentsPageData>('/api/v1/agents');
 }
 
+export async function updateDefaultClaudeModel(
+  modelId: string,
+): Promise<AiAgentsPageData> {
+  return apiRequest<AiAgentsPageData>('/api/v1/agents/default-claude', {
+    method: 'PUT',
+    headers: buildMutationHeaders({ includeJson: true }),
+    body: JSON.stringify({ modelId }),
+  });
+}
+
 export async function saveAiProviderCredential(input: {
   providerId: string;
   apiKey?: string | null;
@@ -461,72 +459,6 @@ export async function verifyAiProviderCredential(
     },
   );
   return envelope.provider;
-}
-
-export async function createRegisteredAgent(input: {
-  name: string;
-  providerId: string;
-  modelId: string;
-  modelDisplayName?: string | null;
-  setAsDefault?: boolean;
-}): Promise<{ agent: RegisteredAgent; defaultRegisteredAgentId: string | null }> {
-  return apiRequest<{ agent: RegisteredAgent; defaultRegisteredAgentId: string | null }>(
-    '/api/v1/agents/registered',
-    {
-      method: 'POST',
-      headers: buildMutationHeaders({ includeJson: true }),
-      body: JSON.stringify(input),
-    },
-  );
-}
-
-export async function updateRegisteredAgent(input: {
-  agentId: string;
-  name?: string;
-  enabled?: boolean;
-  setAsDefault?: boolean;
-}): Promise<{ agent: RegisteredAgent; defaultRegisteredAgentId: string | null }> {
-  return apiRequest<{ agent: RegisteredAgent; defaultRegisteredAgentId: string | null }>(
-    `/api/v1/agents/registered/${encodeURIComponent(input.agentId)}`,
-    {
-      method: 'PATCH',
-      headers: buildMutationHeaders({ includeJson: true }),
-      body: JSON.stringify({
-        name: input.name,
-        enabled: input.enabled,
-        setAsDefault: input.setAsDefault,
-      }),
-    },
-  );
-}
-
-export async function duplicateRegisteredAgent(input: {
-  sourceAgentId: string;
-  name: string;
-  providerId: string;
-  modelId: string;
-  modelDisplayName?: string | null;
-}): Promise<{ agent: RegisteredAgent }> {
-  return apiRequest<{ agent: RegisteredAgent }>(
-    `/api/v1/agents/registered/${encodeURIComponent(input.sourceAgentId)}/duplicate`,
-    {
-      method: 'POST',
-      headers: buildMutationHeaders({ includeJson: true }),
-      body: JSON.stringify(input),
-    },
-  );
-}
-
-export async function deleteRegisteredAgent(
-  agentId: string,
-): Promise<{ deleted: true }> {
-  return apiRequest<{ deleted: true }>(
-    `/api/v1/agents/registered/${encodeURIComponent(agentId)}`,
-    {
-      method: 'DELETE',
-      headers: buildMutationHeaders({ includeJson: false }),
-    },
-  );
 }
 
 export async function getTalkLlmSettings(): Promise<TalkLlmSettings> {
