@@ -90,4 +90,64 @@ describe('registered agent accessors', () => {
       modelDisplayName: expectedModelDisplayName,
     });
   });
+
+  it('resets old mock default talk agents to the Claude default agent', () => {
+    upsertUser({
+      id: 'owner-2',
+      email: 'owner2@example.com',
+      displayName: 'Owner Two',
+      role: 'owner',
+    });
+    upsertTalk({
+      id: 'talk-2',
+      ownerId: 'owner-2',
+      topicTitle: 'Mock Reset Test',
+    });
+
+    getDb()
+      .prepare(
+        `
+        INSERT INTO talk_agents (
+          id,
+          talk_id,
+          name,
+          source_kind,
+          persona_role,
+          route_id,
+          registered_agent_id,
+          provider_id,
+          model_id,
+          is_primary,
+          sort_order,
+          created_at,
+          updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `,
+      )
+      .run(
+        'agent-mock',
+        'talk-2',
+        'Mock',
+        'provider',
+        'assistant',
+        'route.default.mock',
+        null,
+        null,
+        null,
+        1,
+        0,
+        new Date().toISOString(),
+        new Date().toISOString(),
+      );
+
+    const expectedModelId = getDefaultClaudeModelId();
+    const [agent] = listTalkAgentInstances('talk-2');
+
+    expect(agent).toMatchObject({
+      name: 'Claude',
+      sourceKind: 'claude_default',
+      providerId: 'provider.anthropic',
+      modelId: expectedModelId,
+    });
+  });
 });

@@ -1656,7 +1656,26 @@ export function ensureTalkHasDefaultAgent(
   now?: string,
 ): TalkAgentRecord[] {
   const existing = listTalkAgents(talkId);
-  if (existing.length > 0) return existing;
+  if (existing.length > 0) {
+    const shouldResetToClaudeDefault = existing.every((agent) => {
+      const route = getTalkRouteById(agent.route_id);
+      const primaryStep = route ? listTalkRouteSteps(route.id)[0] : undefined;
+      return (
+        agent.route_id === BUILTIN_MOCK_ROUTE_ID ||
+        agent.provider_id === BUILTIN_MOCK_PROVIDER_ID ||
+        agent.model_id === 'mock-default' ||
+        primaryStep?.provider_id === BUILTIN_MOCK_PROVIDER_ID ||
+        primaryStep?.model_id === 'mock-default' ||
+        agent.name === 'Mock'
+      );
+    });
+
+    if (!shouldResetToClaudeDefault) {
+      return existing;
+    }
+
+    return resetTalkAgentsToDefault(talkId, now);
+  }
   return resetTalkAgentsToDefault(talkId, now);
 }
 

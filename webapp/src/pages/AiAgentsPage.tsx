@@ -171,6 +171,12 @@ function formatProviderSaveNotice(provider: AgentProviderCard): string {
   }
 }
 
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    window.setTimeout(resolve, ms);
+  });
+}
+
 export function AiAgentsPage({
   onUnauthorized,
   userRole,
@@ -357,6 +363,39 @@ export function AiAgentsPage({
     });
   };
 
+  const pollProviderAfterSave = async (providerId: string): Promise<void> => {
+    const delays = [1_500, 1_500, 2_500, 3_500, 5_000];
+
+    for (const delayMs of delays) {
+      await delay(delayMs);
+      try {
+        const nextData = await getAiAgents();
+        const nextProvider = nextData.additionalProviders.find(
+          (entry) => entry.id === providerId,
+        );
+        if (!nextProvider) return;
+
+        refreshProvider(nextProvider);
+        if (nextProvider.verificationStatus !== 'not_verified') {
+          if (nextProvider.verificationStatus === 'verified') {
+            setNotice(`${nextProvider.name} credential verified.`);
+          } else {
+            setNotice(
+              `${nextProvider.name} verification status: ${formatVerificationStatus(nextProvider.verificationStatus)}.`,
+            );
+          }
+          return;
+        }
+      } catch (err) {
+        if (err instanceof UnauthorizedError) {
+          onUnauthorized();
+          return;
+        }
+        return;
+      }
+    }
+  };
+
   const handleApiFailure = (err: unknown, fallback: string): void => {
     if (err instanceof UnauthorizedError) {
       onUnauthorized();
@@ -460,6 +499,9 @@ export function AiAgentsPage({
       });
       refreshProvider(provider);
       setNotice(formatProviderSaveNotice(provider));
+      if (provider.hasCredential && provider.verificationStatus === 'not_verified') {
+        void pollProviderAfterSave(provider.id);
+      }
     } catch (err) {
       handleApiFailure(err, 'Failed to save provider credential.');
     } finally {
