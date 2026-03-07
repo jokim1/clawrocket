@@ -1,3 +1,5 @@
+import { setTimeout as delay } from 'node:timers/promises';
+
 import { decryptProviderSecret } from '../llm/provider-secret-store.js';
 import {
   getLlmProviderById,
@@ -8,7 +10,9 @@ import {
 import type { AgentProviderCardSnapshot } from '../db/llm-accessors.js';
 import type { LlmProviderRecord, ProviderSecretPayload } from '../llm/types.js';
 
-const VERIFY_TIMEOUT_MS = 5_000;
+const DEFAULT_VERIFY_TIMEOUT_MS = 5_000;
+const NVIDIA_VERIFY_TIMEOUT_MS = 15_000;
+const NVIDIA_MAX_ATTEMPTS = 2;
 
 function joinUrl(baseUrl: string, path: string): string {
   return `${baseUrl.replace(/\/+$/, '')}${path}`;
@@ -117,63 +121,81 @@ export class ProviderCredentialsVerifier {
 
     const secret = decryptProviderSecret(secretRecord.ciphertext);
     const request = buildVerificationRequest(provider);
-    const controller = new AbortController();
-    const timer = setTimeout(
-      () => controller.abort('provider_verify_timeout'),
-      VERIFY_TIMEOUT_MS,
-    );
+    const timeoutMs =
+      provider.provider_kind === 'nvidia'
+        ? NVIDIA_VERIFY_TIMEOUT_MS
+        : DEFAULT_VERIFY_TIMEOUT_MS;
+    const maxAttempts =
+      provider.provider_kind === 'nvidia' ? NVIDIA_MAX_ATTEMPTS : 1;
+    let finalStatus: 'verified' | 'invalid' | 'unavailable' = 'unavailable';
+    let finalError: string | null = `${provider.name} verification failed.`;
 
-    try {
-      const response = await this.fetchImpl(request.url, {
-        method: request.method,
-        headers: {
-          ...buildHeaders(provider, secret),
-          ...(request.headers || {}),
-        },
-        body: request.body,
-        signal: controller.signal,
-      });
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      const controller = new AbortController();
+      const timer = setTimeout(
+        () => controller.abort('provider_verify_timeout'),
+        timeoutMs,
+      );
 
-      if (response.ok) {
-        upsertProviderVerification({
-          providerId,
-          status: 'verified',
-          lastVerifiedAt: new Date().toISOString(),
-          lastError: null,
+      try {
+        const response = await this.fetchImpl(request.url, {
+          method: request.method,
+          headers: {
+            ...buildHeaders(provider, secret),
+            ...(request.headers || {}),
+          },
+          body: request.body,
+          signal: controller.signal,
         });
-      } else if (response.status === 401 || response.status === 403) {
-        const message = `Credential rejected by ${provider.name}.`;
-        upsertProviderVerification({
-          providerId,
-          status: 'invalid',
-          lastVerifiedAt: new Date().toISOString(),
-          lastError: message,
-        });
-      } else {
-        const message = `${provider.name} verification failed with HTTP ${response.status}.`;
-        upsertProviderVerification({
-          providerId,
-          status: 'unavailable',
-          lastVerifiedAt: new Date().toISOString(),
-          lastError: message,
-        });
+
+        if (response.ok) {
+          finalStatus = 'verified';
+          finalError = null;
+          break;
+        }
+
+        if (response.status === 401 || response.status === 403) {
+          finalStatus = 'invalid';
+          finalError = `Credential rejected by ${provider.name}.`;
+          break;
+        }
+
+        finalStatus = 'unavailable';
+        finalError = `${provider.name} verification failed with HTTP ${response.status}.`;
+        if (
+          provider.provider_kind === 'nvidia' &&
+          attempt < maxAttempts &&
+          response.status >= 500
+        ) {
+          await delay(500);
+          continue;
+        }
+        break;
+      } catch (error) {
+        finalStatus = 'unavailable';
+        finalError =
+          error instanceof Error && error.name === 'AbortError'
+            ? `${provider.name} verification timed out.`
+            : error instanceof Error
+              ? error.message
+              : `${provider.name} verification failed.`;
+
+        if (provider.provider_kind === 'nvidia' && attempt < maxAttempts) {
+          await delay(500);
+          continue;
+        }
+        break;
+      } finally {
+        clearTimeout(timer);
       }
-    } catch (error) {
-      const message =
-        error instanceof Error && error.name === 'AbortError'
-          ? `${provider.name} verification timed out.`
-          : error instanceof Error
-            ? error.message
-            : `${provider.name} verification failed.`;
-      upsertProviderVerification({
-        providerId,
-        status: 'unavailable',
-        lastVerifiedAt: new Date().toISOString(),
-        lastError: message,
-      });
-    } finally {
-      clearTimeout(timer);
     }
+
+    upsertProviderVerification({
+      providerId,
+      status: finalStatus,
+      lastVerifiedAt: new Date().toISOString(),
+      lastError: finalError,
+    });
 
     return this.getCard(providerId);
   }
