@@ -18,6 +18,7 @@ describe('AiAgentsPage', () => {
   });
 
   it('renders the simplified Claude plus additional providers layout', async () => {
+    const user = userEvent.setup();
     installAiAgentsFetch();
 
     render(
@@ -67,6 +68,14 @@ describe('AiAgentsPage', () => {
       within(nvidiaCard).getByRole('link', { name: 'Get key from NVIDIA' }),
     ).toHaveAttribute('href', 'https://build.nvidia.com/');
     expect(within(nvidiaCard).getByPlaceholderText('nvapi-...')).toBeTruthy();
+    const nvidiaKeyInput = within(nvidiaCard).getByLabelText('API key');
+    expect(nvidiaKeyInput).toHaveAttribute('type', 'password');
+    await user.click(
+      within(nvidiaCard).getByRole('button', {
+        name: 'Show NVIDIA Kimi2.5 API key',
+      }),
+    );
+    expect(nvidiaKeyInput).toHaveAttribute('type', 'text');
   });
 
   it('reports saved provider credentials honestly when verification does not pass', async () => {
@@ -92,6 +101,39 @@ describe('AiAgentsPage', () => {
     expect(
       await screen.findByText('OpenAI credential saved. Verification status: invalid.'),
     ).toBeTruthy();
+  });
+
+  it('shows NVIDIA as saved immediately while background verification runs', async () => {
+    const user = userEvent.setup();
+    installAiAgentsFetch();
+
+    render(
+      <MemoryRouter initialEntries={['/app/agents']}>
+        <AiAgentsPage onUnauthorized={vi.fn()} userRole="owner" />
+      </MemoryRouter>,
+    );
+
+    await screen.findByRole('heading', { name: 'AI Agents' });
+
+    const nvidiaCard = screen
+      .getByRole('heading', { name: 'NVIDIA Kimi2.5' })
+      .closest('article');
+    if (!nvidiaCard) {
+      throw new Error('Expected NVIDIA provider card');
+    }
+
+    await user.type(
+      within(nvidiaCard).getByLabelText('API key'),
+      'nvapi-test-key',
+    );
+    await user.click(within(nvidiaCard).getByRole('button', { name: 'Save' }));
+
+    expect(
+      await screen.findByText(
+        'NVIDIA Kimi2.5 credential saved. Verification is running in the background.',
+      ),
+    ).toBeTruthy();
+    expect(within(nvidiaCard).getByText('Needs verification')).toBeTruthy();
   });
 });
 
@@ -168,6 +210,27 @@ function installAiAgentsFetch() {
         };
         const provider = snapshot.additionalProviders.find(
           (entry) => entry.id === 'provider.openai',
+        );
+        return jsonResponse(200, { ok: true, data: { provider } });
+      }
+
+      if (url.endsWith('/api/v1/agents/providers/provider.nvidia') && method === 'PUT') {
+        snapshot = {
+          ...snapshot,
+          additionalProviders: snapshot.additionalProviders.map((provider) =>
+            provider.id === 'provider.nvidia'
+              ? {
+                  ...provider,
+                  hasCredential: true,
+                  credentialHint: '••••X6za',
+                  verificationStatus: 'not_verified',
+                  lastVerificationError: null,
+                }
+              : provider,
+          ),
+        };
+        const provider = snapshot.additionalProviders.find(
+          (entry) => entry.id === 'provider.nvidia',
         );
         return jsonResponse(200, { ok: true, data: { provider } });
       }
