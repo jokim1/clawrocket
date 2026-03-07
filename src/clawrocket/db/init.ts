@@ -92,6 +92,83 @@ function seedBuiltinTalkLlmDefaults(database: Database.Database): void {
     .run(now);
 }
 
+function migrateLlmProvidersForNvidia(database: Database.Database): void {
+  const row = database
+    .prepare(
+      `
+      SELECT sql
+      FROM sqlite_master
+      WHERE type = 'table' AND name = 'llm_providers'
+    `,
+    )
+    .get() as { sql?: string | null } | undefined;
+
+  const sql = row?.sql || '';
+  if (!sql || sql.includes("'nvidia'")) {
+    return;
+  }
+
+  database.exec(`
+    PRAGMA foreign_keys = OFF;
+
+    CREATE TABLE llm_providers_new (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      provider_kind TEXT NOT NULL
+        CHECK(provider_kind IN ('anthropic', 'openai', 'gemini', 'deepseek', 'kimi', 'nvidia', 'custom')),
+      api_format TEXT NOT NULL
+        CHECK(api_format IN ('anthropic_messages', 'openai_chat_completions')),
+      base_url TEXT NOT NULL,
+      auth_scheme TEXT NOT NULL
+        CHECK(auth_scheme IN ('x_api_key', 'bearer')),
+      enabled INTEGER NOT NULL DEFAULT 1,
+      core_compatibility TEXT NOT NULL DEFAULT 'none'
+        CHECK(core_compatibility IN ('none', 'claude_sdk_proxy')),
+      response_start_timeout_ms INTEGER,
+      stream_idle_timeout_ms INTEGER,
+      absolute_timeout_ms INTEGER,
+      updated_at TEXT NOT NULL,
+      updated_by TEXT REFERENCES users(id)
+    );
+
+    INSERT INTO llm_providers_new (
+      id,
+      name,
+      provider_kind,
+      api_format,
+      base_url,
+      auth_scheme,
+      enabled,
+      core_compatibility,
+      response_start_timeout_ms,
+      stream_idle_timeout_ms,
+      absolute_timeout_ms,
+      updated_at,
+      updated_by
+    )
+    SELECT
+      id,
+      name,
+      provider_kind,
+      api_format,
+      base_url,
+      auth_scheme,
+      enabled,
+      core_compatibility,
+      response_start_timeout_ms,
+      stream_idle_timeout_ms,
+      absolute_timeout_ms,
+      updated_at,
+      updated_by
+    FROM llm_providers;
+
+    DROP TABLE llm_providers;
+    ALTER TABLE llm_providers_new RENAME TO llm_providers;
+
+    PRAGMA foreign_keys = ON;
+  `);
+}
+
 function createClawrocketSchema(database: Database.Database): void {
   database.exec(`
     CREATE TABLE IF NOT EXISTS users (
@@ -408,6 +485,8 @@ function createClawrocketSchema(database: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_llm_attempts_talk_id_created_at
       ON llm_attempts(talk_id, created_at);
   `);
+
+  migrateLlmProvidersForNvidia(database);
 
   try {
     database.exec(`
