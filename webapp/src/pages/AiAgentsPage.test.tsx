@@ -13,6 +13,7 @@ import type {
 describe('AiAgentsPage', () => {
   afterEach(() => {
     cleanup();
+    vi.useRealTimers();
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
   });
@@ -134,6 +135,11 @@ describe('AiAgentsPage', () => {
       ),
     ).toBeTruthy();
     expect(within(nvidiaCard).getByText('Needs verification')).toBeTruthy();
+
+    expect(
+      await screen.findByText('NVIDIA Kimi2.5 credential verified.', {}, { timeout: 4_000 }),
+    ).toBeTruthy();
+    expect(within(nvidiaCard).getByText('Configured')).toBeTruthy();
   });
 });
 
@@ -141,6 +147,7 @@ function installAiAgentsFetch() {
   let snapshot = buildAiAgentsData();
   let settings = buildExecutorSettings();
   let status = buildExecutorStatus();
+  let nvidiaVerificationPending = false;
 
   vi.stubGlobal(
     'fetch',
@@ -156,6 +163,24 @@ function installAiAgentsFetch() {
       const method = init?.method || 'GET';
 
       if (url.endsWith('/api/v1/agents') && method === 'GET') {
+        if (nvidiaVerificationPending) {
+          snapshot = {
+            ...snapshot,
+            additionalProviders: snapshot.additionalProviders.map((provider) =>
+              provider.id === 'provider.nvidia'
+                ? {
+                    ...provider,
+                    hasCredential: true,
+                    credentialHint: '••••X6za',
+                    verificationStatus: 'verified',
+                    lastVerifiedAt: '2026-03-06T20:28:56.000Z',
+                    lastVerificationError: null,
+                  }
+                : provider,
+            ),
+          };
+          nvidiaVerificationPending = false;
+        }
         return jsonResponse(200, { ok: true, data: snapshot });
       }
 
@@ -215,6 +240,7 @@ function installAiAgentsFetch() {
       }
 
       if (url.endsWith('/api/v1/agents/providers/provider.nvidia') && method === 'PUT') {
+        nvidiaVerificationPending = true;
         snapshot = {
           ...snapshot,
           additionalProviders: snapshot.additionalProviders.map((provider) =>
