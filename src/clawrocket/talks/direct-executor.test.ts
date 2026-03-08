@@ -1,4 +1,5 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { ChildProcess } from 'child_process';
 
 import {
   _initTestDatabase,
@@ -12,12 +13,18 @@ import {
   listTalkLlmSettingsSnapshot,
   replaceTalkAgents,
   replaceTalkLlmSettingsSnapshot,
+  resetTalkAgentsToDefault,
   upsertUser,
 } from '../db/index.js';
 import { decryptProviderSecret } from '../llm/provider-secret-store.js';
 
 import { DirectTalkExecutor } from './direct-executor.js';
 import type { TalkExecutionEvent } from './executor.js';
+import {
+  _resetActiveExecutorSettingsServiceForTests,
+  ExecutorSettingsService,
+  setActiveExecutorSettingsService,
+} from './executor-settings.js';
 
 const OWNER_ID = 'owner-1';
 const TALK_ID = 'talk-1';
@@ -271,6 +278,12 @@ describe('DirectTalkExecutor', () => {
   beforeEach(() => {
     _initTestDatabase();
     seedTalk();
+    _resetActiveExecutorSettingsServiceForTests();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    _resetActiveExecutorSettingsServiceForTests();
   });
 
   it('stores encrypted provider secrets when replacing the Talk LLM settings snapshot', () => {
@@ -703,5 +716,105 @@ describe('DirectTalkExecutor', () => {
       model_id: 'gpt-fast',
       status: 'success',
     });
+  });
+
+  it('fails the Claude default path after a response-start timeout', async () => {
+    vi.useFakeTimers();
+
+    const settingsService = new ExecutorSettingsService();
+    settingsService.saveExecutorConfig(
+      {
+        executorAuthMode: 'api_key',
+        anthropicApiKey: 'sk-ant-test',
+      },
+      OWNER_ID,
+    );
+    setActiveExecutorSettingsService(settingsService);
+    resetTalkAgentsToDefault(TALK_ID);
+
+    enqueueTalkTurnAtomic({
+      talkId: TALK_ID,
+      userId: OWNER_ID,
+      content: 'Please answer eventually',
+      messageId: 'msg-claude-timeout',
+      runId: 'run-claude-timeout',
+    });
+
+    const runContainer = vi.fn(
+      async (
+        _group: unknown,
+        _input: unknown,
+        onProcess: (proc: ChildProcess, containerName: string) => void,
+      ) => {
+        return await new Promise<{
+          status: 'success' | 'error';
+          result: string | null;
+          error?: string;
+        }>((resolve) => {
+          let killed = false;
+          const proc = {
+            get killed() {
+              return killed;
+            },
+            kill: vi.fn(() => {
+              killed = true;
+              resolve({ status: 'success', result: null });
+              return true;
+            }),
+          } as unknown as ChildProcess;
+
+          onProcess(proc, 'test-container');
+        });
+      },
+    );
+
+    const executor = new DirectTalkExecutor({
+      runContainer,
+    });
+
+    const events: TalkExecutionEvent[] = [];
+    const executeErrorPromise = executor
+      .execute(
+        {
+          runId: 'run-claude-timeout',
+          talkId: TALK_ID,
+          requestedBy: OWNER_ID,
+          triggerMessageId: 'msg-claude-timeout',
+          triggerContent: 'Please answer eventually',
+        },
+        new AbortController().signal,
+        (event) => {
+          events.push(event);
+        },
+      )
+      .then(
+        () => null,
+        (error) => error,
+      );
+
+    await vi.advanceTimersByTimeAsync(60_001);
+
+    await expect(executeErrorPromise).resolves.toMatchObject({
+      code: 'response_start_timeout',
+    });
+
+    const attempts = listLlmAttemptsForRun('run-claude-timeout');
+    expect(attempts).toHaveLength(1);
+    expect(attempts[0]).toMatchObject({
+      provider_id: 'provider.anthropic',
+      status: 'failed',
+      failure_class: 'timeout',
+    });
+
+    expect(events.map((event) => event.type)).toEqual([
+      'talk_response_started',
+      'talk_response_failed',
+    ]);
+    expect(events[1]).toMatchObject({
+      type: 'talk_response_failed',
+      errorCode: 'response_start_timeout',
+      errorMessage: 'Claude did not start streaming a response in time.',
+    });
+    expect(runContainer).toHaveBeenCalledTimes(1);
   });
 });

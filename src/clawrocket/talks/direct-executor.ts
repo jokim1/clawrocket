@@ -474,6 +474,19 @@ function looksLikeClaudeAuthFailure(message: string): boolean {
   );
 }
 
+function getClaudeTimeoutMessage(reason: unknown): string {
+  switch (String(reason || 'provider_timeout')) {
+    case 'response_start_timeout':
+      return 'Claude did not start streaming a response in time.';
+    case 'stream_idle_timeout':
+      return 'Claude stopped streaming for too long.';
+    case 'absolute_timeout':
+      return 'Claude response exceeded the maximum time limit.';
+    default:
+      return 'Claude response timed out.';
+  }
+}
+
 function classifyClaudeDefaultFailure(error: unknown): ClassifiedTalkError {
   if (error instanceof ContextAssemblyError) {
     return {
@@ -485,6 +498,19 @@ function classifyClaudeDefaultFailure(error: unknown): ClassifiedTalkError {
   }
 
   if (error instanceof TalkExecutorError) {
+    if (
+      error.code === 'response_start_timeout' ||
+      error.code === 'stream_idle_timeout' ||
+      error.code === 'absolute_timeout' ||
+      error.code === 'provider_timeout'
+    ) {
+      return {
+        code: error.code,
+        message: error.sourceMessage,
+        failureClass: 'timeout',
+        retryable: true,
+      };
+    }
     if (error.code === 'executor_not_configured') {
       return {
         code: error.code,
@@ -1009,13 +1035,46 @@ export class DirectTalkExecutor implements TalkExecutor {
       const group = createWebTalkGroup(this.groupFolder);
       const chunks: string[] = [];
       let processRef: ChildProcess | null = null;
+      const timeoutController = new AbortController();
+      const abortWithTimeout = (reason: string) => {
+        if (!timeoutController.signal.aborted) {
+          timeoutController.abort(reason);
+        }
+      };
+      const onParentAbort = () => {
+        if (!timeoutController.signal.aborted) {
+          timeoutController.abort(signal.reason);
+        }
+      };
+      signal.addEventListener('abort', onParentAbort, { once: true });
       const onAbort = () => {
         if (processRef && !processRef.killed) {
           processRef.kill('SIGTERM');
         }
       };
+      timeoutController.signal.addEventListener('abort', onAbort, {
+        once: true,
+      });
+      let sawFirstChunk = false;
+      let responseStartTimer: ReturnType<typeof setTimeout> | null = setTimeout(
+        () => {
+          abortWithTimeout('response_start_timeout');
+        },
+        DEFAULT_RESPONSE_START_TIMEOUT_MS,
+      );
+      let idleTimer: ReturnType<typeof setTimeout> | null = null;
+      const absoluteTimer = setTimeout(() => {
+        abortWithTimeout('absolute_timeout');
+      }, DEFAULT_ABSOLUTE_TIMEOUT_MS);
+      const resetIdleTimer = () => {
+        if (idleTimer) {
+          clearTimeout(idleTimer);
+        }
+        idleTimer = setTimeout(() => {
+          abortWithTimeout('stream_idle_timeout');
+        }, DEFAULT_STREAM_IDLE_TIMEOUT_MS);
+      };
 
-      signal.addEventListener('abort', onAbort, { once: true });
       try {
         const result = await this.runContainer(
           group,
@@ -1037,6 +1096,14 @@ export class DirectTalkExecutor implements TalkExecutor {
           },
           async (streamOutput: ContainerOutput) => {
             if (!streamOutput.result) return;
+            if (!sawFirstChunk) {
+              sawFirstChunk = true;
+              if (responseStartTimer) {
+                clearTimeout(responseStartTimer);
+                responseStartTimer = null;
+              }
+            }
+            resetIdleTimer();
             chunks.push(streamOutput.result);
             emit?.({
               type: 'talk_response_delta',
@@ -1054,6 +1121,16 @@ export class DirectTalkExecutor implements TalkExecutor {
 
         if (signal.aborted) {
           throw abortError(signal.reason);
+        }
+        if (timeoutController.signal.aborted) {
+          const timeoutMessage = getClaudeTimeoutMessage(
+            timeoutController.signal.reason,
+          );
+          throw new TalkExecutorError(
+            String(timeoutController.signal.reason || 'provider_timeout'),
+            timeoutMessage,
+            { sourceMessage: timeoutMessage },
+          );
         }
 
         if (result.status === 'error') {
@@ -1127,7 +1204,11 @@ export class DirectTalkExecutor implements TalkExecutor {
           modelId: context.modelId,
         };
       } finally {
-        signal.removeEventListener('abort', onAbort);
+        signal.removeEventListener('abort', onParentAbort);
+        timeoutController.signal.removeEventListener('abort', onAbort);
+        if (responseStartTimer) clearTimeout(responseStartTimer);
+        if (idleTimer) clearTimeout(idleTimer);
+        clearTimeout(absoluteTimer);
       }
     } catch (error) {
       if (signal.aborted) {
@@ -1143,6 +1224,37 @@ export class DirectTalkExecutor implements TalkExecutor {
           latencyMs: Date.now() - startedAt,
         });
         throw abortError(signal.reason);
+      }
+      if (
+        error instanceof TalkExecutorError &&
+        (error.code === 'response_start_timeout' ||
+          error.code === 'stream_idle_timeout' ||
+          error.code === 'absolute_timeout')
+      ) {
+        createLlmAttempt({
+          runId: context.input.runId,
+          talkId: context.input.talkId,
+          agentId: context.agentId,
+          routeId: context.routeId,
+          routeStepPosition: context.routeStepPosition,
+          providerId: context.providerId,
+          modelId: context.modelId,
+          status: 'failed',
+          failureClass: 'timeout',
+          latencyMs: Date.now() - startedAt,
+        });
+        emit?.({
+          type: 'talk_response_failed',
+          runId: context.input.runId,
+          talkId: context.input.talkId,
+          agentId: context.agentId,
+          routeStepPosition: context.routeStepPosition,
+          providerId: context.providerId,
+          modelId: context.modelId,
+          errorCode: error.code,
+          errorMessage: error.sourceMessage,
+        });
+        throw error;
       }
 
       const classified = classifyClaudeDefaultFailure(error);
