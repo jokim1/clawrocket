@@ -1676,9 +1676,10 @@ function buildApp(opts: WebServerOptions): Hono {
     }
 
     const bodyText = await c.req.text();
-    const payload = parseJsonPayload<{ title?: string; folderId?: string | null }>(
-      bodyText,
-    );
+    const payload = parseJsonPayload<{
+      title?: string;
+      folderId?: string | null;
+    }>(bodyText);
     if (!payload.ok) {
       return c.json(
         {
@@ -1698,7 +1699,8 @@ function buildApp(opts: WebServerOptions): Hono {
       title:
         typeof payload.data.title === 'string' ? payload.data.title : undefined,
       folderId:
-        typeof payload.data.folderId === 'string' || payload.data.folderId === null
+        typeof payload.data.folderId === 'string' ||
+        payload.data.folderId === null
           ? payload.data.folderId
           : undefined,
     });
@@ -1932,7 +1934,10 @@ function buildApp(opts: WebServerOptions): Hono {
       );
     }
 
-    if (payload.data.itemType !== 'talk' && payload.data.itemType !== 'folder') {
+    if (
+      payload.data.itemType !== 'talk' &&
+      payload.data.itemType !== 'folder'
+    ) {
       return c.json(
         {
           ok: false,
@@ -1944,7 +1949,10 @@ function buildApp(opts: WebServerOptions): Hono {
         400,
       );
     }
-    if (typeof payload.data.itemId !== 'string' || payload.data.itemId.length === 0) {
+    if (
+      typeof payload.data.itemId !== 'string' ||
+      payload.data.itemId.length === 0
+    ) {
       return c.json(
         {
           ok: false,
@@ -1973,7 +1981,10 @@ function buildApp(opts: WebServerOptions): Hono {
         400,
       );
     }
-    if (typeof payload.data.destinationIndex !== 'number' || Number.isNaN(payload.data.destinationIndex)) {
+    if (
+      typeof payload.data.destinationIndex !== 'number' ||
+      Number.isNaN(payload.data.destinationIndex)
+    ) {
       return c.json(
         {
           ok: false,

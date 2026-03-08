@@ -944,10 +944,12 @@ export function deleteTalkFolderAndMoveTalksToTopLevel(input: {
     getDb()
       .prepare('DELETE FROM talk_folders WHERE id = ? AND owner_id = ?')
       .run(txInput.id, txInput.ownerId);
-    const remainingRoot = listOwnedRootSidebarItems(txInput.ownerId).map((item) => ({
-      type: item.type,
-      id: item.id,
-    }));
+    const remainingRoot = listOwnedRootSidebarItems(txInput.ownerId).map(
+      (item) => ({
+        type: item.type,
+        id: item.id,
+      }),
+    );
     writeRootSidebarOrder(txInput.ownerId, remainingRoot);
     return true;
   });
@@ -989,7 +991,9 @@ export function patchTalkMetadata(input: {
       const oldRootItems =
         oldFolderId === null
           ? listOwnedRootSidebarItems(txInput.ownerId)
-              .filter((item) => !(item.type === 'talk' && item.id === txInput.talkId))
+              .filter(
+                (item) => !(item.type === 'talk' && item.id === txInput.talkId),
+              )
               .map((item) => ({ type: item.type, id: item.id }))
           : null;
       const oldFolderItems =
@@ -1008,7 +1012,10 @@ export function patchTalkMetadata(input: {
       if (txInput.folderId === null) {
         appendTalksToTopLevel(txInput.ownerId, [txInput.talkId]);
       } else {
-        const folderTalkIds = listOwnedFolderTalkIds(txInput.ownerId, txInput.folderId);
+        const folderTalkIds = listOwnedFolderTalkIds(
+          txInput.ownerId,
+          txInput.folderId,
+        );
         getDb()
           .prepare(
             `
@@ -1044,10 +1051,12 @@ export function deleteTalkForOwner(input: {
       .prepare('DELETE FROM talks WHERE id = ? AND owner_id = ?')
       .run(txInput.talkId, txInput.ownerId);
     if (oldFolderId === null) {
-      const remaining = listOwnedRootSidebarItems(txInput.ownerId).map((item) => ({
-        type: item.type,
-        id: item.id,
-      }));
+      const remaining = listOwnedRootSidebarItems(txInput.ownerId).map(
+        (item) => ({
+          type: item.type,
+          id: item.id,
+        }),
+      );
       writeRootSidebarOrder(txInput.ownerId, remaining);
     } else {
       const remaining = listOwnedFolderTalkIds(txInput.ownerId, oldFolderId);
@@ -1070,7 +1079,8 @@ export function reorderTalkSidebarItem(input: {
       return false;
     }
 
-    const talk = txInput.itemType === 'talk' ? getTalkById(txInput.itemId) : undefined;
+    const talk =
+      txInput.itemType === 'talk' ? getTalkById(txInput.itemId) : undefined;
     const folder =
       txInput.itemType === 'folder'
         ? getTalkFolderByIdForOwner(txInput.itemId, txInput.ownerId)
@@ -1090,9 +1100,14 @@ export function reorderTalkSidebarItem(input: {
 
     if (txInput.itemType === 'folder') {
       const rootItems = listOwnedRootSidebarItems(txInput.ownerId)
-        .filter((item) => !(item.type === 'folder' && item.id === txInput.itemId))
+        .filter(
+          (item) => !(item.type === 'folder' && item.id === txInput.itemId),
+        )
         .map((item) => ({ type: item.type, id: item.id }));
-      const index = Math.max(0, Math.min(txInput.destinationIndex, rootItems.length));
+      const index = Math.max(
+        0,
+        Math.min(txInput.destinationIndex, rootItems.length),
+      );
       rootItems.splice(index, 0, { type: 'folder', id: txInput.itemId });
       writeRootSidebarOrder(txInput.ownerId, rootItems);
       return true;
@@ -1102,16 +1117,25 @@ export function reorderTalkSidebarItem(input: {
     if (sourceFolderId === txInput.destinationFolderId) {
       if (sourceFolderId === null) {
         const rootItems = listOwnedRootSidebarItems(txInput.ownerId)
-          .filter((item) => !(item.type === 'talk' && item.id === txInput.itemId))
+          .filter(
+            (item) => !(item.type === 'talk' && item.id === txInput.itemId),
+          )
           .map((item) => ({ type: item.type, id: item.id }));
-        const index = Math.max(0, Math.min(txInput.destinationIndex, rootItems.length));
+        const index = Math.max(
+          0,
+          Math.min(txInput.destinationIndex, rootItems.length),
+        );
         rootItems.splice(index, 0, { type: 'talk', id: txInput.itemId });
         writeRootSidebarOrder(txInput.ownerId, rootItems);
       } else {
-        const talkIds = listOwnedFolderTalkIds(txInput.ownerId, sourceFolderId).filter(
-          (id) => id !== txInput.itemId,
+        const talkIds = listOwnedFolderTalkIds(
+          txInput.ownerId,
+          sourceFolderId,
+        ).filter((id) => id !== txInput.itemId);
+        const index = Math.max(
+          0,
+          Math.min(txInput.destinationIndex, talkIds.length),
         );
-        const index = Math.max(0, Math.min(txInput.destinationIndex, talkIds.length));
         talkIds.splice(index, 0, txInput.itemId);
         writeFolderTalkOrder(txInput.ownerId, sourceFolderId, talkIds);
       }
@@ -1124,19 +1148,25 @@ export function reorderTalkSidebarItem(input: {
         .map((item) => ({ type: item.type, id: item.id }));
       writeRootSidebarOrder(txInput.ownerId, rootItems);
     } else {
-      const sourceTalkIds = listOwnedFolderTalkIds(txInput.ownerId, sourceFolderId).filter(
-        (id) => id !== txInput.itemId,
-      );
+      const sourceTalkIds = listOwnedFolderTalkIds(
+        txInput.ownerId,
+        sourceFolderId,
+      ).filter((id) => id !== txInput.itemId);
       writeFolderTalkOrder(txInput.ownerId, sourceFolderId, sourceTalkIds);
     }
 
     const now = new Date().toISOString();
     if (txInput.destinationFolderId === null) {
-      const rootItems = listOwnedRootSidebarItems(txInput.ownerId).map((item) => ({
-        type: item.type,
-        id: item.id,
-      }));
-      const index = Math.max(0, Math.min(txInput.destinationIndex, rootItems.length));
+      const rootItems = listOwnedRootSidebarItems(txInput.ownerId).map(
+        (item) => ({
+          type: item.type,
+          id: item.id,
+        }),
+      );
+      const index = Math.max(
+        0,
+        Math.min(txInput.destinationIndex, rootItems.length),
+      );
       rootItems.splice(index, 0, { type: 'talk', id: txInput.itemId });
       getDb()
         .prepare(
@@ -1149,8 +1179,14 @@ export function reorderTalkSidebarItem(input: {
         .run(now, txInput.itemId, txInput.ownerId);
       writeRootSidebarOrder(txInput.ownerId, rootItems);
     } else {
-      const talkIds = listOwnedFolderTalkIds(txInput.ownerId, txInput.destinationFolderId);
-      const index = Math.max(0, Math.min(txInput.destinationIndex, talkIds.length));
+      const talkIds = listOwnedFolderTalkIds(
+        txInput.ownerId,
+        txInput.destinationFolderId,
+      );
+      const index = Math.max(
+        0,
+        Math.min(txInput.destinationIndex, talkIds.length),
+      );
       talkIds.splice(index, 0, txInput.itemId);
       getDb()
         .prepare(
@@ -1161,14 +1197,20 @@ export function reorderTalkSidebarItem(input: {
         `,
         )
         .run(txInput.destinationFolderId, now, txInput.itemId, txInput.ownerId);
-      writeFolderTalkOrder(txInput.ownerId, txInput.destinationFolderId, talkIds);
+      writeFolderTalkOrder(
+        txInput.ownerId,
+        txInput.destinationFolderId,
+        talkIds,
+      );
     }
     return true;
   });
   return tx(input);
 }
 
-export function listTalkSidebarTreeForUser(userId: string): TalkSidebarTreeRecord {
+export function listTalkSidebarTreeForUser(
+  userId: string,
+): TalkSidebarTreeRecord {
   const folders = listTalkFoldersForOwner(userId);
   // Sidebar trees stay intentionally small in v1; this ceiling avoids pulling an
   // unbounded root list while still covering normal usage comfortably.
@@ -1180,18 +1222,22 @@ export function listTalkSidebarTreeForUser(userId: string): TalkSidebarTreeRecor
   }) as TalkSidebarTalkRecord[];
   const rootTalks = talks
     .filter((talk) => talk.folder_id === null)
-    .sort((a, b) => a.sort_order - b.sort_order || a.created_at.localeCompare(b.created_at));
-  const talksByFolderId = folders.reduce<Record<string, TalkSidebarTalkRecord[]>>(
-    (acc, folder) => {
-      acc[folder.id] = talks
-        .filter((talk) => talk.folder_id === folder.id)
-        .sort(
-          (a, b) => a.sort_order - b.sort_order || a.created_at.localeCompare(b.created_at),
-        );
-      return acc;
-    },
-    {},
-  );
+    .sort(
+      (a, b) =>
+        a.sort_order - b.sort_order || a.created_at.localeCompare(b.created_at),
+    );
+  const talksByFolderId = folders.reduce<
+    Record<string, TalkSidebarTalkRecord[]>
+  >((acc, folder) => {
+    acc[folder.id] = talks
+      .filter((talk) => talk.folder_id === folder.id)
+      .sort(
+        (a, b) =>
+          a.sort_order - b.sort_order ||
+          a.created_at.localeCompare(b.created_at),
+      );
+    return acc;
+  }, {});
   return { folders, rootTalks, talksByFolderId };
 }
 

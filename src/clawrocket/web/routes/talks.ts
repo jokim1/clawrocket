@@ -162,7 +162,9 @@ function toTalkApiRecord(talk: TalkWithAccessRecord): TalkApiRecord {
   };
 }
 
-function toSidebarTalkApiRecord(talk: TalkWithAccessRecord): SidebarTalkApiRecord {
+function toSidebarTalkApiRecord(
+  talk: TalkWithAccessRecord,
+): SidebarTalkApiRecord {
   return {
     id: talk.id,
     title: talk.topic_title,
@@ -464,9 +466,7 @@ export function listTalksRoute(input: {
   };
 }
 
-export function listTalkSidebarRoute(input: {
-  auth: AuthContext;
-}): {
+export function listTalkSidebarRoute(input: { auth: AuthContext }): {
   statusCode: number;
   body: ApiEnvelope<{ items: TalkSidebarItemApiRecord[] }>;
 } {
@@ -775,10 +775,7 @@ export function patchTalkRoute(input: {
   };
 }
 
-export function deleteTalkRoute(input: {
-  auth: AuthContext;
-  talkId: string;
-}): {
+export function deleteTalkRoute(input: { auth: AuthContext; talkId: string }): {
   statusCode: number;
   body: ApiEnvelope<{ deleted: true }>;
 } {

@@ -188,9 +188,9 @@ function listTableColumns(
   table: string,
 ): string[] {
   return (
-    database
-      .prepare(`PRAGMA table_info(${table})`)
-      .all() as Array<{ name: string }>
+    database.prepare(`PRAGMA table_info(${table})`).all() as Array<{
+      name: string;
+    }>
   ).map((row) => row.name);
 }
 
@@ -211,9 +211,11 @@ function resetTalkDomainForFolderTree(database: Database.Database): void {
   }
 
   const talkCount =
-    (database.prepare(`SELECT COUNT(*) AS count FROM talks`).get() as
-      | { count: number }
-      | undefined)?.count ?? 0;
+    (
+      database.prepare(`SELECT COUNT(*) AS count FROM talks`).get() as
+        | { count: number }
+        | undefined
+    )?.count ?? 0;
   if (talkCount > 0) {
     console.warn(
       `[clawrocket] Resetting talk-domain data for folder-tree schema rollout; deleting ${talkCount} existing talks and related records.`,
