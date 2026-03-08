@@ -384,9 +384,9 @@ export async function listTalks(): Promise<Talk[]> {
 }
 
 export async function createTalk(title: string): Promise<Talk> {
-  const envelope = await apiRequest<{ talk: Talk }>('/api/v1/talks', {
+  const envelope = await apiMutationRequest<{ talk: Talk }>('/api/v1/talks', {
     method: 'POST',
-    headers: buildMutationHeaders({ includeJson: true }),
+    includeJson: true,
     body: JSON.stringify({ title }),
   });
   return envelope.talk;
@@ -397,11 +397,11 @@ export async function getTalkSidebar(): Promise<TalkSidebarTree> {
 }
 
 export async function createTalkFolder(title?: string): Promise<TalkSidebarFolder> {
-  const envelope = await apiRequest<{
+  const envelope = await apiMutationRequest<{
     folder: { id: string; title: string; sortOrder: number; talks: TalkSidebarTalk[] };
   }>('/api/v1/talk-folders', {
     method: 'POST',
-    headers: buildMutationHeaders({ includeJson: true }),
+    includeJson: true,
     body: JSON.stringify({ title }),
   });
   return { ...envelope.folder, type: 'folder' };
@@ -411,22 +411,21 @@ export async function patchTalkFolder(input: {
   folderId: string;
   title: string;
 }): Promise<TalkSidebarFolder> {
-  const envelope = await apiRequest<{
+  const envelope = await apiMutationRequest<{
     folder: { id: string; title: string; sortOrder: number; talks: TalkSidebarTalk[] };
   }>(`/api/v1/talk-folders/${encodeURIComponent(input.folderId)}`, {
     method: 'PATCH',
-    headers: buildMutationHeaders({ includeJson: true }),
+    includeJson: true,
     body: JSON.stringify({ title: input.title }),
   });
   return { ...envelope.folder, type: 'folder' };
 }
 
 export async function deleteTalkFolder(folderId: string): Promise<void> {
-  await apiRequest<{ deleted: true }>(
+  await apiMutationRequest<{ deleted: true }>(
     `/api/v1/talk-folders/${encodeURIComponent(folderId)}`,
     {
       method: 'DELETE',
-      headers: buildMutationHeaders({ includeJson: false }),
     },
   );
 }
@@ -436,11 +435,11 @@ export async function patchTalkMetadata(input: {
   title?: string;
   folderId?: string | null;
 }): Promise<Talk> {
-  const envelope = await apiRequest<{ talk: Talk }>(
+  const envelope = await apiMutationRequest<{ talk: Talk }>(
     `/api/v1/talks/${encodeURIComponent(input.talkId)}`,
     {
       method: 'PATCH',
-      headers: buildMutationHeaders({ includeJson: true }),
+      includeJson: true,
       body: JSON.stringify({
         title: input.title,
         folderId: input.folderId,
@@ -451,9 +450,8 @@ export async function patchTalkMetadata(input: {
 }
 
 export async function deleteTalk(talkId: string): Promise<void> {
-  await apiRequest<{ deleted: true }>(`/api/v1/talks/${encodeURIComponent(talkId)}`, {
+  await apiMutationRequest<{ deleted: true }>(`/api/v1/talks/${encodeURIComponent(talkId)}`, {
     method: 'DELETE',
-    headers: buildMutationHeaders({ includeJson: false }),
   });
 }
 
@@ -463,9 +461,9 @@ export async function reorderTalkSidebar(input: {
   destinationFolderId: string | null;
   destinationIndex: number;
 }): Promise<void> {
-  await apiRequest<{ reordered: true }>('/api/v1/talks/sidebar/reorder', {
+  await apiMutationRequest<{ reordered: true }>('/api/v1/talks/sidebar/reorder', {
     method: 'POST',
-    headers: buildMutationHeaders({ includeJson: true }),
+    includeJson: true,
     body: JSON.stringify(input),
   });
 }
@@ -485,11 +483,11 @@ export async function updateTalkPolicy(input: {
   talkId: string;
   agents: string[];
 }): Promise<TalkPolicy> {
-  return apiRequest<TalkPolicy>(
+  return apiMutationRequest<TalkPolicy>(
     `/api/v1/talks/${encodeURIComponent(input.talkId)}/policy`,
     {
       method: 'PUT',
-      headers: buildMutationHeaders({ includeJson: true }),
+      includeJson: true,
       body: JSON.stringify({ agents: input.agents }),
     },
   );
@@ -524,12 +522,12 @@ export async function updateTalkAgents(input: {
   talkId: string;
   agents: TalkAgent[];
 }): Promise<TalkAgent[]> {
-  const envelope = await apiRequest<{
+  const envelope = await apiMutationRequest<{
     talkId: string;
     agents: TalkAgent[];
   }>(`/api/v1/talks/${encodeURIComponent(input.talkId)}/agents`, {
     method: 'PUT',
-    headers: buildMutationHeaders({ includeJson: true }),
+    includeJson: true,
     body: JSON.stringify({ agents: input.agents }),
   });
   return envelope.agents;
@@ -542,9 +540,9 @@ export async function getAiAgents(): Promise<AiAgentsPageData> {
 export async function updateDefaultClaudeModel(
   modelId: string,
 ): Promise<AiAgentsPageData> {
-  return apiRequest<AiAgentsPageData>('/api/v1/agents/default-claude', {
+  return apiMutationRequest<AiAgentsPageData>('/api/v1/agents/default-claude', {
     method: 'PUT',
-    headers: buildMutationHeaders({ includeJson: true }),
+    includeJson: true,
     body: JSON.stringify({ modelId }),
   });
 }
@@ -556,11 +554,11 @@ export async function saveAiProviderCredential(input: {
   baseUrl?: string | null;
   authScheme?: 'x_api_key' | 'bearer';
 }): Promise<AgentProviderCard> {
-  const envelope = await apiRequest<{ provider: AgentProviderCard }>(
+  const envelope = await apiMutationRequest<{ provider: AgentProviderCard }>(
     `/api/v1/agents/providers/${encodeURIComponent(input.providerId)}`,
     {
       method: 'PUT',
-      headers: buildMutationHeaders({ includeJson: true }),
+      includeJson: true,
       body: JSON.stringify(input),
     },
   );
@@ -570,11 +568,10 @@ export async function saveAiProviderCredential(input: {
 export async function verifyAiProviderCredential(
   providerId: string,
 ): Promise<AgentProviderCard> {
-  const envelope = await apiRequest<{ provider: AgentProviderCard }>(
+  const envelope = await apiMutationRequest<{ provider: AgentProviderCard }>(
     `/api/v1/agents/providers/${encodeURIComponent(providerId)}/verify`,
     {
       method: 'POST',
-      headers: buildMutationHeaders({ includeJson: false }),
     },
   );
   return envelope.provider;
@@ -587,9 +584,9 @@ export async function getTalkLlmSettings(): Promise<TalkLlmSettings> {
 export async function updateTalkLlmSettings(
   update: TalkLlmSettingsUpdate,
 ): Promise<TalkLlmSettings> {
-  return apiRequest<TalkLlmSettings>('/api/v1/settings/talk-llm', {
+  return apiMutationRequest<TalkLlmSettings>('/api/v1/settings/talk-llm', {
     method: 'PUT',
-    headers: buildMutationHeaders({ includeJson: true }),
+    includeJson: true,
     body: JSON.stringify(update),
   });
 }
@@ -601,9 +598,9 @@ export async function getExecutorSettings(): Promise<ExecutorSettings> {
 export async function updateExecutorSettings(
   update: ExecutorSettingsUpdate,
 ): Promise<ExecutorSettings> {
-  return apiRequest<ExecutorSettings>('/api/v1/settings/executor', {
+  return apiMutationRequest<ExecutorSettings>('/api/v1/settings/executor', {
     method: 'PUT',
-    headers: buildMutationHeaders({ includeJson: true }),
+    includeJson: true,
     body: JSON.stringify(update),
   });
 }
@@ -617,13 +614,12 @@ export async function verifyExecutorCredentials(): Promise<{
   code: string;
   message: string;
 }> {
-  return apiRequest<{
+  return apiMutationRequest<{
     scheduled: boolean;
     code: string;
     message: string;
   }>('/api/v1/settings/executor/verify', {
     method: 'POST',
-    headers: buildMutationHeaders({ includeJson: false }),
   });
 }
 
@@ -636,11 +632,11 @@ export async function getExecutorSubscriptionHostStatus(): Promise<ExecutorSubsc
 export async function importExecutorSubscriptionFromHost(
   expectedFingerprint: string,
 ): Promise<ExecutorSubscriptionImportResult> {
-  return apiRequest<ExecutorSubscriptionImportResult>(
+  return apiMutationRequest<ExecutorSubscriptionImportResult>(
     '/api/v1/settings/executor/subscription/import',
     {
       method: 'POST',
-      headers: buildMutationHeaders({ includeJson: true }),
+      includeJson: true,
       body: JSON.stringify({
         expectedFingerprint,
       }),
@@ -652,11 +648,10 @@ export async function restartService(): Promise<{
   status: string;
   activeRunCount: number;
 }> {
-  return apiRequest<{ status: string; activeRunCount: number }>(
+  return apiMutationRequest<{ status: string; activeRunCount: number }>(
     '/api/v1/settings/restart',
     {
       method: 'POST',
-      headers: buildMutationHeaders({ includeJson: false }),
     },
   );
 }
@@ -681,11 +676,11 @@ export async function sendTalkMessage(input: {
   content: string;
   targetAgentIds?: string[];
 }): Promise<{ talkId: string; message: TalkMessage; runs: TalkRun[] }> {
-  return apiRequest<{ talkId: string; message: TalkMessage; runs: TalkRun[] }>(
+  return apiMutationRequest<{ talkId: string; message: TalkMessage; runs: TalkRun[] }>(
     `/api/v1/talks/${encodeURIComponent(input.talkId)}/chat`,
     {
       method: 'POST',
-      headers: buildMutationHeaders({ includeJson: true }),
+      includeJson: true,
       body: JSON.stringify({
         content: input.content,
         targetAgentIds: input.targetAgentIds ?? [],
@@ -697,19 +692,17 @@ export async function sendTalkMessage(input: {
 export async function cancelTalkRuns(
   talkId: string,
 ): Promise<{ talkId: string; cancelledRuns: number }> {
-  return apiRequest<{ talkId: string; cancelledRuns: number }>(
+  return apiMutationRequest<{ talkId: string; cancelledRuns: number }>(
     `/api/v1/talks/${encodeURIComponent(talkId)}/chat/cancel`,
     {
       method: 'POST',
-      headers: buildMutationHeaders({ includeJson: false }),
     },
   );
 }
 
 export async function logout(): Promise<void> {
-  await apiRequest<{ loggedOut: boolean }>(AUTH_LOGOUT_PATH, {
+  await apiMutationRequest<{ loggedOut: boolean }>(AUTH_LOGOUT_PATH, {
     method: 'POST',
-    headers: buildMutationHeaders({ includeJson: false }),
   });
 }
 
@@ -718,6 +711,28 @@ async function apiRequest<T>(
   init?: RequestInit,
 ): Promise<T> {
   return apiRequestWithRefresh<T>(path, init, true);
+}
+
+type MutationRequestInit = Omit<RequestInit, 'headers'> & {
+  headers?: HeadersInit;
+  includeJson?: boolean;
+};
+
+type MutationRetryState = {
+  allowAuthRetry: boolean;
+  allowCsrfRetry: boolean;
+  idempotencyKey: string;
+};
+
+async function apiMutationRequest<T>(
+  path: string,
+  init?: MutationRequestInit,
+): Promise<T> {
+  return apiMutationRequestWithRefresh<T>(path, init, {
+    allowAuthRetry: true,
+    allowCsrfRetry: true,
+    idempotencyKey: buildIdempotencyKey(),
+  });
 }
 
 async function apiRequestWithRefresh<T>(
@@ -756,8 +771,68 @@ async function apiRequestWithRefresh<T>(
   return payload.data;
 }
 
+async function apiMutationRequestWithRefresh<T>(
+  path: string,
+  init: MutationRequestInit | undefined,
+  retryState: MutationRetryState,
+): Promise<T> {
+  const response = await fetch(path, {
+    ...init,
+    credentials: 'include',
+    headers: buildMutationAttemptHeaders({
+      includeJson: init?.includeJson === true,
+      explicitHeaders: init?.headers,
+      idempotencyKey: retryState.idempotencyKey,
+    }),
+  });
+
+  if (response.status === 401) {
+    if (retryState.allowAuthRetry && !shouldSkipRefresh(path)) {
+      const refreshed = await ensureRefreshedSession();
+      if (refreshed) {
+        return apiMutationRequestWithRefresh<T>(path, init, {
+          ...retryState,
+          allowAuthRetry: false,
+        });
+      }
+    }
+    throw new UnauthorizedError();
+  }
+
+  const payload = (await response.json()) as ApiEnvelope<T>;
+
+  if (
+    response.status === 403 &&
+    !payload.ok &&
+    payload.error?.code === 'csrf_failed' &&
+    retryState.allowCsrfRetry &&
+    !shouldSkipRefresh(path)
+  ) {
+    const refreshed = await ensureRefreshedSession();
+    if (refreshed) {
+      return apiMutationRequestWithRefresh<T>(path, init, {
+        ...retryState,
+        allowAuthRetry: false,
+        allowCsrfRetry: false,
+      });
+    }
+  }
+
+  if (!response.ok || !payload.ok) {
+    const message =
+      !payload.ok && payload.error?.message
+        ? payload.error.message
+        : `Request failed with status ${response.status}`;
+    const code = !payload.ok ? payload.error?.code : undefined;
+    throw new ApiError(message, response.status, code);
+  }
+  return payload.data;
+}
+
 function shouldSkipRefresh(path: string): boolean {
   const normalizedPath = path.split('?')[0];
+  // Logout intentionally skips refresh-based recovery so we never revive the
+  // same session the user is actively trying to end.
   return (
     normalizedPath === AUTH_REFRESH_PATH || normalizedPath === AUTH_LOGOUT_PATH
   );
@@ -793,14 +868,35 @@ async function ensureRefreshedSession(): Promise<boolean> {
   }
 }
 
-function buildMutationHeaders(input: { includeJson: boolean }): HeadersInit {
-  const headers: Record<string, string> = {
-    'x-csrf-token': getCsrfTokenFromCookie() || '',
-    'idempotency-key': buildIdempotencyKey(),
-  };
-  if (input.includeJson) {
-    headers['content-type'] = 'application/json';
+function buildMutationAttemptHeaders(input: {
+  includeJson: boolean;
+  explicitHeaders?: HeadersInit;
+  idempotencyKey: string;
+}): HeadersInit {
+  const headers = new Headers();
+  headers.set('accept', 'application/json');
+
+  if (input.explicitHeaders) {
+    const explicitHeaders = new Headers(input.explicitHeaders);
+    explicitHeaders.forEach((value, key) => {
+      headers.set(key, value);
+    });
   }
+
+  if (input.includeJson && !headers.has('content-type')) {
+    headers.set('content-type', 'application/json');
+  }
+
+  // Caller headers may supply generic metadata, but CSRF and idempotency are
+  // always owned by this wrapper and written last from current cookie state.
+  const csrfToken = getCsrfTokenFromCookie();
+  if (csrfToken) {
+    headers.set('x-csrf-token', csrfToken);
+  } else {
+    headers.delete('x-csrf-token');
+  }
+
+  headers.set('idempotency-key', input.idempotencyKey);
   return headers;
 }
 
