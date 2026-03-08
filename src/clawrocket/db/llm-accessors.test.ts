@@ -158,9 +158,9 @@ describe('registered agent accessors', () => {
   });
 
   it('marks known Claude suggestions as tool-capable and persists supportsTools for provider models', () => {
-    expect(listClaudeModelSuggestions().every((model) => model.supportsTools)).toBe(
-      true,
-    );
+    expect(
+      listClaudeModelSuggestions().every((model) => model.supportsTools),
+    ).toBe(true);
 
     replaceTalkLlmSettingsSnapshot({
       defaultRouteId: 'route.provider.custom',

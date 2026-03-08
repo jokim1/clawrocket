@@ -655,7 +655,9 @@ function createClawrocketSchema(database: Database.Database): void {
   }
 
   try {
-    database.exec(`ALTER TABLE talk_messages ADD COLUMN sequence_in_run INTEGER`);
+    database.exec(
+      `ALTER TABLE talk_messages ADD COLUMN sequence_in_run INTEGER`,
+    );
   } catch {
     /* column already exists */
   }

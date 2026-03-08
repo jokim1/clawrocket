@@ -622,11 +622,14 @@ describe('talk routes', () => {
       createdAt: '2026-03-07T01:00:00.000Z',
     });
 
-    const messagesRes = await server.request('/api/v1/talks/talk-owner/messages', {
-      headers: {
-        Authorization: 'Bearer owner-token',
+    const messagesRes = await server.request(
+      '/api/v1/talks/talk-owner/messages',
+      {
+        headers: {
+          Authorization: 'Bearer owner-token',
+        },
       },
-    });
+    );
     expect(messagesRes.status).toBe(200);
     const messagesBody = (await messagesRes.json()) as any;
     const runtimeMessage = messagesBody.data.messages.find(
