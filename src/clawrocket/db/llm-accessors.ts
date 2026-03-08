@@ -54,6 +54,7 @@ export interface LlmProviderSnapshot {
     contextWindowTokens: number;
     defaultMaxOutputTokens: number;
     enabled: boolean;
+    supportsTools?: boolean;
   }>;
 }
 
@@ -95,6 +96,7 @@ export interface ProviderModelSuggestion {
   displayName: string;
   contextWindowTokens: number;
   defaultMaxOutputTokens: number;
+  supportsTools: boolean;
 }
 
 export interface AgentProviderCardSnapshot {
@@ -319,24 +321,28 @@ const KNOWN_PROVIDER_CATALOG: Array<{
         displayName: 'Claude Opus 4.6',
         contextWindowTokens: 200000,
         defaultMaxOutputTokens: 4096,
+        supportsTools: true,
       },
       {
         modelId: 'claude-sonnet-4-6',
         displayName: 'Claude Sonnet 4.6',
         contextWindowTokens: 200000,
         defaultMaxOutputTokens: 4096,
+        supportsTools: true,
       },
       {
         modelId: 'claude-sonnet-4-5',
         displayName: 'Claude Sonnet 4.5',
         contextWindowTokens: 200000,
         defaultMaxOutputTokens: 4096,
+        supportsTools: true,
       },
       {
         modelId: 'claude-haiku-4-5',
         displayName: 'Claude Haiku 4.5',
         contextWindowTokens: 200000,
         defaultMaxOutputTokens: 4096,
+        supportsTools: true,
       },
     ],
   },
@@ -353,18 +359,21 @@ const KNOWN_PROVIDER_CATALOG: Array<{
         displayName: 'GPT-5 Mini',
         contextWindowTokens: 128000,
         defaultMaxOutputTokens: 4096,
+        supportsTools: true,
       },
       {
         modelId: 'gpt-4.1',
         displayName: 'GPT-4.1',
         contextWindowTokens: 128000,
         defaultMaxOutputTokens: 4096,
+        supportsTools: true,
       },
       {
         modelId: 'gpt-4o-mini',
         displayName: 'GPT-4o Mini',
         contextWindowTokens: 128000,
         defaultMaxOutputTokens: 4096,
+        supportsTools: true,
       },
     ],
   },
@@ -381,12 +390,14 @@ const KNOWN_PROVIDER_CATALOG: Array<{
         displayName: 'Gemini 2.5 Pro',
         contextWindowTokens: 1048576,
         defaultMaxOutputTokens: 4096,
+        supportsTools: false,
       },
       {
         modelId: 'gemini-2.5-flash',
         displayName: 'Gemini 2.5 Flash',
         contextWindowTokens: 1048576,
         defaultMaxOutputTokens: 4096,
+        supportsTools: false,
       },
     ],
   },
@@ -403,12 +414,14 @@ const KNOWN_PROVIDER_CATALOG: Array<{
         displayName: 'DeepSeek Chat',
         contextWindowTokens: 128000,
         defaultMaxOutputTokens: 4096,
+        supportsTools: false,
       },
       {
         modelId: 'deepseek-reasoner',
         displayName: 'DeepSeek Reasoner',
         contextWindowTokens: 128000,
         defaultMaxOutputTokens: 4096,
+        supportsTools: false,
       },
     ],
   },
@@ -425,6 +438,7 @@ const KNOWN_PROVIDER_CATALOG: Array<{
         displayName: 'Kimi K2 Preview',
         contextWindowTokens: 128000,
         defaultMaxOutputTokens: 4096,
+        supportsTools: false,
       },
     ],
   },
@@ -441,6 +455,7 @@ const KNOWN_PROVIDER_CATALOG: Array<{
         displayName: 'Kimi 2.5 (NVIDIA)',
         contextWindowTokens: 262144,
         defaultMaxOutputTokens: 16384,
+        supportsTools: false,
       },
     ],
   },
@@ -571,6 +586,7 @@ function getFallbackModelMetadata(
     displayName: displayName?.trim() || suggested?.displayName || modelId,
     contextWindowTokens: suggested?.contextWindowTokens || 128000,
     defaultMaxOutputTokens: suggested?.defaultMaxOutputTokens || 4096,
+    supportsTools: suggested?.supportsTools || false,
   };
 }
 
@@ -637,6 +653,7 @@ export function replaceProviderModels(
     displayName: string;
     contextWindowTokens: number;
     defaultMaxOutputTokens: number;
+    supportsTools: boolean;
     enabled: boolean;
   }>,
   updatedBy?: string | null,
@@ -651,8 +668,8 @@ export function replaceProviderModels(
       `
       INSERT INTO llm_provider_models (
         provider_id, model_id, display_name, context_window_tokens,
-        default_max_output_tokens, enabled, updated_at, updated_by
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        default_max_output_tokens, supports_tools, enabled, updated_at, updated_by
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `,
     );
     for (const model of models) {
@@ -662,6 +679,7 @@ export function replaceProviderModels(
         model.displayName,
         model.contextWindowTokens,
         model.defaultMaxOutputTokens,
+        model.supportsTools ? 1 : 0,
         model.enabled ? 1 : 0,
         now,
         updatedBy || null,
@@ -790,6 +808,7 @@ export function listKnownProviderCredentialCards(): AgentProviderCardSnapshot[] 
         displayName: model.display_name,
         contextWindowTokens: model.context_window_tokens,
         defaultMaxOutputTokens: model.default_max_output_tokens,
+        supportsTools: asBoolean(model.supports_tools),
       });
     }
 
@@ -1377,10 +1396,11 @@ function ensureProviderModelExists(input: {
         display_name,
         context_window_tokens,
         default_max_output_tokens,
+        supports_tools,
         enabled,
         updated_at,
         updated_by
-      ) VALUES (?, ?, ?, ?, ?, 1, ?, NULL)
+      ) VALUES (?, ?, ?, ?, ?, ?, 1, ?, NULL)
     `,
     )
     .run(
@@ -1389,6 +1409,7 @@ function ensureProviderModelExists(input: {
       metadata.displayName,
       metadata.contextWindowTokens,
       metadata.defaultMaxOutputTokens,
+      metadata.supportsTools ? 1 : 0,
       updatedAt,
     );
 }
@@ -1947,6 +1968,7 @@ export function listTalkLlmSettingsSnapshot(): TalkLlmSettingsSnapshot {
           displayName: model.display_name,
           contextWindowTokens: model.context_window_tokens,
           defaultMaxOutputTokens: model.default_max_output_tokens,
+          supportsTools: asBoolean(model.supports_tools),
           enabled: asBoolean(model.enabled),
         })),
     })),
@@ -2011,6 +2033,7 @@ export function replaceTalkLlmSettingsSnapshot(input: {
           displayName: model.displayName,
           contextWindowTokens: model.contextWindowTokens,
           defaultMaxOutputTokens: model.defaultMaxOutputTokens,
+          supportsTools: model.supportsTools === true,
           enabled: model.enabled,
         })),
         input.updatedBy,

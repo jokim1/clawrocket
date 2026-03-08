@@ -104,4 +104,50 @@ describe('clawrocket schema init', () => {
       }),
     ).not.toThrow();
   });
+
+  it('adds sequence_in_run and supports_tools to legacy tables', () => {
+    _initCoreTestDatabase();
+
+    const database = getDb();
+    database.exec(`
+      CREATE TABLE talk_messages (
+        id TEXT PRIMARY KEY,
+        talk_id TEXT NOT NULL,
+        role TEXT NOT NULL,
+        content TEXT NOT NULL,
+        created_by TEXT,
+        created_at TEXT NOT NULL,
+        run_id TEXT,
+        metadata_json TEXT
+      );
+
+      CREATE TABLE llm_provider_models (
+        provider_id TEXT NOT NULL,
+        model_id TEXT NOT NULL,
+        display_name TEXT NOT NULL,
+        context_window_tokens INTEGER NOT NULL,
+        default_max_output_tokens INTEGER NOT NULL,
+        enabled INTEGER NOT NULL DEFAULT 1,
+        updated_at TEXT NOT NULL,
+        updated_by TEXT,
+        PRIMARY KEY (provider_id, model_id)
+      );
+    `);
+
+    expect(() => _initClawrocketTestSchema()).not.toThrow();
+
+    const messageColumns = database
+      .prepare(`PRAGMA table_info('talk_messages')`)
+      .all() as Array<{ name: string }>;
+    expect(
+      messageColumns.some((column) => column.name === 'sequence_in_run'),
+    ).toBe(true);
+
+    const modelColumns = database
+      .prepare(`PRAGMA table_info('llm_provider_models')`)
+      .all() as Array<{ name: string }>;
+    expect(
+      modelColumns.some((column) => column.name === 'supports_tools'),
+    ).toBe(true);
+  });
 });

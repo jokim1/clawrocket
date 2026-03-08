@@ -421,7 +421,8 @@ function createClawrocketSchema(database: Database.Database): void {
       created_by TEXT REFERENCES users(id) ON DELETE SET NULL,
       created_at TEXT NOT NULL,
       run_id TEXT REFERENCES talk_runs(id) ON DELETE SET NULL,
-      metadata_json TEXT
+      metadata_json TEXT,
+      sequence_in_run INTEGER
     );
     CREATE INDEX IF NOT EXISTS idx_talk_messages_talk_created_at
       ON talk_messages(talk_id, created_at);
@@ -474,6 +475,7 @@ function createClawrocketSchema(database: Database.Database): void {
       display_name TEXT NOT NULL,
       context_window_tokens INTEGER NOT NULL,
       default_max_output_tokens INTEGER NOT NULL,
+      supports_tools INTEGER NOT NULL DEFAULT 0,
       enabled INTEGER NOT NULL DEFAULT 1,
       updated_at TEXT NOT NULL,
       updated_by TEXT REFERENCES users(id),
@@ -648,6 +650,22 @@ function createClawrocketSchema(database: Database.Database): void {
 
   try {
     database.exec(`ALTER TABLE talk_runs ADD COLUMN target_agent_id TEXT`);
+  } catch {
+    /* column already exists */
+  }
+
+  try {
+    database.exec(
+      `ALTER TABLE talk_messages ADD COLUMN sequence_in_run INTEGER`,
+    );
+  } catch {
+    /* column already exists */
+  }
+
+  try {
+    database.exec(
+      `ALTER TABLE llm_provider_models ADD COLUMN supports_tools INTEGER NOT NULL DEFAULT 0`,
+    );
   } catch {
     /* column already exists */
   }

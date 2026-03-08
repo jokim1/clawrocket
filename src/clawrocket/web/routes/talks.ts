@@ -92,6 +92,7 @@ interface TalkMessageApiRecord {
   runId: string | null;
   agentId?: string | null;
   agentNickname?: string | null;
+  metadata?: Record<string, unknown> | null;
 }
 
 export interface TalkAgentApiRecord {
@@ -287,18 +288,22 @@ function toTalkMessageApiRecord(
 ): TalkMessageApiRecord {
   let agentId: string | null | undefined;
   let agentNickname: string | null | undefined;
+  let metadata: Record<string, unknown> | null = null;
   if (message.metadata_json) {
     try {
       const parsed = JSON.parse(message.metadata_json) as {
         agentId?: unknown;
         agentNickname?: unknown;
         agentName?: unknown;
-      };
-      if (typeof parsed.agentId === 'string') agentId = parsed.agentId;
-      if (typeof parsed.agentNickname === 'string') {
-        agentNickname = parsed.agentNickname;
-      } else if (typeof parsed.agentName === 'string') {
-        agentNickname = parsed.agentName;
+      } & Record<string, unknown>;
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        metadata = parsed;
+        if (typeof parsed.agentId === 'string') agentId = parsed.agentId;
+        if (typeof parsed.agentNickname === 'string') {
+          agentNickname = parsed.agentNickname;
+        } else if (typeof parsed.agentName === 'string') {
+          agentNickname = parsed.agentName;
+        }
       }
     } catch {
       // Ignore metadata parse failures for UI response shaping.
@@ -314,6 +319,7 @@ function toTalkMessageApiRecord(
     runId: message.run_id,
     agentId,
     agentNickname,
+    metadata,
   };
 }
 

@@ -21,6 +21,7 @@ type ProviderModelDraft = {
   displayName: string;
   contextWindowTokens: string;
   defaultMaxOutputTokens: string;
+  supportsTools: boolean;
   enabled: boolean;
 };
 
@@ -122,6 +123,7 @@ function buildProviderDrafts(providers: TalkLlmSettings['providers']): ProviderD
       displayName: model.displayName,
       contextWindowTokens: String(model.contextWindowTokens),
       defaultMaxOutputTokens: String(model.defaultMaxOutputTokens),
+      supportsTools: model.supportsTools === true,
       enabled: model.enabled,
     })),
   }));
@@ -222,6 +224,7 @@ function buildTalkLlmPayload(input: {
           `${providerId}/${modelId} default max output`,
           model.defaultMaxOutputTokens,
         ),
+        supportsTools: model.supportsTools,
         enabled: model.enabled,
       };
     });
@@ -551,6 +554,7 @@ export function TalkLlmSettingsCard({ onUnauthorized }: Props) {
                           displayName: '',
                           contextWindowTokens: '128000',
                           defaultMaxOutputTokens: '4096',
+                          supportsTools: false,
                           enabled: true,
                         },
                       ],
@@ -851,6 +855,7 @@ export function TalkLlmSettingsCard({ onUnauthorized }: Props) {
                                 displayName: '',
                                 contextWindowTokens: '128000',
                                 defaultMaxOutputTokens: '4096',
+                                supportsTools: false,
                                 enabled: true,
                               },
                             ],
@@ -947,6 +952,27 @@ export function TalkLlmSettingsCard({ onUnauthorized }: Props) {
                             </label>
                           </div>
                           <div className="talk-llm-inline-actions">
+                            <label className="talk-llm-checkbox">
+                              <input
+                                type="checkbox"
+                                checked={model.supportsTools}
+                                disabled={busy}
+                                onChange={(event) =>
+                                  updateProvider(provider.draftId, (current) => ({
+                                    ...current,
+                                    models: current.models.map((entry) =>
+                                      entry.draftId === model.draftId
+                                        ? {
+                                            ...entry,
+                                            supportsTools: event.target.checked,
+                                          }
+                                        : entry,
+                                    ),
+                                  }))
+                                }
+                              />
+                              <span>Supports tool use</span>
+                            </label>
                             <label className="talk-llm-checkbox">
                               <input
                                 type="checkbox"

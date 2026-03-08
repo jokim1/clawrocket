@@ -14,6 +14,7 @@ export type MessageAppendedEvent = {
   createdAt?: string;
   agentId?: string | null;
   agentNickname?: string | null;
+  metadata?: Record<string, unknown> | null;
 };
 
 export type TalkRunStartedEvent = {
