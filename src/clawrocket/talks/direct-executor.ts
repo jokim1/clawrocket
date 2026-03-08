@@ -1056,10 +1056,12 @@ export class DirectTalkExecutor implements TalkExecutor {
         once: true,
       });
       let sawFirstChunk = false;
-      let responseStartTimer: ReturnType<typeof setTimeout> | null =
-        setTimeout(() => {
+      let responseStartTimer: ReturnType<typeof setTimeout> | null = setTimeout(
+        () => {
           abortWithTimeout('response_start_timeout');
-        }, DEFAULT_RESPONSE_START_TIMEOUT_MS);
+        },
+        DEFAULT_RESPONSE_START_TIMEOUT_MS,
+      );
       let idleTimer: ReturnType<typeof setTimeout> | null = null;
       const absoluteTimer = setTimeout(() => {
         abortWithTimeout('absolute_timeout');
