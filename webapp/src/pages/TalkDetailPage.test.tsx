@@ -302,7 +302,15 @@ function renderDetailPage(initialEntry: string): ReturnType<typeof render> {
       <Routes>
         <Route
           path="/app/talks/:talkId/*"
-          element={<TalkDetailPage onUnauthorized={vi.fn()} />}
+          element={
+            <TalkDetailPage
+              onUnauthorized={vi.fn()}
+              renameDraft={null}
+              onRenameDraftChange={vi.fn()}
+              onRenameDraftCancel={vi.fn()}
+              onRenameDraftCommit={vi.fn().mockResolvedValue(undefined)}
+            />
+          }
         />
       </Routes>
     </MemoryRouter>,
@@ -316,6 +324,8 @@ function buildTalk(): Talk {
     title: 'Cal Football',
     agents: ['Claude'],
     status: 'active',
+    folderId: null,
+    sortOrder: 0,
     version: 1,
     createdAt: '2026-03-06T00:00:00.000Z',
     updatedAt: '2026-03-06T00:00:00.000Z',

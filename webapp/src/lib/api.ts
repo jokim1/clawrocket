@@ -30,10 +30,34 @@ export type Talk = {
   title: string;
   agents: string[];
   status: string;
+  folderId: string | null;
+  sortOrder: number;
   version: number;
   createdAt: string;
   updatedAt: string;
   accessRole: 'owner' | 'admin' | 'editor' | 'viewer';
+};
+
+export type TalkSidebarTalk = {
+  type: 'talk';
+  id: string;
+  title: string;
+  status: string;
+  sortOrder: number;
+};
+
+export type TalkSidebarFolder = {
+  type: 'folder';
+  id: string;
+  title: string;
+  sortOrder: number;
+  talks: TalkSidebarTalk[];
+};
+
+export type TalkSidebarItem = TalkSidebarTalk | TalkSidebarFolder;
+
+export type TalkSidebarTree = {
+  items: TalkSidebarItem[];
 };
 
 export type TalkMessage = {
@@ -366,6 +390,84 @@ export async function createTalk(title: string): Promise<Talk> {
     body: JSON.stringify({ title }),
   });
   return envelope.talk;
+}
+
+export async function getTalkSidebar(): Promise<TalkSidebarTree> {
+  return apiRequest<TalkSidebarTree>('/api/v1/talks/sidebar');
+}
+
+export async function createTalkFolder(title?: string): Promise<TalkSidebarFolder> {
+  const envelope = await apiRequest<{
+    folder: { id: string; title: string; sortOrder: number; talks: TalkSidebarTalk[] };
+  }>('/api/v1/talk-folders', {
+    method: 'POST',
+    headers: buildMutationHeaders({ includeJson: true }),
+    body: JSON.stringify({ title }),
+  });
+  return { ...envelope.folder, type: 'folder' };
+}
+
+export async function patchTalkFolder(input: {
+  folderId: string;
+  title: string;
+}): Promise<TalkSidebarFolder> {
+  const envelope = await apiRequest<{
+    folder: { id: string; title: string; sortOrder: number; talks: TalkSidebarTalk[] };
+  }>(`/api/v1/talk-folders/${encodeURIComponent(input.folderId)}`, {
+    method: 'PATCH',
+    headers: buildMutationHeaders({ includeJson: true }),
+    body: JSON.stringify({ title: input.title }),
+  });
+  return { ...envelope.folder, type: 'folder' };
+}
+
+export async function deleteTalkFolder(folderId: string): Promise<void> {
+  await apiRequest<{ deleted: true }>(
+    `/api/v1/talk-folders/${encodeURIComponent(folderId)}`,
+    {
+      method: 'DELETE',
+      headers: buildMutationHeaders({ includeJson: false }),
+    },
+  );
+}
+
+export async function patchTalkMetadata(input: {
+  talkId: string;
+  title?: string;
+  folderId?: string | null;
+}): Promise<Talk> {
+  const envelope = await apiRequest<{ talk: Talk }>(
+    `/api/v1/talks/${encodeURIComponent(input.talkId)}`,
+    {
+      method: 'PATCH',
+      headers: buildMutationHeaders({ includeJson: true }),
+      body: JSON.stringify({
+        title: input.title,
+        folderId: input.folderId,
+      }),
+    },
+  );
+  return envelope.talk;
+}
+
+export async function deleteTalk(talkId: string): Promise<void> {
+  await apiRequest<{ deleted: true }>(`/api/v1/talks/${encodeURIComponent(talkId)}`, {
+    method: 'DELETE',
+    headers: buildMutationHeaders({ includeJson: false }),
+  });
+}
+
+export async function reorderTalkSidebar(input: {
+  itemType: 'talk' | 'folder';
+  itemId: string;
+  destinationFolderId: string | null;
+  destinationIndex: number;
+}): Promise<void> {
+  await apiRequest<{ reordered: true }>('/api/v1/talks/sidebar/reorder', {
+    method: 'POST',
+    headers: buildMutationHeaders({ includeJson: true }),
+    body: JSON.stringify(input),
+  });
 }
 
 export async function getTalk(talkId: string): Promise<Talk> {

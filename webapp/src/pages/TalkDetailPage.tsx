@@ -738,8 +738,18 @@ function buildTargetSelection(agents: TalkAgent[], current: string[]): string[] 
 
 export function TalkDetailPage({
   onUnauthorized,
+  titleOverride,
+  renameDraft,
+  onRenameDraftChange,
+  onRenameDraftCancel,
+  onRenameDraftCommit,
 }: {
   onUnauthorized: () => void;
+  titleOverride?: string | null;
+  renameDraft: { talkId: string; draft: string } | null;
+  onRenameDraftChange: (talkId: string, draft: string) => void;
+  onRenameDraftCancel: (talkId: string) => void;
+  onRenameDraftCommit: (talkId: string, draft: string) => Promise<void>;
 }): JSX.Element {
   const { talkId = '' } = useParams<{ talkId: string }>();
   const location = useLocation();
@@ -764,6 +774,7 @@ export function TalkDetailPage({
 
   const timelineRef = useRef<HTMLDivElement | null>(null);
   const endRef = useRef<HTMLDivElement | null>(null);
+  const titleInputRef = useRef<HTMLInputElement | null>(null);
   const messageElementRefs = useRef<Map<string, HTMLElement>>(new Map());
   const autoStickToBottomRef = useRef(false);
   const onUnauthorizedRef = useRef(onUnauthorized);
@@ -1129,6 +1140,7 @@ export function TalkDetailPage({
   const manageAgentsHref = `/app/agents?returnTo=${encodeURIComponent(
     talkTabHref,
   )}&focus=providers`;
+  const isRenaming = renameDraft?.talkId === talkId;
 
   const handleDraftChange = (value: string) => {
     setDraft(value);
@@ -1441,6 +1453,12 @@ export function TalkDetailPage({
     element.scrollIntoView({ behavior: 'smooth', block: 'center' });
   };
 
+  useEffect(() => {
+    if (!isRenaming) return;
+    titleInputRef.current?.focus();
+    titleInputRef.current?.select();
+  }, [isRenaming]);
+
   if (state.kind === 'loading') {
     return <p className="page-state">Loading talk…</p>;
   }
@@ -1466,64 +1484,96 @@ export function TalkDetailPage({
   }
 
   const talk = state.talk;
+  const displayedTitle =
+    isRenaming ? renameDraft?.draft ?? '' : titleOverride || talk.title;
 
   return (
     <section className="page-shell talk-detail-shell">
-      <header className="page-header">
-        <div>
-          <h1 className="talk-title">
-            {talk.title}
-            <span className={`stream-badge stream-${state.streamState}`}>
-              {streamBadgeLabel}
-            </span>
-          </h1>
-          <p>Event-authoritative live timeline.</p>
-          {agents.length > 0 ? (
-            <div className="talk-status-strip" role="list" aria-label="Talk agent status">
-              {agents.map((agent) => (
-                <span
-                  key={agent.id}
-                  className={`talk-status-pill talk-status-pill-${agent.health}`}
-                  role="listitem"
+      <div className="talk-workspace">
+        <div className="talk-workspace-header">
+          <header className="page-header talk-page-header">
+            <div className="talk-page-heading">
+              {isRenaming ? (
+                <input
+                  ref={titleInputRef}
+                  className="talk-title-input"
+                  type="text"
+                  value={renameDraft?.draft ?? ''}
+                  onChange={(event) =>
+                    onRenameDraftChange(talkId, event.target.value)
+                  }
+                  onKeyDown={async (event) => {
+                    if (event.key === 'Enter') {
+                      event.preventDefault();
+                      await onRenameDraftCommit(talkId, renameDraft?.draft ?? '');
+                    }
+                    if (event.key === 'Escape') {
+                      event.preventDefault();
+                      onRenameDraftCancel(talkId);
+                    }
+                  }}
+                  onBlur={() => {
+                    void onRenameDraftCommit(talkId, renameDraft?.draft ?? '');
+                  }}
+                  aria-label="Talk title"
+                />
+              ) : (
+                <h1 className="talk-title">
+                  {displayedTitle}
+                  <span className={`stream-badge stream-${state.streamState}`}>
+                    {streamBadgeLabel}
+                  </span>
+                </h1>
+              )}
+              <p>Event-authoritative live timeline.</p>
+              {agents.length > 0 ? (
+                <div className="talk-status-strip" role="list" aria-label="Talk agent status">
+                  {agents.map((agent) => (
+                    <span
+                      key={agent.id}
+                      className={`talk-status-pill talk-status-pill-${agent.health}`}
+                      role="listitem"
+                    >
+                      <span
+                        className={`talk-status-dot talk-status-dot-${agent.health}`}
+                        aria-hidden="true"
+                      />
+                      <span>{buildAgentLabel(agent)}</span>
+                      {agent.isPrimary ? (
+                        <span className="talk-status-primary">Primary</span>
+                      ) : null}
+                    </span>
+                  ))}
+                </div>
+              ) : null}
+              <nav className="talk-tabs" aria-label="Talk sections">
+                <Link
+                  to={talkTabHref}
+                  className={`talk-tab ${currentTab === 'talk' ? 'talk-tab-active' : ''}`}
                 >
-                  <span
-                    className={`talk-status-dot talk-status-dot-${agent.health}`}
-                    aria-hidden="true"
-                  />
-                  <span>{buildAgentLabel(agent)}</span>
-                  {agent.isPrimary ? (
-                    <span className="talk-status-primary">Primary</span>
-                  ) : null}
-                </span>
-              ))}
+                  Talk
+                </Link>
+                <Link
+                  to={agentsTabHref}
+                  className={`talk-tab ${currentTab === 'agents' ? 'talk-tab-active' : ''}`}
+                >
+                  Agents
+                </Link>
+                <Link
+                  to={runsTabHref}
+                  className={`talk-tab ${currentTab === 'runs' ? 'talk-tab-active' : ''}`}
+                >
+                  Run History
+                </Link>
+              </nav>
             </div>
-          ) : null}
-          <nav className="talk-tabs" aria-label="Talk sections">
-            <Link
-              to={talkTabHref}
-              className={`talk-tab ${currentTab === 'talk' ? 'talk-tab-active' : ''}`}
-            >
-              Talk
-            </Link>
-            <Link
-              to={agentsTabHref}
-              className={`talk-tab ${currentTab === 'agents' ? 'talk-tab-active' : ''}`}
-            >
-              Agents
-            </Link>
-            <Link
-              to={runsTabHref}
-              className={`talk-tab ${currentTab === 'runs' ? 'talk-tab-active' : ''}`}
-            >
-              Run History
-            </Link>
-          </nav>
+            <Link to="/app/talks">Back</Link>
+          </header>
         </div>
-        <Link to="/app/talks">Back</Link>
-      </header>
 
-      {currentTab === 'agents' ? (
-        <section className="talk-tab-panel" aria-label="Talk agents">
+        <div className="talk-workspace-scroll" ref={timelineRef}>
+          {currentTab === 'agents' ? (
+            <section className="talk-tab-panel" aria-label="Talk agents">
           <div className="agents-panel-header">
             <h2>Agents</h2>
             <Link className="secondary-btn" to={manageAgentsHref}>
@@ -1754,11 +1804,11 @@ export function TalkDetailPage({
               {agentState.message}
             </div>
           ) : null}
-        </section>
-      ) : null}
+            </section>
+          ) : null}
 
-      {currentTab === 'runs' ? (
-        <section className="talk-tab-panel run-history-panel" aria-label="Run history">
+          {currentTab === 'runs' ? (
+            <section className="talk-tab-panel run-history-panel" aria-label="Run history">
           <h2>Run History</h2>
           {runHistory.length === 0 ? (
             <p className="page-state">No runs yet.</p>
@@ -1802,12 +1852,11 @@ export function TalkDetailPage({
               ))}
             </ul>
           )}
-        </section>
-      ) : null}
+            </section>
+          ) : null}
 
-      {currentTab === 'talk' ? (
-        <>
-          <div className="timeline" aria-label="Talk timeline" ref={timelineRef}>
+          {currentTab === 'talk' ? (
+            <div className="timeline" aria-label="Talk timeline">
             {state.messages.length === 0 ? (
               <p className="page-state">No messages yet.</p>
             ) : (
@@ -1873,9 +1922,12 @@ export function TalkDetailPage({
             ) : null}
 
             <div ref={endRef} />
-          </div>
+            </div>
+          ) : null}
+        </div>
 
-          <form className="composer" onSubmit={handleSend}>
+        {currentTab === 'talk' ? (
+          <form className="composer talk-workspace-composer" onSubmit={handleSend}>
             <div className="composer-targets" role="group" aria-label="Selected agents">
               {agents.map((agent) => {
                 const selected = targetAgentIds.includes(agent.id);
@@ -1961,8 +2013,8 @@ export function TalkDetailPage({
               </div>
             ) : null}
           </form>
-        </>
-      ) : null}
+        ) : null}
+      </div>
     </section>
   );
 }

@@ -169,7 +169,84 @@ function migrateLlmProvidersForNvidia(database: Database.Database): void {
   `);
 }
 
+function tableExists(database: Database.Database, name: string): boolean {
+  const row = database
+    .prepare(
+      `
+      SELECT 1
+      FROM sqlite_master
+      WHERE type = 'table' AND name = ?
+      LIMIT 1
+    `,
+    )
+    .get(name) as { 1: number } | undefined;
+  return Boolean(row);
+}
+
+function listTableColumns(
+  database: Database.Database,
+  table: string,
+): string[] {
+  return (
+    database.prepare(`PRAGMA table_info(${table})`).all() as Array<{
+      name: string;
+    }>
+  ).map((row) => row.name);
+}
+
+// NOTE: This is intentionally destructive. We explicitly discard old talk-domain
+// data if the DB predates the folder-tree schema because this build is treated
+// as greenfield and we do not support backfilling legacy talk ordering.
+function resetTalkDomainForFolderTree(database: Database.Database): void {
+  if (!tableExists(database, 'talks')) {
+    return;
+  }
+
+  const talkColumns = listTableColumns(database, 'talks');
+  const hasFolderTreeColumns =
+    talkColumns.includes('folder_id') && talkColumns.includes('sort_order');
+  const hasFoldersTable = tableExists(database, 'talk_folders');
+  if (hasFolderTreeColumns && hasFoldersTable) {
+    return;
+  }
+
+  const talkCount =
+    (
+      database.prepare(`SELECT COUNT(*) AS count FROM talks`).get() as
+        | { count: number }
+        | undefined
+    )?.count ?? 0;
+  if (talkCount > 0) {
+    console.warn(
+      `[clawrocket] Resetting talk-domain data for folder-tree schema rollout; deleting ${talkCount} existing talks and related records.`,
+    );
+  }
+
+  database.exec(`
+    DROP VIEW IF EXISTS group_llm_policies;
+
+    PRAGMA foreign_keys = OFF;
+
+    DROP TABLE IF EXISTS llm_attempts;
+    DROP TABLE IF EXISTS talk_agents;
+    DROP TABLE IF EXISTS talk_executor_sessions;
+    DROP TABLE IF EXISTS talk_llm_policies;
+    DROP TABLE IF EXISTS talk_messages;
+    DROP TABLE IF EXISTS talk_runs;
+    DROP TABLE IF EXISTS talk_members;
+    DROP TABLE IF EXISTS talks;
+    DROP TABLE IF EXISTS talk_folders;
+    DROP TABLE IF EXISTS registered_agents;
+    DROP TABLE IF EXISTS talk_route_steps;
+    DROP TABLE IF EXISTS talk_routes;
+
+    PRAGMA foreign_keys = ON;
+  `);
+}
+
 function createClawrocketSchema(database: Database.Database): void {
+  resetTalkDomainForFolderTree(database);
+
   database.exec(`
     CREATE TABLE IF NOT EXISTS users (
       id TEXT PRIMARY KEY,
@@ -195,9 +272,22 @@ function createClawrocketSchema(database: Database.Database): void {
     );
     CREATE INDEX IF NOT EXISTS idx_user_invites_email ON user_invites(email);
 
+    CREATE TABLE IF NOT EXISTS talk_folders (
+      id TEXT PRIMARY KEY,
+      owner_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      title TEXT NOT NULL,
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_talk_folders_owner_sort
+      ON talk_folders(owner_id, sort_order, updated_at);
+
     CREATE TABLE IF NOT EXISTS talks (
       id TEXT PRIMARY KEY,
       owner_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      folder_id TEXT REFERENCES talk_folders(id) ON DELETE SET NULL,
+      sort_order INTEGER NOT NULL DEFAULT 0,
       topic_title TEXT,
       status TEXT NOT NULL DEFAULT 'active'
         CHECK(status IN ('active', 'paused', 'archived')),
@@ -205,6 +295,8 @@ function createClawrocketSchema(database: Database.Database): void {
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
+    CREATE INDEX IF NOT EXISTS idx_talks_owner_folder_sort
+      ON talks(owner_id, folder_id, sort_order, updated_at);
 
     CREATE TABLE IF NOT EXISTS talk_members (
       talk_id TEXT NOT NULL REFERENCES talks(id) ON DELETE CASCADE,

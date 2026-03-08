@@ -64,15 +64,22 @@ import {
 } from './routes/events.js';
 import { healthResponse, statusResponse } from './routes/system.js';
 import {
+  createTalkFolderRoute,
   cancelTalkChat,
   createTalkRoute,
+  deleteTalkFolderRoute,
+  deleteTalkRoute,
   enqueueTalkChat,
   getTalkPolicyRoute,
   getTalkRoute,
   listTalkAgentsRoute,
   listTalkMessagesRoute,
   listTalkRunsRoute,
+  listTalkSidebarRoute,
   listTalksRoute,
+  patchTalkFolderRoute,
+  patchTalkRoute,
+  reorderTalkSidebarRoute,
   updateTalkAgentsRoute,
   updateTalkPolicyRoute,
 } from './routes/talks.js';
@@ -1235,6 +1242,22 @@ function buildApp(opts: WebServerOptions): Hono {
     });
   });
 
+  app.get('/api/v1/talks/sidebar', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+
+    const rateResult = checkRateLimit({ userId: auth.userId, bucket: 'read' });
+    if (!rateResult.allowed) {
+      return rateLimitedResponse(c, rateResult);
+    }
+
+    const result = listTalkSidebarRoute({ auth });
+    return new Response(JSON.stringify(result.body), {
+      status: result.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
+  });
+
   app.get('/api/v1/agents', async (c) => {
     const auth = requireAuth(c);
     if (!auth) return unauthorized(c);
@@ -1521,6 +1544,60 @@ function buildApp(opts: WebServerOptions): Hono {
     });
   });
 
+  app.post('/api/v1/talk-folders', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+
+    const rateResult = checkRateLimit({ userId: auth.userId, bucket: 'write' });
+    if (!rateResult.allowed) {
+      return rateLimitedResponse(c, rateResult);
+    }
+
+    const csrf = validateCsrfToken({
+      method: c.req.method,
+      authType: auth.authType,
+      cookieHeader: c.req.header('cookie'),
+      csrfHeader: c.req.header('x-csrf-token'),
+    });
+    if (!csrf.ok) {
+      return c.json(
+        {
+          ok: false,
+          error: {
+            code: 'csrf_failed',
+            message: csrf.reason,
+          },
+        },
+        403,
+      );
+    }
+
+    const bodyText = await c.req.text();
+    const payload = parseJsonPayload<{ title?: string }>(bodyText);
+    if (!payload.ok) {
+      return c.json(
+        {
+          ok: false,
+          error: {
+            code: 'invalid_json',
+            message: payload.error,
+          },
+        },
+        400,
+      );
+    }
+
+    const result = createTalkFolderRoute({
+      auth,
+      title: payload.data.title,
+    });
+
+    return new Response(JSON.stringify(result.body), {
+      status: result.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
+  });
+
   app.get('/api/v1/talks/:talkId', async (c) => {
     const auth = requireAuth(c);
     if (!auth) return unauthorized(c);
@@ -1548,6 +1625,384 @@ function buildApp(opts: WebServerOptions): Hono {
     const result = getTalkRoute({
       talkId,
       auth,
+    });
+    return new Response(JSON.stringify(result.body), {
+      status: result.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
+  });
+
+  app.patch('/api/v1/talks/:id', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+
+    const rateResult = checkRateLimit({ userId: auth.userId, bucket: 'write' });
+    if (!rateResult.allowed) {
+      return rateLimitedResponse(c, rateResult);
+    }
+
+    const csrf = validateCsrfToken({
+      method: c.req.method,
+      authType: auth.authType,
+      cookieHeader: c.req.header('cookie'),
+      csrfHeader: c.req.header('x-csrf-token'),
+    });
+    if (!csrf.ok) {
+      return c.json(
+        {
+          ok: false,
+          error: {
+            code: 'csrf_failed',
+            message: csrf.reason,
+          },
+        },
+        403,
+      );
+    }
+
+    const encodedTalkId = c.req.param('id');
+    const talkId = safeDecodePathSegment(encodedTalkId);
+    if (!talkId) {
+      return c.json(
+        {
+          ok: false,
+          error: {
+            code: 'invalid_talk_id',
+            message: 'Talk ID path segment is not valid URL encoding',
+          },
+        },
+        400,
+      );
+    }
+
+    const bodyText = await c.req.text();
+    const payload = parseJsonPayload<{
+      title?: string;
+      folderId?: string | null;
+    }>(bodyText);
+    if (!payload.ok) {
+      return c.json(
+        {
+          ok: false,
+          error: {
+            code: 'invalid_json',
+            message: payload.error,
+          },
+        },
+        400,
+      );
+    }
+
+    const result = patchTalkRoute({
+      talkId,
+      auth,
+      title:
+        typeof payload.data.title === 'string' ? payload.data.title : undefined,
+      folderId:
+        typeof payload.data.folderId === 'string' ||
+        payload.data.folderId === null
+          ? payload.data.folderId
+          : undefined,
+    });
+    return new Response(JSON.stringify(result.body), {
+      status: result.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
+  });
+
+  app.delete('/api/v1/talks/:id', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+
+    const rateResult = checkRateLimit({ userId: auth.userId, bucket: 'write' });
+    if (!rateResult.allowed) {
+      return rateLimitedResponse(c, rateResult);
+    }
+
+    const csrf = validateCsrfToken({
+      method: c.req.method,
+      authType: auth.authType,
+      cookieHeader: c.req.header('cookie'),
+      csrfHeader: c.req.header('x-csrf-token'),
+    });
+    if (!csrf.ok) {
+      return c.json(
+        {
+          ok: false,
+          error: {
+            code: 'csrf_failed',
+            message: csrf.reason,
+          },
+        },
+        403,
+      );
+    }
+
+    const encodedTalkId = c.req.param('id');
+    const talkId = safeDecodePathSegment(encodedTalkId);
+    if (!talkId) {
+      return c.json(
+        {
+          ok: false,
+          error: {
+            code: 'invalid_talk_id',
+            message: 'Talk ID path segment is not valid URL encoding',
+          },
+        },
+        400,
+      );
+    }
+
+    const result = deleteTalkRoute({
+      talkId,
+      auth,
+    });
+    return new Response(JSON.stringify(result.body), {
+      status: result.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
+  });
+
+  app.patch('/api/v1/talk-folders/:id', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+
+    const rateResult = checkRateLimit({ userId: auth.userId, bucket: 'write' });
+    if (!rateResult.allowed) {
+      return rateLimitedResponse(c, rateResult);
+    }
+
+    const csrf = validateCsrfToken({
+      method: c.req.method,
+      authType: auth.authType,
+      cookieHeader: c.req.header('cookie'),
+      csrfHeader: c.req.header('x-csrf-token'),
+    });
+    if (!csrf.ok) {
+      return c.json(
+        {
+          ok: false,
+          error: {
+            code: 'csrf_failed',
+            message: csrf.reason,
+          },
+        },
+        403,
+      );
+    }
+
+    const encodedFolderId = c.req.param('id');
+    const folderId = safeDecodePathSegment(encodedFolderId);
+    if (!folderId) {
+      return c.json(
+        {
+          ok: false,
+          error: {
+            code: 'invalid_folder_id',
+            message: 'Folder ID path segment is not valid URL encoding',
+          },
+        },
+        400,
+      );
+    }
+
+    const bodyText = await c.req.text();
+    const payload = parseJsonPayload<{ title?: string }>(bodyText);
+    if (!payload.ok) {
+      return c.json(
+        {
+          ok: false,
+          error: {
+            code: 'invalid_json',
+            message: payload.error,
+          },
+        },
+        400,
+      );
+    }
+
+    const result = patchTalkFolderRoute({
+      folderId,
+      auth,
+      title:
+        typeof payload.data.title === 'string' ? payload.data.title : undefined,
+    });
+    return new Response(JSON.stringify(result.body), {
+      status: result.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
+  });
+
+  app.delete('/api/v1/talk-folders/:id', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+
+    const rateResult = checkRateLimit({ userId: auth.userId, bucket: 'write' });
+    if (!rateResult.allowed) {
+      return rateLimitedResponse(c, rateResult);
+    }
+
+    const csrf = validateCsrfToken({
+      method: c.req.method,
+      authType: auth.authType,
+      cookieHeader: c.req.header('cookie'),
+      csrfHeader: c.req.header('x-csrf-token'),
+    });
+    if (!csrf.ok) {
+      return c.json(
+        {
+          ok: false,
+          error: {
+            code: 'csrf_failed',
+            message: csrf.reason,
+          },
+        },
+        403,
+      );
+    }
+
+    const encodedFolderId = c.req.param('id');
+    const folderId = safeDecodePathSegment(encodedFolderId);
+    if (!folderId) {
+      return c.json(
+        {
+          ok: false,
+          error: {
+            code: 'invalid_folder_id',
+            message: 'Folder ID path segment is not valid URL encoding',
+          },
+        },
+        400,
+      );
+    }
+
+    const result = deleteTalkFolderRoute({
+      folderId,
+      auth,
+    });
+    return new Response(JSON.stringify(result.body), {
+      status: result.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
+  });
+
+  app.post('/api/v1/talks/sidebar/reorder', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+
+    const rateResult = checkRateLimit({ userId: auth.userId, bucket: 'write' });
+    if (!rateResult.allowed) {
+      return rateLimitedResponse(c, rateResult);
+    }
+
+    const csrf = validateCsrfToken({
+      method: c.req.method,
+      authType: auth.authType,
+      cookieHeader: c.req.header('cookie'),
+      csrfHeader: c.req.header('x-csrf-token'),
+    });
+    if (!csrf.ok) {
+      return c.json(
+        {
+          ok: false,
+          error: {
+            code: 'csrf_failed',
+            message: csrf.reason,
+          },
+        },
+        403,
+      );
+    }
+
+    const bodyText = await c.req.text();
+    const payload = parseJsonPayload<{
+      itemType?: 'talk' | 'folder';
+      itemId?: string;
+      destinationFolderId?: string | null;
+      destinationIndex?: number;
+    }>(bodyText);
+    if (!payload.ok) {
+      return c.json(
+        {
+          ok: false,
+          error: {
+            code: 'invalid_json',
+            message: payload.error,
+          },
+        },
+        400,
+      );
+    }
+
+    if (
+      payload.data.itemType !== 'talk' &&
+      payload.data.itemType !== 'folder'
+    ) {
+      return c.json(
+        {
+          ok: false,
+          error: {
+            code: 'invalid_sidebar_reorder',
+            message: 'Item type must be talk or folder',
+          },
+        },
+        400,
+      );
+    }
+    if (
+      typeof payload.data.itemId !== 'string' ||
+      payload.data.itemId.length === 0
+    ) {
+      return c.json(
+        {
+          ok: false,
+          error: {
+            code: 'invalid_sidebar_reorder',
+            message: 'Item id is required',
+          },
+        },
+        400,
+      );
+    }
+    if (
+      !(
+        typeof payload.data.destinationFolderId === 'string' ||
+        payload.data.destinationFolderId === null
+      )
+    ) {
+      return c.json(
+        {
+          ok: false,
+          error: {
+            code: 'invalid_sidebar_reorder',
+            message: 'Destination folder must be a folder id or null',
+          },
+        },
+        400,
+      );
+    }
+    if (
+      typeof payload.data.destinationIndex !== 'number' ||
+      Number.isNaN(payload.data.destinationIndex)
+    ) {
+      return c.json(
+        {
+          ok: false,
+          error: {
+            code: 'invalid_sidebar_reorder',
+            message: 'Destination index must be a number',
+          },
+        },
+        400,
+      );
+    }
+
+    const result = reorderTalkSidebarRoute({
+      auth,
+      itemType: payload.data.itemType,
+      itemId: payload.data.itemId,
+      destinationFolderId: payload.data.destinationFolderId,
+      destinationIndex: payload.data.destinationIndex,
     });
     return new Response(JSON.stringify(result.body), {
       status: result.statusCode,

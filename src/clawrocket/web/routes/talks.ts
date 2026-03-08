@@ -3,19 +3,28 @@ import { randomUUID } from 'crypto';
 import {
   cancelTalkRunsAtomic,
   createTalk,
+  createTalkFolder,
+  deleteTalkFolderAndMoveTalksToTopLevel,
+  deleteTalkForOwner,
   deleteTalkLlmPolicy,
   enqueueTalkTurnAtomic,
   ensureTalkHasDefaultAgent,
   getPrimaryTalkAgent,
+  getTalkById,
   getTalkForUser,
   getTalkRouteById,
   listAdditionalProviderCredentialCards,
   listTalkAgentInstances,
   listTalkAgents,
+  listTalkFoldersForOwner,
   listTalkMessages,
   listTalkRunsForTalk,
+  listTalkSidebarTreeForUser,
   listTalksForUser,
   normalizeTalkListPage,
+  patchTalkMetadata,
+  renameTalkFolder,
+  reorderTalkSidebarItem,
   replaceTalkAgentInstances,
   replaceTalkAgents,
   type TalkAgentInstanceInput,
@@ -37,6 +46,8 @@ import { AuthContext, ApiEnvelope } from '../types.js';
 interface TalkApiRecord {
   id: string;
   ownerId: string;
+  folderId: string | null;
+  sortOrder: number;
   title: string | null;
   agents: string[];
   status: 'active' | 'paused' | 'archived';
@@ -45,6 +56,32 @@ interface TalkApiRecord {
   updatedAt: string;
   accessRole: 'owner' | 'admin' | 'editor' | 'viewer';
 }
+
+interface SidebarTalkApiRecord {
+  id: string;
+  title: string | null;
+  status: 'active' | 'paused' | 'archived';
+  sortOrder: number;
+}
+
+interface TalkFolderApiRecord {
+  id: string;
+  title: string;
+  sortOrder: number;
+  talks: SidebarTalkApiRecord[];
+}
+
+type TalkSidebarItemApiRecord =
+  | ({
+      type: 'talk';
+    } & SidebarTalkApiRecord)
+  | {
+      type: 'folder';
+      id: string;
+      title: string;
+      sortOrder: number;
+      talks: SidebarTalkApiRecord[];
+    };
 
 interface TalkMessageApiRecord {
   id: string;
@@ -110,6 +147,8 @@ function toTalkApiRecord(talk: TalkWithAccessRecord): TalkApiRecord {
   return {
     id: talk.id,
     ownerId: talk.owner_id,
+    folderId: talk.folder_id,
+    sortOrder: talk.sort_order,
     title: talk.topic_title,
     agents:
       agents.length > 0
@@ -120,6 +159,17 @@ function toTalkApiRecord(talk: TalkWithAccessRecord): TalkApiRecord {
     createdAt: talk.created_at,
     updatedAt: talk.updated_at,
     accessRole: talk.access_role,
+  };
+}
+
+function toSidebarTalkApiRecord(
+  talk: TalkWithAccessRecord,
+): SidebarTalkApiRecord {
+  return {
+    id: talk.id,
+    title: talk.topic_title,
+    status: talk.status,
+    sortOrder: talk.sort_order,
   };
 }
 
@@ -135,7 +185,10 @@ function mapVerificationToHealth(
     | undefined,
 ): 'ready' | 'invalid' | 'unknown' {
   if (verificationStatus === 'verified') return 'ready';
-  if (verificationStatus === 'invalid' || verificationStatus === 'unavailable') {
+  if (
+    verificationStatus === 'invalid' ||
+    verificationStatus === 'unavailable'
+  ) {
     return 'invalid';
   }
   return 'unknown';
@@ -154,13 +207,18 @@ function buildTalkAgentHealthLookup(
     ]),
   );
   const claudeDefaultHealth = executorSettings
-    ? mapVerificationToHealth(executorSettings.getSettingsView().verificationStatus)
+    ? mapVerificationToHealth(
+        executorSettings.getSettingsView().verificationStatus,
+      )
     : 'unknown';
   return { claudeDefaultHealth, providerHealthById };
 }
 
 function parseTalkRunError(
-  run: Pick<ReturnType<typeof listTalkRunsForTalk>[number], 'status' | 'cancel_reason'>,
+  run: Pick<
+    ReturnType<typeof listTalkRunsForTalk>[number],
+    'status' | 'cancel_reason'
+  >,
 ): { errorCode: string | null; errorMessage: string | null } {
   const raw = run.cancel_reason?.trim() || null;
   if (!raw) {
@@ -188,17 +246,17 @@ function parseTalkRunError(
 
 function toTalkAgentApiRecord(
   agent: {
-  id: string;
-  nickname: string;
-  nicknameMode: 'auto' | 'custom';
-  sourceKind: 'claude_default' | 'provider';
-  role: TalkPersonaRole;
-  isLead: boolean;
-  displayOrder: number;
-  status: 'active' | 'archived';
-  providerId: string | null;
-  modelId: string | null;
-  modelDisplayName: string | null;
+    id: string;
+    nickname: string;
+    nicknameMode: 'auto' | 'custom';
+    sourceKind: 'claude_default' | 'provider';
+    role: TalkPersonaRole;
+    isLead: boolean;
+    displayOrder: number;
+    status: 'active' | 'archived';
+    providerId: string | null;
+    modelId: string | null;
+    modelDisplayName: string | null;
   },
   healthLookup: {
     claudeDefaultHealth: 'ready' | 'invalid' | 'unknown';
@@ -216,7 +274,8 @@ function toTalkAgentApiRecord(
     health:
       agent.sourceKind === 'claude_default'
         ? healthLookup.claudeDefaultHealth
-        : healthLookup.providerHealthById.get(agent.providerId || '') || 'unknown',
+        : healthLookup.providerHealthById.get(agent.providerId || '') ||
+          'unknown',
     providerId: agent.providerId,
     modelId: agent.modelId,
     modelDisplayName: agent.modelDisplayName,
@@ -407,6 +466,178 @@ export function listTalksRoute(input: {
   };
 }
 
+export function listTalkSidebarRoute(input: { auth: AuthContext }): {
+  statusCode: number;
+  body: ApiEnvelope<{ items: TalkSidebarItemApiRecord[] }>;
+} {
+  const tree = listTalkSidebarTreeForUser(input.auth.userId);
+  const rootItems: TalkSidebarItemApiRecord[] = [
+    ...tree.rootTalks.map((talk) => ({
+      type: 'talk' as const,
+      ...toSidebarTalkApiRecord(talk),
+    })),
+    ...tree.folders.map((folder) => ({
+      type: 'folder' as const,
+      id: folder.id,
+      title: folder.title,
+      sortOrder: folder.sort_order,
+      talks: (tree.talksByFolderId[folder.id] || []).map((talk) =>
+        toSidebarTalkApiRecord(talk),
+      ),
+    })),
+  ].sort((a, b) => a.sortOrder - b.sortOrder || a.id.localeCompare(b.id));
+
+  return {
+    statusCode: 200,
+    body: {
+      ok: true,
+      data: {
+        items: rootItems,
+      },
+    },
+  };
+}
+
+export function createTalkFolderRoute(input: {
+  auth: AuthContext;
+  title?: string;
+}): {
+  statusCode: number;
+  body: ApiEnvelope<{ folder: TalkFolderApiRecord }>;
+} {
+  const rawTitle = input.title?.trim() || '';
+  if (rawTitle.length > 160) {
+    return {
+      statusCode: 400,
+      body: {
+        ok: false,
+        error: {
+          code: 'invalid_folder_title',
+          message: 'Folder title must be 160 characters or less',
+        },
+      },
+    };
+  }
+
+  const folder = createTalkFolder({
+    id: `folder_${randomUUID()}`,
+    ownerId: input.auth.userId,
+    title: rawTitle || 'Untitled Folder',
+  });
+
+  return {
+    statusCode: 201,
+    body: {
+      ok: true,
+      data: {
+        folder: {
+          id: folder.id,
+          title: folder.title,
+          sortOrder: folder.sort_order,
+          talks: [],
+        },
+      },
+    },
+  };
+}
+
+export function patchTalkFolderRoute(input: {
+  auth: AuthContext;
+  folderId: string;
+  title?: string;
+}): {
+  statusCode: number;
+  body: ApiEnvelope<{ folder: TalkFolderApiRecord }>;
+} {
+  const rawTitle = input.title?.trim() || '';
+  if (!rawTitle) {
+    return {
+      statusCode: 400,
+      body: {
+        ok: false,
+        error: {
+          code: 'invalid_folder_title',
+          message: 'Folder title is required',
+        },
+      },
+    };
+  }
+  if (rawTitle.length > 160) {
+    return {
+      statusCode: 400,
+      body: {
+        ok: false,
+        error: {
+          code: 'invalid_folder_title',
+          message: 'Folder title must be 160 characters or less',
+        },
+      },
+    };
+  }
+
+  const folder = renameTalkFolder({
+    id: input.folderId,
+    ownerId: input.auth.userId,
+    title: rawTitle,
+  });
+  if (!folder) {
+    return {
+      statusCode: 404,
+      body: {
+        ok: false,
+        error: {
+          code: 'folder_not_found',
+          message: 'Folder not found',
+        },
+      },
+    };
+  }
+
+  return {
+    statusCode: 200,
+    body: {
+      ok: true,
+      data: {
+        folder: {
+          id: folder.id,
+          title: folder.title,
+          sortOrder: folder.sort_order,
+          talks: [],
+        },
+      },
+    },
+  };
+}
+
+export function deleteTalkFolderRoute(input: {
+  auth: AuthContext;
+  folderId: string;
+}): {
+  statusCode: number;
+  body: ApiEnvelope<{ deleted: true }>;
+} {
+  const deleted = deleteTalkFolderAndMoveTalksToTopLevel({
+    id: input.folderId,
+    ownerId: input.auth.userId,
+  });
+  if (!deleted) {
+    return {
+      statusCode: 404,
+      body: {
+        ok: false,
+        error: {
+          code: 'folder_not_found',
+          message: 'Folder not found',
+        },
+      },
+    };
+  }
+  return {
+    statusCode: 200,
+    body: { ok: true, data: { deleted: true } },
+  };
+}
+
 export function createTalkRoute(input: { auth: AuthContext; title?: string }): {
   statusCode: number;
   body: ApiEnvelope<{ talk: TalkApiRecord }>;
@@ -457,6 +688,208 @@ export function createTalkRoute(input: { auth: AuthContext; title?: string }): {
         talk: toTalkApiRecord(talk),
       },
     },
+  };
+}
+
+export function patchTalkRoute(input: {
+  auth: AuthContext;
+  talkId: string;
+  title?: string;
+  folderId?: string | null;
+}): {
+  statusCode: number;
+  body: ApiEnvelope<{ talk: TalkApiRecord }>;
+} {
+  const talk = getTalkForUser(input.talkId, input.auth.userId);
+  if (!talk) {
+    return {
+      statusCode: 404,
+      body: {
+        ok: false,
+        error: { code: 'talk_not_found', message: 'Talk not found' },
+      },
+    };
+  }
+  if (!canEditTalk(input.talkId, input.auth.userId, input.auth.role)) {
+    return {
+      statusCode: 403,
+      body: {
+        ok: false,
+        error: { code: 'forbidden', message: 'Talk is read-only' },
+      },
+    };
+  }
+
+  const rawTitle = input.title?.trim();
+  if (rawTitle !== undefined && rawTitle.length === 0) {
+    return {
+      statusCode: 400,
+      body: {
+        ok: false,
+        error: {
+          code: 'invalid_talk_title',
+          message: 'Talk title is required',
+        },
+      },
+    };
+  }
+  if (rawTitle && rawTitle.length > 160) {
+    return {
+      statusCode: 400,
+      body: {
+        ok: false,
+        error: {
+          code: 'invalid_talk_title',
+          message: 'Talk title must be 160 characters or less',
+        },
+      },
+    };
+  }
+
+  const updated = patchTalkMetadata({
+    talkId: input.talkId,
+    ownerId: talk.owner_id,
+    title: rawTitle,
+    folderId: input.folderId,
+  });
+  const reloaded = updated
+    ? getTalkForUser(updated.id, input.auth.userId)
+    : undefined;
+  if (!reloaded) {
+    return {
+      statusCode: 404,
+      body: {
+        ok: false,
+        error: { code: 'talk_not_found', message: 'Talk not found' },
+      },
+    };
+  }
+  return {
+    statusCode: 200,
+    body: {
+      ok: true,
+      data: {
+        talk: toTalkApiRecord(reloaded),
+      },
+    },
+  };
+}
+
+export function deleteTalkRoute(input: { auth: AuthContext; talkId: string }): {
+  statusCode: number;
+  body: ApiEnvelope<{ deleted: true }>;
+} {
+  const talk = getTalkForUser(input.talkId, input.auth.userId);
+  if (!talk) {
+    return {
+      statusCode: 404,
+      body: {
+        ok: false,
+        error: { code: 'talk_not_found', message: 'Talk not found' },
+      },
+    };
+  }
+  if (!canEditTalk(input.talkId, input.auth.userId, input.auth.role)) {
+    return {
+      statusCode: 403,
+      body: {
+        ok: false,
+        error: { code: 'forbidden', message: 'Talk is read-only' },
+      },
+    };
+  }
+  const deleted = deleteTalkForOwner({
+    talkId: input.talkId,
+    ownerId: talk.owner_id,
+  });
+  if (!deleted) {
+    return {
+      statusCode: 404,
+      body: {
+        ok: false,
+        error: { code: 'talk_not_found', message: 'Talk not found' },
+      },
+    };
+  }
+  return {
+    statusCode: 200,
+    body: { ok: true, data: { deleted: true } },
+  };
+}
+
+export function reorderTalkSidebarRoute(input: {
+  auth: AuthContext;
+  itemType: 'talk' | 'folder';
+  itemId: string;
+  destinationFolderId: string | null;
+  destinationIndex: number;
+}): {
+  statusCode: number;
+  body: ApiEnvelope<{ reordered: true }>;
+} {
+  const destinationIndex = Math.max(0, Math.floor(input.destinationIndex));
+  let ownerId = input.auth.userId;
+  if (input.itemType === 'talk') {
+    const talk = getTalkForUser(input.itemId, input.auth.userId);
+    if (!talk) {
+      return {
+        statusCode: 404,
+        body: {
+          ok: false,
+          error: { code: 'talk_not_found', message: 'Talk not found' },
+        },
+      };
+    }
+    if (!canEditTalk(talk.id, input.auth.userId, input.auth.role)) {
+      return {
+        statusCode: 403,
+        body: {
+          ok: false,
+          error: { code: 'forbidden', message: 'Talk is read-only' },
+        },
+      };
+    }
+    ownerId = talk.owner_id;
+  }
+
+  if (
+    input.destinationFolderId !== null &&
+    !listTalkFoldersForOwner(ownerId).some(
+      (folder) => folder.id === input.destinationFolderId,
+    )
+  ) {
+    return {
+      statusCode: 404,
+      body: {
+        ok: false,
+        error: { code: 'folder_not_found', message: 'Folder not found' },
+      },
+    };
+  }
+
+  const reordered = reorderTalkSidebarItem({
+    ownerId,
+    itemType: input.itemType,
+    itemId: input.itemId,
+    destinationFolderId: input.destinationFolderId,
+    destinationIndex,
+  });
+  if (!reordered) {
+    return {
+      statusCode: 400,
+      body: {
+        ok: false,
+        error: {
+          code: 'invalid_reorder',
+          message: 'Reorder target is not valid',
+        },
+      },
+    };
+  }
+
+  return {
+    statusCode: 200,
+    body: { ok: true, data: { reordered: true } },
   };
 }
 
@@ -521,7 +954,10 @@ export function listTalkAgentsRoute(input: {
       data: {
         talkId: input.talkId,
         agents: listTalkAgentInstances(input.talkId).map((agent) =>
-          toTalkAgentApiRecord(agent, buildTalkAgentHealthLookup(input.executorSettings)),
+          toTalkAgentApiRecord(
+            agent,
+            buildTalkAgentHealthLookup(input.executorSettings),
+          ),
         ),
       },
     },
@@ -956,14 +1392,18 @@ export function enqueueTalkChat(input: {
       idempotencyKey: input.idempotencyKey,
     });
   } catch (error) {
-    if (error instanceof Error && error.message === 'talk already has an active round') {
+    if (
+      error instanceof Error &&
+      error.message === 'talk already has an active round'
+    ) {
       return {
         statusCode: 409,
         body: {
           ok: false,
           error: {
             code: 'talk_round_active',
-            message: 'Wait for the current round to finish or cancel it before sending another message',
+            message:
+              'Wait for the current round to finish or cancel it before sending another message',
           },
         },
       };
@@ -991,7 +1431,9 @@ export function enqueueTalkChat(input: {
           triggerMessageId: run.trigger_message_id,
           targetAgentId: run.target_agent_id || null,
           targetAgentNickname:
-            (run.target_agent_id && agentNicknameById.get(run.target_agent_id)) || null,
+            (run.target_agent_id &&
+              agentNicknameById.get(run.target_agent_id)) ||
+            null,
           errorCode: null,
           errorMessage: null,
           executorAlias: run.executor_alias,
