@@ -137,13 +137,246 @@ a {
   color: #7a86a0;
 }
 
+.clawtalk-sidebar-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.65rem;
+  padding: 0 0.25rem;
+  position: relative;
+}
+
+.clawtalk-sidebar-section-actions {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+.clawtalk-sidebar-add {
+  width: 1.95rem;
+  height: 1.95rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 10px;
+  background: linear-gradient(180deg, #3f7aff 0%, #2459df 100%);
+  color: #fff;
+  font-size: 1.3rem;
+  line-height: 1;
+  cursor: pointer;
+  box-shadow: 0 8px 18px rgba(37, 89, 223, 0.24);
+}
+
+.clawtalk-sidebar-add:hover {
+  filter: brightness(1.04);
+}
+
 .clawtalk-sidebar-talks {
   flex: 1;
   min-height: 0;
-  display: grid;
-  gap: 0.28rem;
   overflow-y: auto;
   padding-right: 0.15rem;
+}
+
+.clawtalk-sidebar-tree {
+  display: grid;
+  gap: 0.28rem;
+}
+
+.clawtalk-sidebar-folder-block {
+  display: grid;
+  gap: 0.28rem;
+}
+
+.clawtalk-sidebar-tree-row {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  border-radius: 12px;
+  position: relative;
+}
+
+.clawtalk-sidebar-tree-link {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  min-height: 2.55rem;
+  padding: 0.66rem 0.8rem;
+  border-radius: 12px;
+  text-decoration: none;
+  color: #31415f;
+  font-weight: 600;
+  transition:
+    background 140ms ease,
+    color 140ms ease;
+}
+
+.clawtalk-sidebar-tree-link:hover {
+  background: rgba(67, 104, 184, 0.08);
+  color: #173a79;
+}
+
+.clawtalk-sidebar-tree-link.active {
+  background: linear-gradient(180deg, #edf3ff 0%, #e3ecff 100%);
+  color: #153c86;
+  box-shadow: inset 0 0 0 1px #cbd9fb;
+}
+
+.clawtalk-sidebar-tree-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.clawtalk-sidebar-talk-row-nested .clawtalk-sidebar-tree-link {
+  min-height: 2.35rem;
+  padding-top: 0.58rem;
+  padding-bottom: 0.58rem;
+}
+
+.clawtalk-sidebar-folder-row {
+  padding-right: 0.15rem;
+}
+
+.clawtalk-sidebar-folder-toggle,
+.clawtalk-sidebar-folder-label {
+  border: 0;
+  background: transparent;
+  color: #31415f;
+  cursor: pointer;
+}
+
+.clawtalk-sidebar-folder-toggle {
+  width: 1.8rem;
+  height: 1.8rem;
+  flex: 0 0 auto;
+  border-radius: 8px;
+}
+
+.clawtalk-sidebar-folder-toggle:hover,
+.clawtalk-sidebar-folder-label:hover {
+  background: rgba(67, 104, 184, 0.08);
+}
+
+.clawtalk-sidebar-folder-label {
+  flex: 1;
+  min-width: 0;
+  text-align: left;
+  border-radius: 12px;
+  padding: 0.66rem 0.35rem 0.66rem 0.15rem;
+  font-weight: 700;
+}
+
+.clawtalk-sidebar-folder-talks {
+  display: grid;
+  gap: 0.28rem;
+  margin-left: 1.2rem;
+  padding-left: 0.55rem;
+  border-left: 1px solid #e3eaf5;
+}
+
+.clawtalk-sidebar-folder-empty {
+  margin: 0;
+  padding: 0.4rem 0.8rem;
+  color: #66728d;
+  font-size: 0.86rem;
+}
+
+.clawtalk-sidebar-folder-form {
+  flex: 1;
+}
+
+.clawtalk-sidebar-folder-form input {
+  width: 100%;
+  border: 1px solid #c8d3e9;
+  border-radius: 9px;
+  padding: 0.48rem 0.6rem;
+  font-size: 0.9rem;
+}
+
+.clawtalk-sidebar-tree-actions {
+  position: relative;
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 120ms ease;
+}
+
+.clawtalk-sidebar-tree-row:hover .clawtalk-sidebar-tree-actions,
+.clawtalk-sidebar-tree-row:focus-within .clawtalk-sidebar-tree-actions,
+.clawtalk-sidebar-tree-actions:has(.clawtalk-sidebar-menu) {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.clawtalk-sidebar-more {
+  width: 2rem;
+  height: 2rem;
+  border: 0;
+  border-radius: 10px;
+  background: rgba(67, 104, 184, 0.08);
+  color: #274d96;
+  font-size: 1rem;
+  cursor: pointer;
+}
+
+.clawtalk-sidebar-menu,
+.clawtalk-sidebar-submenu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 0.35rem);
+  z-index: 10;
+  min-width: 170px;
+  display: grid;
+  gap: 0.2rem;
+  padding: 0.35rem;
+  border: 1px solid #d6dfed;
+  border-radius: 12px;
+  background: #fff;
+  box-shadow: 0 12px 28px rgba(31, 52, 88, 0.14);
+}
+
+.clawtalk-sidebar-submenu {
+  position: static;
+  min-width: auto;
+  margin-top: 0.2rem;
+  box-shadow: none;
+  border-style: dashed;
+}
+
+.clawtalk-sidebar-menu button,
+.clawtalk-sidebar-submenu button {
+  border: 0;
+  background: transparent;
+  padding: 0.5rem 0.65rem;
+  text-align: left;
+  border-radius: 8px;
+  cursor: pointer;
+  color: #31415f;
+}
+
+.clawtalk-sidebar-menu button:hover,
+.clawtalk-sidebar-submenu button:hover {
+  background: rgba(67, 104, 184, 0.08);
+}
+
+.clawtalk-sidebar-menu button.danger {
+  color: #922626;
+}
+
+.clawtalk-sidebar-row-dragging {
+  opacity: 0.72;
+}
+
+.clawtalk-sidebar-drop-target {
+  outline: 2px solid #86aefb;
+  outline-offset: 2px;
+  border-radius: 14px;
 }
 
 .clawtalk-talk-link-title {
@@ -165,6 +398,7 @@ a {
   display: flex;
   flex-direction: column;
   gap: 1rem;
+  min-height: 0;
 }
 
 .app-main-topbar {
@@ -176,8 +410,16 @@ a {
 
 .app-main-content {
   min-width: 0;
+  min-height: 0;
+  flex: 1;
   display: grid;
   align-content: start;
+}
+
+.app-main-content-talk {
+  display: flex;
+  overflow: hidden;
+  align-content: stretch;
 }
 
 .app-user-meta {
@@ -622,8 +864,12 @@ a {
 }
 
 .talk-detail-shell {
-  display: grid;
-  gap: 0.75rem;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  padding: 0;
+  overflow: hidden;
+  display: flex;
 }
 
 .page-header {
@@ -864,9 +1110,55 @@ a {
   margin: 0;
 }
 
-.talk-detail-shell {
+.talk-workspace {
+  width: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.talk-workspace-header {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  padding: 1rem 1rem 0;
+  background: #fff;
+  border-bottom: 1px solid #eef2fa;
+}
+
+.talk-workspace-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 1rem;
   display: grid;
+  align-content: start;
   gap: 1rem;
+}
+
+.talk-workspace-composer {
+  padding: 0.85rem 1rem 1rem;
+  border-top: 1px solid #eef2fa;
+  background: #fff;
+}
+
+.talk-page-header {
+  margin-bottom: 0;
+}
+
+.talk-page-heading {
+  min-width: 0;
+  flex: 1;
+}
+
+.talk-title-input {
+  width: min(100%, 34rem);
+  border: 1px solid #c8d3e9;
+  border-radius: 10px;
+  padding: 0.6rem 0.75rem;
+  font-size: 2rem;
+  font-weight: 700;
+  color: #1d2433;
 }
 
 .talk-status-strip {
@@ -1190,8 +1482,6 @@ a {
 .timeline {
   position: relative;
   min-height: 280px;
-  max-height: 65vh;
-  overflow-y: auto;
   border: 1px solid #e1e6f2;
   border-radius: 10px;
   padding: 0.75rem;
@@ -1348,6 +1638,19 @@ a {
     max-height: 240px;
   }
 
+  .app-main-content-talk {
+    overflow: visible;
+  }
+
+  .talk-detail-shell {
+    height: auto;
+    overflow: visible;
+  }
+
+  .talk-workspace-scroll {
+    max-height: none;
+  }
+
   .app-main-topbar {
     justify-content: space-between;
     align-items: flex-start;
@@ -1363,6 +1666,11 @@ a {
   .page-header {
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  .talk-title-input {
+    width: 100%;
+    font-size: 1.6rem;
   }
 
   .talk-create {

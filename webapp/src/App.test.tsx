@@ -89,24 +89,19 @@ describe('App', () => {
           },
         }),
       ],
-      '/api/v1/talks': [
+      '/api/v1/talks/sidebar': [
         jsonResponse(200, {
           ok: true,
           data: {
-            talks: [
+            items: [
               {
                 id: 'talk-1',
-                ownerId: 'u1',
+                type: 'talk',
                 title: 'Family Planning',
-                agents: ['Gemini', 'Opus4.6'],
                 status: 'active',
-                version: 1,
-                createdAt: '2026-03-04T00:00:00.000Z',
-                updatedAt: '2026-03-04T00:00:00.000Z',
-                accessRole: 'owner',
+                sortOrder: 0,
               },
             ],
-            page: { limit: 50, offset: 0, count: 1 },
           },
         }),
       ],
@@ -137,7 +132,7 @@ describe('App', () => {
           },
         }),
       ],
-      '/api/v1/talks': [
+      '/api/v1/talks/sidebar': [
         jsonResponse(401, {
           ok: false,
           error: {
@@ -181,12 +176,11 @@ describe('App', () => {
           },
         }),
       ],
-      '/api/v1/talks': [
+      '/api/v1/talks/sidebar': [
         jsonResponse(200, {
           ok: true,
           data: {
-            talks: [],
-            page: { limit: 50, offset: 0, count: 0 },
+            items: [],
           },
         }),
       ],
@@ -228,12 +222,11 @@ describe('App', () => {
           },
         }),
       ],
-      '/api/v1/talks': [
+      '/api/v1/talks/sidebar': [
         jsonResponse(200, {
           ok: true,
           data: {
-            talks: [],
-            page: { limit: 50, offset: 0, count: 0 },
+            items: [],
           },
         }),
       ],

@@ -632,7 +632,7 @@ export class DirectTalkExecutor implements TalkExecutor {
         );
       }
 
-        return this.executeClaudeDefaultAttempt(
+      return this.executeClaudeDefaultAttempt(
         {
           input,
           agentId: resolved.agent.id,

@@ -437,9 +437,20 @@ export function markDeviceAuthCodeCompleted(input: {
 export interface TalkRecord {
   id: string;
   owner_id: string;
+  folder_id: string | null;
+  sort_order: number;
   topic_title: string | null;
   status: 'active' | 'paused' | 'archived';
   version: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface TalkFolderRecord {
+  id: string;
+  owner_id: string;
+  title: string;
+  sort_order: number;
   created_at: string;
   updated_at: string;
 }
@@ -465,6 +476,26 @@ export interface TalkListPage {
   offset: number;
 }
 
+export interface TalkSidebarTalkRecord {
+  id: string;
+  owner_id: string;
+  folder_id: string | null;
+  sort_order: number;
+  topic_title: string | null;
+  status: 'active' | 'paused' | 'archived';
+  version: number;
+  created_at: string;
+  updated_at: string;
+  access_role: TalkAccessLevel;
+  llm_policy: string | null;
+}
+
+export interface TalkSidebarTreeRecord {
+  folders: TalkFolderRecord[];
+  rootTalks: TalkSidebarTalkRecord[];
+  talksByFolderId: Record<string, TalkSidebarTalkRecord[]>;
+}
+
 export function normalizeTalkListPage(input?: {
   limit?: number;
   offset?: number;
@@ -480,28 +511,189 @@ export function normalizeTalkListPage(input?: {
   return { limit, offset };
 }
 
+function bumpRootSortOrders(ownerId: string): void {
+  getDb()
+    .prepare(
+      `
+      UPDATE talks
+      SET sort_order = sort_order + 1
+      WHERE owner_id = ? AND folder_id IS NULL
+    `,
+    )
+    .run(ownerId);
+  getDb()
+    .prepare(
+      `
+      UPDATE talk_folders
+      SET sort_order = sort_order + 1
+      WHERE owner_id = ?
+    `,
+    )
+    .run(ownerId);
+}
+
+function writeRootSidebarOrder(
+  ownerId: string,
+  items: Array<{ type: 'talk' | 'folder'; id: string }>,
+): void {
+  const updateTalk = getDb().prepare(
+    `
+      UPDATE talks
+      SET sort_order = ?
+      WHERE id = ? AND owner_id = ? AND folder_id IS NULL
+    `,
+  );
+  const updateFolder = getDb().prepare(
+    `
+      UPDATE talk_folders
+      SET sort_order = ?
+      WHERE id = ? AND owner_id = ?
+    `,
+  );
+  items.forEach((item, index) => {
+    if (item.type === 'talk') {
+      updateTalk.run(index, item.id, ownerId);
+    } else {
+      updateFolder.run(index, item.id, ownerId);
+    }
+  });
+}
+
+function writeFolderTalkOrder(
+  ownerId: string,
+  folderId: string,
+  talkIds: string[],
+): void {
+  const updateTalk = getDb().prepare(
+    `
+      UPDATE talks
+      SET sort_order = ?
+      WHERE id = ? AND owner_id = ? AND folder_id = ?
+    `,
+  );
+  talkIds.forEach((talkId, index) => {
+    updateTalk.run(index, talkId, ownerId, folderId);
+  });
+}
+
+function listOwnedRootSidebarItems(ownerId: string): Array<{
+  type: 'talk' | 'folder';
+  id: string;
+  sort_order: number;
+}> {
+  return getDb()
+    .prepare(
+      `
+      SELECT 'talk' AS type, id, sort_order
+      FROM talks
+      WHERE owner_id = ? AND folder_id IS NULL
+      UNION ALL
+      SELECT 'folder' AS type, id, sort_order
+      FROM talk_folders
+      WHERE owner_id = ?
+      ORDER BY sort_order ASC, id ASC
+    `,
+    )
+    .all(ownerId, ownerId) as Array<{
+    type: 'talk' | 'folder';
+    id: string;
+    sort_order: number;
+  }>;
+}
+
+function listOwnedFolderTalkIds(ownerId: string, folderId: string): string[] {
+  return getDb()
+    .prepare(
+      `
+      SELECT id
+      FROM talks
+      WHERE owner_id = ? AND folder_id = ?
+      ORDER BY sort_order ASC, created_at ASC, id ASC
+    `,
+    )
+    .all(ownerId, folderId)
+    .map((row) => (row as { id: string }).id);
+}
+
+function getTalkFolderByIdForOwner(
+  folderId: string,
+  ownerId: string,
+): TalkFolderRecord | undefined {
+  return getDb()
+    .prepare(
+      `
+      SELECT *
+      FROM talk_folders
+      WHERE id = ? AND owner_id = ?
+      LIMIT 1
+    `,
+    )
+    .get(folderId, ownerId) as TalkFolderRecord | undefined;
+}
+
+function appendTalksToTopLevel(ownerId: string, talkIds: string[]): void {
+  if (talkIds.length === 0) return;
+  const maxRootTalk = getDb()
+    .prepare(
+      `
+      SELECT COALESCE(MAX(sort_order), -1) AS value
+      FROM talks
+      WHERE owner_id = ? AND folder_id IS NULL
+    `,
+    )
+    .get(ownerId) as { value: number };
+  const maxRootFolder = getDb()
+    .prepare(
+      `
+      SELECT COALESCE(MAX(sort_order), -1) AS value
+      FROM talk_folders
+      WHERE owner_id = ?
+    `,
+    )
+    .get(ownerId) as { value: number };
+  let nextSort = Math.max(maxRootTalk.value, maxRootFolder.value) + 1;
+  const update = getDb().prepare(
+    `
+      UPDATE talks
+      SET folder_id = NULL, sort_order = ?, updated_at = ?
+      WHERE id = ? AND owner_id = ?
+    `,
+  );
+  const now = new Date().toISOString();
+  talkIds.forEach((talkId) => {
+    update.run(nextSort, now, talkId, ownerId);
+    nextSort += 1;
+  });
+}
+
 export function createTalk(input: {
   id: string;
   ownerId: string;
   topicTitle?: string;
   status?: 'active' | 'paused' | 'archived';
 }): void {
-  const now = new Date().toISOString();
-  getDb()
-    .prepare(
-      `
-    INSERT INTO talks (id, owner_id, topic_title, status, version, created_at, updated_at)
-    VALUES (?, ?, ?, ?, 1, ?, ?)
-  `,
-    )
-    .run(
-      input.id,
-      input.ownerId,
-      input.topicTitle || null,
-      input.status || 'active',
-      now,
-      now,
-    );
+  const tx = getDb().transaction((txInput: typeof input) => {
+    const now = new Date().toISOString();
+    bumpRootSortOrders(txInput.ownerId);
+    getDb()
+      .prepare(
+        `
+      INSERT INTO talks (
+        id, owner_id, folder_id, sort_order, topic_title, status, version, created_at, updated_at
+      )
+      VALUES (?, ?, NULL, 0, ?, ?, 1, ?, ?)
+    `,
+      )
+      .run(
+        txInput.id,
+        txInput.ownerId,
+        txInput.topicTitle || null,
+        txInput.status || 'active',
+        now,
+        now,
+      );
+  });
+  tx(input);
 }
 
 export function getTalkById(talkId: string): TalkRecord | undefined {
@@ -520,6 +712,7 @@ export function listTalksForUser(input: {
   userId: string;
   limit?: number;
   offset?: number;
+  status?: 'active' | 'paused' | 'archived';
 }): TalkWithAccessRecord[] {
   const user = getUserById(input.userId);
   if (!user || user.is_active !== 1) return [];
@@ -527,6 +720,7 @@ export function listTalksForUser(input: {
     limit: input.limit,
     offset: input.offset,
   });
+  const statusFilter = input.status ?? null;
 
   if (user.role === 'owner' || user.role === 'admin') {
     // Global admin/owner role is authoritative here; membership role is not surfaced.
@@ -535,11 +729,13 @@ export function listTalksForUser(input: {
       .prepare(
         `
         SELECT t.id, t.owner_id, t.topic_title, t.status, t.version, t.created_at, t.updated_at,
+               t.folder_id, t.sort_order,
                p.llm_policy,
                CASE WHEN t.owner_id = ? THEN 'owner' ELSE ? END AS access_role
         FROM talks t
         LEFT JOIN talk_llm_policies p
           ON p.talk_id = t.id
+        WHERE (? IS NULL OR t.status = ?)
         ORDER BY t.updated_at DESC, t.created_at DESC
         LIMIT ? OFFSET ?
       `,
@@ -547,6 +743,8 @@ export function listTalksForUser(input: {
       .all(
         input.userId,
         accessRole,
+        statusFilter,
+        statusFilter,
         page.limit,
         page.offset,
       ) as TalkWithAccessRecord[];
@@ -558,6 +756,8 @@ export function listTalksForUser(input: {
       SELECT DISTINCT
         t.id,
         t.owner_id,
+        t.folder_id,
+        t.sort_order,
         t.topic_title,
         t.status,
         t.version,
@@ -571,7 +771,8 @@ export function listTalksForUser(input: {
        AND tm.user_id = ?
       LEFT JOIN talk_llm_policies p
         ON p.talk_id = t.id
-      WHERE t.owner_id = ? OR tm.user_id = ?
+      WHERE (t.owner_id = ? OR tm.user_id = ?)
+        AND (? IS NULL OR t.status = ?)
       ORDER BY t.updated_at DESC, t.created_at DESC
       LIMIT ? OFFSET ?
     `,
@@ -581,6 +782,8 @@ export function listTalksForUser(input: {
       input.userId,
       input.userId,
       input.userId,
+      statusFilter,
+      statusFilter,
       page.limit,
       page.offset,
     ) as TalkWithAccessRecord[];
@@ -599,6 +802,7 @@ export function getTalkForUser(
       .prepare(
         `
         SELECT t.id, t.owner_id, t.topic_title, t.status, t.version, t.created_at, t.updated_at,
+               t.folder_id, t.sort_order,
                p.llm_policy,
                CASE WHEN t.owner_id = ? THEN 'owner' ELSE ? END AS access_role
         FROM talks t
@@ -620,6 +824,8 @@ export function getTalkForUser(
       SELECT
         t.id,
         t.owner_id,
+        t.folder_id,
+        t.sort_order,
         t.topic_title,
         t.status,
         t.version,
@@ -654,8 +860,10 @@ export function upsertTalk(input: {
   getDb()
     .prepare(
       `
-    INSERT INTO talks (id, owner_id, topic_title, status, version, created_at, updated_at)
-    VALUES (?, ?, ?, ?, 1, ?, ?)
+    INSERT INTO talks (
+      id, owner_id, folder_id, sort_order, topic_title, status, version, created_at, updated_at
+    )
+    VALUES (?, ?, NULL, 0, ?, ?, 1, ?, ?)
     ON CONFLICT(id) DO UPDATE SET
       topic_title = excluded.topic_title,
       status = excluded.status,
@@ -671,6 +879,320 @@ export function upsertTalk(input: {
       now,
       now,
     );
+}
+
+export function listTalkFoldersForOwner(ownerId: string): TalkFolderRecord[] {
+  return getDb()
+    .prepare(
+      `
+      SELECT *
+      FROM talk_folders
+      WHERE owner_id = ?
+      ORDER BY sort_order ASC, created_at ASC, id ASC
+    `,
+    )
+    .all(ownerId) as TalkFolderRecord[];
+}
+
+export function createTalkFolder(input: {
+  id: string;
+  ownerId: string;
+  title: string;
+}): TalkFolderRecord {
+  const tx = getDb().transaction((txInput: typeof input) => {
+    const now = new Date().toISOString();
+    bumpRootSortOrders(txInput.ownerId);
+    getDb()
+      .prepare(
+        `
+        INSERT INTO talk_folders (id, owner_id, title, sort_order, created_at, updated_at)
+        VALUES (?, ?, ?, 0, ?, ?)
+      `,
+      )
+      .run(txInput.id, txInput.ownerId, txInput.title, now, now);
+    return getTalkFolderByIdForOwner(txInput.id, txInput.ownerId)!;
+  });
+  return tx(input);
+}
+
+export function renameTalkFolder(input: {
+  id: string;
+  ownerId: string;
+  title: string;
+}): TalkFolderRecord | undefined {
+  getDb()
+    .prepare(
+      `
+      UPDATE talk_folders
+      SET title = ?, updated_at = ?
+      WHERE id = ? AND owner_id = ?
+    `,
+    )
+    .run(input.title, new Date().toISOString(), input.id, input.ownerId);
+  return getTalkFolderByIdForOwner(input.id, input.ownerId);
+}
+
+export function deleteTalkFolderAndMoveTalksToTopLevel(input: {
+  id: string;
+  ownerId: string;
+}): boolean {
+  const tx = getDb().transaction((txInput: typeof input) => {
+    const folder = getTalkFolderByIdForOwner(txInput.id, txInput.ownerId);
+    if (!folder) return false;
+    const talkIds = listOwnedFolderTalkIds(txInput.ownerId, txInput.id);
+    appendTalksToTopLevel(txInput.ownerId, talkIds);
+    getDb()
+      .prepare('DELETE FROM talk_folders WHERE id = ? AND owner_id = ?')
+      .run(txInput.id, txInput.ownerId);
+    const remainingRoot = listOwnedRootSidebarItems(txInput.ownerId).map((item) => ({
+      type: item.type,
+      id: item.id,
+    }));
+    writeRootSidebarOrder(txInput.ownerId, remainingRoot);
+    return true;
+  });
+  return tx(input);
+}
+
+export function patchTalkMetadata(input: {
+  talkId: string;
+  ownerId: string;
+  title?: string;
+  folderId?: string | null;
+}): TalkRecord | undefined {
+  const tx = getDb().transaction((txInput: typeof input) => {
+    const talk = getTalkById(txInput.talkId);
+    if (!talk || talk.owner_id !== txInput.ownerId) return undefined;
+
+    const nextFolderId =
+      txInput.folderId === undefined ? talk.folder_id : txInput.folderId;
+    if (nextFolderId !== null && nextFolderId !== talk.folder_id) {
+      const folder = getTalkFolderByIdForOwner(nextFolderId, txInput.ownerId);
+      if (!folder) return undefined;
+    }
+
+    const now = new Date().toISOString();
+    if (txInput.title !== undefined) {
+      getDb()
+        .prepare(
+          `
+          UPDATE talks
+          SET topic_title = ?, updated_at = ?, version = version + 1
+          WHERE id = ? AND owner_id = ?
+        `,
+        )
+        .run(txInput.title || null, now, txInput.talkId, txInput.ownerId);
+    }
+
+    if (txInput.folderId !== undefined && txInput.folderId !== talk.folder_id) {
+      const oldFolderId = talk.folder_id;
+      const oldRootItems =
+        oldFolderId === null
+          ? listOwnedRootSidebarItems(txInput.ownerId)
+              .filter((item) => !(item.type === 'talk' && item.id === txInput.talkId))
+              .map((item) => ({ type: item.type, id: item.id }))
+          : null;
+      const oldFolderItems =
+        oldFolderId !== null
+          ? listOwnedFolderTalkIds(txInput.ownerId, oldFolderId).filter(
+              (id) => id !== txInput.talkId,
+            )
+          : null;
+      if (oldRootItems) {
+        writeRootSidebarOrder(txInput.ownerId, oldRootItems);
+      }
+      if (oldFolderItems && oldFolderId) {
+        writeFolderTalkOrder(txInput.ownerId, oldFolderId, oldFolderItems);
+      }
+
+      if (txInput.folderId === null) {
+        appendTalksToTopLevel(txInput.ownerId, [txInput.talkId]);
+      } else {
+        const folderTalkIds = listOwnedFolderTalkIds(txInput.ownerId, txInput.folderId);
+        getDb()
+          .prepare(
+            `
+            UPDATE talks
+            SET folder_id = ?, sort_order = ?, updated_at = ?, version = version + 1
+            WHERE id = ? AND owner_id = ?
+          `,
+          )
+          .run(
+            txInput.folderId,
+            folderTalkIds.length,
+            now,
+            txInput.talkId,
+            txInput.ownerId,
+          );
+      }
+    }
+
+    return getTalkById(txInput.talkId);
+  });
+  return tx(input);
+}
+
+export function deleteTalkForOwner(input: {
+  talkId: string;
+  ownerId: string;
+}): boolean {
+  const tx = getDb().transaction((txInput: typeof input) => {
+    const talk = getTalkById(txInput.talkId);
+    if (!talk || talk.owner_id !== txInput.ownerId) return false;
+    const oldFolderId = talk.folder_id;
+    getDb()
+      .prepare('DELETE FROM talks WHERE id = ? AND owner_id = ?')
+      .run(txInput.talkId, txInput.ownerId);
+    if (oldFolderId === null) {
+      const remaining = listOwnedRootSidebarItems(txInput.ownerId).map((item) => ({
+        type: item.type,
+        id: item.id,
+      }));
+      writeRootSidebarOrder(txInput.ownerId, remaining);
+    } else {
+      const remaining = listOwnedFolderTalkIds(txInput.ownerId, oldFolderId);
+      writeFolderTalkOrder(txInput.ownerId, oldFolderId, remaining);
+    }
+    return true;
+  });
+  return tx(input);
+}
+
+export function reorderTalkSidebarItem(input: {
+  ownerId: string;
+  itemType: 'talk' | 'folder';
+  itemId: string;
+  destinationFolderId: string | null;
+  destinationIndex: number;
+}): boolean {
+  const tx = getDb().transaction((txInput: typeof input) => {
+    if (txInput.itemType === 'folder' && txInput.destinationFolderId !== null) {
+      return false;
+    }
+
+    const talk = txInput.itemType === 'talk' ? getTalkById(txInput.itemId) : undefined;
+    const folder =
+      txInput.itemType === 'folder'
+        ? getTalkFolderByIdForOwner(txInput.itemId, txInput.ownerId)
+        : undefined;
+
+    if (txInput.itemType === 'talk') {
+      if (!talk || talk.owner_id !== txInput.ownerId) return false;
+      if (
+        txInput.destinationFolderId !== null &&
+        !getTalkFolderByIdForOwner(txInput.destinationFolderId, txInput.ownerId)
+      ) {
+        return false;
+      }
+    } else if (!folder) {
+      return false;
+    }
+
+    if (txInput.itemType === 'folder') {
+      const rootItems = listOwnedRootSidebarItems(txInput.ownerId)
+        .filter((item) => !(item.type === 'folder' && item.id === txInput.itemId))
+        .map((item) => ({ type: item.type, id: item.id }));
+      const index = Math.max(0, Math.min(txInput.destinationIndex, rootItems.length));
+      rootItems.splice(index, 0, { type: 'folder', id: txInput.itemId });
+      writeRootSidebarOrder(txInput.ownerId, rootItems);
+      return true;
+    }
+
+    const sourceFolderId = talk!.folder_id;
+    if (sourceFolderId === txInput.destinationFolderId) {
+      if (sourceFolderId === null) {
+        const rootItems = listOwnedRootSidebarItems(txInput.ownerId)
+          .filter((item) => !(item.type === 'talk' && item.id === txInput.itemId))
+          .map((item) => ({ type: item.type, id: item.id }));
+        const index = Math.max(0, Math.min(txInput.destinationIndex, rootItems.length));
+        rootItems.splice(index, 0, { type: 'talk', id: txInput.itemId });
+        writeRootSidebarOrder(txInput.ownerId, rootItems);
+      } else {
+        const talkIds = listOwnedFolderTalkIds(txInput.ownerId, sourceFolderId).filter(
+          (id) => id !== txInput.itemId,
+        );
+        const index = Math.max(0, Math.min(txInput.destinationIndex, talkIds.length));
+        talkIds.splice(index, 0, txInput.itemId);
+        writeFolderTalkOrder(txInput.ownerId, sourceFolderId, talkIds);
+      }
+      return true;
+    }
+
+    if (sourceFolderId === null) {
+      const rootItems = listOwnedRootSidebarItems(txInput.ownerId)
+        .filter((item) => !(item.type === 'talk' && item.id === txInput.itemId))
+        .map((item) => ({ type: item.type, id: item.id }));
+      writeRootSidebarOrder(txInput.ownerId, rootItems);
+    } else {
+      const sourceTalkIds = listOwnedFolderTalkIds(txInput.ownerId, sourceFolderId).filter(
+        (id) => id !== txInput.itemId,
+      );
+      writeFolderTalkOrder(txInput.ownerId, sourceFolderId, sourceTalkIds);
+    }
+
+    const now = new Date().toISOString();
+    if (txInput.destinationFolderId === null) {
+      const rootItems = listOwnedRootSidebarItems(txInput.ownerId).map((item) => ({
+        type: item.type,
+        id: item.id,
+      }));
+      const index = Math.max(0, Math.min(txInput.destinationIndex, rootItems.length));
+      rootItems.splice(index, 0, { type: 'talk', id: txInput.itemId });
+      getDb()
+        .prepare(
+          `
+          UPDATE talks
+          SET folder_id = NULL, updated_at = ?, version = version + 1
+          WHERE id = ? AND owner_id = ?
+        `,
+        )
+        .run(now, txInput.itemId, txInput.ownerId);
+      writeRootSidebarOrder(txInput.ownerId, rootItems);
+    } else {
+      const talkIds = listOwnedFolderTalkIds(txInput.ownerId, txInput.destinationFolderId);
+      const index = Math.max(0, Math.min(txInput.destinationIndex, talkIds.length));
+      talkIds.splice(index, 0, txInput.itemId);
+      getDb()
+        .prepare(
+          `
+          UPDATE talks
+          SET folder_id = ?, updated_at = ?, version = version + 1
+          WHERE id = ? AND owner_id = ?
+        `,
+        )
+        .run(txInput.destinationFolderId, now, txInput.itemId, txInput.ownerId);
+      writeFolderTalkOrder(txInput.ownerId, txInput.destinationFolderId, talkIds);
+    }
+    return true;
+  });
+  return tx(input);
+}
+
+export function listTalkSidebarTreeForUser(userId: string): TalkSidebarTreeRecord {
+  const folders = listTalkFoldersForOwner(userId);
+  // Sidebar trees stay intentionally small in v1; this ceiling avoids pulling an
+  // unbounded root list while still covering normal usage comfortably.
+  const talks = listTalksForUser({
+    userId,
+    limit: 1000,
+    offset: 0,
+    status: 'active',
+  }) as TalkSidebarTalkRecord[];
+  const rootTalks = talks
+    .filter((talk) => talk.folder_id === null)
+    .sort((a, b) => a.sort_order - b.sort_order || a.created_at.localeCompare(b.created_at));
+  const talksByFolderId = folders.reduce<Record<string, TalkSidebarTalkRecord[]>>(
+    (acc, folder) => {
+      acc[folder.id] = talks
+        .filter((talk) => talk.folder_id === folder.id)
+        .sort(
+          (a, b) => a.sort_order - b.sort_order || a.created_at.localeCompare(b.created_at),
+        );
+      return acc;
+    },
+    {},
+  );
+  return { folders, rootTalks, talksByFolderId };
 }
 
 export function upsertTalkMember(input: {
@@ -952,7 +1474,10 @@ export function enqueueTalkTurnAtomic(input: {
       runs: TalkRunRecord[];
     } => {
       const now = txInput.now || new Date().toISOString();
-      if (txInput.runIds.length === 0 || txInput.runIds.length !== txInput.targetAgentIds.length) {
+      if (
+        txInput.runIds.length === 0 ||
+        txInput.runIds.length !== txInput.targetAgentIds.length
+      ) {
         throw new Error('talk turn requires one run id per target agent');
       }
 
@@ -987,8 +1512,7 @@ export function enqueueTalkTurnAtomic(input: {
         status: 'queued',
         trigger_message_id: txInput.messageId,
         target_agent_id: txInput.targetAgentIds[index] || null,
-        idempotency_key:
-          index === 0 ? txInput.idempotencyKey || null : null,
+        idempotency_key: index === 0 ? txInput.idempotencyKey || null : null,
         executor_alias: null,
         executor_model: null,
         created_at: now,
