@@ -17,6 +17,7 @@ import {
 } from './db.js';
 import {
   _initClawrocketTestSchema,
+  appendRuntimeTalkMessage,
   appendOutboxEvent,
   canUserEditTalk,
   cancelTalkRunsAtomic,
@@ -689,6 +690,91 @@ describe('phase 0 schema and reliability tables', () => {
       beforeCreatedAt: '2024-01-01T00:00:01.000Z',
     });
     expect(before.map((message) => message.id)).toEqual(['tm-1']);
+  });
+
+  it('orders same-timestamp talk messages by sequence_in_run and includes runtime metadata in outbox events', () => {
+    createTalkRun({
+      id: 'run-seq-1',
+      talk_id: 'talk-1',
+      requested_by: 'owner-1',
+      status: 'running',
+      trigger_message_id: null,
+      target_agent_id: 'agent-default',
+      idempotency_key: null,
+      executor_alias: null,
+      executor_model: null,
+      created_at: '2024-01-01T00:00:01.000Z',
+      started_at: '2024-01-01T00:00:01.500Z',
+      ended_at: null,
+      cancel_reason: null,
+    });
+
+    createTalkMessage({
+      id: 'tm-seq-user',
+      talkId: 'talk-1',
+      role: 'user',
+      content: 'trigger',
+      createdBy: 'owner-1',
+      createdAt: '2024-01-01T00:00:02.000Z',
+    });
+
+    appendRuntimeTalkMessage({
+      id: 'tm-seq-assistant',
+      talkId: 'talk-1',
+      runId: 'run-seq-1',
+      role: 'assistant',
+      content: 'Checking connector data',
+      sequenceInRun: 1,
+      metadataJson: JSON.stringify({
+        kind: 'assistant_tool_use',
+        agentId: 'agent-1',
+        agentNickname: 'Opus',
+      }),
+      createdAt: '2024-01-01T00:00:02.000Z',
+    });
+
+    appendRuntimeTalkMessage({
+      id: 'tm-seq-tool',
+      talkId: 'talk-1',
+      runId: 'run-seq-1',
+      role: 'tool',
+      content: 'Returned 12 rows',
+      sequenceInRun: 2,
+      metadataJson: JSON.stringify({
+        kind: 'tool_result',
+        toolName: 'connector_posthog__query',
+      }),
+      createdAt: '2024-01-01T00:00:02.000Z',
+    });
+
+    const messages = listTalkMessages({ talkId: 'talk-1', limit: 10 });
+    expect(messages.map((message) => message.id)).toEqual([
+      'tm-seq-user',
+      'tm-seq-assistant',
+      'tm-seq-tool',
+    ]);
+
+    const events = getOutboxEventsForTopics(['talk:talk-1'], 0, 20)
+      .filter((event) => event.event_type === 'message_appended')
+      .map((event) => JSON.parse(event.payload) as Record<string, unknown>);
+    const assistantEvent = events.find(
+      (event) => event.messageId === 'tm-seq-assistant',
+    );
+    const toolEvent = events.find((event) => event.messageId === 'tm-seq-tool');
+
+    expect(assistantEvent?.metadata).toMatchObject({
+      kind: 'assistant_tool_use',
+      agentId: 'agent-1',
+      agentNickname: 'Opus',
+    });
+    expect(assistantEvent).toMatchObject({
+      agentId: 'agent-1',
+      agentNickname: 'Opus',
+    });
+    expect(toolEvent?.metadata).toMatchObject({
+      kind: 'tool_result',
+      toolName: 'connector_posthog__query',
+    });
   });
 
   it('atomically enqueues talk turn with message, run, and outbox events', () => {

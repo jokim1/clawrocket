@@ -1434,6 +1434,7 @@ export interface TalkMessageRecord {
   created_at: string;
   run_id: string | null;
   metadata_json: string | null;
+  sequence_in_run: number | null;
 }
 
 export function createTalkMessage(input: {
@@ -1444,14 +1445,15 @@ export function createTalkMessage(input: {
   createdBy?: string | null;
   runId?: string | null;
   metadataJson?: string | null;
+  sequenceInRun?: number | null;
   createdAt?: string;
 }): void {
   getDb()
     .prepare(
       `
     INSERT INTO talk_messages (
-      id, talk_id, role, content, created_by, created_at, run_id, metadata_json
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      id, talk_id, role, content, created_by, created_at, run_id, metadata_json, sequence_in_run
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
   `,
     )
     .run(
@@ -1463,7 +1465,41 @@ export function createTalkMessage(input: {
       input.createdAt || new Date().toISOString(),
       input.runId || null,
       input.metadataJson || null,
+      input.sequenceInRun ?? null,
     );
+}
+
+function parseMessageMetadataJson(
+  metadataJson: string | null | undefined,
+): Record<string, unknown> | null {
+  if (!metadataJson) return null;
+  try {
+    const parsed = JSON.parse(metadataJson) as unknown;
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function extractMessageActorFromMetadata(
+  metadata: Record<string, unknown> | null,
+): { agentId: string | null; agentNickname: string | null } {
+  if (!metadata) {
+    return { agentId: null, agentNickname: null };
+  }
+
+  const agentId =
+    typeof metadata.agentId === 'string' ? metadata.agentId : null;
+  const agentNickname =
+    typeof metadata.agentNickname === 'string'
+      ? metadata.agentNickname
+      : typeof metadata.agentName === 'string'
+        ? metadata.agentName
+        : null;
+
+  return { agentId, agentNickname };
 }
 
 export function listTalkMessages(input: {
@@ -1480,11 +1516,11 @@ export function listTalkMessages(input: {
   const rows = getDb()
     .prepare(
       `
-      SELECT id, talk_id, role, content, created_by, created_at, run_id, metadata_json
+      SELECT id, talk_id, role, content, created_by, created_at, run_id, metadata_json, sequence_in_run
       FROM talk_messages
       WHERE talk_id = ?
         AND (? IS NULL OR created_at < ?)
-      ORDER BY created_at DESC
+      ORDER BY created_at DESC, COALESCE(sequence_in_run, 0) DESC, id DESC
       LIMIT ?
     `,
     )
@@ -1549,6 +1585,7 @@ export function enqueueTalkTurnAtomic(input: {
         created_at: now,
         run_id: null,
         metadata_json: null,
+        sequence_in_run: null,
       };
 
       const runs: TalkRunRecord[] = txInput.runIds.map((runId, index) => ({
@@ -2069,10 +2106,12 @@ export function appendAssistantMessageWithOutbox(input: {
   metadataJson?: string | null;
   agentId?: string | null;
   agentNickname?: string | null;
+  sequenceInRun?: number | null;
   createdAt?: string;
 }): TalkMessageRecord {
   const tx = getDb().transaction((txInput: typeof input): TalkMessageRecord => {
     const createdAt = txInput.createdAt || new Date().toISOString();
+    const metadata = parseMessageMetadataJson(txInput.metadataJson);
     const message: TalkMessageRecord = {
       id: txInput.messageId,
       talk_id: txInput.talkId,
@@ -2082,6 +2121,7 @@ export function appendAssistantMessageWithOutbox(input: {
       created_at: createdAt,
       run_id: txInput.runId,
       metadata_json: txInput.metadataJson || null,
+      sequence_in_run: txInput.sequenceInRun ?? null,
     };
 
     createTalkMessage({
@@ -2092,6 +2132,7 @@ export function appendAssistantMessageWithOutbox(input: {
       createdBy: null,
       runId: message.run_id,
       metadataJson: message.metadata_json,
+      sequenceInRun: message.sequence_in_run,
       createdAt: message.created_at,
     });
 
@@ -2116,6 +2157,77 @@ export function appendAssistantMessageWithOutbox(input: {
           createdAt,
           agentId: txInput.agentId || null,
           agentNickname: txInput.agentNickname || null,
+          metadata,
+        }),
+        createdAt,
+      );
+
+    return message;
+  });
+
+  return tx(input);
+}
+
+export function appendRuntimeTalkMessage(input: {
+  id: string;
+  talkId: string;
+  runId: string;
+  role: 'assistant' | 'tool';
+  content: string;
+  metadataJson?: string | null;
+  sequenceInRun: number;
+  createdAt?: string;
+}): TalkMessageRecord {
+  const tx = getDb().transaction((txInput: typeof input): TalkMessageRecord => {
+    const createdAt = txInput.createdAt || new Date().toISOString();
+    const metadata = parseMessageMetadataJson(txInput.metadataJson);
+    const actor = extractMessageActorFromMetadata(metadata);
+    const message: TalkMessageRecord = {
+      id: txInput.id,
+      talk_id: txInput.talkId,
+      role: txInput.role,
+      content: txInput.content,
+      created_by: null,
+      created_at: createdAt,
+      run_id: txInput.runId,
+      metadata_json: txInput.metadataJson || null,
+      sequence_in_run: txInput.sequenceInRun,
+    };
+
+    createTalkMessage({
+      id: message.id,
+      talkId: message.talk_id,
+      role: message.role,
+      content: message.content,
+      createdBy: null,
+      runId: message.run_id,
+      metadataJson: message.metadata_json,
+      sequenceInRun: message.sequence_in_run,
+      createdAt: message.created_at,
+    });
+
+    touchTalkUpdatedAt(txInput.talkId, createdAt);
+    getDb()
+      .prepare(
+        `
+        INSERT INTO event_outbox (topic, event_type, payload, created_at)
+        VALUES (?, ?, ?, ?)
+      `,
+      )
+      .run(
+        `talk:${txInput.talkId}`,
+        'message_appended',
+        JSON.stringify({
+          talkId: txInput.talkId,
+          messageId: txInput.id,
+          runId: txInput.runId,
+          role: txInput.role,
+          createdBy: null,
+          content: txInput.content,
+          createdAt,
+          agentId: actor.agentId,
+          agentNickname: actor.agentNickname,
+          metadata,
         }),
         createdAt,
       );

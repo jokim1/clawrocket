@@ -35,6 +35,7 @@ export interface LlmProviderModelRecord {
   display_name: string;
   context_window_tokens: number;
   default_max_output_tokens: number;
+  supports_tools: number;
   enabled: number;
   updated_at: string;
   updated_by: string | null;

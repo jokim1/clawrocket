@@ -69,6 +69,7 @@ export type TalkMessage = {
   runId: string | null;
   agentId?: string | null;
   agentNickname?: string | null;
+  metadata?: Record<string, unknown> | null;
 };
 
 export type TalkRun = {
@@ -146,6 +147,7 @@ export type AgentProviderCard = {
     displayName: string;
     contextWindowTokens: number;
     defaultMaxOutputTokens: number;
+    supportsTools?: boolean;
   }>;
 };
 
@@ -156,6 +158,7 @@ export type AiAgentsPageData = {
     displayName: string;
     contextWindowTokens: number;
     defaultMaxOutputTokens: number;
+    supportsTools?: boolean;
   }>;
   additionalProviders: AgentProviderCard[];
 };
@@ -186,6 +189,7 @@ export type TalkLlmProvider = {
     contextWindowTokens: number;
     defaultMaxOutputTokens: number;
     enabled: boolean;
+    supportsTools?: boolean;
   }>;
 };
 

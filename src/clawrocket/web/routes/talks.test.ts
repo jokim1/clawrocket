@@ -589,6 +589,61 @@ describe('talk routes', () => {
     expect(failedRun.targetAgentNickname).toBe(targetAgent.nickname);
   });
 
+  it('returns parsed talk message metadata for runtime messages', async () => {
+    createTalkRun({
+      id: 'run-runtime-meta',
+      talk_id: 'talk-owner',
+      requested_by: 'owner-1',
+      status: 'completed',
+      trigger_message_id: null,
+      target_agent_id: null,
+      idempotency_key: null,
+      executor_alias: null,
+      executor_model: null,
+      created_at: '2026-03-07T00:59:59.000Z',
+      started_at: '2026-03-07T00:59:59.500Z',
+      ended_at: '2026-03-07T01:00:01.000Z',
+      cancel_reason: null,
+    });
+
+    createTalkMessage({
+      id: 'msg-runtime-meta',
+      talkId: 'talk-owner',
+      role: 'assistant',
+      content: 'Checking PostHog',
+      createdBy: null,
+      runId: 'run-runtime-meta',
+      metadataJson: JSON.stringify({
+        kind: 'assistant_tool_use',
+        agentId: 'agent-runtime',
+        agentNickname: 'Opus',
+        displaySummary: 'Checking FTUE funnel',
+      }),
+      createdAt: '2026-03-07T01:00:00.000Z',
+    });
+
+    const messagesRes = await server.request('/api/v1/talks/talk-owner/messages', {
+      headers: {
+        Authorization: 'Bearer owner-token',
+      },
+    });
+    expect(messagesRes.status).toBe(200);
+    const messagesBody = (await messagesRes.json()) as any;
+    const runtimeMessage = messagesBody.data.messages.find(
+      (message: any) => message.id === 'msg-runtime-meta',
+    );
+
+    expect(runtimeMessage).toMatchObject({
+      id: 'msg-runtime-meta',
+      agentId: 'agent-runtime',
+      agentNickname: 'Opus',
+      metadata: {
+        kind: 'assistant_tool_use',
+        displaySummary: 'Checking FTUE funnel',
+      },
+    });
+  });
+
   it('requires editor permission to enqueue chat', async () => {
     const viewerRes = await server.request('/api/v1/talks/talk-owner/chat', {
       method: 'POST',

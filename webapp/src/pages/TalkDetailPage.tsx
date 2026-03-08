@@ -979,6 +979,7 @@ export function TalkDetailPage({
             runId: event.runId,
             agentId: event.agentId,
             agentNickname: event.agentNickname,
+            metadata: event.metadata,
           },
         });
       },

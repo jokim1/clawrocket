@@ -74,6 +74,7 @@ function validateTalkLlmSettingsPayload(input: PutTalkLlmSettingsInput):
           typeof model.defaultMaxOutputTokens === 'number'
             ? Math.max(1, Math.floor(model.defaultMaxOutputTokens))
             : 0,
+        supportsTools: model.supportsTools === true,
         enabled: model.enabled !== false,
       };
     });

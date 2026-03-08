@@ -14,6 +14,8 @@ import {
   getDefaultClaudeModelId,
   getDefaultRegisteredAgentId,
   listClaudeModelSuggestions,
+  listTalkLlmSettingsSnapshot,
+  replaceTalkLlmSettingsSnapshot,
   upsertKnownProviderCredential,
 } from './llm-accessors.js';
 
@@ -153,5 +155,79 @@ describe('registered agent accessors', () => {
       providerId: 'provider.anthropic',
       modelId: expectedModelId,
     });
+  });
+
+  it('marks known Claude suggestions as tool-capable and persists supportsTools for provider models', () => {
+    expect(listClaudeModelSuggestions().every((model) => model.supportsTools)).toBe(
+      true,
+    );
+
+    replaceTalkLlmSettingsSnapshot({
+      defaultRouteId: 'route.provider.custom',
+      providers: [
+        {
+          id: 'provider.custom-tools',
+          name: 'Custom Tools',
+          providerKind: 'custom',
+          apiFormat: 'openai_chat_completions',
+          baseUrl: 'https://example.com/v1',
+          authScheme: 'bearer',
+          enabled: true,
+          coreCompatibility: 'none',
+          responseStartTimeoutMs: null,
+          streamIdleTimeoutMs: null,
+          absoluteTimeoutMs: null,
+          models: [
+            {
+              modelId: 'tool-model',
+              displayName: 'Tool Model',
+              contextWindowTokens: 64000,
+              defaultMaxOutputTokens: 2048,
+              supportsTools: true,
+              enabled: true,
+            },
+            {
+              modelId: 'plain-model',
+              displayName: 'Plain Model',
+              contextWindowTokens: 32000,
+              defaultMaxOutputTokens: 1024,
+              supportsTools: false,
+              enabled: true,
+            },
+          ],
+        },
+      ],
+      routes: [
+        {
+          id: 'route.provider.custom',
+          name: 'Custom Route',
+          enabled: true,
+          steps: [
+            {
+              position: 0,
+              providerId: 'provider.custom-tools',
+              modelId: 'tool-model',
+            },
+          ],
+        },
+      ],
+    });
+
+    const snapshot = listTalkLlmSettingsSnapshot();
+    const provider = snapshot.providers.find(
+      (entry) => entry.id === 'provider.custom-tools',
+    );
+    expect(provider?.models).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          modelId: 'tool-model',
+          supportsTools: true,
+        }),
+        expect.objectContaining({
+          modelId: 'plain-model',
+          supportsTools: false,
+        }),
+      ]),
+    );
   });
 });

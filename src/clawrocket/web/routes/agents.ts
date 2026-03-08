@@ -21,6 +21,7 @@ export interface AiAgentsPageRecord {
     displayName: string;
     contextWindowTokens: number;
     defaultMaxOutputTokens: number;
+    supportsTools: boolean;
   }>;
   additionalProviders: AgentProviderCardSnapshot[];
 }
