@@ -145,6 +145,61 @@ describe('TalkDetailPage', () => {
     });
   });
 
+  it('shows unsaved draft agents in the Talk tab and blocks send until agent changes are saved', async () => {
+    const user = userEvent.setup();
+
+    installTalkDetailFetch({
+      messages: [],
+      runs: [],
+      talkAgents: [
+        buildTalkAgent({
+          id: 'agent-claude',
+          nickname: 'Claude Sonnet 4.6',
+          sourceKind: 'claude_default',
+          role: 'assistant',
+          isPrimary: true,
+          displayOrder: 0,
+          health: 'ready',
+          providerId: null,
+          modelId: 'claude-sonnet-4-6',
+          modelDisplayName: 'Claude Sonnet 4.6',
+        }),
+      ],
+    });
+
+    renderDetailPage('/app/talks/talk-1/agents');
+    await screen.findByRole('heading', { name: 'Agents' });
+
+    const footerSourceSelect = screen.getAllByLabelText('Source')[0];
+    await user.selectOptions(footerSourceSelect, 'provider.openai');
+    await user.selectOptions(screen.getAllByLabelText('Role')[1], 'critic');
+    await user.click(screen.getByRole('button', { name: 'Add Agent' }));
+
+    const tabs = within(screen.getByRole('navigation', { name: 'Talk sections' }));
+    await user.click(tabs.getByRole('link', { name: 'Talk' }));
+    await screen.findByLabelText('Talk timeline');
+
+    const statusPills = screen.getByRole('list', { name: 'Talk agent status' });
+    expect(within(statusPills).getByText('Claude Sonnet 4.6 (General)')).toBeTruthy();
+    expect(within(statusPills).getByText('GPT-5 Mini (Critic)')).toBeTruthy();
+
+    const targetGroup = screen.getByRole('group', { name: 'Selected agents' });
+    expect(
+      within(targetGroup).getByRole('button', { name: /Claude Sonnet 4\.6 \(General\)/i }),
+    ).toBeTruthy();
+    expect(
+      within(targetGroup).getByRole('button', { name: /GPT-5 Mini \(Critic\)/i }),
+    ).toBeTruthy();
+
+    expect(
+      screen.getByText('Save agent changes before sending a message.'),
+    ).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Send' })).toHaveAttribute('disabled');
+    expect(screen.getByPlaceholderText('Send a message to this talk')).toHaveAttribute(
+      'disabled',
+    );
+  });
+
   it('uses primary-target chips by default and sends plural targetAgentIds', async () => {
     const user = userEvent.setup();
     let sendBody:

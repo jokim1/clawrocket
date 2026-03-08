@@ -736,6 +736,34 @@ function buildTargetSelection(agents: TalkAgent[], current: string[]): string[] 
   return primary ? [primary.id] : agents[0] ? [agents[0].id] : [];
 }
 
+function serializeTalkAgentForDraftCompare(agent: TalkAgent): string {
+  return JSON.stringify({
+    id: agent.id,
+    nickname: agent.nickname,
+    nicknameMode: agent.nicknameMode,
+    sourceKind: agent.sourceKind,
+    providerId: agent.providerId,
+    modelId: agent.modelId,
+    modelDisplayName: agent.modelDisplayName,
+    role: agent.role,
+    isPrimary: agent.isPrimary,
+    displayOrder: agent.displayOrder,
+  });
+}
+
+function haveSameTalkAgentDraftState(left: TalkAgent[], right: TalkAgent[]): boolean {
+  if (left.length !== right.length) return false;
+  for (let index = 0; index < left.length; index += 1) {
+    if (
+      serializeTalkAgentForDraftCompare(left[index]) !==
+      serializeTalkAgentForDraftCompare(right[index])
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
 export function TalkDetailPage({
   onUnauthorized,
   titleOverride,
@@ -925,10 +953,6 @@ export function TalkDetailPage({
   }, [handleUnauthorized]);
 
   useEffect(() => {
-    setTargetAgentIds((current) => buildTargetSelection(agents, current));
-  }, [agents]);
-
-  useEffect(() => {
     if (state.kind !== 'ready') return;
     const stream = openTalkStream({
       talkId,
@@ -1094,21 +1118,21 @@ export function TalkDetailPage({
       }),
     [aiAgentsData, newAgentDraft.providerId, newAgentDraft.sourceKind],
   );
+  const hasUnsavedAgentChanges = useMemo(
+    () => !haveSameTalkAgentDraftState(agents, agentDrafts),
+    [agentDrafts, agents],
+  );
+  const effectiveAgents = hasUnsavedAgentChanges ? agentDrafts : agents;
+  useEffect(() => {
+    setTargetAgentIds((current) => buildTargetSelection(effectiveAgents, current));
+  }, [effectiveAgents]);
   const agentLabelById = useMemo(
     () =>
-      agents.reduce<Record<string, string>>((acc, agent) => {
+      effectiveAgents.reduce<Record<string, string>>((acc, agent) => {
         acc[agent.id] = buildAgentLabel(agent);
         return acc;
       }, {}),
-    [agents],
-  );
-  const draftAgentLabelById = useMemo(
-    () =>
-      agentDrafts.reduce<Record<string, string>>((acc, agent) => {
-        acc[agent.id] = buildAgentLabel(agent);
-        return acc;
-      }, {}),
-    [agentDrafts],
+    [effectiveAgents],
   );
   const messageLookup = useMemo(
     () => new Map(state.messages.map((message) => [message.id, message] as const)),
@@ -1185,6 +1209,14 @@ export function TalkDetailPage({
       dispatch({
         type: 'SEND_FAILED',
         message: 'Wait for the current round to finish or cancel it first.',
+        lastDraft: content,
+      });
+      return;
+    }
+    if (hasUnsavedAgentChanges) {
+      dispatch({
+        type: 'SEND_FAILED',
+        message: 'Save agent changes before sending a message.',
         lastDraft: content,
       });
       return;
@@ -1526,9 +1558,9 @@ export function TalkDetailPage({
                 </h1>
               )}
               <p>Event-authoritative live timeline.</p>
-              {agents.length > 0 ? (
+              {effectiveAgents.length > 0 ? (
                 <div className="talk-status-strip" role="list" aria-label="Talk agent status">
-                  {agents.map((agent) => (
+                  {effectiveAgents.map((agent) => (
                     <span
                       key={agent.id}
                       className={`talk-status-pill talk-status-pill-${agent.health}`}
@@ -1929,7 +1961,7 @@ export function TalkDetailPage({
         {currentTab === 'talk' ? (
           <form className="composer talk-workspace-composer" onSubmit={handleSend}>
             <div className="composer-targets" role="group" aria-label="Selected agents">
-              {agents.map((agent) => {
+              {effectiveAgents.map((agent) => {
                 const selected = targetAgentIds.includes(agent.id);
                 return (
                   <button
@@ -1962,7 +1994,9 @@ export function TalkDetailPage({
               placeholder="Send a message to this talk"
               rows={3}
               maxLength={TALK_MESSAGE_MAX_CHARS}
-              disabled={state.sendState.status === 'posting' || activeRound}
+              disabled={
+                state.sendState.status === 'posting' || activeRound || hasUnsavedAgentChanges
+              }
             />
 
             <div className="composer-controls">
@@ -1972,7 +2006,9 @@ export function TalkDetailPage({
               <button
                 type="submit"
                 className="primary-btn"
-                disabled={state.sendState.status === 'posting' || activeRound}
+                disabled={
+                  state.sendState.status === 'posting' || activeRound || hasUnsavedAgentChanges
+                }
               >
                 {state.sendState.status === 'posting' ? 'Sending…' : 'Send'}
               </button>
@@ -1992,6 +2028,12 @@ export function TalkDetailPage({
               <div className="inline-banner inline-banner-warning" role="status">
                 Wait for the current round to finish or cancel it before sending another
                 message.
+              </div>
+            ) : null}
+
+            {!activeRound && hasUnsavedAgentChanges ? (
+              <div className="inline-banner inline-banner-warning" role="status">
+                Save agent changes before sending a message.
               </div>
             ) : null}
 
