@@ -6,12 +6,11 @@ import {
   getTalkContext,
   getTalkContextSourceById,
   getTalkForUser,
+  markTalkContextSourcePending,
   listTalkContextRules,
-  listTalkContextSources,
   patchTalkContextRule,
   patchTalkContextSource,
   setTalkGoal,
-  updateSourceExtraction,
   type ContextRuleSnapshot,
   type ContextSourceSnapshot,
   type TalkContextSnapshot,
@@ -405,5 +404,40 @@ export function deleteTalkContextSourceRoute(input: {
   return {
     statusCode: 200,
     body: { ok: true, data: { deleted: true } },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// POST /talks/:talkId/context/sources/:sourceId/retry
+// ---------------------------------------------------------------------------
+
+export function retryTalkContextSourceRoute(input: {
+  auth: AuthContext;
+  talkId: string;
+  sourceId: string;
+}): {
+  statusCode: number;
+  body: ApiEnvelope<{ source: ContextSourceSnapshot }>;
+} {
+  const talk = talkOrNull(input.talkId, input.auth.userId);
+  if (!talk) return notFoundResponse('Talk not found.');
+  const denied = requireEditAccess(input.talkId, input.auth);
+  if (denied) return denied;
+
+  const existing = getTalkContextSourceById(input.sourceId, input.talkId);
+  if (!existing) return notFoundResponse('Source not found.');
+  if (existing.sourceType !== 'url' || !existing.sourceUrl) {
+    return badRequest(
+      'source_not_retryable',
+      'Only URL sources can be retried.',
+    );
+  }
+
+  const source = markTalkContextSourcePending(input.sourceId, input.talkId);
+  if (!source) return notFoundResponse('Source not found.');
+
+  return {
+    statusCode: 200,
+    body: { ok: true, data: { source } },
   };
 }

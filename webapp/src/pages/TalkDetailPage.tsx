@@ -16,12 +16,19 @@ import {
   attachTalkDataConnector,
   ApiError,
   cancelTalkRuns,
+  ChannelConnection,
+  ChannelQueueFailure,
+  ChannelTarget,
   ContextGoal,
   ContextRule,
   ContextSource,
+  createTalkChannel,
   createTalkContextRule,
   createTalkContextSource,
   DataConnector,
+  deleteTalkChannel,
+  deleteTalkChannelDeliveryFailure,
+  deleteTalkChannelIngressFailure,
   deleteTalkMessages,
   deleteTalkContextRule,
   deleteTalkContextSource,
@@ -33,16 +40,26 @@ import {
   getTalkContext,
   getTalkDataConnectors,
   getTalkRuns,
+  listChannelConnections,
+  listChannelTargets,
+  listTalkChannelDeliveryFailures,
+  listTalkChannelIngressFailures,
+  listTalkChannels,
   listTalkMessages,
+  patchTalkChannel,
   patchTalkContextRule,
-  patchTalkContextSource,
+  retryTalkChannelDeliveryFailure,
+  retryTalkChannelIngressFailure,
+  retryTalkContextSource,
   sendTalkMessage,
   setTalkGoal,
   Talk,
   TalkAgent,
+  TalkChannelBinding,
   TalkDataConnector,
   TalkMessage,
   TalkRun,
+  testTalkChannelBinding,
   updateTalkAgents,
   UnauthorizedError,
 } from '../lib/api';
@@ -62,7 +79,13 @@ import type {
   TalkStreamState,
 } from '../lib/talkStream';
 
-type TabKey = 'talk' | 'agents' | 'context' | 'data-connectors' | 'runs';
+type TabKey =
+  | 'talk'
+  | 'agents'
+  | 'context'
+  | 'channels'
+  | 'data-connectors'
+  | 'runs';
 
 type RunView = TalkRun & {
   updatedAt: number;
@@ -209,6 +232,35 @@ type AgentCreationDraft = {
   providerId: string | null;
   modelId: string;
   role: TalkAgent['role'];
+};
+
+type ChannelBindingDraft = {
+  displayName: string;
+  active: boolean;
+  responseMode: TalkChannelBinding['responseMode'];
+  responderMode: TalkChannelBinding['responderMode'];
+  responderAgentId: string;
+  deliveryMode: TalkChannelBinding['deliveryMode'];
+  channelContextNote: string;
+  inboundRateLimitPerMinute: string;
+  maxPendingEvents: string;
+  overflowPolicy: TalkChannelBinding['overflowPolicy'];
+  maxDeferredAgeMinutes: string;
+};
+
+type ChannelCreateDraft = {
+  connectionId: string;
+  targetKey: string;
+  displayName: string;
+  responseMode: TalkChannelBinding['responseMode'];
+  responderMode: TalkChannelBinding['responderMode'];
+  responderAgentId: string;
+  deliveryMode: TalkChannelBinding['deliveryMode'];
+  channelContextNote: string;
+  inboundRateLimitPerMinute: string;
+  maxPendingEvents: string;
+  overflowPolicy: TalkChannelBinding['overflowPolicy'];
+  maxDeferredAgeMinutes: string;
 };
 
 type TalkAgentSourceOption = {
@@ -622,6 +674,7 @@ function getTabFromPath(pathname: string, talkId: string): TabKey {
   const base = `/app/talks/${talkId}`;
   if (pathname === `${base}/agents`) return 'agents';
   if (pathname === `${base}/context`) return 'context';
+  if (pathname === `${base}/channels`) return 'channels';
   if (pathname === `${base}/data-connectors`) return 'data-connectors';
   if (pathname === `${base}/runs`) return 'runs';
   return 'talk';
@@ -667,11 +720,83 @@ function connectorStatusClass(
   }
 }
 
+function formatChannelPlatform(platform: ChannelConnection['platform']): string {
+  return platform === 'telegram' ? 'Telegram' : 'Slack';
+}
+
+function formatChannelReasonCode(value: string | null): string {
+  if (!value) return 'None';
+  switch (value) {
+    case 'overflow_drop_oldest':
+      return 'Dropped oldest queued message';
+    case 'overflow_drop_newest':
+      return 'Dropped newest queued message';
+    case 'overflow_no_evictable_row':
+      return 'Queue full while another item was processing';
+    case 'expired_while_busy':
+      return 'Dropped after waiting too long for the talk to become idle';
+    case 'binding_deactivated':
+      return 'Binding was deactivated';
+    case 'enqueue_invalid_state':
+      return 'Talk state prevented channel enqueue';
+    case 'delivery_retries_exhausted':
+      return 'Delivery retries exhausted';
+    default:
+      return value.replace(/_/g, ' ');
+  }
+}
+
 function formatDateTime(value: string | null): string {
   if (!value) return 'Never';
   const parsed = new Date(value);
   if (Number.isNaN(parsed.valueOf())) return value;
   return parsed.toLocaleString();
+}
+
+function buildChannelBindingDraft(binding: TalkChannelBinding): ChannelBindingDraft {
+  return {
+    displayName: binding.displayName,
+    active: binding.active,
+    responseMode: binding.responseMode,
+    responderMode: binding.responderMode,
+    responderAgentId: binding.responderAgentId || '',
+    deliveryMode: binding.deliveryMode,
+    channelContextNote: binding.channelContextNote || '',
+    inboundRateLimitPerMinute: String(binding.inboundRateLimitPerMinute),
+    maxPendingEvents: String(binding.maxPendingEvents),
+    overflowPolicy: binding.overflowPolicy,
+    maxDeferredAgeMinutes: String(binding.maxDeferredAgeMinutes),
+  };
+}
+
+function buildDefaultChannelCreateDraft(): ChannelCreateDraft {
+  return {
+    connectionId: '',
+    targetKey: '',
+    displayName: '',
+    responseMode: 'mentions',
+    responderMode: 'primary',
+    responderAgentId: '',
+    deliveryMode: 'reply',
+    channelContextNote: '',
+    inboundRateLimitPerMinute: '10',
+    maxPendingEvents: '20',
+    overflowPolicy: 'drop_oldest',
+    maxDeferredAgeMinutes: '10',
+  };
+}
+
+function buildChannelTargetKey(target: Pick<ChannelTarget, 'targetKind' | 'targetId'>): string {
+  return `${target.targetKind}::${target.targetId}`;
+}
+
+function parseChannelTargetKey(value: string): { targetKind: string; targetId: string } | null {
+  const separatorIndex = value.indexOf('::');
+  if (separatorIndex <= 0) return null;
+  return {
+    targetKind: value.slice(0, separatorIndex),
+    targetId: value.slice(separatorIndex + 2),
+  };
 }
 
 function buildAgentLabel(agent: Pick<TalkAgent, 'nickname' | 'role'>): string {
@@ -913,6 +1038,23 @@ export function TalkDetailPage({
   const [addSourceTitle, setAddSourceTitle] = useState('');
   const [addSourceUrl, setAddSourceUrl] = useState('');
   const [addSourceText, setAddSourceText] = useState('');
+  const [channelBindings, setChannelBindings] = useState<TalkChannelBinding[]>([]);
+  const [channelConnections, setChannelConnections] = useState<ChannelConnection[]>([]);
+  const [channelTargets, setChannelTargets] = useState<ChannelTarget[]>([]);
+  const [channelDrafts, setChannelDrafts] = useState<Record<string, ChannelBindingDraft>>(
+    {},
+  );
+  const [channelFailuresByBindingId, setChannelFailuresByBindingId] = useState<
+    Record<string, { ingress: ChannelQueueFailure[]; delivery: ChannelQueueFailure[] }>
+  >({});
+  const [channelCreateDraft, setChannelCreateDraft] = useState<ChannelCreateDraft>(
+    buildDefaultChannelCreateDraft(),
+  );
+  const [channelTargetsLoading, setChannelTargetsLoading] = useState(false);
+  const [channelStatus, setChannelStatus] = useState<{
+    status: 'idle' | 'loading' | 'saving' | 'error' | 'success';
+    message?: string;
+  }>({ status: 'idle' });
 
   const timelineRef = useRef<HTMLDivElement | null>(null);
   const endRef = useRef<HTMLDivElement | null>(null);
@@ -981,6 +1123,24 @@ export function TalkDetailPage({
     }
   }, [handleUnauthorized, talkId]);
 
+  const refreshContext = useCallback(
+    async (options?: { hydrateGoalDraft?: boolean; showLoading?: boolean }) => {
+      if (options?.showLoading) {
+        setContextStatus({ status: 'loading' });
+      }
+      const ctx = await getTalkContext(talkId);
+      setContextGoal(ctx.goal);
+      if (options?.hydrateGoalDraft) {
+        setGoalDraft(ctx.goal?.goalText ?? '');
+      }
+      setContextRules(ctx.rules);
+      setContextSources(ctx.sources);
+      setContextLoaded(true);
+      setContextStatus({ status: 'idle' });
+    },
+    [talkId],
+  );
+
   useEffect(() => {
     let cancelled = false;
     dispatch({ type: 'BOOTSTRAP_LOADING' });
@@ -1007,6 +1167,14 @@ export function TalkDetailPage({
     setAddSourceTitle('');
     setAddSourceUrl('');
     setAddSourceText('');
+    setChannelBindings([]);
+    setChannelConnections([]);
+    setChannelTargets([]);
+    setChannelDrafts({});
+    setChannelFailuresByBindingId({});
+    setChannelCreateDraft(buildDefaultChannelCreateDraft());
+    setChannelTargetsLoading(false);
+    setChannelStatus({ status: 'idle' });
 
     const load = async () => {
       try {
@@ -1238,6 +1406,8 @@ export function TalkDetailPage({
     accessRole === 'owner' || accessRole === 'admin' || accessRole === 'editor';
   const canManageTalkConnectors =
     accessRole === 'owner' || accessRole === 'admin';
+  const canEditChannels = canEditAgents;
+  const canBrowseChannelConnections = canManageTalkConnectors;
 
   const configuredProviders = useMemo(
     () => getConfiguredProviders(aiAgentsData),
@@ -1351,10 +1521,18 @@ export function TalkDetailPage({
       ),
     [orgConnectors, talkConnectors],
   );
+  const selectedChannelTarget = useMemo(
+    () =>
+      channelTargets.find(
+        (target) => buildChannelTargetKey(target) === channelCreateDraft.targetKey,
+      ) || null,
+    [channelCreateDraft.targetKey, channelTargets],
+  );
 
   const talkTabHref = `/app/talks/${talkId}`;
   const agentsTabHref = `/app/talks/${talkId}/agents`;
   const contextTabHref = `/app/talks/${talkId}/context`;
+  const channelsTabHref = `/app/talks/${talkId}/channels`;
   const connectorsTabHref = `/app/talks/${talkId}/data-connectors`;
   const runsTabHref = `/app/talks/${talkId}/runs`;
   const manageAgentsHref = `/app/agents?returnTo=${encodeURIComponent(
@@ -1412,24 +1590,153 @@ export function TalkDetailPage({
     setAttachConnectorId(availableConnectors[0]?.id || '');
   }, [attachConnectorId, availableConnectors, currentTab]);
 
+  const reloadTalkChannels = useCallback(
+    async (options?: { quiet?: boolean }) => {
+      if (state.kind !== 'ready') return;
+      if (!options?.quiet) {
+        setChannelStatus((current) =>
+          current.status === 'saving' ? current : { status: 'loading' },
+        );
+      }
+      try {
+        const [bindings, connections] = await Promise.all([
+          listTalkChannels(talkId),
+          canBrowseChannelConnections
+            ? listChannelConnections()
+            : Promise.resolve([] as ChannelConnection[]),
+        ]);
+        const failureEntries = await Promise.all(
+          bindings.map(async (binding) => {
+            const [ingress, delivery] = await Promise.all([
+              listTalkChannelIngressFailures({
+                talkId,
+                bindingId: binding.id,
+              }),
+              listTalkChannelDeliveryFailures({
+                talkId,
+                bindingId: binding.id,
+              }),
+            ]);
+            return [binding.id, { ingress, delivery }] as const;
+          }),
+        );
+        setChannelBindings(bindings);
+        setChannelDrafts(
+          bindings.reduce<Record<string, ChannelBindingDraft>>((acc, binding) => {
+            acc[binding.id] = buildChannelBindingDraft(binding);
+            return acc;
+          }, {}),
+        );
+        setChannelFailuresByBindingId(Object.fromEntries(failureEntries));
+        setChannelConnections(connections);
+        setChannelCreateDraft((current) => {
+          const nextConnectionId =
+            connections.find((connection) => connection.id === current.connectionId)?.id ||
+            connections[0]?.id ||
+            current.connectionId;
+          return {
+            ...current,
+            connectionId: nextConnectionId,
+          };
+        });
+        if (!options?.quiet) {
+          setChannelStatus({ status: 'idle' });
+        }
+      } catch (err) {
+        if (err instanceof UnauthorizedError) {
+          handleUnauthorized();
+          return;
+        }
+        setChannelStatus({
+          status: 'error',
+          message:
+            err instanceof Error ? err.message : 'Failed to load talk channels.',
+        });
+      }
+    },
+    [canBrowseChannelConnections, handleUnauthorized, state.kind, talkId],
+  );
+
+  useEffect(() => {
+    if (state.kind !== 'ready' || currentTab !== 'channels') return;
+    void reloadTalkChannels();
+  }, [currentTab, reloadTalkChannels, state.kind]);
+
+  useEffect(() => {
+    if (state.kind !== 'ready' || currentTab !== 'channels') return;
+    if (!canBrowseChannelConnections || !channelCreateDraft.connectionId) {
+      setChannelTargets([]);
+      return;
+    }
+
+    let cancelled = false;
+    setChannelTargetsLoading(true);
+
+    const loadTargets = async () => {
+      try {
+        const targets = await listChannelTargets({
+          connectionId: channelCreateDraft.connectionId,
+          limit: 50,
+        });
+        if (cancelled) return;
+        setChannelTargets(targets);
+        setChannelCreateDraft((current) => {
+          if (current.connectionId !== channelCreateDraft.connectionId) {
+            return current;
+          }
+          const existingTarget = targets.find(
+            (target) => buildChannelTargetKey(target) === current.targetKey,
+          );
+          const nextTarget = existingTarget || targets[0] || null;
+          return {
+            ...current,
+            targetKey: nextTarget ? buildChannelTargetKey(nextTarget) : '',
+            displayName:
+              current.displayName || !nextTarget ? current.displayName : nextTarget.displayName,
+          };
+        });
+      } catch (err) {
+        if (err instanceof UnauthorizedError) {
+          handleUnauthorized();
+          return;
+        }
+        if (!cancelled) {
+          setChannelStatus({
+            status: 'error',
+            message:
+              err instanceof Error ? err.message : 'Failed to load channel targets.',
+          });
+        }
+      } finally {
+        if (!cancelled) {
+          setChannelTargetsLoading(false);
+        }
+      }
+    };
+
+    void loadTargets();
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    canBrowseChannelConnections,
+    channelCreateDraft.connectionId,
+    currentTab,
+    handleUnauthorized,
+    state.kind,
+  ]);
+
   // Load context data when context tab is selected
   useEffect(() => {
     if (state.kind !== 'ready' || currentTab !== 'context') return;
     if (contextLoaded) return;
 
     let cancelled = false;
-    setContextStatus({ status: 'loading' });
 
     const loadContext = async () => {
       try {
-        const ctx = await getTalkContext(talkId);
+        await refreshContext({ hydrateGoalDraft: true, showLoading: true });
         if (cancelled) return;
-        setContextGoal(ctx.goal);
-        setGoalDraft(ctx.goal?.goalText ?? '');
-        setContextRules(ctx.rules);
-        setContextSources(ctx.sources);
-        setContextLoaded(true);
-        setContextStatus({ status: 'idle' });
       } catch (err) {
         if (err instanceof UnauthorizedError) {
           handleUnauthorized();
@@ -1449,7 +1756,46 @@ export function TalkDetailPage({
     return () => {
       cancelled = true;
     };
-  }, [contextLoaded, currentTab, handleUnauthorized, state.kind, talkId]);
+  }, [contextLoaded, currentTab, handleUnauthorized, refreshContext, state.kind]);
+
+  useEffect(() => {
+    if (state.kind !== 'ready' || currentTab !== 'context' || !contextLoaded) {
+      return;
+    }
+    if (!contextSources.some((source) => source.status === 'pending')) {
+      return;
+    }
+
+    let cancelled = false;
+    const interval = window.setInterval(() => {
+      void refreshContext().catch((err) => {
+        if (cancelled) return;
+        if (err instanceof UnauthorizedError) {
+          handleUnauthorized();
+          return;
+        }
+        setContextStatus({
+          status: 'error',
+          message:
+            err instanceof Error
+              ? err.message
+              : 'Failed to refresh saved source status.',
+        });
+      });
+    }, 2000);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, [
+    contextLoaded,
+    contextSources,
+    currentTab,
+    handleUnauthorized,
+    refreshContext,
+    state.kind,
+  ]);
 
   // Context handlers
   const handleSaveGoal = async () => {
@@ -1542,6 +1888,313 @@ export function TalkDetailPage({
       // silent
     }
   };
+
+  const handleRetrySource = async (sourceId: string) => {
+    try {
+      const updated = await retryTalkContextSource({ talkId, sourceId });
+      setContextSources((prev) =>
+        prev.map((source) => (source.id === updated.id ? updated : source)),
+      );
+      setContextStatus({
+        status: 'success',
+        message: 'Retrying saved source fetch.',
+      });
+    } catch (err) {
+      setContextStatus({
+        status: 'error',
+        message:
+          err instanceof Error ? err.message : 'Failed to retry saved source.',
+      });
+    }
+  };
+
+  const handleChannelDraftChange = useCallback(
+    (bindingId: string, patch: Partial<ChannelBindingDraft>) => {
+      setChannelDrafts((current) => ({
+        ...current,
+        [bindingId]: {
+          ...current[bindingId],
+          ...patch,
+        },
+      }));
+    },
+    [],
+  );
+
+  const handleCreateChannel = useCallback(async () => {
+    if (!canEditChannels) return;
+    const parsedTarget = parseChannelTargetKey(channelCreateDraft.targetKey);
+    if (!channelCreateDraft.connectionId || !parsedTarget) {
+      setChannelStatus({
+        status: 'error',
+        message: 'Select a connection and target before creating a channel binding.',
+      });
+      return;
+    }
+    setChannelStatus({ status: 'saving' });
+    try {
+      await createTalkChannel({
+        talkId,
+        connectionId: channelCreateDraft.connectionId,
+        targetKind: parsedTarget.targetKind,
+        targetId: parsedTarget.targetId,
+        displayName:
+          channelCreateDraft.displayName.trim() ||
+          selectedChannelTarget?.displayName ||
+          parsedTarget.targetId,
+        responseMode: channelCreateDraft.responseMode,
+        responderMode: channelCreateDraft.responderMode,
+        responderAgentId:
+          channelCreateDraft.responderMode === 'agent'
+            ? channelCreateDraft.responderAgentId || null
+            : null,
+        deliveryMode: channelCreateDraft.deliveryMode,
+        channelContextNote: channelCreateDraft.channelContextNote.trim() || null,
+        inboundRateLimitPerMinute:
+          Number.parseInt(channelCreateDraft.inboundRateLimitPerMinute, 10) || 10,
+        maxPendingEvents:
+          Number.parseInt(channelCreateDraft.maxPendingEvents, 10) || 20,
+        overflowPolicy: channelCreateDraft.overflowPolicy,
+        maxDeferredAgeMinutes:
+          Number.parseInt(channelCreateDraft.maxDeferredAgeMinutes, 10) || 10,
+      });
+      await reloadTalkChannels({ quiet: true });
+      setChannelCreateDraft((current) => ({
+        ...buildDefaultChannelCreateDraft(),
+        connectionId: current.connectionId,
+      }));
+      setChannelStatus({
+        status: 'success',
+        message: 'Talk channel binding created.',
+      });
+    } catch (err) {
+      if (err instanceof UnauthorizedError) {
+        handleUnauthorized();
+        return;
+      }
+      setChannelStatus({
+        status: 'error',
+        message:
+          err instanceof Error ? err.message : 'Failed to create talk channel binding.',
+      });
+    }
+  }, [
+    canEditChannels,
+    channelCreateDraft,
+    handleUnauthorized,
+    reloadTalkChannels,
+    selectedChannelTarget?.displayName,
+    talkId,
+  ]);
+
+  const handleSaveChannelBinding = useCallback(
+    async (binding: TalkChannelBinding) => {
+      if (!canEditChannels) return;
+      const draft = channelDrafts[binding.id];
+      if (!draft) return;
+      setChannelStatus({ status: 'saving' });
+      try {
+        await patchTalkChannel({
+          talkId,
+          bindingId: binding.id,
+          active: draft.active,
+          displayName: draft.displayName.trim() || binding.displayName,
+          responseMode: draft.responseMode,
+          responderMode: draft.responderMode,
+          responderAgentId:
+            draft.responderMode === 'agent' ? draft.responderAgentId || null : null,
+          deliveryMode: draft.deliveryMode,
+          channelContextNote: draft.channelContextNote.trim() || null,
+          inboundRateLimitPerMinute:
+            Number.parseInt(draft.inboundRateLimitPerMinute, 10) ||
+            binding.inboundRateLimitPerMinute,
+          maxPendingEvents:
+            Number.parseInt(draft.maxPendingEvents, 10) || binding.maxPendingEvents,
+          overflowPolicy: draft.overflowPolicy,
+          maxDeferredAgeMinutes:
+            Number.parseInt(draft.maxDeferredAgeMinutes, 10) ||
+            binding.maxDeferredAgeMinutes,
+        });
+        await reloadTalkChannels({ quiet: true });
+        setChannelStatus({
+          status: 'success',
+          message: `Saved channel settings for ${binding.displayName}.`,
+        });
+      } catch (err) {
+        if (err instanceof UnauthorizedError) {
+          handleUnauthorized();
+          return;
+        }
+        setChannelStatus({
+          status: 'error',
+          message:
+            err instanceof Error ? err.message : 'Failed to save talk channel settings.',
+        });
+      }
+    },
+    [canEditChannels, channelDrafts, handleUnauthorized, reloadTalkChannels, talkId],
+  );
+
+  const handleDeleteChannelBinding = useCallback(
+    async (binding: TalkChannelBinding) => {
+      if (!canEditChannels) return;
+      const confirmed = window.confirm(
+        `Delete the channel binding for ${binding.displayName}?`,
+      );
+      if (!confirmed) return;
+      setChannelStatus({ status: 'saving' });
+      try {
+        await deleteTalkChannel({
+          talkId,
+          bindingId: binding.id,
+        });
+        await reloadTalkChannels({ quiet: true });
+        setChannelStatus({
+          status: 'success',
+          message: `Deleted channel binding for ${binding.displayName}.`,
+        });
+      } catch (err) {
+        if (err instanceof UnauthorizedError) {
+          handleUnauthorized();
+          return;
+        }
+        setChannelStatus({
+          status: 'error',
+          message:
+            err instanceof Error ? err.message : 'Failed to delete talk channel binding.',
+        });
+      }
+    },
+    [canEditChannels, handleUnauthorized, reloadTalkChannels, talkId],
+  );
+
+  const handleTestChannel = useCallback(
+    async (binding: TalkChannelBinding) => {
+      if (!canEditChannels) return;
+      setChannelStatus({ status: 'saving' });
+      try {
+        await testTalkChannelBinding({
+          talkId,
+          bindingId: binding.id,
+        });
+        setChannelStatus({
+          status: 'success',
+          message: `Sent a test message to ${binding.displayName}.`,
+        });
+      } catch (err) {
+        if (err instanceof UnauthorizedError) {
+          handleUnauthorized();
+          return;
+        }
+        setChannelStatus({
+          status: 'error',
+          message:
+            err instanceof Error ? err.message : 'Failed to send test channel message.',
+        });
+      }
+    },
+    [canEditChannels, handleUnauthorized, talkId],
+  );
+
+  const handleRetryIngressFailure = useCallback(
+    async (bindingId: string, rowId: string) => {
+      setChannelStatus({ status: 'saving' });
+      try {
+        await retryTalkChannelIngressFailure({ talkId, bindingId, rowId });
+        await reloadTalkChannels({ quiet: true });
+        setChannelStatus({
+          status: 'success',
+          message: 'Ingress failure retried.',
+        });
+      } catch (err) {
+        if (err instanceof UnauthorizedError) {
+          handleUnauthorized();
+          return;
+        }
+        setChannelStatus({
+          status: 'error',
+          message:
+            err instanceof Error ? err.message : 'Failed to retry ingress failure.',
+        });
+      }
+    },
+    [handleUnauthorized, reloadTalkChannels, talkId],
+  );
+
+  const handleDismissIngressFailure = useCallback(
+    async (bindingId: string, rowId: string) => {
+      setChannelStatus({ status: 'saving' });
+      try {
+        await deleteTalkChannelIngressFailure({ talkId, bindingId, rowId });
+        await reloadTalkChannels({ quiet: true });
+        setChannelStatus({
+          status: 'success',
+          message: 'Ingress failure dismissed.',
+        });
+      } catch (err) {
+        if (err instanceof UnauthorizedError) {
+          handleUnauthorized();
+          return;
+        }
+        setChannelStatus({
+          status: 'error',
+          message:
+            err instanceof Error ? err.message : 'Failed to dismiss ingress failure.',
+        });
+      }
+    },
+    [handleUnauthorized, reloadTalkChannels, talkId],
+  );
+
+  const handleRetryDeliveryFailure = useCallback(
+    async (bindingId: string, rowId: string) => {
+      setChannelStatus({ status: 'saving' });
+      try {
+        await retryTalkChannelDeliveryFailure({ talkId, bindingId, rowId });
+        await reloadTalkChannels({ quiet: true });
+        setChannelStatus({
+          status: 'success',
+          message: 'Delivery failure retried.',
+        });
+      } catch (err) {
+        if (err instanceof UnauthorizedError) {
+          handleUnauthorized();
+          return;
+        }
+        setChannelStatus({
+          status: 'error',
+          message:
+            err instanceof Error ? err.message : 'Failed to retry delivery failure.',
+        });
+      }
+    },
+    [handleUnauthorized, reloadTalkChannels, talkId],
+  );
+
+  const handleDismissDeliveryFailure = useCallback(
+    async (bindingId: string, rowId: string) => {
+      setChannelStatus({ status: 'saving' });
+      try {
+        await deleteTalkChannelDeliveryFailure({ talkId, bindingId, rowId });
+        await reloadTalkChannels({ quiet: true });
+        setChannelStatus({
+          status: 'success',
+          message: 'Delivery failure dismissed.',
+        });
+      } catch (err) {
+        if (err instanceof UnauthorizedError) {
+          handleUnauthorized();
+          return;
+        }
+        setChannelStatus({
+          status: 'error',
+          message:
+            err instanceof Error ? err.message : 'Failed to dismiss delivery failure.',
+        });
+      }
+    },
+    [handleUnauthorized, reloadTalkChannels, talkId],
+  );
 
   const openHistoryEditor = useCallback(() => {
     if (state.kind !== 'ready') return;
@@ -2155,6 +2808,12 @@ export function TalkDetailPage({
                   Context
                 </Link>
                 <Link
+                  to={channelsTabHref}
+                  className={`talk-tab ${currentTab === 'channels' ? 'talk-tab-active' : ''}`}
+                >
+                  Channels
+                </Link>
+                <Link
                   to={connectorsTabHref}
                   className={`talk-tab ${currentTab === 'data-connectors' ? 'talk-tab-active' : ''}`}
                 >
@@ -2556,55 +3215,102 @@ export function TalkDetailPage({
                           <li
                             key={source.id}
                             style={{
-                              display: 'flex',
-                              alignItems: 'center',
-                              gap: '0.5rem',
                               padding: '0.35rem 0',
                               borderBottom: '1px solid var(--border, #eee)',
                             }}
                           >
-                            <span
+                            <div
                               style={{
-                                fontFamily: 'monospace',
-                                fontSize: '0.75rem',
-                                opacity: 0.6,
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: '0.5rem',
                               }}
                             >
-                              {source.sourceRef}
-                            </span>
-                            <span
-                              style={{
-                                fontSize: '0.7rem',
-                                textTransform: 'uppercase',
-                                opacity: 0.5,
-                              }}
-                            >
-                              [{source.sourceType}]
-                            </span>
-                            <span style={{ flex: 1 }}>{source.title}</span>
-                            <span
-                              style={{
-                                fontSize: '0.75rem',
-                                color:
-                                  source.status === 'ready'
-                                    ? 'green'
-                                    : source.status === 'failed'
-                                      ? 'red'
-                                      : 'orange',
-                              }}
-                            >
-                              {source.status}
-                            </span>
-                            {canEditAgents ? (
-                              <button
-                                type="button"
-                                className="secondary-btn"
-                                onClick={() => void handleDeleteSource(source.id)}
-                                title="Remove source"
-                                style={{ minWidth: '2rem', padding: '0.2rem 0.4rem' }}
+                              <span
+                                style={{
+                                  fontFamily: 'monospace',
+                                  fontSize: '0.75rem',
+                                  opacity: 0.6,
+                                }}
                               >
-                                ×
-                              </button>
+                                {source.sourceRef}
+                              </span>
+                              <span
+                                style={{
+                                  fontSize: '0.7rem',
+                                  textTransform: 'uppercase',
+                                  opacity: 0.5,
+                                }}
+                              >
+                                [{source.sourceType}]
+                              </span>
+                              <span style={{ flex: 1 }}>{source.title}</span>
+                              {source.fetchStrategy ? (
+                                <span
+                                  style={{
+                                    fontSize: '0.7rem',
+                                    textTransform: 'uppercase',
+                                    opacity: 0.6,
+                                  }}
+                                >
+                                  via {source.fetchStrategy}
+                                </span>
+                              ) : null}
+                              <span
+                                style={{
+                                  fontSize: '0.75rem',
+                                  color:
+                                    source.status === 'ready'
+                                      ? 'green'
+                                      : source.status === 'failed'
+                                        ? 'red'
+                                        : 'orange',
+                                }}
+                              >
+                                {source.status}
+                              </span>
+                              {canEditAgents && source.sourceType === 'url' && source.status === 'failed' ? (
+                                <button
+                                  type="button"
+                                  className="secondary-btn"
+                                  onClick={() => void handleRetrySource(source.id)}
+                                >
+                                  Retry
+                                </button>
+                              ) : null}
+                              {canEditAgents ? (
+                                <button
+                                  type="button"
+                                  className="secondary-btn"
+                                  onClick={() => void handleDeleteSource(source.id)}
+                                  title="Remove source"
+                                  style={{ minWidth: '2rem', padding: '0.2rem 0.4rem' }}
+                                >
+                                  ×
+                                </button>
+                              ) : null}
+                            </div>
+                            {source.extractionError ? (
+                              <p
+                                style={{
+                                  margin: '0.35rem 0 0 0',
+                                  fontSize: '0.85rem',
+                                  color: 'var(--danger-text, #a61b1b)',
+                                }}
+                              >
+                                {source.extractionError}
+                              </p>
+                            ) : null}
+                            {source.lastFetchedAt ? (
+                              <p
+                                style={{
+                                  margin: '0.2rem 0 0 0',
+                                  fontSize: '0.75rem',
+                                  opacity: 0.65,
+                                }}
+                              >
+                                Last fetched {new Date(source.lastFetchedAt).toLocaleString()}
+                              </p>
                             ) : null}
                           </li>
                         ))}
@@ -2685,6 +3391,660 @@ export function TalkDetailPage({
                     <p className="page-state">{contextStatus.message}</p>
                   ) : null}
                 </>
+              )}
+            </section>
+          ) : null}
+
+          {currentTab === 'channels' ? (
+            <section className="talk-tab-panel" aria-label="Talk channels">
+              <div className="agents-panel-header">
+                <h2>Channels</h2>
+              </div>
+              <p className="policy-muted">
+                Bind this talk to external channels so inbound Telegram messages can
+                create Talk turns and completed replies can be delivered back out.
+              </p>
+
+              {channelStatus.status === 'error' ? (
+                <div className="inline-banner inline-banner-error" role="alert">
+                  {channelStatus.message}
+                </div>
+              ) : null}
+              {channelStatus.status === 'success' ? (
+                <div className="inline-banner inline-banner-success" role="status">
+                  {channelStatus.message}
+                </div>
+              ) : null}
+
+              {canBrowseChannelConnections ? (
+                <div className="talk-llm-card connector-attach-card">
+                  <div className="connector-card-header">
+                    <div>
+                      <h3>Add Channel Binding</h3>
+                      <p className="talk-llm-meta">
+                        V1 uses your system-managed Telegram connection and cached
+                        chat targets discovered by inbound traffic.
+                      </p>
+                    </div>
+                  </div>
+                  {channelConnections.length === 0 ? (
+                    <p className="page-state">
+                      No channel connections are available in this runtime.
+                    </p>
+                  ) : (
+                    <>
+                      <div className="connector-attach-row">
+                        <label>
+                          <span className="settings-label">Connection</span>
+                          <select
+                            value={channelCreateDraft.connectionId ?? ''}
+                            onChange={(event) =>
+                              setChannelCreateDraft((current) => ({
+                                ...current,
+                                connectionId: event.target.value,
+                                targetKey: '',
+                                displayName: '',
+                              }))
+                            }
+                            disabled={channelStatus.status === 'saving'}
+                          >
+                            {channelConnections.map((connection) => (
+                              <option key={connection.id} value={connection.id}>
+                                {connection.displayName} ({formatChannelPlatform(connection.platform)})
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                        <label style={{ flex: 1 }}>
+                          <span className="settings-label">Target</span>
+                          <select
+                            value={channelCreateDraft.targetKey ?? ''}
+                            onChange={(event) => {
+                              const nextTarget =
+                                channelTargets.find(
+                                  (target) =>
+                                    buildChannelTargetKey(target) === event.target.value,
+                                ) || null;
+                              setChannelCreateDraft((current) => ({
+                                ...current,
+                                targetKey: event.target.value,
+                                displayName:
+                                  current.displayName || !nextTarget
+                                    ? current.displayName
+                                    : nextTarget.displayName,
+                              }));
+                            }}
+                            disabled={
+                              channelStatus.status === 'saving' || channelTargetsLoading
+                            }
+                          >
+                            <option value="">
+                              {channelTargetsLoading
+                                ? 'Loading targets…'
+                                : channelTargets.length === 0
+                                  ? 'No targets discovered yet'
+                                  : 'Select a Telegram chat'}
+                            </option>
+                            {channelTargets.map((target) => (
+                              <option
+                                key={buildChannelTargetKey(target)}
+                                value={buildChannelTargetKey(target)}
+                              >
+                                {target.displayName} [{target.targetKind}]
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                      </div>
+                      <div className="connector-attach-row">
+                        <label style={{ flex: 1 }}>
+                          <span className="settings-label">Display Name</span>
+                          <input
+                            type="text"
+                            value={channelCreateDraft.displayName ?? ''}
+                            onChange={(event) =>
+                              setChannelCreateDraft((current) => ({
+                                ...current,
+                                displayName: event.target.value,
+                              }))
+                            }
+                            placeholder={selectedChannelTarget?.displayName || 'Telegram channel'}
+                            disabled={channelStatus.status === 'saving'}
+                          />
+                        </label>
+                        <label>
+                          <span className="settings-label">Response Mode</span>
+                          <select
+                            value={channelCreateDraft.responseMode ?? 'mentions'}
+                            onChange={(event) =>
+                              setChannelCreateDraft((current) => ({
+                                ...current,
+                                responseMode: event.target.value as TalkChannelBinding['responseMode'],
+                              }))
+                            }
+                            disabled={channelStatus.status === 'saving'}
+                          >
+                            <option value="off">Off</option>
+                            <option value="mentions">Mentions</option>
+                            <option value="all">All messages</option>
+                          </select>
+                        </label>
+                        <label>
+                          <span className="settings-label">Delivery</span>
+                          <select
+                            value={channelCreateDraft.deliveryMode ?? 'reply'}
+                            onChange={(event) =>
+                              setChannelCreateDraft((current) => ({
+                                ...current,
+                                deliveryMode: event.target.value as TalkChannelBinding['deliveryMode'],
+                              }))
+                            }
+                            disabled={channelStatus.status === 'saving'}
+                          >
+                            <option value="reply">Reply</option>
+                            <option value="channel">Channel</option>
+                          </select>
+                        </label>
+                      </div>
+                      <div className="connector-attach-row">
+                        <label>
+                          <span className="settings-label">Responder</span>
+                          <select
+                            value={channelCreateDraft.responderMode ?? 'primary'}
+                            onChange={(event) =>
+                              setChannelCreateDraft((current) => ({
+                                ...current,
+                                responderMode: event.target.value as TalkChannelBinding['responderMode'],
+                              }))
+                            }
+                            disabled={channelStatus.status === 'saving'}
+                          >
+                            <option value="primary">Primary agent</option>
+                            <option value="agent">Specific agent</option>
+                          </select>
+                        </label>
+                        {channelCreateDraft.responderMode === 'agent' ? (
+                          <label style={{ flex: 1 }}>
+                            <span className="settings-label">Agent</span>
+                            <select
+                              value={channelCreateDraft.responderAgentId ?? ''}
+                              onChange={(event) =>
+                                setChannelCreateDraft((current) => ({
+                                  ...current,
+                                  responderAgentId: event.target.value,
+                                }))
+                              }
+                              disabled={channelStatus.status === 'saving'}
+                            >
+                              <option value="">Select an agent</option>
+                              {effectiveAgents.map((agent) => (
+                                <option key={agent.id} value={agent.id}>
+                                  {buildAgentLabel(agent)}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                        ) : null}
+                      </div>
+                      <div className="connector-attach-row">
+                        <label>
+                          <span className="settings-label">Rate / min</span>
+                          <input
+                            type="number"
+                            min={1}
+                            value={channelCreateDraft.inboundRateLimitPerMinute ?? ''}
+                            onChange={(event) =>
+                              setChannelCreateDraft((current) => ({
+                                ...current,
+                                inboundRateLimitPerMinute: event.target.value,
+                              }))
+                            }
+                            disabled={channelStatus.status === 'saving'}
+                          />
+                        </label>
+                        <label>
+                          <span className="settings-label">Queue Limit</span>
+                          <input
+                            type="number"
+                            min={1}
+                            value={channelCreateDraft.maxPendingEvents ?? ''}
+                            onChange={(event) =>
+                              setChannelCreateDraft((current) => ({
+                                ...current,
+                                maxPendingEvents: event.target.value,
+                              }))
+                            }
+                            disabled={channelStatus.status === 'saving'}
+                          />
+                        </label>
+                        <label>
+                          <span className="settings-label">Overflow</span>
+                          <select
+                            value={channelCreateDraft.overflowPolicy ?? 'drop_oldest'}
+                            onChange={(event) =>
+                              setChannelCreateDraft((current) => ({
+                                ...current,
+                                overflowPolicy: event.target.value as TalkChannelBinding['overflowPolicy'],
+                              }))
+                            }
+                            disabled={channelStatus.status === 'saving'}
+                          >
+                            <option value="drop_oldest">Drop oldest</option>
+                            <option value="drop_newest">Drop newest</option>
+                          </select>
+                        </label>
+                        <label>
+                          <span className="settings-label">Busy timeout (min)</span>
+                          <input
+                            type="number"
+                            min={1}
+                            value={channelCreateDraft.maxDeferredAgeMinutes ?? ''}
+                            onChange={(event) =>
+                              setChannelCreateDraft((current) => ({
+                                ...current,
+                                maxDeferredAgeMinutes: event.target.value,
+                              }))
+                            }
+                            disabled={channelStatus.status === 'saving'}
+                          />
+                        </label>
+                      </div>
+                      <label style={{ display: 'block', marginTop: '0.75rem' }}>
+                        <span className="settings-label">Channel Context Note</span>
+                        <textarea
+                          value={channelCreateDraft.channelContextNote ?? ''}
+                          onChange={(event) =>
+                            setChannelCreateDraft((current) => ({
+                              ...current,
+                              channelContextNote: event.target.value,
+                            }))
+                          }
+                          placeholder="Optional note appended to the Talk prompt for this channel."
+                          rows={3}
+                          style={{ width: '100%', resize: 'vertical' }}
+                          disabled={channelStatus.status === 'saving'}
+                        />
+                      </label>
+                      <div className="settings-button-row" style={{ marginTop: '0.75rem' }}>
+                        <button
+                          type="button"
+                          className="secondary-btn"
+                          onClick={() => void handleCreateChannel()}
+                          disabled={
+                            channelStatus.status === 'saving' ||
+                            !channelCreateDraft.connectionId ||
+                            !channelCreateDraft.targetKey
+                          }
+                        >
+                          {channelStatus.status === 'saving' ? 'Saving…' : 'Create Binding'}
+                        </button>
+                      </div>
+                    </>
+                  )}
+                </div>
+              ) : canEditChannels ? (
+                <div className="inline-banner inline-banner-warning" role="status">
+                  Only owners and admins can add new channel bindings. You can still
+                  manage existing bindings below.
+                </div>
+              ) : null}
+
+              {channelStatus.status === 'loading' ? (
+                <p className="page-state">Loading channels…</p>
+              ) : channelBindings.length === 0 ? (
+                <p className="page-state">No external channels are bound to this talk yet.</p>
+              ) : (
+                <div className="connector-card-list">
+                  {channelBindings.map((binding) => {
+                    const draft =
+                      channelDrafts[binding.id] || buildChannelBindingDraft(binding);
+                    const failures = channelFailuresByBindingId[binding.id] || {
+                      ingress: [],
+                      delivery: [],
+                    };
+                    return (
+                      <article key={binding.id} className="talk-llm-card connector-card">
+                        <div className="connector-card-header">
+                          <div>
+                            <h3>{binding.displayName}</h3>
+                            <p className="talk-llm-meta">
+                              {formatChannelPlatform(binding.platform)} · {binding.targetKind} ·{' '}
+                              <code>{binding.targetId}</code>
+                            </p>
+                          </div>
+                          <span
+                            className={
+                              binding.active
+                                ? 'talk-agent-chip talk-agent-chip-success'
+                                : 'talk-agent-chip'
+                            }
+                          >
+                            {binding.active ? 'Active' : 'Inactive'}
+                          </span>
+                        </div>
+                        <div className="connector-meta-grid">
+                          <div>
+                            <strong>Connection</strong>
+                            <p>{binding.connectionDisplayName}</p>
+                          </div>
+                          <div>
+                            <strong>Pending ingress</strong>
+                            <p>{binding.pendingIngressCount}</p>
+                          </div>
+                          <div>
+                            <strong>Deferred ingress</strong>
+                            <p>{binding.deferredIngressCount}</p>
+                          </div>
+                          <div>
+                            <strong>Last ingress issue</strong>
+                            <p>{formatChannelReasonCode(binding.lastIngressReasonCode)}</p>
+                          </div>
+                          <div>
+                            <strong>Last delivery issue</strong>
+                            <p>{formatChannelReasonCode(binding.lastDeliveryReasonCode)}</p>
+                          </div>
+                        </div>
+                        <div className="connector-attach-row">
+                          <label style={{ flex: 1 }}>
+                            <span className="settings-label">Display Name</span>
+                            <input
+                              type="text"
+                              value={draft.displayName ?? ''}
+                              onChange={(event) =>
+                                handleChannelDraftChange(binding.id, {
+                                  displayName: event.target.value,
+                                })
+                              }
+                              disabled={!canEditChannels || channelStatus.status === 'saving'}
+                            />
+                          </label>
+                          <label>
+                            <span className="settings-label">Response Mode</span>
+                            <select
+                              value={draft.responseMode ?? 'mentions'}
+                              onChange={(event) =>
+                                handleChannelDraftChange(binding.id, {
+                                  responseMode: event.target.value as TalkChannelBinding['responseMode'],
+                                })
+                              }
+                              disabled={!canEditChannels || channelStatus.status === 'saving'}
+                            >
+                              <option value="off">Off</option>
+                              <option value="mentions">Mentions</option>
+                              <option value="all">All messages</option>
+                            </select>
+                          </label>
+                          <label>
+                            <span className="settings-label">Delivery</span>
+                            <select
+                              value={draft.deliveryMode ?? 'reply'}
+                              onChange={(event) =>
+                                handleChannelDraftChange(binding.id, {
+                                  deliveryMode: event.target.value as TalkChannelBinding['deliveryMode'],
+                                })
+                              }
+                              disabled={!canEditChannels || channelStatus.status === 'saving'}
+                            >
+                              <option value="reply">Reply</option>
+                              <option value="channel">Channel</option>
+                            </select>
+                          </label>
+                        </div>
+                        <div className="connector-attach-row">
+                          <label>
+                            <span className="settings-label">Responder</span>
+                            <select
+                              value={draft.responderMode ?? 'primary'}
+                              onChange={(event) =>
+                                handleChannelDraftChange(binding.id, {
+                                  responderMode: event.target.value as TalkChannelBinding['responderMode'],
+                                })
+                              }
+                              disabled={!canEditChannels || channelStatus.status === 'saving'}
+                            >
+                              <option value="primary">Primary agent</option>
+                              <option value="agent">Specific agent</option>
+                            </select>
+                          </label>
+                          {draft.responderMode === 'agent' ? (
+                            <label style={{ flex: 1 }}>
+                              <span className="settings-label">Agent</span>
+                              <select
+                                value={draft.responderAgentId ?? ''}
+                                onChange={(event) =>
+                                  handleChannelDraftChange(binding.id, {
+                                    responderAgentId: event.target.value,
+                                  })
+                                }
+                                disabled={!canEditChannels || channelStatus.status === 'saving'}
+                              >
+                                <option value="">Select an agent</option>
+                                {effectiveAgents.map((agent) => (
+                                  <option key={agent.id} value={agent.id}>
+                                    {buildAgentLabel(agent)}
+                                  </option>
+                                ))}
+                              </select>
+                            </label>
+                          ) : null}
+                          <label>
+                            <span className="settings-label">Enabled</span>
+                            <select
+                              value={draft.active ? 'active' : 'inactive'}
+                              onChange={(event) =>
+                                handleChannelDraftChange(binding.id, {
+                                  active: event.target.value === 'active',
+                                })
+                              }
+                              disabled={!canEditChannels || channelStatus.status === 'saving'}
+                            >
+                              <option value="active">Active</option>
+                              <option value="inactive">Inactive</option>
+                            </select>
+                          </label>
+                        </div>
+                        <div className="connector-attach-row">
+                          <label>
+                            <span className="settings-label">Rate / min</span>
+                            <input
+                              type="number"
+                              min={1}
+                              value={draft.inboundRateLimitPerMinute ?? ''}
+                              onChange={(event) =>
+                                handleChannelDraftChange(binding.id, {
+                                  inboundRateLimitPerMinute: event.target.value,
+                                })
+                              }
+                              disabled={!canEditChannels || channelStatus.status === 'saving'}
+                            />
+                          </label>
+                          <label>
+                            <span className="settings-label">Queue Limit</span>
+                            <input
+                              type="number"
+                              min={1}
+                              value={draft.maxPendingEvents ?? ''}
+                              onChange={(event) =>
+                                handleChannelDraftChange(binding.id, {
+                                  maxPendingEvents: event.target.value,
+                                })
+                              }
+                              disabled={!canEditChannels || channelStatus.status === 'saving'}
+                            />
+                          </label>
+                          <label>
+                            <span className="settings-label">Overflow</span>
+                            <select
+                              value={draft.overflowPolicy ?? 'drop_oldest'}
+                              onChange={(event) =>
+                                handleChannelDraftChange(binding.id, {
+                                  overflowPolicy: event.target.value as TalkChannelBinding['overflowPolicy'],
+                                })
+                              }
+                              disabled={!canEditChannels || channelStatus.status === 'saving'}
+                            >
+                              <option value="drop_oldest">Drop oldest</option>
+                              <option value="drop_newest">Drop newest</option>
+                            </select>
+                          </label>
+                          <label>
+                            <span className="settings-label">Busy timeout (min)</span>
+                            <input
+                              type="number"
+                              min={1}
+                              value={draft.maxDeferredAgeMinutes ?? ''}
+                              onChange={(event) =>
+                                handleChannelDraftChange(binding.id, {
+                                  maxDeferredAgeMinutes: event.target.value,
+                                })
+                              }
+                              disabled={!canEditChannels || channelStatus.status === 'saving'}
+                            />
+                          </label>
+                        </div>
+                        <label style={{ display: 'block', marginTop: '0.75rem' }}>
+                          <span className="settings-label">Channel Context Note</span>
+                          <textarea
+                            value={draft.channelContextNote ?? ''}
+                            onChange={(event) =>
+                              handleChannelDraftChange(binding.id, {
+                                channelContextNote: event.target.value,
+                              })
+                            }
+                            rows={3}
+                            style={{ width: '100%', resize: 'vertical' }}
+                            disabled={!canEditChannels || channelStatus.status === 'saving'}
+                          />
+                        </label>
+                        <div className="settings-button-row" style={{ marginTop: '0.75rem' }}>
+                          <button
+                            type="button"
+                            className="secondary-btn"
+                            onClick={() => void handleSaveChannelBinding(binding)}
+                            disabled={!canEditChannels || channelStatus.status === 'saving'}
+                          >
+                            Save
+                          </button>
+                          <button
+                            type="button"
+                            className="secondary-btn"
+                            onClick={() => void handleTestChannel(binding)}
+                            disabled={channelStatus.status === 'saving'}
+                          >
+                            Test Send
+                          </button>
+                          <button
+                            type="button"
+                            className="secondary-btn"
+                            onClick={() => void handleDeleteChannelBinding(binding)}
+                            disabled={!canEditChannels || channelStatus.status === 'saving'}
+                          >
+                            Delete
+                          </button>
+                        </div>
+
+                        {failures.ingress.length > 0 ? (
+                          <div style={{ marginTop: '1rem' }}>
+                            <h4>Ingress Failures</h4>
+                            <ul style={{ listStyle: 'none', padding: 0, margin: '0.5rem 0 0 0' }}>
+                              {failures.ingress.map((failure) => (
+                                <li
+                                  key={failure.id}
+                                  style={{
+                                    padding: '0.5rem 0',
+                                    borderTop: '1px solid var(--border, #e6e9ef)',
+                                  }}
+                                >
+                                  <p style={{ margin: 0, fontWeight: 600 }}>
+                                    {formatChannelReasonCode(failure.reasonCode)}
+                                  </p>
+                                  <p style={{ margin: '0.25rem 0', opacity: 0.75 }}>
+                                    {failure.senderName || failure.senderId || 'Unknown sender'} ·{' '}
+                                    {formatDateTime(failure.createdAt)}
+                                  </p>
+                                  {failure.reasonDetail ? (
+                                    <p style={{ margin: '0.25rem 0' }}>{failure.reasonDetail}</p>
+                                  ) : null}
+                                  <div className="settings-button-row">
+                                    <button
+                                      type="button"
+                                      className="secondary-btn"
+                                      onClick={() =>
+                                        void handleRetryIngressFailure(binding.id, failure.id)
+                                      }
+                                      disabled={channelStatus.status === 'saving'}
+                                    >
+                                      Retry
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className="secondary-btn"
+                                      onClick={() =>
+                                        void handleDismissIngressFailure(binding.id, failure.id)
+                                      }
+                                      disabled={channelStatus.status === 'saving'}
+                                    >
+                                      Dismiss
+                                    </button>
+                                  </div>
+                                </li>
+                              ))}
+                            </ul>
+                          </div>
+                        ) : null}
+
+                        {failures.delivery.length > 0 ? (
+                          <div style={{ marginTop: '1rem' }}>
+                            <h4>Delivery Failures</h4>
+                            <ul style={{ listStyle: 'none', padding: 0, margin: '0.5rem 0 0 0' }}>
+                              {failures.delivery.map((failure) => (
+                                <li
+                                  key={failure.id}
+                                  style={{
+                                    padding: '0.5rem 0',
+                                    borderTop: '1px solid var(--border, #e6e9ef)',
+                                  }}
+                                >
+                                  <p style={{ margin: 0, fontWeight: 600 }}>
+                                    {formatChannelReasonCode(failure.reasonCode)}
+                                  </p>
+                                  <p style={{ margin: '0.25rem 0', opacity: 0.75 }}>
+                                    {formatDateTime(failure.createdAt)}
+                                  </p>
+                                  {failure.reasonDetail ? (
+                                    <p style={{ margin: '0.25rem 0' }}>{failure.reasonDetail}</p>
+                                  ) : null}
+                                  <div className="settings-button-row">
+                                    <button
+                                      type="button"
+                                      className="secondary-btn"
+                                      onClick={() =>
+                                        void handleRetryDeliveryFailure(binding.id, failure.id)
+                                      }
+                                      disabled={channelStatus.status === 'saving'}
+                                    >
+                                      Retry
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className="secondary-btn"
+                                      onClick={() =>
+                                        void handleDismissDeliveryFailure(binding.id, failure.id)
+                                      }
+                                      disabled={channelStatus.status === 'saving'}
+                                    >
+                                      Dismiss
+                                    </button>
+                                  </div>
+                                </li>
+                              ))}
+                            </ul>
+                          </div>
+                        ) : null}
+                      </article>
+                    );
+                  })}
+                </div>
               )}
             </section>
           ) : null}

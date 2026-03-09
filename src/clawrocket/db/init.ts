@@ -252,6 +252,8 @@ function createClawrocketSchema(database: Database.Database): void {
       id TEXT PRIMARY KEY,
       email TEXT NOT NULL UNIQUE,
       display_name TEXT NOT NULL,
+      user_type TEXT NOT NULL DEFAULT 'human'
+        CHECK(user_type IN ('human', 'system')),
       role TEXT NOT NULL DEFAULT 'member'
         CHECK(role IN ('owner', 'admin', 'member')),
       is_active INTEGER DEFAULT 1,
@@ -660,7 +662,10 @@ function createClawrocketSchema(database: Database.Database): void {
       storage_key TEXT,
       extracted_text TEXT,
       extracted_at TEXT,
+      last_fetched_at TEXT,
       extraction_error TEXT,
+      fetch_strategy TEXT
+        CHECK(fetch_strategy IN ('http', 'browser', 'managed') OR fetch_strategy IS NULL),
       is_truncated INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
@@ -675,6 +680,131 @@ function createClawrocketSchema(database: Database.Database): void {
       talk_id TEXT PRIMARY KEY REFERENCES talks(id) ON DELETE CASCADE,
       next_ref_number INTEGER NOT NULL DEFAULT 1
     );
+
+    CREATE TABLE IF NOT EXISTS channel_connections (
+      id TEXT PRIMARY KEY,
+      platform TEXT NOT NULL,
+      connection_mode TEXT NOT NULL,
+      account_key TEXT NOT NULL,
+      display_name TEXT NOT NULL,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      health_status TEXT NOT NULL DEFAULT 'healthy',
+      last_health_check_at TEXT,
+      last_health_error TEXT,
+      config_json TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      created_by TEXT REFERENCES users(id),
+      updated_by TEXT REFERENCES users(id)
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_channel_connections_platform_account
+      ON channel_connections(platform, account_key);
+
+    CREATE TABLE IF NOT EXISTS channel_connection_secrets (
+      connection_id TEXT PRIMARY KEY REFERENCES channel_connections(id) ON DELETE CASCADE,
+      secrets_json TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      updated_by TEXT REFERENCES users(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS channel_targets (
+      connection_id TEXT NOT NULL REFERENCES channel_connections(id) ON DELETE CASCADE,
+      target_kind TEXT NOT NULL,
+      target_id TEXT NOT NULL,
+      display_name TEXT NOT NULL,
+      metadata_json TEXT,
+      last_seen_at TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (connection_id, target_kind, target_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_channel_targets_connection_seen
+      ON channel_targets(connection_id, last_seen_at DESC);
+
+    CREATE TABLE IF NOT EXISTS talk_channel_bindings (
+      id TEXT PRIMARY KEY,
+      talk_id TEXT NOT NULL REFERENCES talks(id) ON DELETE CASCADE,
+      connection_id TEXT NOT NULL REFERENCES channel_connections(id) ON DELETE CASCADE,
+      target_kind TEXT NOT NULL,
+      target_id TEXT NOT NULL,
+      display_name TEXT NOT NULL,
+      active INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      created_by TEXT REFERENCES users(id),
+      updated_by TEXT REFERENCES users(id),
+      UNIQUE (connection_id, target_kind, target_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_talk_channel_bindings_talk
+      ON talk_channel_bindings(talk_id, active, created_at);
+
+    CREATE TABLE IF NOT EXISTS talk_channel_policies (
+      binding_id TEXT PRIMARY KEY REFERENCES talk_channel_bindings(id) ON DELETE CASCADE,
+      response_mode TEXT NOT NULL DEFAULT 'mentions',
+      responder_mode TEXT NOT NULL DEFAULT 'primary',
+      responder_agent_id TEXT REFERENCES talk_agents(id) ON DELETE SET NULL,
+      delivery_mode TEXT NOT NULL DEFAULT 'reply',
+      thread_mode TEXT NOT NULL DEFAULT 'conversation',
+      channel_context_note TEXT,
+      allowed_senders_json TEXT,
+      inbound_rate_limit_per_minute INTEGER NOT NULL DEFAULT 10,
+      max_pending_events INTEGER NOT NULL DEFAULT 20,
+      overflow_policy TEXT NOT NULL DEFAULT 'drop_oldest',
+      max_deferred_age_minutes INTEGER NOT NULL DEFAULT 10,
+      updated_at TEXT NOT NULL,
+      updated_by TEXT REFERENCES users(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS channel_ingress_queue (
+      id TEXT PRIMARY KEY,
+      binding_id TEXT NOT NULL REFERENCES talk_channel_bindings(id) ON DELETE CASCADE,
+      talk_id TEXT NOT NULL REFERENCES talks(id) ON DELETE CASCADE,
+      connection_id TEXT NOT NULL REFERENCES channel_connections(id) ON DELETE CASCADE,
+      target_kind TEXT NOT NULL,
+      target_id TEXT NOT NULL,
+      platform_event_id TEXT NOT NULL,
+      external_message_id TEXT,
+      sender_id TEXT,
+      sender_name TEXT,
+      payload_json TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending',
+      reason_code TEXT,
+      reason_detail TEXT,
+      dedupe_key TEXT NOT NULL UNIQUE,
+      available_at TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      attempt_count INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE INDEX IF NOT EXISTS idx_channel_ingress_queue_status_available
+      ON channel_ingress_queue(status, available_at, created_at);
+    CREATE INDEX IF NOT EXISTS idx_channel_ingress_queue_binding_status_available
+      ON channel_ingress_queue(binding_id, status, available_at, created_at);
+    CREATE INDEX IF NOT EXISTS idx_channel_ingress_queue_talk_status_available
+      ON channel_ingress_queue(talk_id, status, available_at, created_at);
+
+    CREATE TABLE IF NOT EXISTS channel_delivery_outbox (
+      id TEXT PRIMARY KEY,
+      binding_id TEXT NOT NULL REFERENCES talk_channel_bindings(id) ON DELETE CASCADE,
+      talk_id TEXT NOT NULL REFERENCES talks(id) ON DELETE CASCADE,
+      run_id TEXT NOT NULL REFERENCES talk_runs(id) ON DELETE CASCADE,
+      talk_message_id TEXT NOT NULL REFERENCES talk_messages(id) ON DELETE CASCADE,
+      target_kind TEXT NOT NULL,
+      target_id TEXT NOT NULL,
+      payload_json TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending',
+      reason_code TEXT,
+      reason_detail TEXT,
+      dedupe_key TEXT NOT NULL UNIQUE,
+      available_at TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      attempt_count INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE INDEX IF NOT EXISTS idx_channel_delivery_outbox_status_available
+      ON channel_delivery_outbox(status, available_at, created_at);
+    CREATE INDEX IF NOT EXISTS idx_channel_delivery_outbox_binding_status_available
+      ON channel_delivery_outbox(binding_id, status, available_at, created_at);
   `);
 
   migrateLlmProvidersForNvidia(database);
@@ -720,6 +850,14 @@ function createClawrocketSchema(database: Database.Database): void {
     /* column already exists */
   }
 
+  try {
+    database.exec(
+      `ALTER TABLE users ADD COLUMN user_type TEXT NOT NULL DEFAULT 'human'`,
+    );
+  } catch {
+    /* column already exists */
+  }
+
   // Add executor_alias column if it doesn't exist (migration for existing DBs)
   try {
     database.exec(`ALTER TABLE talk_runs ADD COLUMN executor_alias TEXT`);
@@ -745,6 +883,26 @@ function createClawrocketSchema(database: Database.Database): void {
 
   try {
     database.exec(`ALTER TABLE talk_runs ADD COLUMN target_agent_id TEXT`);
+  } catch {
+    /* column already exists */
+  }
+
+  try {
+    database.exec(`ALTER TABLE talk_runs ADD COLUMN source_binding_id TEXT`);
+  } catch {
+    /* column already exists */
+  }
+
+  try {
+    database.exec(
+      `ALTER TABLE talk_runs ADD COLUMN source_external_message_id TEXT`,
+    );
+  } catch {
+    /* column already exists */
+  }
+
+  try {
+    database.exec(`ALTER TABLE talk_runs ADD COLUMN source_thread_key TEXT`);
   } catch {
     /* column already exists */
   }
@@ -803,6 +961,22 @@ function createClawrocketSchema(database: Database.Database): void {
     /* column already exists */
   }
 
+  try {
+    database.exec(
+      `ALTER TABLE talk_context_sources ADD COLUMN last_fetched_at TEXT`,
+    );
+  } catch {
+    /* column already exists */
+  }
+
+  try {
+    database.exec(
+      `ALTER TABLE talk_context_sources ADD COLUMN fetch_strategy TEXT CHECK(fetch_strategy IN ('http', 'browser', 'managed') OR fetch_strategy IS NULL)`,
+    );
+  } catch {
+    /* column already exists */
+  }
+
   database.exec(`
     CREATE INDEX IF NOT EXISTS idx_talk_agents_registered_agent_id
       ON talk_agents(registered_agent_id)
@@ -854,6 +1028,32 @@ function createClawrocketSchema(database: Database.Database): void {
   }
 
   seedBuiltinTalkLlmDefaults(database);
+
+  const now = new Date().toISOString();
+  database
+    .prepare(
+      `
+      INSERT INTO users (
+        id, email, display_name, user_type, role, is_active, created_at, last_login_at
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, NULL)
+      ON CONFLICT(id) DO UPDATE SET
+        email = excluded.email,
+        display_name = excluded.display_name,
+        user_type = excluded.user_type,
+        role = excluded.role,
+        is_active = excluded.is_active
+    `,
+    )
+    .run(
+      'system:channel-ingress',
+      'channel-ingress@local.invalid',
+      'Channel Ingress',
+      'system',
+      'member',
+      0,
+      now,
+    );
 }
 
 export function initClawrocketSchema(): void {
