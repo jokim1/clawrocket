@@ -3507,41 +3507,37 @@ function buildApp(opts: WebServerOptions): Hono {
       talkId: c.req.param('talkId'),
     });
 
-      const csrf = validateCsrfToken({
-        method: c.req.method,
-        authType: auth.authType,
-        cookieHeader: c.req.header('cookie'),
-        csrfHeader: c.req.header('x-csrf-token'),
-      });
-      if (!csrf.ok) {
-        return c.json(
-          { ok: false, error: { code: 'csrf_invalid', message: csrf.reason } },
-          403,
-        );
+    const csrf = validateCsrfToken({
+      method: c.req.method,
+      authType: auth.authType,
+      cookieHeader: c.req.header('cookie'),
+      csrfHeader: c.req.header('x-csrf-token'),
+    });
+    if (!csrf.ok) {
+      return c.json(
+        { ok: false, error: { code: 'csrf_invalid', message: csrf.reason } },
+        403,
+      );
+    }
+
+    const result = retryTalkContextSourceRoute({
+      auth,
+      talkId: c.req.param('talkId'),
+      sourceId: c.req.param('sourceId'),
+    });
+
+    if (result.statusCode === 200 && result.body.ok) {
+      const source = result.body.data.source;
+      if (source.sourceType === 'url' && typeof source.sourceUrl === 'string') {
+        opts.sourceIngestion.enqueueUrlSource(source.id, source.sourceUrl);
       }
+    }
 
-      const result = retryTalkContextSourceRoute({
-        auth,
-        talkId: c.req.param('talkId'),
-        sourceId: c.req.param('sourceId'),
-      });
-
-      if (result.statusCode === 200 && result.body.ok) {
-        const source = result.body.data.source;
-        if (
-          source.sourceType === 'url' &&
-          typeof source.sourceUrl === 'string'
-        ) {
-          opts.sourceIngestion.enqueueUrlSource(source.id, source.sourceUrl);
-        }
-      }
-
-      return new Response(JSON.stringify(result.body), {
-        status: result.statusCode,
-        headers: { 'content-type': 'application/json; charset=utf-8' },
-      });
-    },
-  );
+    return new Response(JSON.stringify(result.body), {
+      status: result.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
+  });
 
   app.put('/api/v1/talks/:talkId/agents', async (c) => {
     const auth = requireAuth(c);
