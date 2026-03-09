@@ -1,6 +1,7 @@
 import { randomUUID } from 'crypto';
 
 import {
+  AttachmentValidationError,
   cancelTalkRunsAtomic,
   createTalk,
   createTalkFolder,
@@ -14,6 +15,7 @@ import {
   getTalkById,
   getTalkForUser,
   getTalkRouteById,
+  listMessageAttachments,
   listAdditionalProviderCredentialCards,
   listTalkAgentInstances,
   listTalkAgents,
@@ -41,6 +43,7 @@ import {
   parsePolicyAgentsForUiBadges,
 } from '../../talks/policy.js';
 import type { ExecutorSettingsService } from '../../talks/executor-settings.js';
+import { MAX_ATTACHMENTS_PER_MESSAGE } from '../../talks/attachment-extraction.js';
 import { canEditTalk } from '../middleware/acl.js';
 import { AuthContext, ApiEnvelope } from '../types.js';
 
@@ -84,6 +87,14 @@ type TalkSidebarItemApiRecord =
       talks: SidebarTalkApiRecord[];
     };
 
+interface TalkMessageAttachmentApi {
+  id: string;
+  fileName: string;
+  fileSize: number;
+  mimeType: string;
+  extractionStatus: 'pending' | 'extracted' | 'failed';
+}
+
 interface TalkMessageApiRecord {
   id: string;
   role: 'user' | 'assistant' | 'system' | 'tool';
@@ -94,6 +105,7 @@ interface TalkMessageApiRecord {
   agentId?: string | null;
   agentNickname?: string | null;
   metadata?: Record<string, unknown> | null;
+  attachments?: TalkMessageAttachmentApi[];
 }
 
 export interface TalkAgentApiRecord {
@@ -311,6 +323,19 @@ function toTalkMessageApiRecord(
     }
   }
 
+  // Load attachments for this message (lightweight — only metadata)
+  const attachmentRows = listMessageAttachments(message.id);
+  const attachments: TalkMessageAttachmentApi[] | undefined =
+    attachmentRows.length > 0
+      ? attachmentRows.map((a) => ({
+          id: a.id,
+          fileName: a.fileName,
+          fileSize: a.fileSize,
+          mimeType: a.mimeType,
+          extractionStatus: a.extractionStatus,
+        }))
+      : undefined;
+
   return {
     id: message.id,
     role: message.role,
@@ -321,6 +346,7 @@ function toTalkMessageApiRecord(
     agentId,
     agentNickname,
     metadata,
+    attachments,
   };
 }
 
@@ -1419,6 +1445,7 @@ export function enqueueTalkChat(input: {
   auth: AuthContext;
   content: string;
   targetAgentIds?: string[] | null;
+  attachmentIds?: string[] | null;
   idempotencyKey?: string | null;
 }): {
   statusCode: number;
@@ -1525,6 +1552,10 @@ export function enqueueTalkChat(input: {
   const runIds = selectedAgents.map(() => `run_${randomUUID()}`);
   let persisted: ReturnType<typeof enqueueTalkTurnAtomic>;
   try {
+    // Attachment validation and linking happen inside the same SQLite
+    // transaction as message/run creation. If any attachment ID is invalid,
+    // already linked, or exceeds the cap, the transaction rolls back — no
+    // orphaned messages or runs are left behind.
     persisted = enqueueTalkTurnAtomic({
       talkId: input.talkId,
       userId: input.auth.userId,
@@ -1532,6 +1563,11 @@ export function enqueueTalkChat(input: {
       messageId,
       runIds,
       targetAgentIds: selectedAgents.map((agent) => agent.id),
+      attachmentIds:
+        Array.isArray(input.attachmentIds) && input.attachmentIds.length > 0
+          ? input.attachmentIds
+          : undefined,
+      maxAttachmentsPerMessage: MAX_ATTACHMENTS_PER_MESSAGE,
       idempotencyKey: input.idempotencyKey,
     });
   } catch (error) {
@@ -1547,6 +1583,18 @@ export function enqueueTalkChat(input: {
             code: 'talk_round_active',
             message:
               'Wait for the current round to finish or cancel it before sending another message',
+          },
+        },
+      };
+    }
+    if (error instanceof AttachmentValidationError) {
+      return {
+        statusCode: 400,
+        body: {
+          ok: false,
+          error: {
+            code: error.code,
+            message: error.message,
           },
         },
       };

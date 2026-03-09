@@ -58,7 +58,9 @@ import {
   TalkChannelBinding,
   TalkDataConnector,
   TalkMessage,
+  TalkMessageAttachment,
   TalkRun,
+  uploadTalkAttachment,
   testTalkChannelBinding,
   updateTalkAgents,
   UnauthorizedError,
@@ -997,6 +999,18 @@ export function TalkDetailPage({
   const currentTab = getTabFromPath(location.pathname, talkId);
   const [state, dispatch] = useReducer(detailReducer, undefined, createInitialDetailState);
   const [draft, setDraft] = useState('');
+  const [pendingAttachments, setPendingAttachments] = useState<
+    Array<{
+      localId: string;
+      file: File;
+      fileName: string;
+      fileSize: number;
+      status: 'uploading' | 'ready' | 'error';
+      attachmentId?: string;
+      errorMessage?: string;
+    }>
+  >([]);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const [agents, setAgents] = useState<TalkAgent[]>([]);
   const [agentDrafts, setAgentDrafts] = useState<TalkAgent[]>([]);
   const [aiAgentsData, setAiAgentsData] = useState<AiAgentsPageData | null>(null);
@@ -2280,6 +2294,132 @@ export function TalkDetailPage({
     }
   };
 
+  const ALLOWED_ATTACHMENT_EXTENSIONS = '.txt,.md,.csv,.html,.pdf,.docx,.xlsx';
+  const ALLOWED_ATTACHMENT_MIMES = new Set([
+    'text/plain',
+    'text/markdown',
+    'text/csv',
+    'text/html',
+    'application/pdf',
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  ]);
+  const MAX_ATTACHMENT_SIZE = 10 * 1024 * 1024;
+  const MAX_ATTACHMENTS_PER_MESSAGE = 5;
+
+  const handleFilesSelected = async (files: FileList | File[]) => {
+    if (!state.talk) return;
+    const fileArray = Array.from(files);
+    const currentCount = pendingAttachments.length;
+    if (currentCount + fileArray.length > MAX_ATTACHMENTS_PER_MESSAGE) {
+      dispatch({
+        type: 'SEND_FAILED',
+        message: `You can attach up to ${MAX_ATTACHMENTS_PER_MESSAGE} files per message.`,
+        lastDraft: draft,
+      });
+      return;
+    }
+
+    for (const file of fileArray) {
+      if (!ALLOWED_ATTACHMENT_MIMES.has(file.type) && file.type !== '') {
+        dispatch({
+          type: 'SEND_FAILED',
+          message: `File type "${file.type}" is not supported. Supported: text, markdown, CSV, HTML, PDF, DOCX, XLSX.`,
+          lastDraft: draft,
+        });
+        continue;
+      }
+      if (file.size > MAX_ATTACHMENT_SIZE) {
+        dispatch({
+          type: 'SEND_FAILED',
+          message: `"${file.name}" exceeds the 10 MB size limit.`,
+          lastDraft: draft,
+        });
+        continue;
+      }
+
+      const localId = `local-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      setPendingAttachments((prev) => [
+        ...prev,
+        { localId, file, fileName: file.name, fileSize: file.size, status: 'uploading' },
+      ]);
+
+      try {
+        const result = await uploadTalkAttachment(state.talk!.id, file);
+        setPendingAttachments((prev) =>
+          prev.map((a) =>
+            a.localId === localId
+              ? { ...a, status: 'ready' as const, attachmentId: result.attachment.id }
+              : a,
+          ),
+        );
+      } catch (err) {
+        setPendingAttachments((prev) =>
+          prev.map((a) =>
+            a.localId === localId
+              ? {
+                  ...a,
+                  status: 'error' as const,
+                  errorMessage: err instanceof Error ? err.message : 'Upload failed',
+                }
+              : a,
+          ),
+        );
+      }
+    }
+  };
+
+  const handleRemoveAttachment = (localId: string) => {
+    setPendingAttachments((prev) => prev.filter((a) => a.localId !== localId));
+  };
+
+  const handleAttachButtonClick = () => {
+    fileInputRef.current?.click();
+  };
+
+  const handleFileInputChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+    if (event.target.files && event.target.files.length > 0) {
+      void handleFilesSelected(event.target.files);
+      event.target.value = '';
+    }
+  };
+
+  const [isDragOver, setIsDragOver] = useState(false);
+  const dragCounterRef = useRef(0);
+
+  const handleDragEnter = (event: React.DragEvent) => {
+    event.preventDefault();
+    event.stopPropagation();
+    dragCounterRef.current += 1;
+    if (event.dataTransfer.types.includes('Files')) {
+      setIsDragOver(true);
+    }
+  };
+
+  const handleDragLeave = (event: React.DragEvent) => {
+    event.preventDefault();
+    event.stopPropagation();
+    dragCounterRef.current -= 1;
+    if (dragCounterRef.current === 0) {
+      setIsDragOver(false);
+    }
+  };
+
+  const handleDragOver = (event: React.DragEvent) => {
+    event.preventDefault();
+    event.stopPropagation();
+  };
+
+  const handleDrop = (event: React.DragEvent) => {
+    event.preventDefault();
+    event.stopPropagation();
+    dragCounterRef.current = 0;
+    setIsDragOver(false);
+    if (event.dataTransfer.files.length > 0) {
+      void handleFilesSelected(event.dataTransfer.files);
+    }
+  };
+
   const handleToggleTarget = (agentId: string) => {
     setTargetAgentIds((current) => {
       const selected = current.includes(agentId);
@@ -2334,12 +2474,27 @@ export function TalkDetailPage({
       return;
     }
 
+    // Collect ready attachment IDs
+    const readyAttachments = pendingAttachments.filter(
+      (a) => a.status === 'ready' && a.attachmentId,
+    );
+    const stillUploading = pendingAttachments.some((a) => a.status === 'uploading');
+    if (stillUploading) {
+      dispatch({
+        type: 'SEND_FAILED',
+        message: 'Wait for file uploads to finish before sending.',
+        lastDraft: content,
+      });
+      return;
+    }
+
     dispatch({ type: 'SEND_STARTED' });
     try {
       const result = await sendTalkMessage({
         talkId: state.talk.id,
         content,
         targetAgentIds,
+        attachmentIds: readyAttachments.map((a) => a.attachmentId!),
       });
       const nearBottom = isNearBottom();
       dispatch({
@@ -2360,6 +2515,7 @@ export function TalkDetailPage({
         });
       }
       setDraft('');
+      setPendingAttachments([]);
       dispatch({ type: 'SEND_CLEARED' });
     } catch (err) {
       if (err instanceof UnauthorizedError) {
@@ -4283,6 +4439,23 @@ export function TalkDetailPage({
                         <time>{new Date(message.createdAt).toLocaleString()}</time>
                       </header>
                       <p>{message.content}</p>
+                      {message.attachments && message.attachments.length > 0 ? (
+                        <div className="message-attachments">
+                          {message.attachments.map((att) => (
+                            <span key={att.id} className="message-attachment-chip" title={att.mimeType}>
+                              {att.fileName}
+                              <span className="message-attachment-size">
+                                {' '}
+                                {att.fileSize < 1024
+                                  ? `${att.fileSize} B`
+                                  : att.fileSize < 1048576
+                                    ? `${(att.fileSize / 1024).toFixed(1)} KB`
+                                    : `${(att.fileSize / 1048576).toFixed(1)} MB`}
+                              </span>
+                            </span>
+                          ))}
+                        </div>
+                      ) : null}
                     </article>
                   );
                 }
@@ -4330,7 +4503,25 @@ export function TalkDetailPage({
         </div>
 
         {currentTab === 'talk' ? (
-          <form className="composer talk-workspace-composer" onSubmit={handleSend}>
+          <form
+            className={`composer talk-workspace-composer${isDragOver ? ' composer-drag-over' : ''}`}
+            onSubmit={handleSend}
+            onDragEnter={handleDragEnter}
+            onDragLeave={handleDragLeave}
+            onDragOver={handleDragOver}
+            onDrop={handleDrop}
+          >
+            {isDragOver ? (
+              <div className="composer-drop-overlay">Drop files to attach</div>
+            ) : null}
+            <input
+              ref={fileInputRef}
+              type="file"
+              multiple
+              accept={ALLOWED_ATTACHMENT_EXTENSIONS}
+              onChange={handleFileInputChange}
+              style={{ display: 'none' }}
+            />
             <div className="composer-targets" role="group" aria-label="Selected agents">
               {effectiveAgents.map((agent) => {
                 const selected = targetAgentIds.includes(agent.id);
@@ -4371,10 +4562,49 @@ export function TalkDetailPage({
               }
             />
 
+            {pendingAttachments.length > 0 ? (
+              <div className="composer-attachments">
+                {pendingAttachments.map((att) => (
+                  <span
+                    key={att.localId}
+                    className={`composer-attachment-chip composer-attachment-${att.status}`}
+                    title={att.status === 'error' ? att.errorMessage : att.fileName}
+                  >
+                    <span className="composer-attachment-name">{att.fileName}</span>
+                    {att.status === 'uploading' ? (
+                      <span className="composer-attachment-status"> uploading…</span>
+                    ) : null}
+                    {att.status === 'error' ? (
+                      <span className="composer-attachment-status"> failed</span>
+                    ) : null}
+                    <button
+                      type="button"
+                      className="composer-attachment-remove"
+                      onClick={() => handleRemoveAttachment(att.localId)}
+                      aria-label={`Remove ${att.fileName}`}
+                    >
+                      ×
+                    </button>
+                  </span>
+                ))}
+              </div>
+            ) : null}
+
             <div className="composer-controls">
               <span className="composer-count">
                 {draft.length}/{TALK_MESSAGE_MAX_CHARS}
               </span>
+              <button
+                type="button"
+                className="secondary-btn composer-attach-btn"
+                onClick={handleAttachButtonClick}
+                disabled={
+                  state.sendState.status === 'posting' || activeRound || hasUnsavedAgentChanges
+                }
+                title="Attach files"
+              >
+                Attach
+              </button>
               <button
                 type="submit"
                 className="primary-btn"

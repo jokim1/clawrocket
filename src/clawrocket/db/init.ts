@@ -1027,6 +1027,33 @@ function createClawrocketSchema(database: Database.Database): void {
     tx(staleSessions);
   }
 
+  // ---- Message attachments (file uploads in Talk messages) ----
+  try {
+    database.exec(`
+      CREATE TABLE IF NOT EXISTS talk_message_attachments (
+        id TEXT PRIMARY KEY,
+        message_id TEXT REFERENCES talk_messages(id) ON DELETE CASCADE,
+        talk_id TEXT NOT NULL REFERENCES talks(id) ON DELETE CASCADE,
+        file_name TEXT NOT NULL,
+        file_size INTEGER NOT NULL,
+        mime_type TEXT NOT NULL,
+        storage_key TEXT NOT NULL,
+        extracted_text TEXT,
+        extraction_status TEXT NOT NULL DEFAULT 'pending'
+          CHECK(extraction_status IN ('pending', 'extracted', 'failed')),
+        extraction_error TEXT,
+        created_at TEXT NOT NULL,
+        created_by TEXT REFERENCES users(id) ON DELETE SET NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_tma_message
+        ON talk_message_attachments(message_id);
+      CREATE INDEX IF NOT EXISTS idx_tma_talk
+        ON talk_message_attachments(talk_id, created_at);
+    `);
+  } catch {
+    /* table already exists */
+  }
+
   seedBuiltinTalkLlmDefaults(database);
 
   const now = new Date().toISOString();

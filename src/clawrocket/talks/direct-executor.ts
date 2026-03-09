@@ -12,9 +12,12 @@ import { logger } from '../../logger.js';
 import type { RegisteredGroup } from '../../types.js';
 import {
   appendRuntimeTalkMessage,
+  getTalkChannelBindingById,
   createLlmAttempt,
   getProviderSecretByProviderId,
   getTalkById,
+  getTalkMessageById,
+  getTalkRunById,
   listConnectorsForTalkRun,
   resolveTalkAgent,
   setTalkRunExecutorProfile,
@@ -43,6 +46,7 @@ import type {
 import {
   assembleTalkPromptContext,
   ContextAssemblyError,
+  type CurrentTurnAttachment,
   type PromptMessage,
 } from './context-assembler.js';
 import type {
@@ -55,11 +59,18 @@ import type {
 import { TalkExecutorError } from './executor.js';
 import { getActiveExecutorSettingsService } from './executor-settings.js';
 import {
+  buildAttachmentManifest,
+  buildAttachmentToolDefinition,
   buildTalkContextDirectives,
   buildContextSourceToolDefinition,
+  executeReadAttachment,
   executeReadContextSource,
   type TalkContextDirectivesResult,
 } from './context-directives.js';
+import {
+  listMessageAttachmentsForPrompt,
+  listTalkAttachments,
+} from '../db/index.js';
 import type { TalkPersonaRole } from '../llm/types.js';
 
 const DEFAULT_RESPONSE_START_TIMEOUT_MS = 60_000;
@@ -89,6 +100,50 @@ interface StreamAttemptResult {
   responseSequenceInRun?: number | null;
 }
 
+function buildChannelPromptAugments(input: {
+  runId: string;
+  triggerMessageId: string;
+}): { channelContextNote: string | null; sourcePreamble: string | null } {
+  const run = getTalkRunById(input.runId);
+  if (!run?.source_binding_id) {
+    return { channelContextNote: null, sourcePreamble: null };
+  }
+  const binding = getTalkChannelBindingById(run.source_binding_id);
+  if (!binding) {
+    return { channelContextNote: null, sourcePreamble: null };
+  }
+  const triggerMessage = getTalkMessageById(input.triggerMessageId);
+  const metadata = (() => {
+    if (!triggerMessage?.metadata_json) return null;
+    try {
+      return JSON.parse(triggerMessage.metadata_json) as Record<
+        string,
+        unknown
+      >;
+    } catch {
+      return null;
+    }
+  })();
+
+  const chatDisplayName =
+    typeof metadata?.targetDisplayName === 'string'
+      ? metadata.targetDisplayName
+      : binding.display_name;
+  const senderDisplayName =
+    typeof metadata?.senderName === 'string' ? metadata.senderName : 'Unknown';
+  const timestamp =
+    typeof metadata?.timestamp === 'string'
+      ? metadata.timestamp
+      : triggerMessage?.created_at || new Date().toISOString();
+  const platformLabel =
+    binding.platform === 'telegram' ? 'Telegram' : 'Channel';
+
+  return {
+    channelContextNote: binding.channel_context_note || null,
+    sourcePreamble: `External channel context: ${platformLabel} chat "${chatDisplayName}" from "${senderDisplayName}" at ${timestamp}.`,
+  };
+}
+
 interface TimeoutConfig {
   responseStartTimeoutMs: number;
   streamIdleTimeoutMs: number;
@@ -115,6 +170,7 @@ interface ConnectorToolContext {
     ReturnType<typeof listConnectorsForTalkRun>[number]
   >;
   contextSourceTool?: ContextSourceToolDef;
+  attachmentTool?: ContextSourceToolDef;
 }
 
 type AnthropicContentBlock =
@@ -760,6 +816,7 @@ function isToolCapableModel(
 function buildAnthropicToolDefinitions(
   toolDefinitions: ConnectorToolDefinition[],
   contextSourceTool?: ContextSourceToolDef,
+  attachmentTool?: ContextSourceToolDef,
 ): Array<{
   name: string;
   description: string;
@@ -777,12 +834,20 @@ function buildAnthropicToolDefinitions(
       input_schema: contextSourceTool.inputSchema,
     });
   }
+  if (attachmentTool) {
+    tools.push({
+      name: attachmentTool.toolName,
+      description: attachmentTool.description,
+      input_schema: attachmentTool.inputSchema,
+    });
+  }
   return tools;
 }
 
 function buildOpenAiToolDefinitions(
   toolDefinitions: ConnectorToolDefinition[],
   contextSourceTool?: ContextSourceToolDef,
+  attachmentTool?: ContextSourceToolDef,
 ): Array<{
   type: 'function';
   function: {
@@ -806,6 +871,16 @@ function buildOpenAiToolDefinitions(
         name: contextSourceTool.toolName,
         description: contextSourceTool.description,
         parameters: contextSourceTool.inputSchema,
+      },
+    });
+  }
+  if (attachmentTool) {
+    tools.push({
+      type: 'function' as const,
+      function: {
+        name: attachmentTool.toolName,
+        description: attachmentTool.description,
+        parameters: attachmentTool.inputSchema,
       },
     });
   }
@@ -842,6 +917,13 @@ function buildAllToolDefinitionsForBudget(
       toolName: connectorToolContext.contextSourceTool.toolName,
       description: connectorToolContext.contextSourceTool.description,
       inputSchema: connectorToolContext.contextSourceTool.inputSchema,
+    });
+  }
+  if (connectorToolContext.attachmentTool) {
+    tools.push({
+      toolName: connectorToolContext.attachmentTool.toolName,
+      description: connectorToolContext.attachmentTool.description,
+      inputSchema: connectorToolContext.attachmentTool.inputSchema,
     });
   }
   return tools;
@@ -1016,6 +1098,10 @@ export class DirectTalkExecutor implements TalkExecutor {
       input.talkId,
     );
     const contextDirectives = buildTalkContextDirectives(input.talkId);
+    const channelPromptAugments = buildChannelPromptAugments({
+      runId: input.runId,
+      triggerMessageId: input.triggerMessageId,
+    });
     const requiresConnectorTools =
       connectorToolContext.attachedConnectorCount > 0;
     const requiresContextSourceTool = contextDirectives.hasSources;
@@ -1031,6 +1117,18 @@ export class DirectTalkExecutor implements TalkExecutor {
       };
     }
 
+    // Attach read_attachment tool when the talk has any message attachments
+    const talkAttachments = listTalkAttachments(input.talkId);
+    if (talkAttachments.length > 0) {
+      const attToolDef = buildAttachmentToolDefinition();
+      connectorToolContext.attachmentTool = {
+        toolName: attToolDef.toolName,
+        description: attToolDef.description,
+        inputSchema: attToolDef.inputSchema,
+        talkId: input.talkId,
+      };
+    }
+
     if (
       requiresConnectorTools &&
       connectorToolContext.toolDefinitions.length === 0
@@ -1039,6 +1137,21 @@ export class DirectTalkExecutor implements TalkExecutor {
         'connector_not_ready',
         'Attached data connectors are not ready. Verify their credentials and configuration before running this talk.',
       );
+    }
+
+    // Load current-turn attachments for prompt assembly (inline content)
+    const currentTurnAttachments = listMessageAttachmentsForPrompt(
+      input.triggerMessageId,
+    );
+    const hasAttachmentTool = connectorToolContext.attachmentTool != null;
+
+    // Append attachment manifest to directives if the talk has file attachments
+    let directivesText = contextDirectives.directivesText;
+    const attachmentManifest = buildAttachmentManifest(input.talkId);
+    if (attachmentManifest) {
+      directivesText = directivesText
+        ? `${directivesText}\n\n${attachmentManifest}`
+        : attachmentManifest;
     }
 
     if (resolved.sourceKind === 'claude_default') {
@@ -1050,7 +1163,10 @@ export class DirectTalkExecutor implements TalkExecutor {
         );
       }
 
-      const needsToolLoop = requiresConnectorTools || requiresContextSourceTool;
+      const needsToolLoop =
+        requiresConnectorTools ||
+        requiresContextSourceTool ||
+        hasAttachmentTool;
 
       // In subscription mode, source-only talks fall back to the container-agent
       // path inside executeClaudeDefaultWithTools, which doesn't need tool
@@ -1093,7 +1209,10 @@ export class DirectTalkExecutor implements TalkExecutor {
           connectorToolContext,
           signal,
           emit,
-          contextDirectives,
+          contextDirectives
+            ? { ...contextDirectives, directivesText }
+            : contextDirectives,
+          currentTurnAttachments,
         );
       }
 
@@ -1113,7 +1232,11 @@ export class DirectTalkExecutor implements TalkExecutor {
         primaryStep?.model.default_max_output_tokens ?? 4_096,
         signal,
         emit,
-        contextDirectives,
+        contextDirectives
+          ? { ...contextDirectives, directivesText }
+          : contextDirectives,
+        undefined, // webTalkConnectorBundle — not used in non-tool path
+        currentTurnAttachments,
       );
     }
 
@@ -1253,6 +1376,10 @@ export class DirectTalkExecutor implements TalkExecutor {
           currentRunId: input.runId,
           currentUserMessageId: input.triggerMessageId,
           currentUserMessage: input.triggerContent,
+          currentTurnAttachments:
+            currentTurnAttachments.length > 0
+              ? currentTurnAttachments
+              : undefined,
           agent: {
             id: resolved.agent.id,
             name: resolved.agent.name,
@@ -1260,9 +1387,13 @@ export class DirectTalkExecutor implements TalkExecutor {
           },
           modelContextWindowTokens: step.model.context_window_tokens,
           maxOutputTokens: step.model.default_max_output_tokens,
-          talkDirectives: contextDirectives.directivesText,
+          talkDirectives: directivesText,
+          channelContextNote: channelPromptAugments.channelContextNote,
+          sourcePreamble: channelPromptAugments.sourcePreamble,
           toolDefinitions:
-            requiresConnectorTools || requiresContextSourceTool
+            requiresConnectorTools ||
+            requiresContextSourceTool ||
+            hasAttachmentTool
               ? buildAllToolDefinitionsForBudget(connectorToolContext)
               : undefined,
         });
@@ -1285,7 +1416,9 @@ export class DirectTalkExecutor implements TalkExecutor {
           attemptContext,
           emit,
           signal,
-          requiresConnectorTools || requiresContextSourceTool
+          requiresConnectorTools ||
+            requiresContextSourceTool ||
+            hasAttachmentTool
             ? connectorToolContext
             : undefined,
         );
@@ -1468,6 +1601,7 @@ export class DirectTalkExecutor implements TalkExecutor {
     emit?: (event: TalkExecutionEvent) => void,
     contextDirectives?: TalkContextDirectivesResult,
     webTalkConnectorBundle?: ContainerWebTalkConnectorBundle,
+    currentTurnAttachments?: CurrentTurnAttachment[],
   ): Promise<TalkExecutorOutput> {
     const settingsService = getActiveExecutorSettingsService();
     const blockedReason = settingsService.getExecutionBlockedReason();
@@ -1505,12 +1639,20 @@ export class DirectTalkExecutor implements TalkExecutor {
 
     const startedAt = Date.now();
     try {
+      const channelPromptAugments = buildChannelPromptAugments({
+        runId: context.input.runId,
+        triggerMessageId: context.input.triggerMessageId,
+      });
       const prompt = assembleTalkPromptContext({
         talkId: context.input.talkId,
         talkTitle,
         currentRunId: context.input.runId,
         currentUserMessageId: context.input.triggerMessageId,
         currentUserMessage: context.input.triggerContent,
+        currentTurnAttachments:
+          currentTurnAttachments && currentTurnAttachments.length > 0
+            ? currentTurnAttachments
+            : undefined,
         agent: {
           id: context.agentId,
           name: context.agentNickname,
@@ -1519,6 +1661,8 @@ export class DirectTalkExecutor implements TalkExecutor {
         modelContextWindowTokens,
         maxOutputTokens,
         talkDirectives: contextDirectives?.directivesText,
+        channelContextNote: channelPromptAugments.channelContextNote,
+        sourcePreamble: channelPromptAugments.sourcePreamble,
         toolDefinitions: webTalkConnectorBundle?.toolDefinitions,
       });
 
@@ -1799,6 +1943,7 @@ export class DirectTalkExecutor implements TalkExecutor {
     signal: AbortSignal,
     emit?: (event: TalkExecutionEvent) => void,
     contextDirectives?: TalkContextDirectivesResult,
+    currentTurnAttachments?: CurrentTurnAttachment[],
   ): Promise<TalkExecutorOutput> {
     const settingsService = getActiveExecutorSettingsService();
     const blockedReason = settingsService.getExecutionBlockedReason();
@@ -1858,6 +2003,7 @@ export class DirectTalkExecutor implements TalkExecutor {
         emit,
         subscriptionDirectives,
         subscriptionConnectorBundle,
+        currentTurnAttachments,
       );
     }
 
@@ -1886,12 +2032,20 @@ export class DirectTalkExecutor implements TalkExecutor {
 
     const startedAt = Date.now();
     try {
+      const channelPromptAugments = buildChannelPromptAugments({
+        runId: context.input.runId,
+        triggerMessageId: context.input.triggerMessageId,
+      });
       const prompt = assembleTalkPromptContext({
         talkId: context.input.talkId,
         talkTitle,
         currentRunId: context.input.runId,
         currentUserMessageId: context.input.triggerMessageId,
         currentUserMessage: context.input.triggerContent,
+        currentTurnAttachments:
+          currentTurnAttachments && currentTurnAttachments.length > 0
+            ? currentTurnAttachments
+            : undefined,
         agent: {
           id: context.agentId,
           name: context.agentNickname,
@@ -1900,6 +2054,8 @@ export class DirectTalkExecutor implements TalkExecutor {
         modelContextWindowTokens,
         maxOutputTokens,
         talkDirectives: contextDirectives?.directivesText,
+        channelContextNote: channelPromptAugments.channelContextNote,
+        sourcePreamble: channelPromptAugments.sourcePreamble,
         toolDefinitions: buildAllToolDefinitionsForBudget(connectorToolContext),
       });
 
@@ -2072,6 +2228,25 @@ export class DirectTalkExecutor implements TalkExecutor {
               ? `read_context_source(${sourceRef}) failed`
               : `read_context_source(${sourceRef})`,
         };
+      } else if (
+        toolCall.name === 'read_attachment' &&
+        connectorToolContext.attachmentTool
+      ) {
+        // Handle read_attachment tool
+        const input = toolCall.input as { attachmentId?: string };
+        const attId = input?.attachmentId ?? '';
+        const result = executeReadAttachment(
+          connectorToolContext.attachmentTool.talkId,
+          attId,
+        );
+        execution = {
+          content: JSON.stringify(result),
+          isError: 'error' in result,
+          displaySummary:
+            'error' in result
+              ? `read_attachment(${attId}) failed`
+              : `read_attachment(${attId})`,
+        };
       } else {
         // Connector tools
         const parsedToolName = parseConnectorToolName(toolCall.name);
@@ -2184,6 +2359,7 @@ export class DirectTalkExecutor implements TalkExecutor {
       const toolDefinitions = buildAnthropicToolDefinitions(
         connectorToolContext.toolDefinitions,
         connectorToolContext.contextSourceTool,
+        connectorToolContext.attachmentTool,
       );
       const conversation = messages.map(
         (message): AnthropicConversationMessage => ({
@@ -2454,6 +2630,7 @@ export class DirectTalkExecutor implements TalkExecutor {
       const toolDefinitions = buildOpenAiToolDefinitions(
         connectorToolContext.toolDefinitions,
         connectorToolContext.contextSourceTool,
+        connectorToolContext.attachmentTool,
       );
       let totalUsage: TalkExecutionUsage | undefined;
       let sequenceInRun = 0;

@@ -208,6 +208,14 @@ export type TalkContext = {
   sources: ContextSource[];
 };
 
+export type TalkMessageAttachment = {
+  id: string;
+  fileName: string;
+  fileSize: number;
+  mimeType: string;
+  extractionStatus: 'pending' | 'extracted' | 'failed';
+};
+
 export type TalkMessage = {
   id: string;
   role: 'user' | 'assistant' | 'system' | 'tool';
@@ -218,6 +226,7 @@ export type TalkMessage = {
   agentId?: string | null;
   agentNickname?: string | null;
   metadata?: Record<string, unknown> | null;
+  attachments?: TalkMessageAttachment[];
 };
 
 export type TalkRun = {
@@ -1413,6 +1422,7 @@ export async function sendTalkMessage(input: {
   talkId: string;
   content: string;
   targetAgentIds?: string[];
+  attachmentIds?: string[];
 }): Promise<{ talkId: string; message: TalkMessage; runs: TalkRun[] }> {
   return apiMutationRequest<{ talkId: string; message: TalkMessage; runs: TalkRun[] }>(
     `/api/v1/talks/${encodeURIComponent(input.talkId)}/chat`,
@@ -1422,8 +1432,35 @@ export async function sendTalkMessage(input: {
       body: JSON.stringify({
         content: input.content,
         targetAgentIds: input.targetAgentIds ?? [],
+        attachmentIds: input.attachmentIds ?? [],
       }),
     },
+  );
+}
+
+export async function uploadTalkAttachment(
+  talkId: string,
+  file: File,
+): Promise<{ attachment: TalkMessageAttachment }> {
+  const formData = new FormData();
+  formData.append('file', file);
+  return apiMutationRequest<{ attachment: TalkMessageAttachment }>(
+    `/api/v1/talks/${encodeURIComponent(talkId)}/attachments`,
+    {
+      method: 'POST',
+      body: formData,
+      // Do NOT set includeJson — this is multipart, not JSON
+    },
+  );
+}
+
+export async function deleteTalkAttachment(
+  talkId: string,
+  attachmentId: string,
+): Promise<void> {
+  await apiMutationRequest<{ ok: boolean }>(
+    `/api/v1/talks/${encodeURIComponent(talkId)}/attachments/${encodeURIComponent(attachmentId)}`,
+    { method: 'DELETE' },
   );
 }
 

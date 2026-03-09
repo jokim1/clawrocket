@@ -1615,25 +1615,25 @@ export function listTalkReplayRows(input: {
       input.currentRunId,
       input.currentUserMessageId,
     ) as Array<{
-      user_id: string;
-      user_talk_id: string;
-      user_role: TalkMessageRole;
-      user_content: string;
-      user_created_by: string | null;
-      user_created_at: string;
-      user_run_id: string | null;
-      user_metadata_json: string | null;
-      user_sequence_in_run: number | null;
-      assistant_id: string;
-      assistant_talk_id: string;
-      assistant_role: TalkMessageRole;
-      assistant_content: string;
-      assistant_created_by: string | null;
-      assistant_created_at: string;
-      assistant_run_id: string | null;
-      assistant_metadata_json: string | null;
-      assistant_sequence_in_run: number | null;
-    }>;
+    user_id: string;
+    user_talk_id: string;
+    user_role: TalkMessageRole;
+    user_content: string;
+    user_created_by: string | null;
+    user_created_at: string;
+    user_run_id: string | null;
+    user_metadata_json: string | null;
+    user_sequence_in_run: number | null;
+    assistant_id: string;
+    assistant_talk_id: string;
+    assistant_role: TalkMessageRole;
+    assistant_content: string;
+    assistant_created_by: string | null;
+    assistant_created_at: string;
+    assistant_run_id: string | null;
+    assistant_metadata_json: string | null;
+    assistant_sequence_in_run: number | null;
+  }>;
 
   return rows.map((row) => ({
     user: {
@@ -1755,6 +1755,8 @@ export function enqueueTalkTurnAtomic(input: {
   messageId: string;
   runIds: string[];
   targetAgentIds: string[];
+  attachmentIds?: string[] | null;
+  maxAttachmentsPerMessage?: number;
   idempotencyKey?: string | null;
   now?: string;
 }): { message: TalkMessageRecord; runs: TalkRunRecord[] } {
@@ -1877,11 +1879,57 @@ export function enqueueTalkTurnAtomic(input: {
         );
       }
 
+      // Validate and link attachments inside the same transaction so the
+      // entire operation is atomic — no race between validation and linking.
+      const attIds = txInput.attachmentIds;
+      if (Array.isArray(attIds) && attIds.length > 0) {
+        const cap = txInput.maxAttachmentsPerMessage ?? 5;
+        if (attIds.length > cap) {
+          throw new AttachmentValidationError(
+            'too_many_attachments',
+            `A message may have at most ${cap} attachments.`,
+          );
+        }
+
+        const linkStmt = getDb().prepare(
+          `UPDATE talk_message_attachments
+           SET message_id = ?
+           WHERE id = ? AND talk_id = ? AND message_id IS NULL`,
+        );
+        const invalidIds: string[] = [];
+        for (const attId of attIds) {
+          const result = linkStmt.run(message.id, attId, txInput.talkId);
+          if (result.changes === 0) {
+            invalidIds.push(attId);
+          }
+        }
+        if (invalidIds.length > 0) {
+          throw new AttachmentValidationError(
+            'invalid_attachment_ids',
+            `Some attachment IDs could not be linked: ${invalidIds.join(', ')}. ` +
+              'They may be invalid, already linked, or belong to another talk.',
+          );
+        }
+      }
+
       return { message, runs };
     },
   );
 
   return tx(input);
+}
+
+/**
+ * Thrown when attachment validation fails inside enqueueTalkTurnAtomic.
+ * The transaction is rolled back so no message or runs are persisted.
+ */
+export class AttachmentValidationError extends Error {
+  readonly code: string;
+  constructor(code: string, message: string) {
+    super(message);
+    this.name = 'AttachmentValidationError';
+    this.code = code;
+  }
 }
 
 // --- Event outbox ---

@@ -1,7 +1,4 @@
-import {
-  listTalkReplayRows,
-  type TalkMessageRecord,
-} from '../db/index.js';
+import { listTalkReplayRows, type TalkMessageRecord } from '../db/index.js';
 import type { TalkPersonaRole } from '../llm/types.js';
 
 export interface PromptMessage {
@@ -17,12 +14,22 @@ export interface ContextAssemblyResult {
   inputBudgetTokens: number;
 }
 
+export interface CurrentTurnAttachment {
+  id: string;
+  fileName: string;
+  mimeType: string;
+  fileSize: number;
+  extractedText: string | null;
+  extractionStatus: string;
+}
+
 export interface ContextAssemblyInput {
   talkId: string;
   talkTitle?: string | null;
   currentRunId: string;
   currentUserMessageId: string;
   currentUserMessage: string;
+  currentTurnAttachments?: CurrentTurnAttachment[];
   agent: {
     id: string;
     name: string;
@@ -31,6 +38,8 @@ export interface ContextAssemblyInput {
   modelContextWindowTokens: number;
   maxOutputTokens: number;
   talkDirectives?: string | null;
+  channelContextNote?: string | null;
+  sourcePreamble?: string | null;
   toolDefinitions?: unknown[];
 }
 
@@ -102,6 +111,60 @@ function buildBaseSystemPrompt(title?: string | null): string {
 function buildPersonaPrompt(input: ContextAssemblyInput): string {
   const persona = PERSONA_PROMPTS[input.agent.personaRole];
   return `Selected talk agent: ${input.agent.name}.\n${persona}`;
+}
+
+/**
+ * Max chars of attachment text to inline directly in the user message.
+ * Larger attachments are referenced by the read_attachment tool hint.
+ */
+const INLINE_ATTACHMENT_MAX_CHARS = 16_000; // ~4000 tokens
+
+function formatFileSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function buildAugmentedUserMessage(
+  originalText: string,
+  attachments: CurrentTurnAttachment[],
+): string {
+  if (attachments.length === 0) return originalText;
+
+  const parts: string[] = [];
+
+  // Attachment manifest
+  parts.push('[Attached files]');
+  for (const att of attachments) {
+    parts.push(
+      `- ${att.fileName} (${att.mimeType}, ${formatFileSize(att.fileSize)})`,
+    );
+  }
+  parts.push('');
+
+  // Inline extracted content for each attachment
+  for (const att of attachments) {
+    if (att.extractionStatus !== 'extracted' || !att.extractedText) {
+      parts.push(
+        `--- ${att.fileName} ---\n[Extraction ${att.extractionStatus === 'failed' ? 'failed' : 'pending'}. Use read_attachment("${att.id}") once available.]\n`,
+      );
+      continue;
+    }
+
+    const text = att.extractedText;
+    if (text.length <= INLINE_ATTACHMENT_MAX_CHARS) {
+      parts.push(`--- ${att.fileName} ---\n${text}\n`);
+    } else {
+      parts.push(
+        `--- ${att.fileName} (first ${INLINE_ATTACHMENT_MAX_CHARS} chars) ---\n${text.slice(0, INLINE_ATTACHMENT_MAX_CHARS)}\n[…truncated — use read_attachment("${att.id}") for full content]\n`,
+      );
+    }
+  }
+
+  // Original user message
+  parts.push(originalText);
+
+  return parts.join('\n');
 }
 
 function buildHistoricalTurns(
@@ -186,14 +249,35 @@ export function assembleTalkPromptContext(
       text: input.talkDirectives.trim(),
     });
   }
+  if (input.channelContextNote?.trim()) {
+    systemMessages.push({
+      role: 'system',
+      text: input.channelContextNote.trim(),
+    });
+  }
+  if (input.sourcePreamble?.trim()) {
+    systemMessages.push({
+      role: 'system',
+      text: input.sourcePreamble.trim(),
+    });
+  }
   systemMessages.push({
     role: 'system',
     text: buildPersonaPrompt(input),
   });
 
+  // Augment the user's message with inline attachment content for the current turn
+  const augmentedText =
+    input.currentTurnAttachments && input.currentTurnAttachments.length > 0
+      ? buildAugmentedUserMessage(
+          input.currentUserMessage,
+          input.currentTurnAttachments,
+        )
+      : input.currentUserMessage;
+
   const currentUserMessage: PromptMessage = {
     role: 'user',
-    text: input.currentUserMessage,
+    text: augmentedText,
     talkMessageId: input.currentUserMessageId,
     agentId: input.agent.id,
   };

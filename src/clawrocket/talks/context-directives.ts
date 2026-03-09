@@ -1,6 +1,9 @@
 import {
+  getMessageAttachmentById,
   getTalkContextForPrompt,
   getTalkContextSourceByRef,
+  listTalkAttachments,
+  type AttachmentSnapshot,
   type TalkContextForPrompt,
 } from '../db/context-accessors.js';
 
@@ -228,4 +231,99 @@ export function executeReadContextSource(
     truncated: truncated || source.isTruncated,
     content,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Tool definition for read_attachment
+// ---------------------------------------------------------------------------
+
+export function buildAttachmentToolDefinition(): ContextSourceToolDefinition {
+  return {
+    toolName: 'read_attachment',
+    description:
+      'Read the extracted text of a file attachment from any message in this talk. Returns up to 12,000 characters of content.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        attachmentId: {
+          type: 'string',
+          description:
+            'The attachment ID from the attached files listing in the conversation.',
+        },
+      },
+      required: ['attachmentId'],
+    },
+  };
+}
+
+const READ_ATTACHMENT_MAX_CHARS = 12_000;
+
+export interface ReadAttachmentResult {
+  attachmentId: string;
+  fileName: string;
+  mimeType: string;
+  totalChars: number;
+  returnedChars: number;
+  truncated: boolean;
+  content: string | null;
+}
+
+export function executeReadAttachment(
+  talkId: string,
+  attachmentId: string,
+): ReadAttachmentResult | { error: string } {
+  const attachment = getMessageAttachmentById(attachmentId, talkId);
+  if (!attachment) {
+    return { error: `Attachment "${attachmentId}" not found in this talk.` };
+  }
+
+  if (attachment.extraction_status !== 'extracted') {
+    return {
+      error:
+        `Attachment "${attachment.file_name}" extraction ${attachment.extraction_status === 'failed' ? 'failed' : 'is still pending'}. ${attachment.extraction_error || ''}`.trim(),
+    };
+  }
+
+  const totalChars = attachment.extracted_text?.length ?? 0;
+  let content = attachment.extracted_text;
+  let truncated = false;
+
+  if (content && content.length > READ_ATTACHMENT_MAX_CHARS) {
+    content = content.slice(0, READ_ATTACHMENT_MAX_CHARS);
+    truncated = true;
+  }
+
+  return {
+    attachmentId: attachment.id,
+    fileName: attachment.file_name,
+    mimeType: attachment.mime_type,
+    totalChars,
+    returnedChars: content?.length ?? 0,
+    truncated,
+    content,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Attachment manifest for directives (tells agent what files are available)
+// ---------------------------------------------------------------------------
+
+export function buildAttachmentManifest(talkId: string): string | null {
+  const attachments = listTalkAttachments(talkId);
+  if (attachments.length === 0) return null;
+
+  const entries = attachments.map((att) => {
+    const status =
+      att.extractionStatus === 'extracted' ? '' : ` [${att.extractionStatus}]`;
+    const size = formatAttachmentSize(att.fileSize);
+    return `- ${att.id}: "${att.fileName}" (${att.mimeType}, ${size})${status}`;
+  });
+
+  return `## Message Attachments\n${entries.join('\n')}\nUse read_attachment(attachmentId) to read full content.`;
+}
+
+function formatAttachmentSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
