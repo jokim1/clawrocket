@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
 
+import { AvatarMenu } from './components/AvatarMenu';
 import { ClawTalkSidebar } from './components/ClawTalkSidebar';
 import { SignInView } from './components/SignInView';
 import {
@@ -25,6 +26,7 @@ import { AiAgentsPage } from './pages/AiAgentsPage';
 import { DataConnectorsPage } from './pages/DataConnectorsPage';
 import { TalkDetailPage } from './pages/TalkDetailPage';
 import { TalkListPage } from './pages/TalkListPage';
+import { ProfilePage } from './pages/ProfilePage';
 import { SettingsPage } from './pages/SettingsPage';
 
 type AuthState =
@@ -372,6 +374,13 @@ export function App() {
     auth.status === 'authenticated' &&
     (auth.user.role === 'owner' || auth.user.role === 'admin');
 
+  const handleUserUpdated = useCallback(
+    (user: SessionUser) => {
+      setAuth({ status: 'authenticated', user });
+    },
+    [],
+  );
+
   const currentTalkId = location.pathname.startsWith('/app/talks/')
     ? decodeURIComponent(location.pathname.split('/')[3] || '')
     : '';
@@ -395,7 +404,6 @@ export function App() {
         loading={sidebarLoading}
         error={sidebarError}
         userRole={auth.user.role}
-        canManageSettings={canManageSettings}
         onCreateTalk={handleCreateTalk}
         onCreateFolder={handleCreateFolder}
         onRenameTalk={handleRenameTalk}
@@ -408,18 +416,13 @@ export function App() {
       />
       <div className="app-main">
         <header className="app-main-topbar">
-          <div className="app-user-meta">
-            <strong>{auth.user.displayName}</strong>
-            <span>{auth.user.email}</span>
-          </div>
-          <button
-            type="button"
-            className="secondary-btn"
-            onClick={handleSignOut}
-            disabled={signOutBusy}
-          >
-            Sign out
-          </button>
+          <div className="app-main-topbar-spacer" />
+          <AvatarMenu
+            user={auth.user}
+            canManageSettings={canManageSettings}
+            onSignOut={handleSignOut}
+            signOutBusy={signOutBusy}
+          />
         </header>
         <div className={`app-main-content${isTalkRoute ? ' app-main-content-talk' : ''}`}>
           <Routes>
@@ -482,6 +485,16 @@ export function App() {
                 ) : (
                   <Navigate to="/app/talks" replace />
                 )
+              }
+            />
+            <Route
+              path="/app/profile"
+              element={
+                <ProfilePage
+                  user={auth.user}
+                  onUnauthorized={handleUnauthorized}
+                  onUserUpdated={handleUserUpdated}
+                />
               }
             />
             <Route path="*" element={<Navigate to="/app/talks" replace />} />

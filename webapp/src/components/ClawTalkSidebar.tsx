@@ -40,7 +40,6 @@ type Props = {
   loading: boolean;
   error: string | null;
   userRole: string;
-  canManageSettings: boolean;
   onCreateTalk: () => Promise<Talk>;
   onCreateFolder: () => Promise<TalkSidebarFolder>;
   onRenameTalk: (talkId: string, title: string) => void;
@@ -186,7 +185,6 @@ export function ClawTalkSidebar({
   loading,
   error,
   userRole,
-  canManageSettings,
   onCreateTalk,
   onCreateFolder,
   onRenameTalk,
@@ -707,16 +705,6 @@ export function ClawTalkSidebar({
             }
           >
             Data Connectors
-          </NavLink>
-        ) : null}
-        {canManageSettings ? (
-          <NavLink
-            to="/app/settings"
-            className={({ isActive }) =>
-              `clawtalk-sidebar-link${isActive ? ' active' : ''}`
-            }
-          >
-            Settings
           </NavLink>
         ) : null}
       </nav>

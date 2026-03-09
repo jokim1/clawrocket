@@ -107,7 +107,6 @@ describe('ClawTalkSidebar', () => {
           loading={false}
           error={null}
           userRole="owner"
-          canManageSettings={true}
           onCreateTalk={vi.fn(async () => buildTalk())}
           onCreateFolder={vi.fn(async () => buildFolder())}
           onRenameTalk={vi.fn()}

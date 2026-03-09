@@ -49,6 +49,15 @@ export function upsertUser(input: {
     );
 }
 
+export function updateUserDisplayName(
+  userId: string,
+  displayName: string,
+): void {
+  getDb()
+    .prepare('UPDATE users SET display_name = ? WHERE id = ?')
+    .run(displayName, userId);
+}
+
 export function getUserById(userId: string): UserRecord | undefined {
   return getDb().prepare('SELECT * FROM users WHERE id = ?').get(userId) as
     | UserRecord
