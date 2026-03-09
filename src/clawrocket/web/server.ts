@@ -93,6 +93,16 @@ import {
   getTalkLlmSettingsRoute,
   updateTalkLlmSettingsRoute,
 } from './routes/talk-llm.js';
+import {
+  attachTalkDataConnectorRoute,
+  createDataConnectorRoute,
+  deleteDataConnectorRoute,
+  detachTalkDataConnectorRoute,
+  listDataConnectorsRoute,
+  listTalkDataConnectorsRoute,
+  patchDataConnectorRoute,
+  setDataConnectorCredentialRoute,
+} from './routes/data-connectors.js';
 import { authenticateRequest } from './middleware/auth.js';
 import { AuthContext } from './types.js';
 
@@ -1448,6 +1458,240 @@ function buildApp(opts: WebServerOptions): Hono {
     });
   });
 
+  app.get('/api/v1/data-connectors', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+
+    const result = listDataConnectorsRoute({ auth });
+    return new Response(JSON.stringify(result.body), {
+      status: result.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
+  });
+
+  app.post('/api/v1/data-connectors', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+
+    const rateResult = checkRateLimit({ principalId: auth.userId, bucket: 'write' });
+    if (!rateResult.allowed) {
+      return rateLimitedResponse(c, rateResult);
+    }
+
+    const csrf = validateCsrfToken({
+      method: c.req.method,
+      authType: auth.authType,
+      cookieHeader: c.req.header('cookie'),
+      csrfHeader: c.req.header('x-csrf-token'),
+    });
+    if (!csrf.ok) {
+      return c.json(
+        { ok: false, error: { code: 'csrf_failed', message: csrf.reason } },
+        403,
+      );
+    }
+
+    const bodyText = await c.req.text();
+    const payload = parseJsonPayload<{
+      name?: string;
+      connectorKind?: string;
+      config?: Record<string, unknown>;
+      enabled?: boolean;
+    }>(bodyText);
+    if (!payload.ok) {
+      return c.json(
+        { ok: false, error: { code: 'invalid_json', message: payload.error } },
+        400,
+      );
+    }
+    if (!payload.data || typeof payload.data !== 'object') {
+      return c.json(
+        {
+          ok: false,
+          error: { code: 'invalid_json', message: 'JSON object expected.' },
+        },
+        400,
+      );
+    }
+
+    const result = createDataConnectorRoute({
+      auth,
+      name: typeof payload.data.name === 'string' ? payload.data.name : '',
+      connectorKind:
+        typeof payload.data.connectorKind === 'string'
+          ? payload.data.connectorKind
+          : '',
+      config:
+        payload.data.config && typeof payload.data.config === 'object'
+          ? payload.data.config
+          : undefined,
+      enabled:
+        typeof payload.data.enabled === 'boolean'
+          ? payload.data.enabled
+          : undefined,
+    });
+    return new Response(JSON.stringify(result.body), {
+      status: result.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
+  });
+
+  app.patch('/api/v1/data-connectors/:connectorId', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+
+    const rateResult = checkRateLimit({ principalId: auth.userId, bucket: 'write' });
+    if (!rateResult.allowed) {
+      return rateLimitedResponse(c, rateResult);
+    }
+
+    const csrf = validateCsrfToken({
+      method: c.req.method,
+      authType: auth.authType,
+      cookieHeader: c.req.header('cookie'),
+      csrfHeader: c.req.header('x-csrf-token'),
+    });
+    if (!csrf.ok) {
+      return c.json(
+        { ok: false, error: { code: 'csrf_failed', message: csrf.reason } },
+        403,
+      );
+    }
+
+    const bodyText = await c.req.text();
+    const payload = parseJsonPayload<{
+      name?: string;
+      config?: Record<string, unknown>;
+      enabled?: boolean;
+    }>(bodyText);
+    if (!payload.ok) {
+      return c.json(
+        { ok: false, error: { code: 'invalid_json', message: payload.error } },
+        400,
+      );
+    }
+    if (!payload.data || typeof payload.data !== 'object') {
+      return c.json(
+        {
+          ok: false,
+          error: { code: 'invalid_json', message: 'JSON object expected.' },
+        },
+        400,
+      );
+    }
+
+    const result = patchDataConnectorRoute({
+      auth,
+      connectorId: c.req.param('connectorId'),
+      name:
+        typeof payload.data.name === 'string' ? payload.data.name : undefined,
+      config:
+        payload.data.config !== undefined &&
+        payload.data.config &&
+        typeof payload.data.config === 'object'
+          ? payload.data.config
+          : payload.data.config === null
+            ? {}
+            : undefined,
+      enabled:
+        typeof payload.data.enabled === 'boolean'
+          ? payload.data.enabled
+          : undefined,
+    });
+    return new Response(JSON.stringify(result.body), {
+      status: result.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
+  });
+
+  app.delete('/api/v1/data-connectors/:connectorId', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+
+    const rateResult = checkRateLimit({ principalId: auth.userId, bucket: 'write' });
+    if (!rateResult.allowed) {
+      return rateLimitedResponse(c, rateResult);
+    }
+
+    const csrf = validateCsrfToken({
+      method: c.req.method,
+      authType: auth.authType,
+      cookieHeader: c.req.header('cookie'),
+      csrfHeader: c.req.header('x-csrf-token'),
+    });
+    if (!csrf.ok) {
+      return c.json(
+        { ok: false, error: { code: 'csrf_failed', message: csrf.reason } },
+        403,
+      );
+    }
+
+    const result = deleteDataConnectorRoute({
+      auth,
+      connectorId: c.req.param('connectorId'),
+    });
+    return new Response(JSON.stringify(result.body), {
+      status: result.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
+  });
+
+  app.put('/api/v1/data-connectors/:connectorId/credential', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+
+    const rateResult = checkRateLimit({ principalId: auth.userId, bucket: 'write' });
+    if (!rateResult.allowed) {
+      return rateLimitedResponse(c, rateResult);
+    }
+
+    const csrf = validateCsrfToken({
+      method: c.req.method,
+      authType: auth.authType,
+      cookieHeader: c.req.header('cookie'),
+      csrfHeader: c.req.header('x-csrf-token'),
+    });
+    if (!csrf.ok) {
+      return c.json(
+        { ok: false, error: { code: 'csrf_failed', message: csrf.reason } },
+        403,
+      );
+    }
+
+    const bodyText = await c.req.text();
+    const payload = parseJsonPayload<{
+      apiKey?: string | null;
+    }>(bodyText);
+    if (!payload.ok) {
+      return c.json(
+        { ok: false, error: { code: 'invalid_json', message: payload.error } },
+        400,
+      );
+    }
+    if (!payload.data || typeof payload.data !== 'object') {
+      return c.json(
+        {
+          ok: false,
+          error: { code: 'invalid_json', message: 'JSON object expected.' },
+        },
+        400,
+      );
+    }
+
+    const result = setDataConnectorCredentialRoute({
+      auth,
+      connectorId: c.req.param('connectorId'),
+      apiKey:
+        typeof payload.data.apiKey === 'string' || payload.data.apiKey === null
+          ? payload.data.apiKey
+          : undefined,
+    });
+    return new Response(JSON.stringify(result.body), {
+      status: result.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
+  });
+
   app.post('/api/v1/talks', async (c) => {
     const auth = requireAuth(c);
     if (!auth) return unauthorized(c);
@@ -2076,6 +2320,109 @@ function buildApp(opts: WebServerOptions): Hono {
       talkId,
       auth,
       executorSettings: opts.executorSettings,
+    });
+    return new Response(JSON.stringify(result.body), {
+      status: result.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
+  });
+
+  app.get('/api/v1/talks/:talkId/data-connectors', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+
+    const result = listTalkDataConnectorsRoute({
+      auth,
+      talkId: c.req.param('talkId'),
+    });
+    return new Response(JSON.stringify(result.body), {
+      status: result.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
+  });
+
+  app.post('/api/v1/talks/:talkId/data-connectors', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+
+    const rateResult = checkRateLimit({ principalId: auth.userId, bucket: 'write' });
+    if (!rateResult.allowed) {
+      return rateLimitedResponse(c, rateResult);
+    }
+
+    const csrf = validateCsrfToken({
+      method: c.req.method,
+      authType: auth.authType,
+      cookieHeader: c.req.header('cookie'),
+      csrfHeader: c.req.header('x-csrf-token'),
+    });
+    if (!csrf.ok) {
+      return c.json(
+        { ok: false, error: { code: 'csrf_failed', message: csrf.reason } },
+        403,
+      );
+    }
+
+    const bodyText = await c.req.text();
+    const payload = parseJsonPayload<{
+      connectorId?: string;
+    }>(bodyText);
+    if (!payload.ok) {
+      return c.json(
+        { ok: false, error: { code: 'invalid_json', message: payload.error } },
+        400,
+      );
+    }
+    if (!payload.data || typeof payload.data !== 'object') {
+      return c.json(
+        {
+          ok: false,
+          error: { code: 'invalid_json', message: 'JSON object expected.' },
+        },
+        400,
+      );
+    }
+
+    const result = attachTalkDataConnectorRoute({
+      auth,
+      talkId: c.req.param('talkId'),
+      connectorId:
+        typeof payload.data.connectorId === 'string'
+          ? payload.data.connectorId
+          : '',
+    });
+    return new Response(JSON.stringify(result.body), {
+      status: result.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
+  });
+
+  app.delete('/api/v1/talks/:talkId/data-connectors/:connectorId', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+
+    const rateResult = checkRateLimit({ principalId: auth.userId, bucket: 'write' });
+    if (!rateResult.allowed) {
+      return rateLimitedResponse(c, rateResult);
+    }
+
+    const csrf = validateCsrfToken({
+      method: c.req.method,
+      authType: auth.authType,
+      cookieHeader: c.req.header('cookie'),
+      csrfHeader: c.req.header('x-csrf-token'),
+    });
+    if (!csrf.ok) {
+      return c.json(
+        { ok: false, error: { code: 'csrf_failed', message: csrf.reason } },
+        403,
+      );
+    }
+
+    const result = detachTalkDataConnectorRoute({
+      auth,
+      talkId: c.req.param('talkId'),
+      connectorId: c.req.param('connectorId'),
     });
     return new Response(JSON.stringify(result.body), {
       status: result.statusCode,

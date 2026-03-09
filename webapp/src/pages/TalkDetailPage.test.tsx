@@ -14,8 +14,10 @@ import { TalkDetailPage } from './TalkDetailPage';
 import { openTalkStream } from '../lib/talkStream';
 import type {
   AiAgentsPageData,
+  DataConnector,
   Talk,
   TalkAgent,
+  TalkDataConnector,
   TalkMessage,
   TalkRun,
 } from '../lib/api';
@@ -75,6 +77,11 @@ describe('TalkDetailPage', () => {
     await user.click(tabs.getByRole('link', { name: 'Agents' }));
     await screen.findByRole('heading', { name: 'Agents' });
     expect(screen.getByLabelText('Talk agents')).toBeTruthy();
+
+    await user.click(tabs.getByRole('link', { name: 'Data Connectors' }));
+    await screen.findByRole('heading', { name: 'Data Connectors' });
+    expect(screen.getByText('FTUE PostHog')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Detach' })).toBeTruthy();
 
     await user.click(tabs.getByRole('link', { name: 'Run History' }));
     await screen.findByRole('heading', { name: 'Run History' });
@@ -349,6 +356,29 @@ describe('TalkDetailPage', () => {
     expect(screen.getAllByText('Claude Sonnet 4.6 (General)').length).toBeGreaterThanOrEqual(2);
     expect(screen.getAllByText('GPT-5 Mini (Critic)').length).toBeGreaterThanOrEqual(2);
   });
+
+  it('detaches and re-attaches connectors from the Data Connectors tab', async () => {
+    const user = userEvent.setup();
+
+    installTalkDetailFetch();
+    renderDetailPage('/app/talks/talk-1/data-connectors');
+
+    await screen.findByRole('heading', { name: 'Data Connectors' });
+    expect(screen.getByText('FTUE PostHog')).toBeTruthy();
+
+    await user.click(screen.getByRole('button', { name: 'Detach' }));
+    expect(
+      await screen.findByText('FTUE PostHog detached from this talk.'),
+    ).toBeTruthy();
+    expect(screen.queryByRole('heading', { name: 'FTUE PostHog' })).toBeNull();
+
+    await user.selectOptions(screen.getByLabelText('Connector'), 'connector-sheet');
+    await user.click(screen.getByRole('button', { name: 'Attach Connector' }));
+    expect(
+      await screen.findByText('Economy Sheet attached to this talk.'),
+    ).toBeTruthy();
+    expect(screen.getByRole('heading', { name: 'Economy Sheet' })).toBeTruthy();
+  });
 });
 
 function renderDetailPage(initialEntry: string): ReturnType<typeof render> {
@@ -439,6 +469,42 @@ function buildRun(
   };
 }
 
+function buildDataConnector(
+  input: Partial<DataConnector> = {},
+): DataConnector {
+  return {
+    id: input.id ?? 'connector-1',
+    name: input.name ?? 'FTUE PostHog',
+    connectorKind: input.connectorKind ?? 'posthog',
+    config:
+      input.config ??
+      {
+        hostUrl: 'https://us.posthog.com',
+        projectId: '12345',
+      },
+    discovered: input.discovered ?? null,
+    enabled: input.enabled ?? true,
+    hasCredential: input.hasCredential ?? false,
+    verificationStatus: input.verificationStatus ?? 'missing',
+    lastVerifiedAt: input.lastVerifiedAt ?? null,
+    lastVerificationError: input.lastVerificationError ?? null,
+    attachedTalkCount: input.attachedTalkCount ?? 0,
+    createdAt: input.createdAt ?? '2026-03-06T00:00:00.000Z',
+    updatedAt: input.updatedAt ?? '2026-03-06T00:00:00.000Z',
+  };
+}
+
+function buildTalkDataConnector(
+  input: Partial<TalkDataConnector> = {},
+): TalkDataConnector {
+  const base = buildDataConnector(input);
+  return {
+    ...base,
+    attachedAt: input.attachedAt ?? '2026-03-06T00:00:10.000Z',
+    attachedBy: input.attachedBy ?? 'owner-1',
+  };
+}
+
 function buildAiAgentsData(): AiAgentsPageData {
   return {
     defaultClaudeModelId: 'claude-sonnet-4-6',
@@ -488,6 +554,8 @@ function installTalkDetailFetch(input?: {
   messages?: TalkMessage[];
   runs?: TalkRun[];
   talkAgents?: TalkAgent[];
+  dataConnectors?: DataConnector[];
+  talkDataConnectors?: TalkDataConnector[];
   aiAgents?: AiAgentsPageData;
   onPutAgents?: (body: SavedTalkAgentRequest) => TalkAgent[];
   onSendMessage?: (body: {
@@ -547,6 +615,31 @@ function installTalkDetailFetch(input?: {
         modelDisplayName: 'GPT-5 Mini',
       }),
     ];
+  const dataConnectors =
+    input?.dataConnectors ??
+    [
+      buildDataConnector({
+        id: 'connector-posthog',
+        name: 'FTUE PostHog',
+        connectorKind: 'posthog',
+        hasCredential: true,
+        verificationStatus: 'not_verified',
+        attachedTalkCount: 1,
+      }),
+      buildDataConnector({
+        id: 'connector-sheet',
+        name: 'Economy Sheet',
+        connectorKind: 'google_sheets',
+      }),
+    ];
+  let talkDataConnectors =
+    input?.talkDataConnectors ??
+    [
+      buildTalkDataConnector({
+        ...dataConnectors[0],
+        attachedAt: '2026-03-06T00:00:10.000Z',
+      }),
+    ];
   const aiAgents = input?.aiAgents ?? buildAiAgentsData();
 
   vi.stubGlobal(
@@ -591,6 +684,56 @@ function installTalkDetailFetch(input?: {
         return jsonResponse(200, {
           ok: true,
           data: { talkId: 'talk-1', agents: talkAgents },
+        });
+      }
+
+      if (url.endsWith('/api/v1/talks/talk-1/data-connectors') && method === 'GET') {
+        return jsonResponse(200, {
+          ok: true,
+          data: { talkId: 'talk-1', connectors: talkDataConnectors },
+        });
+      }
+
+      if (url.endsWith('/api/v1/talks/talk-1/data-connectors') && method === 'POST') {
+        const body = JSON.parse(String(init?.body || '{}')) as {
+          connectorId: string;
+        };
+        const source = dataConnectors.find((connector) => connector.id === body.connectorId);
+        if (!source) {
+          return jsonResponse(404, {
+            ok: false,
+            error: { code: 'not_found', message: 'Data connector not found.' },
+          });
+        }
+        const attached = buildTalkDataConnector({
+          ...source,
+          attachedAt: '2026-03-06T00:00:12.000Z',
+        });
+        talkDataConnectors = [...talkDataConnectors, attached];
+        return jsonResponse(200, {
+          ok: true,
+          data: { connector: attached },
+        });
+      }
+
+      if (
+        url.includes('/api/v1/talks/talk-1/data-connectors/') &&
+        method === 'DELETE'
+      ) {
+        const connectorId = url.split('/api/v1/talks/talk-1/data-connectors/')[1];
+        talkDataConnectors = talkDataConnectors.filter(
+          (connector) => connector.id !== connectorId,
+        );
+        return jsonResponse(200, {
+          ok: true,
+          data: { deleted: true },
+        });
+      }
+
+      if (url.endsWith('/api/v1/data-connectors') && method === 'GET') {
+        return jsonResponse(200, {
+          ok: true,
+          data: { connectors: dataConnectors },
         });
       }
 

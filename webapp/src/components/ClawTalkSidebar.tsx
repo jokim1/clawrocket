@@ -579,6 +579,16 @@ export function ClawTalkSidebar({
             AI Agents
           </NavLink>
         ) : null}
+        {canManageAgents ? (
+          <NavLink
+            to="/app/connectors"
+            className={({ isActive }) =>
+              `clawtalk-sidebar-link${isActive ? ' active' : ''}`
+            }
+          >
+            Data Connectors
+          </NavLink>
+        ) : null}
         {canManageSettings ? (
           <NavLink
             to="/app/settings"

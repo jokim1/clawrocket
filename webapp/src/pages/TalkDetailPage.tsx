@@ -12,16 +12,22 @@ import { Link, useLocation, useParams } from 'react-router-dom';
 import {
   AgentProviderCard,
   AiAgentsPageData,
+  attachTalkDataConnector,
   ApiError,
   cancelTalkRuns,
+  DataConnector,
+  detachTalkDataConnector,
   getAiAgents,
+  getDataConnectors,
   getTalk,
   getTalkAgents,
+  getTalkDataConnectors,
   getTalkRuns,
   listTalkMessages,
   sendTalkMessage,
   Talk,
   TalkAgent,
+  TalkDataConnector,
   TalkMessage,
   TalkRun,
   updateTalkAgents,
@@ -41,7 +47,7 @@ import type {
   TalkStreamState,
 } from '../lib/talkStream';
 
-type TabKey = 'talk' | 'agents' | 'runs';
+type TabKey = 'talk' | 'agents' | 'data-connectors' | 'runs';
 
 type RunView = TalkRun & {
   updatedAt: number;
@@ -584,8 +590,56 @@ function formatTalkRole(role: TalkAgent['role']): string {
 function getTabFromPath(pathname: string, talkId: string): TabKey {
   const base = `/app/talks/${talkId}`;
   if (pathname === `${base}/agents`) return 'agents';
+  if (pathname === `${base}/data-connectors`) return 'data-connectors';
   if (pathname === `${base}/runs`) return 'runs';
   return 'talk';
+}
+
+function formatConnectorKind(kind: DataConnector['connectorKind']): string {
+  return kind === 'posthog' ? 'PostHog' : 'Google Sheets';
+}
+
+function formatConnectorStatus(
+  status: DataConnector['verificationStatus'],
+): string {
+  switch (status) {
+    case 'missing':
+      return 'Missing credential';
+    case 'not_verified':
+      return 'Needs verification';
+    case 'verifying':
+      return 'Verifying…';
+    case 'verified':
+      return 'Configured';
+    case 'invalid':
+      return 'Invalid';
+    case 'unavailable':
+      return 'Unavailable';
+    default:
+      return status;
+  }
+}
+
+function connectorStatusClass(
+  status: DataConnector['verificationStatus'],
+): string {
+  switch (status) {
+    case 'verified':
+      return 'talk-agent-chip talk-agent-chip-success';
+    case 'invalid':
+      return 'talk-agent-chip talk-agent-chip-error';
+    case 'unavailable':
+      return 'talk-agent-chip talk-agent-chip-warning';
+    default:
+      return 'talk-agent-chip';
+  }
+}
+
+function formatDateTime(value: string | null): string {
+  if (!value) return 'Never';
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.valueOf())) return value;
+  return parsed.toLocaleString();
 }
 
 function buildAgentLabel(agent: Pick<TalkAgent, 'nickname' | 'role'>): string {
@@ -799,6 +853,13 @@ export function TalkDetailPage({
     status: 'idle' | 'saving' | 'error' | 'success';
     message?: string;
   }>({ status: 'idle' });
+  const [talkConnectors, setTalkConnectors] = useState<TalkDataConnector[]>([]);
+  const [orgConnectors, setOrgConnectors] = useState<DataConnector[]>([]);
+  const [attachConnectorId, setAttachConnectorId] = useState('');
+  const [connectorState, setConnectorState] = useState<{
+    status: 'idle' | 'loading' | 'saving' | 'error' | 'success';
+    message?: string;
+  }>({ status: 'idle' });
 
   const timelineRef = useRef<HTMLDivElement | null>(null);
   const endRef = useRef<HTMLDivElement | null>(null);
@@ -876,6 +937,10 @@ export function TalkDetailPage({
     setTargetAgentIds([]);
     setAgentsCatalogError(null);
     setAgentState({ status: 'idle' });
+    setTalkConnectors([]);
+    setOrgConnectors([]);
+    setAttachConnectorId('');
+    setConnectorState({ status: 'idle' });
 
     const load = async () => {
       try {
@@ -1101,6 +1166,8 @@ export function TalkDetailPage({
   const accessRole = state.kind === 'ready' ? state.talk?.accessRole : null;
   const canEditAgents =
     accessRole === 'owner' || accessRole === 'admin' || accessRole === 'editor';
+  const canManageTalkConnectors =
+    accessRole === 'owner' || accessRole === 'admin';
 
   const configuredProviders = useMemo(
     () => getConfiguredProviders(aiAgentsData),
@@ -1158,14 +1225,74 @@ export function TalkDetailPage({
       ),
     [state.runsById],
   );
+  const availableConnectors = useMemo(
+    () =>
+      orgConnectors.filter(
+        (connector) =>
+          connector.enabled &&
+          !talkConnectors.some((attached) => attached.id === connector.id),
+      ),
+    [orgConnectors, talkConnectors],
+  );
 
   const talkTabHref = `/app/talks/${talkId}`;
   const agentsTabHref = `/app/talks/${talkId}/agents`;
+  const connectorsTabHref = `/app/talks/${talkId}/data-connectors`;
   const runsTabHref = `/app/talks/${talkId}/runs`;
   const manageAgentsHref = `/app/agents?returnTo=${encodeURIComponent(
     talkTabHref,
   )}&focus=providers`;
+  const manageConnectorsHref = '/app/connectors';
   const isRenaming = renameDraft?.talkId === talkId;
+
+  useEffect(() => {
+    if (state.kind !== 'ready' || currentTab !== 'data-connectors') return;
+
+    let cancelled = false;
+    setConnectorState((current) =>
+      current.status === 'saving' ? current : { status: 'loading' },
+    );
+
+    const loadConnectors = async () => {
+      try {
+        const [attached, allConnectors] = await Promise.all([
+          getTalkDataConnectors(talkId),
+          canManageTalkConnectors ? getDataConnectors() : Promise.resolve([]),
+        ]);
+        if (cancelled) return;
+        setTalkConnectors(attached);
+        setOrgConnectors(allConnectors);
+        setConnectorState({ status: 'idle' });
+      } catch (err) {
+        if (err instanceof UnauthorizedError) {
+          handleUnauthorized();
+          return;
+        }
+        if (!cancelled) {
+          setConnectorState({
+            status: 'error',
+            message:
+              err instanceof Error
+                ? err.message
+                : 'Failed to load data connectors.',
+          });
+        }
+      }
+    };
+
+    void loadConnectors();
+    return () => {
+      cancelled = true;
+    };
+  }, [canManageTalkConnectors, currentTab, handleUnauthorized, state.kind, talkId]);
+
+  useEffect(() => {
+    if (currentTab !== 'data-connectors') return;
+    if (availableConnectors.some((connector) => connector.id === attachConnectorId)) {
+      return;
+    }
+    setAttachConnectorId(availableConnectors[0]?.id || '');
+  }, [attachConnectorId, availableConnectors, currentTab]);
 
   const handleDraftChange = (value: string) => {
     setDraft(value);
@@ -1280,6 +1407,86 @@ export function TalkDetailPage({
       dispatch({
         type: 'CANCEL_FAILED',
         message: err instanceof Error ? err.message : 'Failed to cancel runs',
+      });
+    }
+  };
+
+  const handleAttachConnector = async () => {
+    if (!canManageTalkConnectors || !attachConnectorId) return;
+
+    setConnectorState({ status: 'saving' });
+    try {
+      const attached = await attachTalkDataConnector({
+        talkId,
+        connectorId: attachConnectorId,
+      });
+      setTalkConnectors((current) =>
+        current.some((connector) => connector.id === attached.id)
+          ? current
+          : [...current, attached],
+      );
+      setOrgConnectors((current) =>
+        current.map((connector) =>
+          connector.id === attached.id
+            ? {
+                ...connector,
+                attachedTalkCount: connector.attachedTalkCount + 1,
+              }
+            : connector,
+        ),
+      );
+      setConnectorState({
+        status: 'success',
+        message: `${attached.name} attached to this talk.`,
+      });
+    } catch (err) {
+      if (err instanceof UnauthorizedError) {
+        handleUnauthorized();
+        return;
+      }
+      setConnectorState({
+        status: 'error',
+        message:
+          err instanceof Error ? err.message : 'Failed to attach data connector.',
+      });
+    }
+  };
+
+  const handleDetachConnector = async (connector: TalkDataConnector) => {
+    if (!canManageTalkConnectors) return;
+
+    setConnectorState({ status: 'saving' });
+    try {
+      await detachTalkDataConnector({
+        talkId,
+        connectorId: connector.id,
+      });
+      setTalkConnectors((current) =>
+        current.filter((item) => item.id !== connector.id),
+      );
+      setOrgConnectors((current) =>
+        current.map((item) =>
+          item.id === connector.id
+            ? {
+                ...item,
+                attachedTalkCount: Math.max(0, item.attachedTalkCount - 1),
+              }
+            : item,
+        ),
+      );
+      setConnectorState({
+        status: 'success',
+        message: `${connector.name} detached from this talk.`,
+      });
+    } catch (err) {
+      if (err instanceof UnauthorizedError) {
+        handleUnauthorized();
+        return;
+      }
+      setConnectorState({
+        status: 'error',
+        message:
+          err instanceof Error ? err.message : 'Failed to detach data connector.',
       });
     }
   };
@@ -1593,6 +1800,12 @@ export function TalkDetailPage({
                   Agents
                 </Link>
                 <Link
+                  to={connectorsTabHref}
+                  className={`talk-tab ${currentTab === 'data-connectors' ? 'talk-tab-active' : ''}`}
+                >
+                  Data Connectors
+                </Link>
+                <Link
                   to={runsTabHref}
                   className={`talk-tab ${currentTab === 'runs' ? 'talk-tab-active' : ''}`}
                 >
@@ -1837,6 +2050,135 @@ export function TalkDetailPage({
               {agentState.message}
             </div>
           ) : null}
+            </section>
+          ) : null}
+
+          {currentTab === 'data-connectors' ? (
+            <section className="talk-tab-panel" aria-label="Talk data connectors">
+              <div className="agents-panel-header">
+                <h2>Data Connectors</h2>
+                {canManageTalkConnectors ? (
+                  <Link className="secondary-btn" to={manageConnectorsHref}>
+                    Manage Data Connectors
+                  </Link>
+                ) : null}
+              </div>
+              <p className="policy-muted">
+                Attach org-level data sources to this talk. Runtime tool execution is
+                still landing in a follow-up slice, so this tab currently manages the
+                binding layer.
+              </p>
+
+              {canManageTalkConnectors ? (
+                <div className="talk-llm-card connector-attach-card">
+                  <div className="connector-card-header">
+                    <div>
+                      <h3>Attach Connector</h3>
+                      <p className="talk-llm-meta">
+                        Only enabled org-level connectors can be attached here.
+                      </p>
+                    </div>
+                  </div>
+                  {availableConnectors.length === 0 ? (
+                    <p className="page-state">
+                      No enabled org-level connectors are available to attach yet.
+                    </p>
+                  ) : (
+                    <div className="connector-attach-row">
+                      <label>
+                        <span className="settings-label">Connector</span>
+                        <select
+                          value={attachConnectorId}
+                          onChange={(event) => setAttachConnectorId(event.target.value)}
+                          disabled={connectorState.status === 'saving'}
+                        >
+                          {availableConnectors.map((connector) => (
+                            <option key={connector.id} value={connector.id}>
+                              {connector.name} ({formatConnectorKind(connector.connectorKind)})
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <button
+                        type="button"
+                        className="secondary-btn"
+                        onClick={() => void handleAttachConnector()}
+                        disabled={
+                          connectorState.status === 'saving' || !attachConnectorId
+                        }
+                      >
+                        {connectorState.status === 'saving'
+                          ? 'Saving…'
+                          : 'Attach Connector'}
+                      </button>
+                    </div>
+                  )}
+                </div>
+              ) : null}
+
+              {connectorState.status === 'error' ? (
+                <div className="inline-banner inline-banner-error" role="alert">
+                  {connectorState.message}
+                </div>
+              ) : null}
+              {connectorState.status === 'success' ? (
+                <div className="inline-banner inline-banner-success" role="status">
+                  {connectorState.message}
+                </div>
+              ) : null}
+
+              {talkConnectors.length === 0 ? (
+                <p className="page-state">No data connectors attached to this talk.</p>
+              ) : (
+                <div className="connector-card-list">
+                  {talkConnectors.map((connector) => (
+                    <article key={connector.id} className="talk-llm-card connector-card">
+                      <div className="connector-card-header">
+                        <div>
+                          <h3>{connector.name}</h3>
+                          <p className="talk-llm-meta">
+                            {formatConnectorKind(connector.connectorKind)}
+                          </p>
+                        </div>
+                        <span className={connectorStatusClass(connector.verificationStatus)}>
+                          {formatConnectorStatus(connector.verificationStatus)}
+                        </span>
+                      </div>
+                      <div className="connector-meta-grid">
+                        <div>
+                          <strong>Credential</strong>
+                          <p>{connector.hasCredential ? 'Stored' : 'Missing'}</p>
+                        </div>
+                        <div>
+                          <strong>Attached</strong>
+                          <p>{formatDateTime(connector.attachedAt)}</p>
+                        </div>
+                        <div>
+                          <strong>Last verified</strong>
+                          <p>{formatDateTime(connector.lastVerifiedAt)}</p>
+                        </div>
+                      </div>
+                      {connector.lastVerificationError ? (
+                        <div className="inline-banner inline-banner-warning" role="status">
+                          {connector.lastVerificationError}
+                        </div>
+                      ) : null}
+                      {canManageTalkConnectors ? (
+                        <div className="settings-button-row">
+                          <button
+                            type="button"
+                            className="secondary-btn"
+                            onClick={() => void handleDetachConnector(connector)}
+                            disabled={connectorState.status === 'saving'}
+                          >
+                            Detach
+                          </button>
+                        </div>
+                      ) : null}
+                    </article>
+                  ))}
+                </div>
+              )}
             </section>
           ) : null}
 

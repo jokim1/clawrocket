@@ -498,6 +498,48 @@ function createClawrocketSchema(database: Database.Database): void {
       updated_at TEXT NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS data_connectors (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      connector_kind TEXT NOT NULL
+        CHECK(connector_kind IN ('google_sheets', 'posthog')),
+      config_json TEXT,
+      discovered_json TEXT,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL,
+      created_by TEXT REFERENCES users(id),
+      updated_at TEXT NOT NULL,
+      updated_by TEXT REFERENCES users(id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_data_connectors_kind_enabled
+      ON data_connectors(connector_kind, enabled);
+
+    CREATE TABLE IF NOT EXISTS data_connector_secrets (
+      connector_id TEXT PRIMARY KEY REFERENCES data_connectors(id) ON DELETE CASCADE,
+      ciphertext TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      updated_by TEXT REFERENCES users(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS data_connector_verifications (
+      connector_id TEXT PRIMARY KEY REFERENCES data_connectors(id) ON DELETE CASCADE,
+      status TEXT NOT NULL
+        CHECK(status IN ('not_verified', 'verifying', 'verified', 'invalid', 'unavailable')),
+      last_verified_at TEXT,
+      last_error TEXT,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS talk_data_connectors (
+      talk_id TEXT NOT NULL REFERENCES talks(id) ON DELETE CASCADE,
+      connector_id TEXT NOT NULL REFERENCES data_connectors(id) ON DELETE CASCADE,
+      attached_at TEXT NOT NULL,
+      attached_by TEXT REFERENCES users(id),
+      PRIMARY KEY (talk_id, connector_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_talk_data_connectors_connector
+      ON talk_data_connectors(connector_id);
+
     CREATE TABLE IF NOT EXISTS talk_routes (
       id TEXT PRIMARY KEY,
       name TEXT NOT NULL,

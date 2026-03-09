@@ -60,6 +60,35 @@ export type TalkSidebarTree = {
   items: TalkSidebarItem[];
 };
 
+export type DataConnectorVerificationStatus =
+  | 'missing'
+  | 'not_verified'
+  | 'verifying'
+  | 'verified'
+  | 'invalid'
+  | 'unavailable';
+
+export type DataConnector = {
+  id: string;
+  name: string;
+  connectorKind: 'google_sheets' | 'posthog';
+  config: Record<string, unknown> | null;
+  discovered: Record<string, unknown> | null;
+  enabled: boolean;
+  hasCredential: boolean;
+  verificationStatus: DataConnectorVerificationStatus;
+  lastVerifiedAt: string | null;
+  lastVerificationError: string | null;
+  attachedTalkCount: number;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type TalkDataConnector = DataConnector & {
+  attachedAt: string;
+  attachedBy: string | null;
+};
+
 export type TalkMessage = {
   id: string;
   role: 'user' | 'assistant' | 'system' | 'tool';
@@ -539,6 +568,116 @@ export async function updateTalkAgents(input: {
 
 export async function getAiAgents(): Promise<AiAgentsPageData> {
   return apiRequest<AiAgentsPageData>('/api/v1/agents');
+}
+
+export async function getDataConnectors(): Promise<DataConnector[]> {
+  const envelope = await apiRequest<{ connectors: DataConnector[] }>(
+    '/api/v1/data-connectors',
+  );
+  return envelope.connectors;
+}
+
+export async function createDataConnector(input: {
+  name: string;
+  connectorKind: DataConnector['connectorKind'];
+  config?: Record<string, unknown>;
+  enabled?: boolean;
+}): Promise<DataConnector> {
+  const envelope = await apiMutationRequest<{ connector: DataConnector }>(
+    '/api/v1/data-connectors',
+    {
+      method: 'POST',
+      includeJson: true,
+      body: JSON.stringify(input),
+    },
+  );
+  return envelope.connector;
+}
+
+export async function patchDataConnector(input: {
+  connectorId: string;
+  name?: string;
+  config?: Record<string, unknown>;
+  enabled?: boolean;
+}): Promise<DataConnector> {
+  const envelope = await apiMutationRequest<{ connector: DataConnector }>(
+    `/api/v1/data-connectors/${encodeURIComponent(input.connectorId)}`,
+    {
+      method: 'PATCH',
+      includeJson: true,
+      body: JSON.stringify({
+        name: input.name,
+        config: input.config,
+        enabled: input.enabled,
+      }),
+    },
+  );
+  return envelope.connector;
+}
+
+export async function deleteDataConnector(connectorId: string): Promise<void> {
+  await apiMutationRequest<{ deleted: true }>(
+    `/api/v1/data-connectors/${encodeURIComponent(connectorId)}`,
+    {
+      method: 'DELETE',
+    },
+  );
+}
+
+export async function setDataConnectorCredential(input: {
+  connectorId: string;
+  apiKey?: string | null;
+}): Promise<DataConnector> {
+  const envelope = await apiMutationRequest<{ connector: DataConnector }>(
+    `/api/v1/data-connectors/${encodeURIComponent(input.connectorId)}/credential`,
+    {
+      method: 'PUT',
+      includeJson: true,
+      body: JSON.stringify({
+        apiKey: input.apiKey ?? null,
+      }),
+    },
+  );
+  return envelope.connector;
+}
+
+export async function getTalkDataConnectors(
+  talkId: string,
+): Promise<TalkDataConnector[]> {
+  const envelope = await apiRequest<{
+    talkId: string;
+    connectors: TalkDataConnector[];
+  }>(`/api/v1/talks/${encodeURIComponent(talkId)}/data-connectors`);
+  return envelope.connectors;
+}
+
+export async function attachTalkDataConnector(input: {
+  talkId: string;
+  connectorId: string;
+}): Promise<TalkDataConnector> {
+  const envelope = await apiMutationRequest<{ connector: TalkDataConnector }>(
+    `/api/v1/talks/${encodeURIComponent(input.talkId)}/data-connectors`,
+    {
+      method: 'POST',
+      includeJson: true,
+      body: JSON.stringify({
+        connectorId: input.connectorId,
+      }),
+    },
+  );
+  return envelope.connector;
+}
+
+export async function detachTalkDataConnector(input: {
+  talkId: string;
+  connectorId: string;
+}): Promise<void> {
+  await apiMutationRequest<{ deleted: true }>(
+    `/api/v1/talks/${encodeURIComponent(input.talkId)}/data-connectors/${encodeURIComponent(input.connectorId)}`,
+    {
+      method: 'DELETE',
+    },
+  );
 }
 
 export async function updateDefaultClaudeModel(
