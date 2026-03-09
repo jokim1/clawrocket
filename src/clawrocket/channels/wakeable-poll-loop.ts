@@ -56,10 +56,7 @@ export class WakeablePollLoop {
           await this.waitForNextTick();
         }
       } catch (error) {
-        logger.error(
-          { err: error },
-          `${this.options.label} cycle failed`,
-        );
+        logger.error({ err: error }, `${this.options.label} cycle failed`);
         await this.waitForNextTick();
       }
     }
