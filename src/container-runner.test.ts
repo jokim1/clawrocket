@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
 import { EventEmitter } from 'events';
 import { PassThrough } from 'stream';
+import fs from 'fs';
 
 // Sentinel markers must match container-runner.ts
 const OUTPUT_START_MARKER = '---NANOCLAW_OUTPUT_START---';
@@ -41,6 +42,7 @@ vi.mock('fs', async () => {
       readdirSync: vi.fn(() => []),
       statSync: vi.fn(() => ({ isDirectory: () => false })),
       copyFileSync: vi.fn(),
+      cpSync: vi.fn(),
     },
   };
 });
@@ -114,6 +116,9 @@ describe('container-runner timeout behavior', () => {
   beforeEach(() => {
     vi.useFakeTimers();
     fakeProc = createFakeProcess();
+    vi.mocked(fs.existsSync).mockReset();
+    vi.mocked(fs.existsSync).mockReturnValue(false);
+    vi.mocked(fs.cpSync).mockReset();
   });
 
   afterEach(() => {
@@ -205,5 +210,50 @@ describe('container-runner timeout behavior', () => {
     const result = await resultPromise;
     expect(result.status).toBe('success');
     expect(result.newSessionId).toBe('session-456');
+  });
+
+  it('refreshes the web-talk agent runner source even when a cached copy exists', async () => {
+    const projectRoot = process.cwd();
+    const agentRunnerSrc = `${projectRoot}/container/agent-runner/src`;
+    const groupRunnerDst =
+      '/tmp/nanoclaw-test-data/sessions/test-group/agent-runner-src';
+
+    vi.mocked(fs.existsSync).mockImplementation((targetPath) => {
+      const normalized =
+        typeof targetPath === 'string' ? targetPath : String(targetPath);
+      if (
+        normalized === agentRunnerSrc ||
+        normalized === groupRunnerDst ||
+        normalized === '/tmp/nanoclaw-test-groups/test-group'
+      ) {
+        return true;
+      }
+      return false;
+    });
+
+    const resultPromise = runContainerAgent(
+      testGroup,
+      {
+        ...testInput,
+        toolProfile: 'web_talk',
+      },
+      () => {},
+    );
+
+    emitOutputMarker(fakeProc, {
+      status: 'success',
+      result: 'Synced runner',
+    });
+    await vi.advanceTimersByTimeAsync(10);
+    fakeProc.emit('close', 0);
+    await vi.advanceTimersByTimeAsync(10);
+
+    await expect(resultPromise).resolves.toMatchObject({
+      status: 'success',
+    });
+    expect(fs.cpSync).toHaveBeenCalledWith(agentRunnerSrc, groupRunnerDst, {
+      recursive: true,
+      force: true,
+    });
   });
 });
