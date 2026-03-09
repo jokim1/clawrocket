@@ -1262,7 +1262,7 @@ export class DirectTalkExecutor implements TalkExecutor {
           maxOutputTokens: step.model.default_max_output_tokens,
           talkDirectives: contextDirectives.directivesText,
           toolDefinitions:
-            (requiresConnectorTools || requiresContextSourceTool)
+            requiresConnectorTools || requiresContextSourceTool
               ? buildAllToolDefinitionsForBudget(connectorToolContext)
               : undefined,
         });
@@ -1395,7 +1395,10 @@ export class DirectTalkExecutor implements TalkExecutor {
     }
 
     if (!sawEligibleStep) {
-      if ((requiresConnectorTools || requiresContextSourceTool) && !sawToolCapableStep) {
+      if (
+        (requiresConnectorTools || requiresContextSourceTool) &&
+        !sawToolCapableStep
+      ) {
         const reason = requiresConnectorTools
           ? 'Attached data connectors require a tool-capable model on the selected agent route.'
           : 'Saved context sources require a tool-capable model on the selected agent route for read_context_source support.';
