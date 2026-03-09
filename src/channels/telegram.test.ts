@@ -122,6 +122,9 @@ function createTextCtx(overrides: {
       message_id: overrides.messageId ?? 1,
       entities: overrides.entities ?? [],
     },
+    update: {
+      update_id: 1000 + (overrides.messageId ?? 1),
+    },
     me: { username: 'andy_ai_bot' },
     reply: vi.fn(),
   };
@@ -154,6 +157,9 @@ function createMediaCtx(overrides: {
       message_id: overrides.messageId ?? 1,
       caption: overrides.caption,
       ...(overrides.extra || {}),
+    },
+    update: {
+      update_id: 2000 + (overrides.messageId ?? 1),
     },
     me: { username: 'andy_ai_bot' },
   };
@@ -275,6 +281,40 @@ describe('TelegramChannel', () => {
           is_from_me: false,
         }),
       );
+    });
+
+    it('lets talk-channel ingress consume the message before legacy group routing', async () => {
+      const opts = createTestOpts({
+        onInboundEvent: vi.fn().mockResolvedValue(true),
+      });
+      const channel = new TelegramChannel('test-token', opts);
+      await channel.connect();
+
+      const ctx = createTextCtx({
+        text: '@andy_ai_bot hello from telegram',
+        entities: [{ type: 'mention', offset: 0, length: 12 }],
+      });
+      await triggerTextMessage(ctx);
+
+      expect(opts.onChatMetadata).toHaveBeenCalledWith(
+        'tg:100200300',
+        expect.any(String),
+        'Test Group',
+        'telegram',
+        true,
+      );
+      expect(opts.onInboundEvent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          platform: 'telegram',
+          platform_event_id: '1001',
+          target_id: 'tg:100200300',
+          target_kind: 'chat',
+          content: '@Andy @andy_ai_bot hello from telegram',
+          external_message_id: '1',
+          is_mentioned: true,
+        }),
+      );
+      expect(opts.onMessage).not.toHaveBeenCalled();
     });
 
     it('only emits metadata for unregistered chats', async () => {

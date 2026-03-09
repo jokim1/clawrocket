@@ -1,4 +1,4 @@
-import { listTalkMessages, type TalkMessageRecord } from '../db/index.js';
+import { listTalkReplayRows, type TalkMessageRecord } from '../db/index.js';
 import type { TalkPersonaRole } from '../llm/types.js';
 
 export interface PromptMessage {
@@ -14,12 +14,22 @@ export interface ContextAssemblyResult {
   inputBudgetTokens: number;
 }
 
+export interface CurrentTurnAttachment {
+  id: string;
+  fileName: string;
+  mimeType: string;
+  fileSize: number;
+  extractedText: string | null;
+  extractionStatus: string;
+}
+
 export interface ContextAssemblyInput {
   talkId: string;
   talkTitle?: string | null;
   currentRunId: string;
   currentUserMessageId: string;
   currentUserMessage: string;
+  currentTurnAttachments?: CurrentTurnAttachment[];
   agent: {
     id: string;
     name: string;
@@ -28,13 +38,14 @@ export interface ContextAssemblyInput {
   modelContextWindowTokens: number;
   maxOutputTokens: number;
   talkDirectives?: string | null;
+  channelContextNote?: string | null;
+  sourcePreamble?: string | null;
   toolDefinitions?: unknown[];
 }
 
 interface HistoricalTurn {
-  runId: string;
   user: TalkMessageRecord;
-  assistant: TalkMessageRecord;
+  assistants: TalkMessageRecord[];
 }
 
 export class ContextAssemblyError extends Error {
@@ -102,47 +113,107 @@ function buildPersonaPrompt(input: ContextAssemblyInput): string {
   return `Selected talk agent: ${input.agent.name}.\n${persona}`;
 }
 
+/**
+ * Max chars of attachment text to inline directly in the user message.
+ * Larger attachments are referenced by the read_attachment tool hint.
+ */
+const INLINE_ATTACHMENT_MAX_CHARS = 16_000; // ~4000 tokens
+
+function formatFileSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function buildAugmentedUserMessage(
+  originalText: string,
+  attachments: CurrentTurnAttachment[],
+): string {
+  if (attachments.length === 0) return originalText;
+
+  const parts: string[] = [];
+
+  // Attachment manifest
+  parts.push('[Attached files]');
+  for (const att of attachments) {
+    parts.push(
+      `- ${att.fileName} (${att.mimeType}, ${formatFileSize(att.fileSize)})`,
+    );
+  }
+  parts.push('');
+
+  // Inline extracted content for each attachment
+  for (const att of attachments) {
+    if (att.extractionStatus !== 'extracted' || !att.extractedText) {
+      parts.push(
+        `--- ${att.fileName} ---\n[Extraction ${att.extractionStatus === 'failed' ? 'failed' : 'pending'}. Use read_attachment("${att.id}") once available.]\n`,
+      );
+      continue;
+    }
+
+    const text = att.extractedText;
+    if (text.length <= INLINE_ATTACHMENT_MAX_CHARS) {
+      parts.push(`--- ${att.fileName} ---\n${text}\n`);
+    } else {
+      parts.push(
+        `--- ${att.fileName} (first ${INLINE_ATTACHMENT_MAX_CHARS} chars) ---\n${text.slice(0, INLINE_ATTACHMENT_MAX_CHARS)}\n[…truncated — use read_attachment("${att.id}") for full content]\n`,
+      );
+    }
+  }
+
+  // Original user message
+  parts.push(originalText);
+
+  return parts.join('\n');
+}
+
 function buildHistoricalTurns(
   talkId: string,
   currentRunId: string,
+  currentUserMessageId: string,
 ): HistoricalTurn[] {
-  // v1 simplification: cap the DB scan while context assembly is purely
-  // stateless replay. The actual retained history is still bounded by the
-  // route/model token budget below.
-  const messages = listTalkMessages({ talkId, limit: 500 });
-  const byRunId = new Map<
-    string,
-    {
-      user?: TalkMessageRecord;
-      assistant?: TalkMessageRecord;
-    }
-  >();
+  const replayRows = listTalkReplayRows({
+    talkId,
+    currentRunId,
+    currentUserMessageId,
+    limit: 500,
+  });
+  const byUserId = new Map<string, HistoricalTurn>();
 
-  for (const message of messages) {
-    if (!message.run_id || message.run_id === currentRunId) continue;
-    const group = byRunId.get(message.run_id) || {};
-    if (message.role === 'user' && !group.user) group.user = message;
-    if (
-      message.role === 'assistant' &&
-      parseMessageMetadataKind(message) !== 'assistant_tool_use'
-    ) {
-      group.assistant = message;
+  for (const row of replayRows) {
+    if (parseMessageMetadataKind(row.assistant) === 'assistant_tool_use') {
+      continue;
     }
-    byRunId.set(message.run_id, group);
+
+    const existing = byUserId.get(row.user.id);
+    if (existing) {
+      existing.assistants.push(row.assistant);
+      continue;
+    }
+
+    byUserId.set(row.user.id, {
+      user: row.user,
+      assistants: [row.assistant],
+    });
   }
 
-  return Array.from(byRunId.entries())
-    .map(([runId, group]) =>
-      group.user && group.assistant
-        ? {
-            runId,
-            user: group.user,
-            assistant: group.assistant,
-          }
-        : null,
-    )
-    .filter((turn): turn is HistoricalTurn => Boolean(turn))
-    .sort((a, b) => a.user.created_at.localeCompare(b.user.created_at));
+  return Array.from(byUserId.values()).sort((a, b) =>
+    compareMessagePosition(a.user, b.user),
+  );
+}
+
+function compareMessagePosition(
+  left: Pick<TalkMessageRecord, 'created_at' | 'sequence_in_run' | 'id'>,
+  right: Pick<TalkMessageRecord, 'created_at' | 'sequence_in_run' | 'id'>,
+): number {
+  const createdAtCompare = left.created_at.localeCompare(right.created_at);
+  if (createdAtCompare !== 0) return createdAtCompare;
+
+  const leftSequence = left.sequence_in_run ?? 0;
+  const rightSequence = right.sequence_in_run ?? 0;
+  if (leftSequence !== rightSequence) return leftSequence - rightSequence;
+
+  return left.id.localeCompare(right.id);
 }
 
 export function assembleTalkPromptContext(
@@ -178,14 +249,35 @@ export function assembleTalkPromptContext(
       text: input.talkDirectives.trim(),
     });
   }
+  if (input.channelContextNote?.trim()) {
+    systemMessages.push({
+      role: 'system',
+      text: input.channelContextNote.trim(),
+    });
+  }
+  if (input.sourcePreamble?.trim()) {
+    systemMessages.push({
+      role: 'system',
+      text: input.sourcePreamble.trim(),
+    });
+  }
   systemMessages.push({
     role: 'system',
     text: buildPersonaPrompt(input),
   });
 
+  // Augment the user's message with inline attachment content for the current turn
+  const augmentedText =
+    input.currentTurnAttachments && input.currentTurnAttachments.length > 0
+      ? buildAugmentedUserMessage(
+          input.currentUserMessage,
+          input.currentTurnAttachments,
+        )
+      : input.currentUserMessage;
+
   const currentUserMessage: PromptMessage = {
     role: 'user',
-    text: input.currentUserMessage,
+    text: augmentedText,
     talkMessageId: input.currentUserMessageId,
     agentId: input.agent.id,
   };
@@ -207,26 +299,36 @@ export function assembleTalkPromptContext(
   const historicalTurns = buildHistoricalTurns(
     input.talkId,
     input.currentRunId,
+    input.currentUserMessageId,
   );
   for (let index = historicalTurns.length - 1; index >= 0; index -= 1) {
     const turn = historicalTurns[index];
-    const userMessage: PromptMessage = {
-      role: 'user',
-      text: turn.user.content,
-      talkMessageId: turn.user.id,
-    };
-    const assistantMessage: PromptMessage = {
-      role: 'assistant',
-      text: turn.assistant.content,
-      talkMessageId: turn.assistant.id,
-    };
-    const turnCost =
-      messageTokenCost(userMessage) + messageTokenCost(assistantMessage);
+    const turnMessages: PromptMessage[] = [
+      {
+        role: 'user',
+        text: turn.user.content,
+        talkMessageId: turn.user.id,
+      },
+      ...turn.assistants
+        .slice()
+        .sort(compareMessagePosition)
+        .map(
+          (assistant): PromptMessage => ({
+            role: 'assistant',
+            text: assistant.content,
+            talkMessageId: assistant.id,
+          }),
+        ),
+    ];
+    const turnCost = turnMessages.reduce(
+      (sum, message) => sum + messageTokenCost(message),
+      0,
+    );
     if (usedTokens + turnCost > inputBudgetTokens) {
       break;
     }
     usedTokens += turnCost;
-    selectedHistorical.unshift(userMessage, assistantMessage);
+    selectedHistorical.unshift(...turnMessages);
   }
 
   return {

@@ -41,9 +41,16 @@ import {
   storeMessage,
 } from './db.js';
 import {
+  ensureSystemManagedTelegramConnection,
+  getTalkChannelBindingById,
   initClawrocketSchema,
   syncKnownProviderModels,
+  upsertChannelTarget,
 } from './clawrocket/db/index.js';
+import { ChannelDeliveryWorker } from './clawrocket/channels/channel-delivery-worker.js';
+import { ChannelIngressWorker } from './clawrocket/channels/channel-ingress-worker.js';
+import { TalkChannelRouter } from './clawrocket/channels/channel-router.js';
+import { TalkLifecycleWakeBus } from './clawrocket/channels/talk-lifecycle-wake-bus.js';
 import { registerClawrocketSchedulerMaintenanceHook } from './clawrocket/scheduler-maintenance.js';
 import { GroupQueue } from './group-queue.js';
 import { resolveGroupFolderPath } from './group-folder.js';
@@ -475,10 +482,17 @@ async function main(): Promise<void> {
   let webServer:
     | {
         stop: () => Promise<void>;
+        runWorker?: {
+          wake: () => void;
+          abortTalk: (talkId: string) => void;
+        };
       }
     | undefined;
+  let channelIngressWorker: ChannelIngressWorker | undefined;
+  let channelDeliveryWorker: ChannelDeliveryWorker | undefined;
   let shutdownPromise: Promise<void> | null = null;
   let signalHandlersInstalled = false;
+  const talkLifecycleBus = new TalkLifecycleWakeBus();
 
   const gracefulShutdown = (
     reason: string,
@@ -504,6 +518,30 @@ async function main(): Promise<void> {
       } catch (error) {
         releaseError = releaseError ?? error;
         logger.error({ err: error, reason }, 'Failed to drain group queue');
+      }
+
+      if (channelIngressWorker) {
+        try {
+          await channelIngressWorker.stop();
+        } catch (error) {
+          releaseError = releaseError ?? error;
+          logger.error(
+            { err: error, reason },
+            'Failed to stop talk channel ingress worker',
+          );
+        }
+      }
+
+      if (channelDeliveryWorker) {
+        try {
+          await channelDeliveryWorker.stop();
+        } catch (error) {
+          releaseError = releaseError ?? error;
+          logger.error(
+            { err: error, reason },
+            'Failed to stop talk channel delivery worker',
+          );
+        }
       }
 
       if (webServer) {
@@ -572,6 +610,7 @@ async function main(): Promise<void> {
     initDatabase();
     // ClawRocket integration seam: initialize ClawRocket schema in shared DB.
     initClawrocketSchema();
+    const telegramConnection = ensureSystemManagedTelegramConnection();
     syncKnownProviderModels();
     // ClawRocket integration seam: register scheduler maintenance callbacks.
     registerClawrocketSchedulerMaintenanceHook();
@@ -579,10 +618,48 @@ async function main(): Promise<void> {
     loadState();
 
     if (WEB_ENABLED) {
-      webServer = await startWebServer();
+      webServer = await startWebServer({
+        onTalkTerminal: (talkId) => {
+          talkLifecycleBus.notifyTalkTerminal(talkId);
+        },
+        onChannelDeliveryQueued: () => {
+          channelDeliveryWorker?.wake();
+        },
+        sendChannelTestMessage: async (bindingId, text) => {
+          const binding = getTalkChannelBindingById(bindingId);
+          if (!binding) {
+            throw new Error('Talk channel binding not found');
+          }
+          const channel = findChannel(channels, binding.target_id);
+          if (!channel) {
+            throw new Error(`No channel owns target ${binding.target_id}`);
+          }
+          await channel.sendMessage(binding.target_id, text);
+        },
+      });
     } else {
       logger.info('Web API server is disabled (WEB_ENABLED=false)');
     }
+
+    if (webServer?.runWorker) {
+      channelIngressWorker = new ChannelIngressWorker({
+        runWorker: webServer.runWorker,
+        talkLifecycleBus,
+      });
+      channelDeliveryWorker = new ChannelDeliveryWorker({
+        sendText: async (jid, text) => {
+          const channel = findChannel(channels, jid);
+          if (!channel) {
+            throw new Error(`No channel owns target ${jid}`);
+          }
+          await channel.sendMessage(jid, text);
+        },
+      });
+    }
+
+    const talkChannelRouter = channelIngressWorker
+      ? new TalkChannelRouter(telegramConnection.id, channelIngressWorker)
+      : null;
 
     // Channel callbacks (shared by all channels)
     const channelOpts = {
@@ -593,7 +670,25 @@ async function main(): Promise<void> {
         name?: string,
         channel?: string,
         isGroup?: boolean,
-      ) => storeChatMetadata(chatJid, timestamp, name, channel, isGroup),
+      ) => {
+        storeChatMetadata(chatJid, timestamp, name, channel, isGroup);
+        if (channel === 'telegram') {
+          upsertChannelTarget({
+            connectionId: telegramConnection.id,
+            targetKind: 'chat',
+            targetId: chatJid,
+            displayName: name || chatJid,
+            metadataJson: JSON.stringify({
+              isGroup: isGroup === true,
+            }),
+            lastSeenAt: timestamp,
+          });
+        }
+      },
+      onInboundEvent: talkChannelRouter
+        ? (event: import('./types.js').TalkChannelInboundEvent) =>
+            talkChannelRouter.handleInboundEvent(event)
+        : undefined,
       registeredGroups: () => registeredGroups,
     };
 
@@ -615,6 +710,13 @@ async function main(): Promise<void> {
     }
     if (channels.length === 0) {
       throw new Error('No channels connected');
+    }
+
+    if (channelIngressWorker) {
+      await channelIngressWorker.start();
+    }
+    if (channelDeliveryWorker) {
+      await channelDeliveryWorker.start();
     }
 
     // Initialize Telegram bot pool for agent teams

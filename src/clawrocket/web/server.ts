@@ -118,6 +118,23 @@ import {
   setTalkGoalRoute,
 } from './routes/talk-context.js';
 import {
+  listTalkAttachmentsRoute,
+  uploadTalkAttachmentRoute,
+} from './routes/talk-attachments.js';
+import {
+  listTalkChannelsRoute,
+  createTalkChannelRoute,
+  patchTalkChannelRoute,
+  deleteTalkChannelRoute,
+  testTalkChannelBindingRoute,
+  listTalkChannelIngressFailuresRoute,
+  retryTalkChannelIngressFailureRoute,
+  deleteTalkChannelIngressFailureRoute,
+  listTalkChannelDeliveryFailuresRoute,
+  retryTalkChannelDeliveryFailureRoute,
+  deleteTalkChannelDeliveryFailureRoute,
+} from './routes/channels.js';
+import {
   createDefaultTalkContextSourceIngestionService,
   type TalkContextSourceIngestionService,
 } from '../talks/source-ingestion.js';
@@ -145,6 +162,8 @@ export interface WebServerOptions {
   subscriptionHostAuth: ExecutorSubscriptionHostAuthService;
   dataConnectorVerifier: DataConnectorVerifier;
   sourceIngestion: TalkContextSourceIngestionService;
+  onTalkTerminal?: (talkId: string) => void;
+  sendChannelTestMessage?: (bindingId: string, text: string) => Promise<void>;
 }
 
 export interface WebServerHandle {
@@ -152,6 +171,7 @@ export interface WebServerHandle {
   stop: () => Promise<void>;
   request: (path: string, init?: RequestInit) => Promise<Response>;
   server: ServerType | null;
+  runWorker?: TalkRunWorkerControl;
 }
 
 export function createWebServer(
@@ -187,6 +207,8 @@ export function createWebServer(
     sourceIngestion:
       input?.sourceIngestion ||
       createDefaultTalkContextSourceIngestionService(),
+    onTalkTerminal: input?.onTalkTerminal,
+    sendChannelTestMessage: input?.sendChannelTestMessage,
   };
 
   // startWebServer() already runs bootstrap migration in production. Repeat it
@@ -2470,6 +2492,405 @@ function buildApp(opts: WebServerOptions): Hono {
     });
   });
 
+  app.get('/api/v1/talks/:talkId/channels', async (c) => {
+    const auth = (c as any).get('auth') as AuthContext;
+    const talkId = safeDecodePathSegment(c.req.param('talkId'));
+    if (!talkId) {
+      return c.json(
+        {
+          ok: false,
+          error: {
+            code: 'invalid_talk_id',
+            message: 'Talk ID path segment is not valid URL encoding',
+          },
+        },
+        400,
+      );
+    }
+    const result = listTalkChannelsRoute({ auth, talkId });
+    return new Response(JSON.stringify(result.body), {
+      status: result.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
+  });
+
+  app.post('/api/v1/talks/:talkId/channels', async (c) => {
+    const auth = (c as any).get('auth') as AuthContext;
+    const talkId = safeDecodePathSegment(c.req.param('talkId'));
+    if (!talkId) {
+      return c.json(
+        {
+          ok: false,
+          error: {
+            code: 'invalid_talk_id',
+            message: 'Talk ID path segment is not valid URL encoding',
+          },
+        },
+        400,
+      );
+    }
+    const body = (await c.req.json().catch(() => ({}))) as Record<
+      string,
+      unknown
+    >;
+    const result = createTalkChannelRoute({
+      auth,
+      talkId,
+      connectionId: String(body.connectionId || ''),
+      targetKind: String(body.targetKind || 'chat'),
+      targetId: String(body.targetId || ''),
+      displayName: String(body.displayName || body.targetId || ''),
+      responseMode:
+        body.responseMode === 'off' ||
+        body.responseMode === 'mentions' ||
+        body.responseMode === 'all'
+          ? body.responseMode
+          : undefined,
+      responderMode:
+        body.responderMode === 'primary' || body.responderMode === 'agent'
+          ? body.responderMode
+          : undefined,
+      responderAgentId:
+        typeof body.responderAgentId === 'string'
+          ? body.responderAgentId
+          : null,
+      deliveryMode:
+        body.deliveryMode === 'reply' || body.deliveryMode === 'channel'
+          ? body.deliveryMode
+          : undefined,
+      channelContextNote:
+        typeof body.channelContextNote === 'string'
+          ? body.channelContextNote
+          : null,
+      inboundRateLimitPerMinute:
+        typeof body.inboundRateLimitPerMinute === 'number'
+          ? body.inboundRateLimitPerMinute
+          : undefined,
+      maxPendingEvents:
+        typeof body.maxPendingEvents === 'number'
+          ? body.maxPendingEvents
+          : undefined,
+      overflowPolicy:
+        body.overflowPolicy === 'drop_oldest' ||
+        body.overflowPolicy === 'drop_newest'
+          ? body.overflowPolicy
+          : undefined,
+      maxDeferredAgeMinutes:
+        typeof body.maxDeferredAgeMinutes === 'number'
+          ? body.maxDeferredAgeMinutes
+          : undefined,
+    });
+    return new Response(JSON.stringify(result.body), {
+      status: result.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
+  });
+
+  app.patch('/api/v1/talks/:talkId/channels/:bindingId', async (c) => {
+    const auth = (c as any).get('auth') as AuthContext;
+    const talkId = safeDecodePathSegment(c.req.param('talkId'));
+    if (!talkId) {
+      return c.json(
+        {
+          ok: false,
+          error: {
+            code: 'invalid_talk_id',
+            message: 'Talk ID path segment is not valid URL encoding',
+          },
+        },
+        400,
+      );
+    }
+    const body = (await c.req.json().catch(() => ({}))) as Record<
+      string,
+      unknown
+    >;
+    const result = patchTalkChannelRoute({
+      auth,
+      talkId,
+      bindingId: c.req.param('bindingId'),
+      active: typeof body.active === 'boolean' ? body.active : undefined,
+      displayName:
+        typeof body.displayName === 'string' ? body.displayName : undefined,
+      responseMode:
+        body.responseMode === 'off' ||
+        body.responseMode === 'mentions' ||
+        body.responseMode === 'all'
+          ? body.responseMode
+          : undefined,
+      responderMode:
+        body.responderMode === 'primary' || body.responderMode === 'agent'
+          ? body.responderMode
+          : undefined,
+      responderAgentId:
+        typeof body.responderAgentId === 'string'
+          ? body.responderAgentId
+          : undefined,
+      deliveryMode:
+        body.deliveryMode === 'reply' || body.deliveryMode === 'channel'
+          ? body.deliveryMode
+          : undefined,
+      channelContextNote:
+        typeof body.channelContextNote === 'string'
+          ? body.channelContextNote
+          : body.channelContextNote === null
+            ? null
+            : undefined,
+      inboundRateLimitPerMinute:
+        typeof body.inboundRateLimitPerMinute === 'number'
+          ? body.inboundRateLimitPerMinute
+          : undefined,
+      maxPendingEvents:
+        typeof body.maxPendingEvents === 'number'
+          ? body.maxPendingEvents
+          : undefined,
+      overflowPolicy:
+        body.overflowPolicy === 'drop_oldest' ||
+        body.overflowPolicy === 'drop_newest'
+          ? body.overflowPolicy
+          : undefined,
+      maxDeferredAgeMinutes:
+        typeof body.maxDeferredAgeMinutes === 'number'
+          ? body.maxDeferredAgeMinutes
+          : undefined,
+    });
+    return new Response(JSON.stringify(result.body), {
+      status: result.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
+  });
+
+  app.delete('/api/v1/talks/:talkId/channels/:bindingId', async (c) => {
+    const auth = (c as any).get('auth') as AuthContext;
+    const talkId = safeDecodePathSegment(c.req.param('talkId'));
+    if (!talkId) {
+      return c.json(
+        {
+          ok: false,
+          error: {
+            code: 'invalid_talk_id',
+            message: 'Talk ID path segment is not valid URL encoding',
+          },
+        },
+        400,
+      );
+    }
+    const result = deleteTalkChannelRoute({
+      auth,
+      talkId,
+      bindingId: c.req.param('bindingId'),
+    });
+    return new Response(JSON.stringify(result.body), {
+      status: result.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
+  });
+
+  app.post('/api/v1/talks/:talkId/channels/:bindingId/test', async (c) => {
+    const auth = (c as any).get('auth') as AuthContext;
+    const talkId = safeDecodePathSegment(c.req.param('talkId'));
+    if (!talkId) {
+      return c.json(
+        {
+          ok: false,
+          error: {
+            code: 'invalid_talk_id',
+            message: 'Talk ID path segment is not valid URL encoding',
+          },
+        },
+        400,
+      );
+    }
+    const result = await testTalkChannelBindingRoute({
+      auth,
+      talkId,
+      bindingId: c.req.param('bindingId'),
+      sendTestMessage: opts.sendChannelTestMessage,
+    });
+    return new Response(JSON.stringify(result.body), {
+      status: result.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
+  });
+
+  app.get(
+    '/api/v1/talks/:talkId/channels/:bindingId/ingress-failures',
+    async (c) => {
+      const auth = (c as any).get('auth') as AuthContext;
+      const talkId = safeDecodePathSegment(c.req.param('talkId'));
+      if (!talkId) {
+        return c.json(
+          {
+            ok: false,
+            error: {
+              code: 'invalid_talk_id',
+              message: 'Talk ID path segment is not valid URL encoding',
+            },
+          },
+          400,
+        );
+      }
+      const result = listTalkChannelIngressFailuresRoute({
+        auth,
+        talkId,
+        bindingId: c.req.param('bindingId'),
+      });
+      return new Response(JSON.stringify(result.body), {
+        status: result.statusCode,
+        headers: { 'content-type': 'application/json; charset=utf-8' },
+      });
+    },
+  );
+
+  app.post(
+    '/api/v1/talks/:talkId/channels/:bindingId/ingress-failures/:rowId/retry',
+    async (c) => {
+      const auth = (c as any).get('auth') as AuthContext;
+      const talkId = safeDecodePathSegment(c.req.param('talkId'));
+      if (!talkId) {
+        return c.json(
+          {
+            ok: false,
+            error: {
+              code: 'invalid_talk_id',
+              message: 'Talk ID path segment is not valid URL encoding',
+            },
+          },
+          400,
+        );
+      }
+      const result = retryTalkChannelIngressFailureRoute({
+        auth,
+        talkId,
+        bindingId: c.req.param('bindingId'),
+        rowId: c.req.param('rowId'),
+      });
+      return new Response(JSON.stringify(result.body), {
+        status: result.statusCode,
+        headers: { 'content-type': 'application/json; charset=utf-8' },
+      });
+    },
+  );
+
+  app.delete(
+    '/api/v1/talks/:talkId/channels/:bindingId/ingress-failures/:rowId',
+    async (c) => {
+      const auth = (c as any).get('auth') as AuthContext;
+      const talkId = safeDecodePathSegment(c.req.param('talkId'));
+      if (!talkId) {
+        return c.json(
+          {
+            ok: false,
+            error: {
+              code: 'invalid_talk_id',
+              message: 'Talk ID path segment is not valid URL encoding',
+            },
+          },
+          400,
+        );
+      }
+      const result = deleteTalkChannelIngressFailureRoute({
+        auth,
+        talkId,
+        bindingId: c.req.param('bindingId'),
+        rowId: c.req.param('rowId'),
+      });
+      return new Response(JSON.stringify(result.body), {
+        status: result.statusCode,
+        headers: { 'content-type': 'application/json; charset=utf-8' },
+      });
+    },
+  );
+
+  app.get(
+    '/api/v1/talks/:talkId/channels/:bindingId/delivery-failures',
+    async (c) => {
+      const auth = (c as any).get('auth') as AuthContext;
+      const talkId = safeDecodePathSegment(c.req.param('talkId'));
+      if (!talkId) {
+        return c.json(
+          {
+            ok: false,
+            error: {
+              code: 'invalid_talk_id',
+              message: 'Talk ID path segment is not valid URL encoding',
+            },
+          },
+          400,
+        );
+      }
+      const result = listTalkChannelDeliveryFailuresRoute({
+        auth,
+        talkId,
+        bindingId: c.req.param('bindingId'),
+      });
+      return new Response(JSON.stringify(result.body), {
+        status: result.statusCode,
+        headers: { 'content-type': 'application/json; charset=utf-8' },
+      });
+    },
+  );
+
+  app.post(
+    '/api/v1/talks/:talkId/channels/:bindingId/delivery-failures/:rowId/retry',
+    async (c) => {
+      const auth = (c as any).get('auth') as AuthContext;
+      const talkId = safeDecodePathSegment(c.req.param('talkId'));
+      if (!talkId) {
+        return c.json(
+          {
+            ok: false,
+            error: {
+              code: 'invalid_talk_id',
+              message: 'Talk ID path segment is not valid URL encoding',
+            },
+          },
+          400,
+        );
+      }
+      const result = retryTalkChannelDeliveryFailureRoute({
+        auth,
+        talkId,
+        bindingId: c.req.param('bindingId'),
+        rowId: c.req.param('rowId'),
+      });
+      return new Response(JSON.stringify(result.body), {
+        status: result.statusCode,
+        headers: { 'content-type': 'application/json; charset=utf-8' },
+      });
+    },
+  );
+
+  app.delete(
+    '/api/v1/talks/:talkId/channels/:bindingId/delivery-failures/:rowId',
+    async (c) => {
+      const auth = (c as any).get('auth') as AuthContext;
+      const talkId = safeDecodePathSegment(c.req.param('talkId'));
+      if (!talkId) {
+        return c.json(
+          {
+            ok: false,
+            error: {
+              code: 'invalid_talk_id',
+              message: 'Talk ID path segment is not valid URL encoding',
+            },
+          },
+          400,
+        );
+      }
+      const result = deleteTalkChannelDeliveryFailureRoute({
+        auth,
+        talkId,
+        bindingId: c.req.param('bindingId'),
+        rowId: c.req.param('rowId'),
+      });
+      return new Response(JSON.stringify(result.body), {
+        status: result.statusCode,
+        headers: { 'content-type': 'application/json; charset=utf-8' },
+      });
+    },
+  );
+
   app.get('/api/v1/talks/:talkId/data-connectors', async (c) => {
     const auth = requireAuth(c);
     if (!auth) return unauthorized(c);
@@ -3033,6 +3454,81 @@ function buildApp(opts: WebServerOptions): Hono {
     },
   );
 
+  // ---- Message attachments (file upload) ----
+
+  app.post('/api/v1/talks/:talkId/attachments', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+
+    const rateResult = checkRateLimit({
+      principalId: auth.userId,
+      bucket: 'write',
+    });
+    if (!rateResult.allowed) return rateLimitedResponse(c, rateResult);
+
+    const csrf = validateCsrfToken({
+      method: c.req.method,
+      authType: auth.authType,
+      cookieHeader: c.req.header('cookie'),
+      csrfHeader: c.req.header('x-csrf-token'),
+    });
+    if (!csrf.ok) {
+      return c.json(
+        { ok: false, error: { code: 'csrf_invalid', message: csrf.reason } },
+        403,
+      );
+    }
+
+    const body = await c.req.parseBody();
+    const file = body['file'];
+    if (!file || !(file instanceof File)) {
+      return c.json(
+        {
+          ok: false,
+          error: { code: 'file_required', message: 'A file field is required' },
+        },
+        400,
+      );
+    }
+
+    const arrayBuffer = await file.arrayBuffer();
+    const result = await uploadTalkAttachmentRoute({
+      auth,
+      talkId: c.req.param('talkId'),
+      file: {
+        name: file.name || 'unnamed',
+        data: Buffer.from(arrayBuffer),
+        type: file.type || 'application/octet-stream',
+      },
+    });
+
+    return new Response(JSON.stringify(result.body), {
+      status: result.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
+  });
+
+  app.get('/api/v1/talks/:talkId/attachments', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+
+    const rateResult = checkRateLimit({
+      principalId: auth.userId,
+      bucket: 'read',
+    });
+    if (!rateResult.allowed) return rateLimitedResponse(c, rateResult);
+
+    const attachmentsResult = listTalkAttachmentsRoute({
+      auth,
+      talkId: c.req.param('talkId'),
+    });
+
+    return new Response(JSON.stringify(attachmentsResult.body), {
+      status: attachmentsResult.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
+  });
+
   app.put('/api/v1/talks/:talkId/agents', async (c) => {
     const auth = requireAuth(c);
     if (!auth) return unauthorized(c);
@@ -3402,6 +3898,7 @@ function buildApp(opts: WebServerOptions): Hono {
     const payload = parseJsonPayload<{
       content?: string;
       targetAgentIds?: unknown;
+      attachmentIds?: unknown;
     }>(bodyText);
     if (!payload.ok) {
       return c.json(
@@ -3422,6 +3919,11 @@ function buildApp(opts: WebServerOptions): Hono {
       content: payload.data.content || '',
       targetAgentIds: Array.isArray(payload.data.targetAgentIds)
         ? payload.data.targetAgentIds.filter(
+            (entry): entry is string => typeof entry === 'string',
+          )
+        : null,
+      attachmentIds: Array.isArray(payload.data.attachmentIds)
+        ? payload.data.attachmentIds.filter(
             (entry): entry is string => typeof entry === 'string',
           )
         : null,

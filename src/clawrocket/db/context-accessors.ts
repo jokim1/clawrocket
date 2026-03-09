@@ -681,6 +681,260 @@ export function deleteTalkContextSource(
 }
 
 // ---------------------------------------------------------------------------
+// Message attachment types
+// ---------------------------------------------------------------------------
+
+export type AttachmentExtractionStatus = 'pending' | 'extracted' | 'failed';
+
+export interface MessageAttachmentRecord {
+  id: string;
+  message_id: string | null;
+  talk_id: string;
+  file_name: string;
+  file_size: number;
+  mime_type: string;
+  storage_key: string;
+  extracted_text: string | null;
+  extraction_status: AttachmentExtractionStatus;
+  extraction_error: string | null;
+  created_at: string;
+  created_by: string | null;
+}
+
+export interface AttachmentSnapshot {
+  id: string;
+  messageId: string | null;
+  fileName: string;
+  fileSize: number;
+  mimeType: string;
+  extractionStatus: AttachmentExtractionStatus;
+  extractionError: string | null;
+  extractedTextLength: number | null;
+  createdAt: string;
+}
+
+function toAttachmentSnapshot(
+  row: MessageAttachmentRecord,
+): AttachmentSnapshot {
+  return {
+    id: row.id,
+    messageId: row.message_id,
+    fileName: row.file_name,
+    fileSize: row.file_size,
+    mimeType: row.mime_type,
+    extractionStatus: row.extraction_status,
+    extractionError: row.extraction_error,
+    extractedTextLength: row.extracted_text?.length ?? null,
+    createdAt: row.created_at,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Message attachment accessors
+// ---------------------------------------------------------------------------
+
+export function createMessageAttachment(input: {
+  id: string;
+  talkId: string;
+  fileName: string;
+  fileSize: number;
+  mimeType: string;
+  storageKey: string;
+  createdBy: string;
+}): AttachmentSnapshot {
+  const now = new Date().toISOString();
+  getDb()
+    .prepare(
+      `
+      INSERT INTO talk_message_attachments (
+        id, message_id, talk_id, file_name, file_size,
+        mime_type, storage_key, extraction_status, created_at, created_by
+      )
+      VALUES (?, NULL, ?, ?, ?, ?, ?, 'pending', ?, ?)
+    `,
+    )
+    .run(
+      input.id,
+      input.talkId,
+      input.fileName,
+      input.fileSize,
+      input.mimeType,
+      input.storageKey,
+      now,
+      input.createdBy,
+    );
+
+  const row = getDb()
+    .prepare(`SELECT * FROM talk_message_attachments WHERE id = ?`)
+    .get(input.id) as MessageAttachmentRecord;
+  return toAttachmentSnapshot(row);
+}
+
+export function linkAttachmentToMessage(
+  attachmentId: string,
+  messageId: string,
+  talkId: string,
+): boolean {
+  const result = getDb()
+    .prepare(
+      `
+      UPDATE talk_message_attachments
+      SET message_id = ?
+      WHERE id = ? AND talk_id = ? AND message_id IS NULL
+    `,
+    )
+    .run(messageId, attachmentId, talkId);
+  return result.changes > 0;
+}
+
+export function listMessageAttachments(
+  messageId: string,
+): AttachmentSnapshot[] {
+  const rows = getDb()
+    .prepare(
+      `
+      SELECT * FROM talk_message_attachments
+      WHERE message_id = ?
+      ORDER BY created_at ASC
+    `,
+    )
+    .all(messageId) as MessageAttachmentRecord[];
+  return rows.map(toAttachmentSnapshot);
+}
+
+export function listTalkAttachments(talkId: string): AttachmentSnapshot[] {
+  const rows = getDb()
+    .prepare(
+      `
+      SELECT * FROM talk_message_attachments
+      WHERE talk_id = ? AND message_id IS NOT NULL
+      ORDER BY created_at ASC
+    `,
+    )
+    .all(talkId) as MessageAttachmentRecord[];
+  return rows.map(toAttachmentSnapshot);
+}
+
+export function getMessageAttachmentById(
+  attachmentId: string,
+  talkId: string,
+): MessageAttachmentRecord | null {
+  const row = getDb()
+    .prepare(
+      `SELECT * FROM talk_message_attachments WHERE id = ? AND talk_id = ?`,
+    )
+    .get(attachmentId, talkId) as MessageAttachmentRecord | undefined;
+  return row ?? null;
+}
+
+export function updateAttachmentExtraction(input: {
+  attachmentId: string;
+  extractedText?: string | null;
+  extractionError?: string | null;
+  extractionStatus: 'extracted' | 'failed';
+}): void {
+  let text = input.extractedText ?? null;
+  if (text && text.length > 50_000) {
+    text = text.slice(0, 50_000);
+  }
+
+  getDb()
+    .prepare(
+      `
+      UPDATE talk_message_attachments
+      SET extracted_text = ?,
+          extraction_error = ?,
+          extraction_status = ?
+      WHERE id = ?
+    `,
+    )
+    .run(
+      text,
+      input.extractionError ?? null,
+      input.extractionStatus,
+      input.attachmentId,
+    );
+}
+
+export function deleteUnlinkedAttachments(
+  talkId: string,
+  olderThanIso: string,
+): number {
+  const result = getDb()
+    .prepare(
+      `
+      DELETE FROM talk_message_attachments
+      WHERE talk_id = ? AND message_id IS NULL AND created_at < ?
+    `,
+    )
+    .run(talkId, olderThanIso);
+  return result.changes;
+}
+
+/**
+ * Delete orphan attachments across ALL talks that were uploaded but never
+ * linked to a message. Returns the storage keys of deleted rows so the
+ * caller can remove the corresponding files from disk.
+ *
+ * Uses DELETE ... RETURNING so the key collection and row deletion are a
+ * single atomic statement — no race with a concurrent link operation.
+ */
+export function pruneOrphanAttachments(olderThanIso: string): {
+  count: number;
+  storageKeys: string[];
+} {
+  const deleted = getDb()
+    .prepare(
+      `
+      DELETE FROM talk_message_attachments
+      WHERE message_id IS NULL AND created_at < ?
+      RETURNING storage_key
+    `,
+    )
+    .all(olderThanIso) as Array<{ storage_key: string }>;
+
+  return {
+    count: deleted.length,
+    storageKeys: deleted.map((r) => r.storage_key),
+  };
+}
+
+export function listMessageAttachmentsForPrompt(messageId: string): Array<{
+  id: string;
+  fileName: string;
+  mimeType: string;
+  fileSize: number;
+  extractedText: string | null;
+  extractionStatus: AttachmentExtractionStatus;
+}> {
+  const rows = getDb()
+    .prepare(
+      `
+      SELECT id, file_name, mime_type, file_size, extracted_text, extraction_status
+      FROM talk_message_attachments
+      WHERE message_id = ?
+      ORDER BY created_at ASC
+    `,
+    )
+    .all(messageId) as Array<{
+    id: string;
+    file_name: string;
+    mime_type: string;
+    file_size: number;
+    extracted_text: string | null;
+    extraction_status: AttachmentExtractionStatus;
+  }>;
+  return rows.map((r) => ({
+    id: r.id,
+    fileName: r.file_name,
+    mimeType: r.mime_type,
+    fileSize: r.file_size,
+    extractedText: r.extracted_text,
+    extractionStatus: r.extraction_status,
+  }));
+}
+
+// ---------------------------------------------------------------------------
 // Full context snapshot (for the GET /context endpoint)
 // ---------------------------------------------------------------------------
 

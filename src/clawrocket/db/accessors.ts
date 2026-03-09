@@ -1,9 +1,12 @@
+import { randomUUID } from 'crypto';
+
 import { getDb } from '../../db.js';
 import {
   TalkAccessRole,
   TalkMessageRole,
   TalkRunStatus,
   UserRole,
+  UserType,
 } from '../types.js';
 
 // --- Identity and web session accessors ---
@@ -12,6 +15,7 @@ export interface UserRecord {
   id: string;
   email: string;
   display_name: string;
+  user_type: UserType;
   role: UserRole;
   is_active: number;
   created_at: string;
@@ -22,6 +26,7 @@ export function upsertUser(input: {
   id: string;
   email: string;
   displayName: string;
+  userType?: UserType;
   role?: UserRole;
   isActive?: boolean;
 }): void {
@@ -29,11 +34,12 @@ export function upsertUser(input: {
   getDb()
     .prepare(
       `
-    INSERT INTO users (id, email, display_name, role, is_active, created_at, last_login_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO users (id, email, display_name, user_type, role, is_active, created_at, last_login_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET
       email = excluded.email,
       display_name = excluded.display_name,
+      user_type = excluded.user_type,
       role = excluded.role,
       is_active = excluded.is_active
   `,
@@ -42,6 +48,7 @@ export function upsertUser(input: {
       input.id,
       input.email,
       input.displayName,
+      input.userType || 'human',
       input.role || 'member',
       input.isActive === false ? 0 : 1,
       now,
@@ -73,14 +80,16 @@ export function getUserByEmail(email: string): UserRecord | undefined {
 export function getOwnerUser(): UserRecord | undefined {
   return getDb()
     .prepare(
-      `SELECT * FROM users WHERE role = 'owner' AND is_active = 1 ORDER BY created_at ASC LIMIT 1`,
+      `SELECT * FROM users WHERE role = 'owner' AND is_active = 1 AND user_type = 'human' ORDER BY created_at ASC LIMIT 1`,
     )
     .get() as UserRecord | undefined;
 }
 
 export function hasAnyUsers(): boolean {
   const row = getDb()
-    .prepare('SELECT COUNT(*) as count FROM users WHERE is_active = 1')
+    .prepare(
+      "SELECT COUNT(*) as count FROM users WHERE is_active = 1 AND user_type = 'human'",
+    )
     .get() as { count: number };
   return row.count > 0;
 }
@@ -1539,6 +1548,119 @@ export function listTalkMessages(input: {
   return rows;
 }
 
+export interface TalkReplayRow {
+  user: TalkMessageRecord;
+  assistant: TalkMessageRecord;
+}
+
+export function listTalkReplayRows(input: {
+  talkId: string;
+  currentRunId: string;
+  currentUserMessageId: string;
+  limit?: number;
+}): TalkReplayRow[] {
+  const limit =
+    typeof input.limit === 'number'
+      ? Math.min(500, Math.max(1, Math.floor(input.limit)))
+      : 500;
+
+  const rows = getDb()
+    .prepare(
+      `
+      WITH recent_messages AS (
+        SELECT id, talk_id, role, content, created_by, created_at, run_id, metadata_json, sequence_in_run
+        FROM talk_messages
+        WHERE talk_id = ?
+        ORDER BY created_at DESC, COALESCE(sequence_in_run, 0) DESC, id DESC
+        LIMIT ?
+      )
+      SELECT
+        u.id AS user_id,
+        u.talk_id AS user_talk_id,
+        u.role AS user_role,
+        u.content AS user_content,
+        u.created_by AS user_created_by,
+        u.created_at AS user_created_at,
+        u.run_id AS user_run_id,
+        u.metadata_json AS user_metadata_json,
+        u.sequence_in_run AS user_sequence_in_run,
+        a.id AS assistant_id,
+        a.talk_id AS assistant_talk_id,
+        a.role AS assistant_role,
+        a.content AS assistant_content,
+        a.created_by AS assistant_created_by,
+        a.created_at AS assistant_created_at,
+        a.run_id AS assistant_run_id,
+        a.metadata_json AS assistant_metadata_json,
+        a.sequence_in_run AS assistant_sequence_in_run
+      FROM recent_messages a
+      JOIN talk_runs r ON r.id = a.run_id
+      JOIN talk_messages u ON u.id = r.trigger_message_id
+      WHERE a.role = 'assistant'
+        AND a.run_id IS NOT NULL
+        AND a.run_id != ?
+        AND u.role = 'user'
+        AND u.id != ?
+      ORDER BY
+        u.created_at ASC,
+        u.id ASC,
+        a.created_at ASC,
+        COALESCE(a.sequence_in_run, 0) ASC,
+        a.id ASC
+    `,
+    )
+    .all(
+      input.talkId,
+      limit,
+      input.currentRunId,
+      input.currentUserMessageId,
+    ) as Array<{
+    user_id: string;
+    user_talk_id: string;
+    user_role: TalkMessageRole;
+    user_content: string;
+    user_created_by: string | null;
+    user_created_at: string;
+    user_run_id: string | null;
+    user_metadata_json: string | null;
+    user_sequence_in_run: number | null;
+    assistant_id: string;
+    assistant_talk_id: string;
+    assistant_role: TalkMessageRole;
+    assistant_content: string;
+    assistant_created_by: string | null;
+    assistant_created_at: string;
+    assistant_run_id: string | null;
+    assistant_metadata_json: string | null;
+    assistant_sequence_in_run: number | null;
+  }>;
+
+  return rows.map((row) => ({
+    user: {
+      id: row.user_id,
+      talk_id: row.user_talk_id,
+      role: row.user_role,
+      content: row.user_content,
+      created_by: row.user_created_by,
+      created_at: row.user_created_at,
+      run_id: row.user_run_id,
+      metadata_json: row.user_metadata_json,
+      sequence_in_run: row.user_sequence_in_run,
+    },
+    assistant: {
+      id: row.assistant_id,
+      talk_id: row.assistant_talk_id,
+      role: row.assistant_role,
+      content: row.assistant_content,
+      created_by: row.assistant_created_by,
+      created_at: row.assistant_created_at,
+      run_id: row.assistant_run_id,
+      metadata_json: row.assistant_metadata_json,
+      sequence_in_run: row.assistant_sequence_in_run,
+    },
+  }));
+}
+
 export function getTalkMessageById(
   messageId: string,
 ): TalkMessageRecord | undefined {
@@ -1633,6 +1755,8 @@ export function enqueueTalkTurnAtomic(input: {
   messageId: string;
   runIds: string[];
   targetAgentIds: string[];
+  attachmentIds?: string[] | null;
+  maxAttachmentsPerMessage?: number;
   idempotencyKey?: string | null;
   now?: string;
 }): { message: TalkMessageRecord; runs: TalkRunRecord[] } {
@@ -1686,6 +1810,9 @@ export function enqueueTalkTurnAtomic(input: {
         idempotency_key: index === 0 ? txInput.idempotencyKey || null : null,
         executor_alias: null,
         executor_model: null,
+        source_binding_id: null,
+        source_external_message_id: null,
+        source_thread_key: null,
         created_at: now,
         started_at: null,
         ended_at: null,
@@ -1752,11 +1879,57 @@ export function enqueueTalkTurnAtomic(input: {
         );
       }
 
+      // Validate and link attachments inside the same transaction so the
+      // entire operation is atomic — no race between validation and linking.
+      const attIds = txInput.attachmentIds;
+      if (Array.isArray(attIds) && attIds.length > 0) {
+        const cap = txInput.maxAttachmentsPerMessage ?? 5;
+        if (attIds.length > cap) {
+          throw new AttachmentValidationError(
+            'too_many_attachments',
+            `A message may have at most ${cap} attachments.`,
+          );
+        }
+
+        const linkStmt = getDb().prepare(
+          `UPDATE talk_message_attachments
+           SET message_id = ?
+           WHERE id = ? AND talk_id = ? AND message_id IS NULL`,
+        );
+        const invalidIds: string[] = [];
+        for (const attId of attIds) {
+          const result = linkStmt.run(message.id, attId, txInput.talkId);
+          if (result.changes === 0) {
+            invalidIds.push(attId);
+          }
+        }
+        if (invalidIds.length > 0) {
+          throw new AttachmentValidationError(
+            'invalid_attachment_ids',
+            `Some attachment IDs could not be linked: ${invalidIds.join(', ')}. ` +
+              'They may be invalid, already linked, or belong to another talk.',
+          );
+        }
+      }
+
       return { message, runs };
     },
   );
 
   return tx(input);
+}
+
+/**
+ * Thrown when attachment validation fails inside enqueueTalkTurnAtomic.
+ * The transaction is rolled back so no message or runs are persisted.
+ */
+export class AttachmentValidationError extends Error {
+  readonly code: string;
+  constructor(code: string, message: string) {
+    super(message);
+    this.name = 'AttachmentValidationError';
+    this.code = code;
+  }
 }
 
 // --- Event outbox ---
@@ -1997,6 +2170,9 @@ export interface TalkRunRecord {
   idempotency_key: string | null;
   executor_alias: string | null;
   executor_model: string | null;
+  source_binding_id?: string | null;
+  source_external_message_id?: string | null;
+  source_thread_key?: string | null;
   created_at: string;
   started_at: string | null;
   ended_at: string | null;
@@ -2009,10 +2185,10 @@ export function createTalkRun(input: TalkRunRecord): void {
       `
     INSERT INTO talk_runs (
       id, talk_id, requested_by, status, trigger_message_id, target_agent_id, idempotency_key,
-      executor_alias, executor_model,
+      executor_alias, executor_model, source_binding_id, source_external_message_id, source_thread_key,
       created_at, started_at, ended_at, cancel_reason
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `,
     )
     .run(
@@ -2025,6 +2201,9 @@ export function createTalkRun(input: TalkRunRecord): void {
       input.idempotency_key,
       input.executor_alias,
       input.executor_model,
+      input.source_binding_id || null,
+      input.source_external_message_id || null,
+      input.source_thread_key || null,
       input.created_at,
       input.started_at,
       input.ended_at,
@@ -2411,6 +2590,7 @@ export function completeRunAndPromoteNextAtomic(input: {
 }): {
   applied: boolean;
   talkId: string | null;
+  deliveryQueued: boolean;
 } {
   const tx = getDb().transaction(
     (
@@ -2418,12 +2598,14 @@ export function completeRunAndPromoteNextAtomic(input: {
     ): {
       applied: boolean;
       talkId: string | null;
+      deliveryQueued: boolean;
     } => {
       const now = txInput.now || new Date().toISOString();
       const run = getDb()
         .prepare(
           `
-          SELECT id, talk_id, trigger_message_id, target_agent_id, executor_alias, executor_model
+          SELECT id, talk_id, trigger_message_id, target_agent_id, executor_alias, executor_model,
+                 source_binding_id, source_external_message_id, source_thread_key
           FROM talk_runs
           WHERE id = ? AND status = 'running'
           LIMIT 1
@@ -2437,10 +2619,13 @@ export function completeRunAndPromoteNextAtomic(input: {
             target_agent_id: string | null;
             executor_alias: string | null;
             executor_model: string | null;
+            source_binding_id: string | null;
+            source_external_message_id: string | null;
+            source_thread_key: string | null;
           }
         | undefined;
       if (!run) {
-        return { applied: false, talkId: null };
+        return { applied: false, talkId: null, deliveryQueued: false };
       }
 
       const completed = getDb()
@@ -2455,7 +2640,7 @@ export function completeRunAndPromoteNextAtomic(input: {
         )
         .run(now, run.id);
       if (completed.changes !== 1) {
-        return { applied: false, talkId: run.talk_id };
+        return { applied: false, talkId: run.talk_id, deliveryQueued: false };
       }
 
       const responseMessage = appendAssistantMessageWithOutbox({
@@ -2469,6 +2654,65 @@ export function completeRunAndPromoteNextAtomic(input: {
         sequenceInRun: txInput.responseSequenceInRun ?? null,
         createdAt: now,
       });
+
+      let deliveryQueued = false;
+      if (run.source_binding_id) {
+        const binding = getDb()
+          .prepare(
+            `
+            SELECT id, active, target_kind, target_id
+            FROM talk_channel_bindings
+            WHERE id = ?
+            LIMIT 1
+          `,
+          )
+          .get(run.source_binding_id) as
+          | {
+              id: string;
+              active: number;
+              target_kind: string;
+              target_id: string;
+            }
+          | undefined;
+        if (binding) {
+          const immediateDeadLetter = binding.active !== 1;
+          getDb()
+            .prepare(
+              `
+              INSERT INTO channel_delivery_outbox (
+                id, binding_id, talk_id, run_id, talk_message_id, target_kind,
+                target_id, payload_json, status, reason_code, reason_detail,
+                dedupe_key, available_at, created_at, updated_at, attempt_count
+              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+            `,
+            )
+            .run(
+              `delivery_${randomUUID()}`,
+              binding.id,
+              run.talk_id,
+              run.id,
+              responseMessage.id,
+              binding.target_kind,
+              binding.target_id,
+              JSON.stringify({
+                content: txInput.responseContent,
+                metadataJson: txInput.responseMetadataJson || null,
+                sourceThreadKey: run.source_thread_key || null,
+                sourceExternalMessageId: run.source_external_message_id || null,
+              }),
+              immediateDeadLetter ? 'dead_letter' : 'pending',
+              immediateDeadLetter ? 'binding_deactivated' : null,
+              immediateDeadLetter
+                ? 'Binding was deactivated before the response could be delivered'
+                : null,
+              `delivery:${run.id}:${responseMessage.id}`,
+              now,
+              now,
+              now,
+            );
+          deliveryQueued = !immediateDeadLetter;
+        }
+      }
 
       getDb()
         .prepare(
@@ -2494,6 +2738,7 @@ export function completeRunAndPromoteNextAtomic(input: {
       return {
         applied: true,
         talkId: run.talk_id,
+        deliveryQueued,
       };
     },
   );
