@@ -1,5 +1,6 @@
 import {
   FormEvent,
+  KeyboardEvent as ReactKeyboardEvent,
   useCallback,
   useEffect,
   useMemo,
@@ -1483,8 +1484,7 @@ export function TalkDetailPage({
     });
   };
 
-  const handleSend = async (event: FormEvent) => {
-    event.preventDefault();
+  const submitDraft = async () => {
     if (state.kind !== 'ready' || !state.talk) return;
 
     const content = draft.trim();
@@ -1559,6 +1559,26 @@ export function TalkDetailPage({
         lastDraft: content,
       });
     }
+  };
+
+  const handleSend = (event: FormEvent) => {
+    event.preventDefault();
+    void submitDraft();
+  };
+
+  const handleComposerKeyDown = (
+    event: ReactKeyboardEvent<HTMLTextAreaElement>,
+  ) => {
+    if (
+      event.key !== 'Enter' ||
+      event.shiftKey ||
+      event.nativeEvent.isComposing ||
+      event.keyCode === 229
+    ) {
+      return;
+    }
+    event.preventDefault();
+    void submitDraft();
   };
 
   const handleCancelRuns = async () => {
@@ -2791,6 +2811,7 @@ export function TalkDetailPage({
             <textarea
               value={draft}
               onChange={(event) => handleDraftChange(event.target.value)}
+              onKeyDown={handleComposerKeyDown}
               placeholder="Send a message to this talk"
               rows={3}
               maxLength={TALK_MESSAGE_MAX_CHARS}
