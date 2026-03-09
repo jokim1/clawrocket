@@ -1622,6 +1622,85 @@ a {
   text-decoration: none;
 }
 
+.connector-form-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 0.75rem;
+  align-items: end;
+}
+
+.connector-form-grid label,
+.connector-credential-row label,
+.connector-attach-row label {
+  display: grid;
+  gap: 0.3rem;
+}
+
+.connector-form-grid input,
+.connector-form-grid select,
+.connector-credential-row input,
+.connector-attach-row select {
+  border: 1px solid #c8d3e9;
+  border-radius: 9px;
+  padding: 0.62rem 0.72rem;
+  font-size: 0.95rem;
+}
+
+.connector-enabled-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  color: #31415f;
+}
+
+.connector-list-header,
+.connector-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.connector-card-list {
+  display: grid;
+  gap: 0.85rem;
+}
+
+.connector-card h3 {
+  margin: 0;
+}
+
+.connector-meta-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 0.75rem;
+  margin-top: 0.85rem;
+}
+
+.connector-meta-grid strong {
+  display: block;
+  font-size: 0.9rem;
+}
+
+.connector-meta-grid p {
+  margin: 0.25rem 0 0;
+  color: #52617f;
+}
+
+.connector-credential-row,
+.connector-attach-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.75rem;
+  align-items: end;
+  margin-top: 0.85rem;
+}
+
+.connector-attach-card {
+  margin-bottom: 0.85rem;
+}
+
 @media (max-width: 960px) {
   .app-shell {
     flex-direction: column;
@@ -1685,7 +1764,9 @@ a {
 
   .settings-form-grid,
   .settings-alias-row,
-  .talk-llm-toolbar {
+  .talk-llm-toolbar,
+  .connector-credential-row,
+  .connector-attach-row {
     grid-template-columns: 1fr;
   }
 

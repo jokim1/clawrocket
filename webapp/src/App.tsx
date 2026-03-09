@@ -22,6 +22,7 @@ import {
   UnauthorizedError,
 } from './lib/api';
 import { AiAgentsPage } from './pages/AiAgentsPage';
+import { DataConnectorsPage } from './pages/DataConnectorsPage';
 import { TalkDetailPage } from './pages/TalkDetailPage';
 import { TalkListPage } from './pages/TalkListPage';
 import { SettingsPage } from './pages/SettingsPage';
@@ -455,6 +456,19 @@ export function App() {
                   onUnauthorized={handleUnauthorized}
                   userRole={auth.user.role}
                 />
+              }
+            />
+            <Route
+              path="/app/connectors"
+              element={
+                canManageAgents ? (
+                  <DataConnectorsPage
+                    onUnauthorized={handleUnauthorized}
+                    userRole={auth.user.role}
+                  />
+                ) : (
+                  <Navigate to="/app/talks" replace />
+                )
               }
             />
             <Route
