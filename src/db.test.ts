@@ -20,15 +20,19 @@ import {
   appendRuntimeTalkMessage,
   appendOutboxEvent,
   canUserEditTalk,
+  claimNextChannelDeliveryRow,
   cancelTalkRunsAtomic,
   completeRunAndPromoteNextAtomic,
   consumeOAuthStateByHash,
+  createTalkChannelBinding,
   createOAuthState,
   createTalk,
   createTalkMessage,
   createTalkRun,
   deleteTalkMessagesAtomic,
+  enqueueChannelTurnAtomic,
   enqueueTalkTurnAtomic as enqueueTalkTurnAtomicRaw,
+  ensureSystemManagedTelegramConnection,
   failInterruptedRunsOnStartup,
   failRunAndPromoteNextAtomic,
   deleteTalkExecutorSession,
@@ -41,6 +45,7 @@ import {
   getTalkForUser,
   getTalkLlmPolicyByTalkId,
   getTalkRunById,
+  searchChannelTargets,
   getUserById,
   listTalkMessages,
   listTalksForUser,
@@ -48,9 +53,11 @@ import {
   normalizeTalkListPage,
   pruneEventOutbox,
   pruneIdempotencyCache,
+  resetTalkAgentsToDefault,
   saveIdempotencyCache,
   setTalkRunExecutorProfile,
   upsertTalk,
+  upsertChannelTarget,
   upsertTalkExecutorSession,
   upsertTalkLlmPolicy,
   upsertTalkMember,
@@ -931,6 +938,61 @@ describe('phase 0 schema and reliability tables', () => {
     ).toBeFalsy();
   });
 
+  it('does not create orphan talk messages when a channel enqueue hits an active round', () => {
+    resetTalkAgentsToDefault('talk-1', '2024-01-01T00:00:21.500Z');
+    const connection = ensureSystemManagedTelegramConnection(
+      '2024-01-01T00:00:21.600Z',
+    );
+    const binding = createTalkChannelBinding({
+      talkId: 'talk-1',
+      connectionId: connection.id,
+      targetKind: 'chat',
+      targetId: 'tg:chat:123',
+      displayName: 'Telegram Chat',
+      createdBy: 'owner-1',
+      now: '2024-01-01T00:00:21.700Z',
+    });
+
+    enqueueTalkTurnAtomic({
+      talkId: 'talk-1',
+      userId: 'owner-1',
+      content: 'busy run',
+      messageId: 'msg-busy-1',
+      runId: 'run-busy-1',
+      now: '2024-01-01T00:00:22.000Z',
+    });
+    markTalkRunStatus(
+      'run-busy-1',
+      'running',
+      null,
+      null,
+      '2024-01-01T00:00:22.100Z',
+    );
+
+    const beforeIds = listTalkMessages({ talkId: 'talk-1', limit: 20 }).map(
+      (message) => message.id,
+    );
+    const result = enqueueChannelTurnAtomic({
+      talkId: 'talk-1',
+      messageId: 'msg-channel-busy-1',
+      runId: 'run-channel-busy-1',
+      targetAgentId: binding.responder_agent_id!,
+      content: 'hello from telegram',
+      metadataJson: JSON.stringify({ platform: 'telegram' }),
+      externalCreatedAt: '2024-01-01T00:00:22.200Z',
+      sourceBindingId: binding.id,
+      sourceExternalMessageId: 'tg-msg-1',
+      now: '2024-01-01T00:00:22.300Z',
+    });
+
+    expect(result).toEqual({ status: 'talk_busy' });
+    const afterIds = listTalkMessages({ talkId: 'talk-1', limit: 20 }).map(
+      (message) => message.id,
+    );
+    expect(afterIds).toEqual(beforeIds);
+    expect(getTalkRunById('run-channel-busy-1')).toBeNull();
+  });
+
   it('completes a running run and appends the assistant message', () => {
     enqueueTalkTurnAtomic({
       talkId: 'talk-1',
@@ -974,6 +1036,92 @@ describe('phase 0 schema and reliability tables', () => {
         event.payload.includes('\"runId\":\"run-atomic-3a\"'),
     );
     expect(completed).toBeDefined();
+  });
+
+  it('queues a delivery row when a channel-originated run completes successfully', () => {
+    resetTalkAgentsToDefault('talk-1', '2024-01-01T00:00:32.100Z');
+    const connection = ensureSystemManagedTelegramConnection(
+      '2024-01-01T00:00:32.200Z',
+    );
+    const binding = createTalkChannelBinding({
+      talkId: 'talk-1',
+      connectionId: connection.id,
+      targetKind: 'chat',
+      targetId: 'tg:chat:456',
+      displayName: 'Telegram Delivery Chat',
+      createdBy: 'owner-1',
+      now: '2024-01-01T00:00:32.300Z',
+    });
+
+    const enqueueResult = enqueueChannelTurnAtomic({
+      talkId: 'talk-1',
+      messageId: 'msg-channel-1',
+      runId: 'run-channel-1',
+      targetAgentId: binding.responder_agent_id!,
+      content: 'Need the latest update',
+      metadataJson: JSON.stringify({ platform: 'telegram' }),
+      externalCreatedAt: '2024-01-01T00:00:32.400Z',
+      sourceBindingId: binding.id,
+      sourceExternalMessageId: 'tg-msg-99',
+      now: '2024-01-01T00:00:32.500Z',
+    });
+    expect(enqueueResult).toEqual({
+      status: 'enqueued',
+      messageId: 'msg-channel-1',
+      runId: 'run-channel-1',
+    });
+
+    markTalkRunStatus(
+      'run-channel-1',
+      'running',
+      null,
+      null,
+      '2024-01-01T00:00:32.600Z',
+    );
+    const completion = completeRunAndPromoteNextAtomic({
+      runId: 'run-channel-1',
+      responseMessageId: 'msg-channel-1-response',
+      responseContent: 'Here is the channel reply',
+      now: '2024-01-01T00:00:33.000Z',
+    });
+
+    expect(completion.applied).toBe(true);
+    expect(completion.deliveryQueued).toBe(true);
+
+    const delivery = claimNextChannelDeliveryRow('2024-01-01T00:00:33.100Z');
+    expect(delivery).toBeTruthy();
+    expect(delivery?.binding_id).toBe(binding.id);
+    expect(delivery?.run_id).toBe('run-channel-1');
+    expect(delivery?.talk_message_id).toBe('msg-channel-1-response');
+    expect(delivery?.status).toBe('sending');
+    expect(delivery?.payload_json).toContain('Here is the channel reply');
+  });
+
+  it('escapes LIKE wildcards when searching channel targets', () => {
+    const connection = ensureSystemManagedTelegramConnection(
+      '2024-01-01T00:00:33.200Z',
+    );
+    upsertChannelTarget({
+      connectionId: connection.id,
+      targetKind: 'chat',
+      targetId: 'tg:chat:percent',
+      displayName: '100% Coverage',
+      lastSeenAt: '2024-01-01T00:00:33.300Z',
+    });
+    upsertChannelTarget({
+      connectionId: connection.id,
+      targetKind: 'chat',
+      targetId: 'tg:chat:plain',
+      displayName: 'Regular Chat',
+      lastSeenAt: '2024-01-01T00:00:33.400Z',
+    });
+
+    const matches = searchChannelTargets({
+      connectionId: connection.id,
+      query: '%',
+      limit: 10,
+    });
+    expect(matches.map((row) => row.display_name)).toEqual(['100% Coverage']);
   });
 
   it('enforces first-writer-wins between cancel and fail transitions', () => {

@@ -16,7 +16,15 @@ import { TalkRunWorker } from '../talks/run-worker.js';
 
 import { createWebServer, WebServerHandle } from './server.js';
 
-export async function startWebServer(): Promise<WebServerHandle> {
+export interface StartWebServerOptions {
+  onTalkTerminal?: (talkId: string) => void;
+  onChannelDeliveryQueued?: () => void;
+  sendChannelTestMessage?: (bindingId: string, text: string) => Promise<void>;
+}
+
+export async function startWebServer(
+  input?: StartWebServerOptions,
+): Promise<WebServerHandle> {
   const executorSettings = new ExecutorSettingsService();
   executorSettings.runBootstrapMigration();
   const effectiveConfig = executorSettings.resolveEffectiveConfig();
@@ -42,6 +50,8 @@ export async function startWebServer(): Promise<WebServerHandle> {
     executor,
     pollMs: TALK_RUN_POLL_MS,
     maxConcurrency: TALK_RUN_MAX_CONCURRENCY,
+    onTalkTerminal: input?.onTalkTerminal,
+    onChannelDeliveryQueued: input?.onChannelDeliveryQueued,
   });
   await runWorker.start();
 
@@ -51,6 +61,7 @@ export async function startWebServer(): Promise<WebServerHandle> {
     runWorker,
     executorSettings,
     executorVerifier,
+    sendChannelTestMessage: input?.sendChannelTestMessage,
   });
 
   let bound: { host: string; port: number };
@@ -67,6 +78,7 @@ export async function startWebServer(): Promise<WebServerHandle> {
     await runWorker.stop();
     await originalStop();
   };
+  server.runWorker = runWorker;
 
   return server;
 }

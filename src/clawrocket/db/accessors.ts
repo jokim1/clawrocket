@@ -1,9 +1,12 @@
+import { randomUUID } from 'crypto';
+
 import { getDb } from '../../db.js';
 import {
   TalkAccessRole,
   TalkMessageRole,
   TalkRunStatus,
   UserRole,
+  UserType,
 } from '../types.js';
 
 // --- Identity and web session accessors ---
@@ -12,6 +15,7 @@ export interface UserRecord {
   id: string;
   email: string;
   display_name: string;
+  user_type: UserType;
   role: UserRole;
   is_active: number;
   created_at: string;
@@ -22,6 +26,7 @@ export function upsertUser(input: {
   id: string;
   email: string;
   displayName: string;
+  userType?: UserType;
   role?: UserRole;
   isActive?: boolean;
 }): void {
@@ -29,11 +34,12 @@ export function upsertUser(input: {
   getDb()
     .prepare(
       `
-    INSERT INTO users (id, email, display_name, role, is_active, created_at, last_login_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO users (id, email, display_name, user_type, role, is_active, created_at, last_login_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET
       email = excluded.email,
       display_name = excluded.display_name,
+      user_type = excluded.user_type,
       role = excluded.role,
       is_active = excluded.is_active
   `,
@@ -42,6 +48,7 @@ export function upsertUser(input: {
       input.id,
       input.email,
       input.displayName,
+      input.userType || 'human',
       input.role || 'member',
       input.isActive === false ? 0 : 1,
       now,
@@ -73,14 +80,16 @@ export function getUserByEmail(email: string): UserRecord | undefined {
 export function getOwnerUser(): UserRecord | undefined {
   return getDb()
     .prepare(
-      `SELECT * FROM users WHERE role = 'owner' AND is_active = 1 ORDER BY created_at ASC LIMIT 1`,
+      `SELECT * FROM users WHERE role = 'owner' AND is_active = 1 AND user_type = 'human' ORDER BY created_at ASC LIMIT 1`,
     )
     .get() as UserRecord | undefined;
 }
 
 export function hasAnyUsers(): boolean {
   const row = getDb()
-    .prepare('SELECT COUNT(*) as count FROM users WHERE is_active = 1')
+    .prepare(
+      "SELECT COUNT(*) as count FROM users WHERE is_active = 1 AND user_type = 'human'",
+    )
     .get() as { count: number };
   return row.count > 0;
 }
@@ -1686,6 +1695,9 @@ export function enqueueTalkTurnAtomic(input: {
         idempotency_key: index === 0 ? txInput.idempotencyKey || null : null,
         executor_alias: null,
         executor_model: null,
+        source_binding_id: null,
+        source_external_message_id: null,
+        source_thread_key: null,
         created_at: now,
         started_at: null,
         ended_at: null,
@@ -1997,6 +2009,9 @@ export interface TalkRunRecord {
   idempotency_key: string | null;
   executor_alias: string | null;
   executor_model: string | null;
+  source_binding_id?: string | null;
+  source_external_message_id?: string | null;
+  source_thread_key?: string | null;
   created_at: string;
   started_at: string | null;
   ended_at: string | null;
@@ -2009,10 +2024,10 @@ export function createTalkRun(input: TalkRunRecord): void {
       `
     INSERT INTO talk_runs (
       id, talk_id, requested_by, status, trigger_message_id, target_agent_id, idempotency_key,
-      executor_alias, executor_model,
+      executor_alias, executor_model, source_binding_id, source_external_message_id, source_thread_key,
       created_at, started_at, ended_at, cancel_reason
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `,
     )
     .run(
@@ -2025,6 +2040,9 @@ export function createTalkRun(input: TalkRunRecord): void {
       input.idempotency_key,
       input.executor_alias,
       input.executor_model,
+      input.source_binding_id || null,
+      input.source_external_message_id || null,
+      input.source_thread_key || null,
       input.created_at,
       input.started_at,
       input.ended_at,
@@ -2411,6 +2429,7 @@ export function completeRunAndPromoteNextAtomic(input: {
 }): {
   applied: boolean;
   talkId: string | null;
+  deliveryQueued: boolean;
 } {
   const tx = getDb().transaction(
     (
@@ -2418,12 +2437,14 @@ export function completeRunAndPromoteNextAtomic(input: {
     ): {
       applied: boolean;
       talkId: string | null;
+      deliveryQueued: boolean;
     } => {
       const now = txInput.now || new Date().toISOString();
       const run = getDb()
         .prepare(
           `
-          SELECT id, talk_id, trigger_message_id, target_agent_id, executor_alias, executor_model
+          SELECT id, talk_id, trigger_message_id, target_agent_id, executor_alias, executor_model,
+                 source_binding_id, source_external_message_id, source_thread_key
           FROM talk_runs
           WHERE id = ? AND status = 'running'
           LIMIT 1
@@ -2437,10 +2458,13 @@ export function completeRunAndPromoteNextAtomic(input: {
             target_agent_id: string | null;
             executor_alias: string | null;
             executor_model: string | null;
+            source_binding_id: string | null;
+            source_external_message_id: string | null;
+            source_thread_key: string | null;
           }
         | undefined;
       if (!run) {
-        return { applied: false, talkId: null };
+        return { applied: false, talkId: null, deliveryQueued: false };
       }
 
       const completed = getDb()
@@ -2455,7 +2479,7 @@ export function completeRunAndPromoteNextAtomic(input: {
         )
         .run(now, run.id);
       if (completed.changes !== 1) {
-        return { applied: false, talkId: run.talk_id };
+        return { applied: false, talkId: run.talk_id, deliveryQueued: false };
       }
 
       const responseMessage = appendAssistantMessageWithOutbox({
@@ -2469,6 +2493,65 @@ export function completeRunAndPromoteNextAtomic(input: {
         sequenceInRun: txInput.responseSequenceInRun ?? null,
         createdAt: now,
       });
+
+      let deliveryQueued = false;
+      if (run.source_binding_id) {
+        const binding = getDb()
+          .prepare(
+            `
+            SELECT id, active, target_kind, target_id
+            FROM talk_channel_bindings
+            WHERE id = ?
+            LIMIT 1
+          `,
+          )
+          .get(run.source_binding_id) as
+          | {
+              id: string;
+              active: number;
+              target_kind: string;
+              target_id: string;
+            }
+          | undefined;
+        if (binding) {
+          const immediateDeadLetter = binding.active !== 1;
+          getDb()
+            .prepare(
+              `
+              INSERT INTO channel_delivery_outbox (
+                id, binding_id, talk_id, run_id, talk_message_id, target_kind,
+                target_id, payload_json, status, reason_code, reason_detail,
+                dedupe_key, available_at, created_at, updated_at, attempt_count
+              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+            `,
+            )
+            .run(
+              `delivery_${randomUUID()}`,
+              binding.id,
+              run.talk_id,
+              run.id,
+              responseMessage.id,
+              binding.target_kind,
+              binding.target_id,
+              JSON.stringify({
+                content: txInput.responseContent,
+                metadataJson: txInput.responseMetadataJson || null,
+                sourceThreadKey: run.source_thread_key || null,
+                sourceExternalMessageId: run.source_external_message_id || null,
+              }),
+              immediateDeadLetter ? 'dead_letter' : 'pending',
+              immediateDeadLetter ? 'binding_deactivated' : null,
+              immediateDeadLetter
+                ? 'Binding was deactivated before the response could be delivered'
+                : null,
+              `delivery:${run.id}:${responseMessage.id}`,
+              now,
+              now,
+              now,
+            );
+          deliveryQueued = !immediateDeadLetter;
+        }
+      }
 
       getDb()
         .prepare(
@@ -2494,6 +2577,7 @@ export function completeRunAndPromoteNextAtomic(input: {
       return {
         applied: true,
         talkId: run.talk_id,
+        deliveryQueued,
       };
     },
   );
