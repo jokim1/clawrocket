@@ -4,6 +4,8 @@ import { setTimeout as sleep } from 'timers/promises';
 
 import {
   runContainerAgent,
+  type ContainerWebTalkConnectorBundle,
+  type ContainerWebTalkConnectorRecord,
   type ContainerOutput,
 } from '../../container-runner.js';
 import { logger } from '../../logger.js';
@@ -17,8 +19,13 @@ import {
   resolveTalkAgent,
   setTalkRunExecutorProfile,
 } from '../db/index.js';
-import { TALK_EXECUTOR_WEB_GROUP_FOLDER } from '../config.js';
+import {
+  GOOGLE_OAUTH_CLIENT_ID,
+  GOOGLE_OAUTH_CLIENT_SECRET,
+  TALK_EXECUTOR_WEB_GROUP_FOLDER,
+} from '../config.js';
 import { DataConnectorVerifier } from '../connectors/connector-verifier.js';
+import { decryptConnectorSecret } from '../connectors/connector-secret-store.js';
 import {
   buildConnectorToolDefinitions,
   parseConnectorToolName,
@@ -191,6 +198,57 @@ function buildAuthHeaders(
   }
 
   return headers;
+}
+
+function buildContainerConnectorBundle(
+  connectorToolContext: ConnectorToolContext,
+): ContainerWebTalkConnectorBundle | undefined {
+  if (connectorToolContext.toolDefinitions.length === 0) {
+    return undefined;
+  }
+
+  const seenConnectorIds = new Set<string>();
+  const connectors: ContainerWebTalkConnectorRecord[] = [];
+
+  for (const tool of connectorToolContext.toolDefinitions) {
+    if (seenConnectorIds.has(tool.connectorId)) continue;
+    const connector = connectorToolContext.connectorsById.get(tool.connectorId);
+    if (!connector) continue;
+    seenConnectorIds.add(tool.connectorId);
+    connectors.push({
+      id: connector.id,
+      name: connector.name,
+      connectorKind: connector.connectorKind,
+      config: connector.config,
+      secret: decryptConnectorSecret(connector.ciphertext),
+    });
+  }
+
+  if (connectors.length === 0) {
+    return undefined;
+  }
+
+  return {
+    connectors,
+    toolDefinitions: connectorToolContext.toolDefinitions.map((tool) => ({
+      connectorId: tool.connectorId,
+      connectorKind: tool.connectorKind,
+      connectorName: tool.connectorName,
+      toolName: tool.toolName,
+      description: tool.description,
+      inputSchema: tool.inputSchema,
+    })),
+    ...(connectors.some(
+      (connector) => connector.connectorKind === 'google_sheets',
+    )
+      ? {
+          googleOAuth: {
+            clientId: GOOGLE_OAUTH_CLIENT_ID,
+            clientSecret: GOOGLE_OAUTH_CLIENT_SECRET,
+          },
+        }
+      : {}),
+  };
 }
 
 function parseSseBuffer(buffer: string): {
@@ -1310,6 +1368,7 @@ export class DirectTalkExecutor implements TalkExecutor {
     maxOutputTokens: number,
     signal: AbortSignal,
     emit?: (event: TalkExecutionEvent) => void,
+    webTalkConnectorBundle?: ContainerWebTalkConnectorBundle,
   ): Promise<TalkExecutorOutput> {
     const settingsService = getActiveExecutorSettingsService();
     const blockedReason = settingsService.getExecutionBlockedReason();
@@ -1360,6 +1419,7 @@ export class DirectTalkExecutor implements TalkExecutor {
         },
         modelContextWindowTokens,
         maxOutputTokens,
+        toolDefinitions: webTalkConnectorBundle?.toolDefinitions,
       });
 
       emit?.({
@@ -1428,6 +1488,7 @@ export class DirectTalkExecutor implements TalkExecutor {
             isMain: false,
             assistantName: context.agentNickname,
             secrets: settingsService.getExecutorSecrets(),
+            webTalkConnectorBundle,
           },
           (proc) => {
             processRef = proc;
@@ -1669,48 +1730,30 @@ export class DirectTalkExecutor implements TalkExecutor {
     const verificationTarget = settingsService.getVerificationTarget();
     const hasRealConnectorTools =
       connectorToolContext.toolDefinitions.length > 0;
-    if (
-      hasRealConnectorTools &&
-      (!verificationTarget || verificationTarget.mode === 'subscription')
-    ) {
-      const message =
-        'Attached data connectors require Anthropic API key or advanced bearer auth. Update the Executor auth mode in Settings.';
-      createLlmAttempt({
-        runId: context.input.runId,
-        talkId: context.input.talkId,
-        agentId: context.agentId,
-        routeId: context.routeId,
-        routeStepPosition: context.routeStepPosition,
-        providerId: context.providerId,
-        modelId: context.modelId,
-        status: 'failed',
-        failureClass: 'configuration',
-      });
-      emit?.({
-        type: 'talk_response_failed',
-        runId: context.input.runId,
-        talkId: context.input.talkId,
-        agentId: context.agentId,
-        routeStepPosition: context.routeStepPosition,
-        providerId: context.providerId,
-        modelId: context.modelId,
-        errorCode: 'connector_auth_mode_unsupported',
-        errorMessage: message,
-      });
-      throw new TalkExecutorError('connector_auth_mode_unsupported', message);
+    if (!verificationTarget || verificationTarget.mode === 'subscription') {
+      const subscriptionConnectorBundle = hasRealConnectorTools
+        ? buildContainerConnectorBundle(connectorToolContext)
+        : undefined;
+      return this.executeClaudeDefaultAttempt(
+        context,
+        talkTitle,
+        personaRole,
+        modelContextWindowTokens,
+        maxOutputTokens,
+        signal,
+        emit,
+        subscriptionConnectorBundle,
+      );
     }
-    const supportedVerificationTarget = verificationTarget;
 
     const provider: LlmProviderRecord = {
       id: 'provider.anthropic',
       name: 'Anthropic',
       provider_kind: 'anthropic',
       api_format: 'anthropic_messages',
-      base_url: supportedVerificationTarget?.anthropicBaseUrl || '',
+      base_url: verificationTarget.anthropicBaseUrl,
       auth_scheme:
-        supportedVerificationTarget?.mode === 'api_key'
-          ? 'x_api_key'
-          : 'bearer',
+        verificationTarget.mode === 'api_key' ? 'x_api_key' : 'bearer',
       enabled: 1,
       core_compatibility: 'none',
       response_start_timeout_ms: null,
@@ -1749,7 +1792,7 @@ export class DirectTalkExecutor implements TalkExecutor {
         context.modelId,
         maxOutputTokens,
         prompt.messages,
-        { apiKey: supportedVerificationTarget?.credential || '' },
+        { apiKey: verificationTarget.credential },
         context,
         emit,
         signal,

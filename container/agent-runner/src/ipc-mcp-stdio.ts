@@ -11,6 +11,11 @@ import fs from 'fs';
 import path from 'path';
 import { CronExpressionParser } from 'cron-parser';
 
+import {
+  readWebTalkConnectorBundleFromEnv,
+  registerConnectorTools,
+} from './connectors.js';
+
 const IPC_DIR = '/workspace/ipc';
 const MESSAGES_DIR = path.join(IPC_DIR, 'messages');
 const TASKS_DIR = path.join(IPC_DIR, 'tasks');
@@ -39,6 +44,11 @@ const server = new McpServer({
   version: '1.0.0',
 });
 
+const webTalkConnectorBundle = readWebTalkConnectorBundleFromEnv();
+
+if (webTalkConnectorBundle) {
+  registerConnectorTools(server, webTalkConnectorBundle);
+} else {
 server.tool(
   'send_message',
   "Send a message to the user or group immediately while you're still running. Use this for progress updates or to send multiple messages. You can call this multiple times. Note: when running as a scheduled task, your final output is NOT sent to the user — use this tool if you need to communicate with the user or group.",
@@ -279,6 +289,7 @@ Use available_groups.json to find the JID for a group. The folder name must be c
     };
   },
 );
+}
 
 // Start the stdio transport
 const transport = new StdioServerTransport();
