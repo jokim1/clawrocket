@@ -193,7 +193,10 @@ export interface BrowserSourceFetchResult {
 }
 
 export interface BrowserSourceFetcher {
-  fetch(input: { url: string; timeoutMs: number }): Promise<BrowserSourceFetchResult>;
+  fetch(input: {
+    url: string;
+    timeoutMs: number;
+  }): Promise<BrowserSourceFetchResult>;
 }
 
 export interface ManagedSourceFetchResult {
@@ -205,7 +208,10 @@ export interface ManagedSourceFetchResult {
 }
 
 export interface ManagedSourceFetcher {
-  fetch(input: { url: string; timeoutMs: number }): Promise<ManagedSourceFetchResult>;
+  fetch(input: {
+    url: string;
+    timeoutMs: number;
+  }): Promise<ManagedSourceFetchResult>;
 }
 
 export interface UrlSourceIngestionDependencies {
@@ -486,8 +492,7 @@ function extractText(body: string, contentType: string): string {
 
 function hostnameMatches(hostname: string, candidates: string[]): boolean {
   return candidates.some(
-    (candidate) =>
-      hostname === candidate || hostname.endsWith(`.${candidate}`),
+    (candidate) => hostname === candidate || hostname.endsWith(`.${candidate}`),
   );
 }
 
@@ -570,8 +575,10 @@ export async function ingestUrlSourceWithBrowser(
     fetchedAt?: string;
   },
 ): Promise<BrowserSourceFetchResult> {
-  const browserFetcher = options?.browserFetcher || DEFAULT_BROWSER_SOURCE_FETCHER;
-  const updateExtractionFn = options?.updateExtraction || updateSourceExtraction;
+  const browserFetcher =
+    options?.browserFetcher || DEFAULT_BROWSER_SOURCE_FETCHER;
+  const updateExtractionFn =
+    options?.updateExtraction || updateSourceExtraction;
   const fetchedAt = options?.fetchedAt ?? new Date().toISOString();
   const result = await browserFetcher.fetch({
     url,
@@ -616,7 +623,8 @@ export async function ingestUrlSource(
 ): Promise<void> {
   const httpFetcher = deps?.httpFetcher ?? safeFetchUrl;
   const browserFetcher = deps?.browserFetcher ?? DEFAULT_BROWSER_SOURCE_FETCHER;
-  const managedFetcher = deps?.managedFetcher ?? getConfiguredManagedSourceFetcher();
+  const managedFetcher =
+    deps?.managedFetcher ?? getConfiguredManagedSourceFetcher();
   const updateExtractionFn = deps?.updateExtraction ?? updateSourceExtraction;
   const fetchedAt = new Date().toISOString();
   let httpError: SourceIngestionError | Error | null = null;
@@ -624,12 +632,10 @@ export async function ingestUrlSource(
   let managedError: Error | null = null;
   let browserAttempted = false;
   let managedAttempted = false;
-  let httpFallback:
-    | {
-        extractedText: string;
-        contentType: string;
-      }
-    | null = null;
+  let httpFallback: {
+    extractedText: string;
+    contentType: string;
+  } | null = null;
   let shouldPreferBrowser = false;
 
   try {
@@ -742,8 +748,7 @@ export async function ingestUrlSource(
     browserError ? `browser: ${formatStageError(browserError)}` : null,
     managedError ? `managed: ${formatStageError(managedError)}` : null,
   ].filter(Boolean);
-  const message =
-    messageParts.join(' | ') || 'Unknown URL ingestion failure.';
+  const message = messageParts.join(' | ') || 'Unknown URL ingestion failure.';
 
   updateExtractionFn({
     sourceId,

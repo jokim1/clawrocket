@@ -54,7 +54,8 @@ describe('source-ingestion', () => {
 
   it('prefers the browser path for Substack URLs even after HTTP success', async () => {
     const httpFetcher = vi.fn().mockResolvedValue({
-      body: '<html><body><article>' + 'B'.repeat(1200) + '</article></body></html>',
+      body:
+        '<html><body><article>' + 'B'.repeat(1200) + '</article></body></html>',
       contentType: 'text/html',
       finalUrl: 'https://example.substack.com/p/test-post',
     });
@@ -125,7 +126,8 @@ describe('source-ingestion', () => {
 
   it('keeps useful HTTP content when browser fallback fails', async () => {
     const httpFetcher = vi.fn().mockResolvedValue({
-      body: '<html><body><article>' + 'C'.repeat(1200) + '</article></body></html>',
+      body:
+        '<html><body><article>' + 'C'.repeat(1200) + '</article></body></html>',
       contentType: 'text/html',
       finalUrl: 'https://example.substack.com/p/fallback',
     });
@@ -158,7 +160,9 @@ describe('source-ingestion', () => {
   it('stores a failure when all ingestion tiers fail', async () => {
     const httpFetcher = vi
       .fn()
-      .mockRejectedValue(new SourceIngestionError('fetch_error', 'Network down'));
+      .mockRejectedValue(
+        new SourceIngestionError('fetch_error', 'Network down'),
+      );
     const browserFetcher = {
       fetch: vi.fn().mockRejectedValue(new Error('Browser failed')),
     };
@@ -179,7 +183,9 @@ describe('source-ingestion', () => {
     const payload = updateExtraction.mock.calls[0][0] as {
       extractionError: string;
     };
-    expect(payload.extractionError).toContain('http: fetch_error: Network down');
+    expect(payload.extractionError).toContain(
+      'http: fetch_error: Network down',
+    );
     expect(payload.extractionError).toContain('browser: Browser failed');
   });
 });

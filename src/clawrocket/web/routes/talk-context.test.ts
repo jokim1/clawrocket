@@ -43,7 +43,9 @@ async function json(res: Response) {
 describe('talk context routes', () => {
   let server: WebServerHandle;
   let sourceIngestion: TalkContextSourceIngestionService & {
-    enqueueUrlSource: ReturnType<typeof vi.fn<(sourceId: string, url: string) => void>>;
+    enqueueUrlSource: ReturnType<
+      typeof vi.fn<(sourceId: string, url: string) => void>
+    >;
   };
   const TALK_ID = 'talk-ctx';
 
@@ -453,7 +455,8 @@ describe('talk context routes', () => {
       updateSourceExtraction({
         sourceId: source.id,
         extractedText: null,
-        extractionError: 'fetch_http_error: HTTP 403 from https://example.com/docs',
+        extractionError:
+          'fetch_http_error: HTTP 403 from https://example.com/docs',
         fetchStrategy: 'http',
       });
 

@@ -2,7 +2,10 @@ import { spawn } from 'child_process';
 import path from 'path';
 
 import { CONTAINER_IMAGE, TIMEZONE } from '../../config.js';
-import { CONTAINER_RUNTIME_BIN, readonlyMountArgs } from '../../container-runtime.js';
+import {
+  CONTAINER_RUNTIME_BIN,
+  readonlyMountArgs,
+} from '../../container-runtime.js';
 
 export interface BrowserSourceFetchResult {
   finalUrl: string;
@@ -122,7 +125,9 @@ export async function runBrowserSourceFetchInContainer(input: {
         typeof parsed.extractedText !== 'string'
       ) {
         reject(
-          new Error(parsed.error || 'Browser ingestion failed without content.'),
+          new Error(
+            parsed.error || 'Browser ingestion failed without content.',
+          ),
         );
         return;
       }
