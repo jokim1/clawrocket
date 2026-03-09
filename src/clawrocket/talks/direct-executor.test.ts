@@ -1137,10 +1137,12 @@ describe('DirectTalkExecutor', () => {
       runId: 'run-claude-connectors',
     });
 
-    const runContainer = vi.fn(async (): Promise<ContainerOutput> => ({
-      status: 'success',
-      result: 'Container connector response',
-    }));
+    const runContainer = vi.fn(
+      async (): Promise<ContainerOutput> => ({
+        status: 'success',
+        result: 'Container connector response',
+      }),
+    );
     const executor = new DirectTalkExecutor({
       runContainer,
       fetchImpl: vi.fn(async () => {
