@@ -4,6 +4,8 @@ import { setTimeout as sleep } from 'timers/promises';
 
 import {
   runContainerAgent,
+  type ContainerWebTalkConnectorBundle,
+  type ContainerWebTalkConnectorRecord,
   type ContainerOutput,
 } from '../../container-runner.js';
 import { logger } from '../../logger.js';
@@ -17,8 +19,13 @@ import {
   resolveTalkAgent,
   setTalkRunExecutorProfile,
 } from '../db/index.js';
-import { TALK_EXECUTOR_WEB_GROUP_FOLDER } from '../config.js';
+import {
+  GOOGLE_OAUTH_CLIENT_ID,
+  GOOGLE_OAUTH_CLIENT_SECRET,
+  TALK_EXECUTOR_WEB_GROUP_FOLDER,
+} from '../config.js';
 import { DataConnectorVerifier } from '../connectors/connector-verifier.js';
+import { decryptConnectorSecret } from '../connectors/connector-secret-store.js';
 import {
   buildConnectorToolDefinitions,
   parseConnectorToolName,
@@ -47,6 +54,12 @@ import type {
 } from './executor.js';
 import { TalkExecutorError } from './executor.js';
 import { getActiveExecutorSettingsService } from './executor-settings.js';
+import {
+  buildTalkContextDirectives,
+  buildContextSourceToolDefinition,
+  executeReadContextSource,
+  type TalkContextDirectivesResult,
+} from './context-directives.js';
 import type { TalkPersonaRole } from '../llm/types.js';
 
 const DEFAULT_RESPONSE_START_TIMEOUT_MS = 60_000;
@@ -87,6 +100,13 @@ interface SseEvent {
   data: string;
 }
 
+interface ContextSourceToolDef {
+  toolName: string;
+  description: string;
+  inputSchema: Record<string, unknown>;
+  talkId: string;
+}
+
 interface ConnectorToolContext {
   attachedConnectorCount: number;
   toolDefinitions: ConnectorToolDefinition[];
@@ -94,6 +114,7 @@ interface ConnectorToolContext {
     string,
     ReturnType<typeof listConnectorsForTalkRun>[number]
   >;
+  contextSourceTool?: ContextSourceToolDef;
 }
 
 type AnthropicContentBlock =
@@ -191,6 +212,57 @@ function buildAuthHeaders(
   }
 
   return headers;
+}
+
+function buildContainerConnectorBundle(
+  connectorToolContext: ConnectorToolContext,
+): ContainerWebTalkConnectorBundle | undefined {
+  if (connectorToolContext.toolDefinitions.length === 0) {
+    return undefined;
+  }
+
+  const seenConnectorIds = new Set<string>();
+  const connectors: ContainerWebTalkConnectorRecord[] = [];
+
+  for (const tool of connectorToolContext.toolDefinitions) {
+    if (seenConnectorIds.has(tool.connectorId)) continue;
+    const connector = connectorToolContext.connectorsById.get(tool.connectorId);
+    if (!connector) continue;
+    seenConnectorIds.add(tool.connectorId);
+    connectors.push({
+      id: connector.id,
+      name: connector.name,
+      connectorKind: connector.connectorKind,
+      config: connector.config,
+      secret: decryptConnectorSecret(connector.ciphertext),
+    });
+  }
+
+  if (connectors.length === 0) {
+    return undefined;
+  }
+
+  return {
+    connectors,
+    toolDefinitions: connectorToolContext.toolDefinitions.map((tool) => ({
+      connectorId: tool.connectorId,
+      connectorKind: tool.connectorKind,
+      connectorName: tool.connectorName,
+      toolName: tool.toolName,
+      description: tool.description,
+      inputSchema: tool.inputSchema,
+    })),
+    ...(connectors.some(
+      (connector) => connector.connectorKind === 'google_sheets',
+    )
+      ? {
+          googleOAuth: {
+            clientId: GOOGLE_OAUTH_CLIENT_ID,
+            clientSecret: GOOGLE_OAUTH_CLIENT_SECRET,
+          },
+        }
+      : {}),
+  };
 }
 
 function parseSseBuffer(buffer: string): {
@@ -687,20 +759,30 @@ function isToolCapableModel(
 
 function buildAnthropicToolDefinitions(
   toolDefinitions: ConnectorToolDefinition[],
+  contextSourceTool?: ContextSourceToolDef,
 ): Array<{
   name: string;
   description: string;
   input_schema: Record<string, unknown>;
 }> {
-  return toolDefinitions.map((tool) => ({
+  const tools = toolDefinitions.map((tool) => ({
     name: tool.toolName,
     description: tool.description,
     input_schema: tool.inputSchema,
   }));
+  if (contextSourceTool) {
+    tools.push({
+      name: contextSourceTool.toolName,
+      description: contextSourceTool.description,
+      input_schema: contextSourceTool.inputSchema,
+    });
+  }
+  return tools;
 }
 
 function buildOpenAiToolDefinitions(
   toolDefinitions: ConnectorToolDefinition[],
+  contextSourceTool?: ContextSourceToolDef,
 ): Array<{
   type: 'function';
   function: {
@@ -709,7 +791,7 @@ function buildOpenAiToolDefinitions(
     parameters: Record<string, unknown>;
   };
 }> {
-  return toolDefinitions.map((tool) => ({
+  const tools = toolDefinitions.map((tool) => ({
     type: 'function' as const,
     function: {
       name: tool.toolName,
@@ -717,6 +799,17 @@ function buildOpenAiToolDefinitions(
       parameters: tool.inputSchema,
     },
   }));
+  if (contextSourceTool) {
+    tools.push({
+      type: 'function' as const,
+      function: {
+        name: contextSourceTool.toolName,
+        description: contextSourceTool.description,
+        parameters: contextSourceTool.inputSchema,
+      },
+    });
+  }
+  return tools;
 }
 
 function mergeUsageTotals(
@@ -733,6 +826,25 @@ function mergeUsageTotals(
         ? (current?.estimatedCostUsd || 0) + (incoming.estimatedCostUsd || 0)
         : undefined,
   };
+}
+
+/**
+ * Builds the full list of tool definitions (connectors + context source) for
+ * prompt-budget estimation. The assembler uses JSON.stringify length of this
+ * array to reserve context-window space for tool schemas.
+ */
+function buildAllToolDefinitionsForBudget(
+  connectorToolContext: ConnectorToolContext,
+): unknown[] {
+  const tools: unknown[] = [...connectorToolContext.toolDefinitions];
+  if (connectorToolContext.contextSourceTool) {
+    tools.push({
+      toolName: connectorToolContext.contextSourceTool.toolName,
+      description: connectorToolContext.contextSourceTool.description,
+      inputSchema: connectorToolContext.contextSourceTool.inputSchema,
+    });
+  }
+  return tools;
 }
 
 function summarizeToolNames(toolCalls: NormalizedToolCall[]): string {
@@ -903,8 +1015,21 @@ export class DirectTalkExecutor implements TalkExecutor {
     const connectorToolContext = await this.buildConnectorToolContext(
       input.talkId,
     );
+    const contextDirectives = buildTalkContextDirectives(input.talkId);
     const requiresConnectorTools =
       connectorToolContext.attachedConnectorCount > 0;
+    const requiresContextSourceTool = contextDirectives.hasSources;
+
+    // Attach read_context_source tool when saved sources exist
+    if (requiresContextSourceTool) {
+      const ctxToolDef = buildContextSourceToolDefinition();
+      connectorToolContext.contextSourceTool = {
+        toolName: ctxToolDef.toolName,
+        description: ctxToolDef.description,
+        inputSchema: ctxToolDef.inputSchema,
+        talkId: input.talkId,
+      };
+    }
 
     if (
       requiresConnectorTools &&
@@ -925,13 +1050,29 @@ export class DirectTalkExecutor implements TalkExecutor {
         );
       }
 
-      const needsToolLoop = requiresConnectorTools;
+      const needsToolLoop = requiresConnectorTools || requiresContextSourceTool;
 
+      // In subscription mode, source-only talks fall back to the container-agent
+      // path inside executeClaudeDefaultWithTools, which doesn't need tool
+      // capability. For all other auth modes (api_key, bearer), the tool loop
+      // runs host-side and requires a tool-capable model.
       if (needsToolLoop && !isToolCapableModel(primaryStep?.model)) {
-        throw new TalkExecutorError(
-          'connector_tools_require_tool_capable_model',
-          'Attached data connectors require a tool-capable model on the selected Claude route.',
-        );
+        const isSubscriptionSourceOnly =
+          !requiresConnectorTools &&
+          requiresContextSourceTool &&
+          (() => {
+            const settings = getActiveExecutorSettingsService();
+            const target = settings.getVerificationTarget();
+            return !target || target.mode === 'subscription';
+          })();
+        if (!isSubscriptionSourceOnly) {
+          throw new TalkExecutorError(
+            'connector_tools_require_tool_capable_model',
+            requiresConnectorTools
+              ? 'Attached data connectors require a tool-capable model on the selected Claude route.'
+              : 'Saved context sources require a tool-capable model on the selected Claude route for read_context_source support.',
+          );
+        }
       }
 
       if (needsToolLoop) {
@@ -952,6 +1093,7 @@ export class DirectTalkExecutor implements TalkExecutor {
           connectorToolContext,
           signal,
           emit,
+          contextDirectives,
         );
       }
 
@@ -971,6 +1113,7 @@ export class DirectTalkExecutor implements TalkExecutor {
         primaryStep?.model.default_max_output_tokens ?? 4_096,
         signal,
         emit,
+        contextDirectives,
       );
     }
 
@@ -1018,7 +1161,10 @@ export class DirectTalkExecutor implements TalkExecutor {
         continue;
       }
 
-      if (requiresConnectorTools && !isToolCapableModel(step.model)) {
+      if (
+        (requiresConnectorTools || requiresContextSourceTool) &&
+        !isToolCapableModel(step.model)
+      ) {
         createLlmAttempt({
           runId: input.runId,
           talkId: input.talkId,
@@ -1033,7 +1179,7 @@ export class DirectTalkExecutor implements TalkExecutor {
         continue;
       }
 
-      if (requiresConnectorTools) {
+      if (requiresConnectorTools || requiresContextSourceTool) {
         sawToolCapableStep = true;
       }
       sawEligibleStep = true;
@@ -1114,9 +1260,11 @@ export class DirectTalkExecutor implements TalkExecutor {
           },
           modelContextWindowTokens: step.model.context_window_tokens,
           maxOutputTokens: step.model.default_max_output_tokens,
-          toolDefinitions: requiresConnectorTools
-            ? connectorToolContext.toolDefinitions
-            : undefined,
+          talkDirectives: contextDirectives.directivesText,
+          toolDefinitions:
+            (requiresConnectorTools || requiresContextSourceTool)
+              ? buildAllToolDefinitionsForBudget(connectorToolContext)
+              : undefined,
         });
 
         const secretRecord = getProviderSecretByProviderId(step.provider.id);
@@ -1137,7 +1285,9 @@ export class DirectTalkExecutor implements TalkExecutor {
           attemptContext,
           emit,
           signal,
-          requiresConnectorTools ? connectorToolContext : undefined,
+          requiresConnectorTools || requiresContextSourceTool
+            ? connectorToolContext
+            : undefined,
         );
 
         createLlmAttempt({
@@ -1245,10 +1395,13 @@ export class DirectTalkExecutor implements TalkExecutor {
     }
 
     if (!sawEligibleStep) {
-      if (requiresConnectorTools && !sawToolCapableStep) {
+      if ((requiresConnectorTools || requiresContextSourceTool) && !sawToolCapableStep) {
+        const reason = requiresConnectorTools
+          ? 'Attached data connectors require a tool-capable model on the selected agent route.'
+          : 'Saved context sources require a tool-capable model on the selected agent route for read_context_source support.';
         throw new TalkExecutorError(
           'connector_tools_require_tool_capable_model',
-          'Attached data connectors require a tool-capable model on the selected agent route.',
+          reason,
         );
       }
       throw new TalkExecutorError(
@@ -1310,6 +1463,8 @@ export class DirectTalkExecutor implements TalkExecutor {
     maxOutputTokens: number,
     signal: AbortSignal,
     emit?: (event: TalkExecutionEvent) => void,
+    contextDirectives?: TalkContextDirectivesResult,
+    webTalkConnectorBundle?: ContainerWebTalkConnectorBundle,
   ): Promise<TalkExecutorOutput> {
     const settingsService = getActiveExecutorSettingsService();
     const blockedReason = settingsService.getExecutionBlockedReason();
@@ -1360,6 +1515,8 @@ export class DirectTalkExecutor implements TalkExecutor {
         },
         modelContextWindowTokens,
         maxOutputTokens,
+        talkDirectives: contextDirectives?.directivesText,
+        toolDefinitions: webTalkConnectorBundle?.toolDefinitions,
       });
 
       emit?.({
@@ -1428,6 +1585,7 @@ export class DirectTalkExecutor implements TalkExecutor {
             isMain: false,
             assistantName: context.agentNickname,
             secrets: settingsService.getExecutorSecrets(),
+            webTalkConnectorBundle,
           },
           (proc) => {
             processRef = proc;
@@ -1637,6 +1795,7 @@ export class DirectTalkExecutor implements TalkExecutor {
     connectorToolContext: ConnectorToolContext,
     signal: AbortSignal,
     emit?: (event: TalkExecutionEvent) => void,
+    contextDirectives?: TalkContextDirectivesResult,
   ): Promise<TalkExecutorOutput> {
     const settingsService = getActiveExecutorSettingsService();
     const blockedReason = settingsService.getExecutionBlockedReason();
@@ -1669,48 +1828,44 @@ export class DirectTalkExecutor implements TalkExecutor {
     const verificationTarget = settingsService.getVerificationTarget();
     const hasRealConnectorTools =
       connectorToolContext.toolDefinitions.length > 0;
-    if (
-      hasRealConnectorTools &&
-      (!verificationTarget || verificationTarget.mode === 'subscription')
-    ) {
-      const message =
-        'Attached data connectors require Anthropic API key or advanced bearer auth. Update the Executor auth mode in Settings.';
-      createLlmAttempt({
-        runId: context.input.runId,
-        talkId: context.input.talkId,
-        agentId: context.agentId,
-        routeId: context.routeId,
-        routeStepPosition: context.routeStepPosition,
-        providerId: context.providerId,
-        modelId: context.modelId,
-        status: 'failed',
-        failureClass: 'configuration',
-      });
-      emit?.({
-        type: 'talk_response_failed',
-        runId: context.input.runId,
-        talkId: context.input.talkId,
-        agentId: context.agentId,
-        routeStepPosition: context.routeStepPosition,
-        providerId: context.providerId,
-        modelId: context.modelId,
-        errorCode: 'connector_auth_mode_unsupported',
-        errorMessage: message,
-      });
-      throw new TalkExecutorError('connector_auth_mode_unsupported', message);
+
+    // Subscription mode uses the existing container-agent path. Real connector
+    // tools are exposed there through a connectors-only MCP profile; context
+    // sources still fall back to directives-only because read_context_source is
+    // host-side only today.
+    if (!verificationTarget || verificationTarget.mode === 'subscription') {
+      const subscriptionDirectives = connectorToolContext.contextSourceTool
+        ? buildTalkContextDirectives(context.input.talkId, {
+            includeToolHint: false,
+          })
+        : contextDirectives;
+      const subscriptionConnectorBundle = hasRealConnectorTools
+        ? buildContainerConnectorBundle({
+            ...connectorToolContext,
+            contextSourceTool: undefined,
+          })
+        : undefined;
+      return this.executeClaudeDefaultAttempt(
+        context,
+        talkTitle,
+        personaRole,
+        modelContextWindowTokens,
+        maxOutputTokens,
+        signal,
+        emit,
+        subscriptionDirectives,
+        subscriptionConnectorBundle,
+      );
     }
-    const supportedVerificationTarget = verificationTarget;
 
     const provider: LlmProviderRecord = {
       id: 'provider.anthropic',
       name: 'Anthropic',
       provider_kind: 'anthropic',
       api_format: 'anthropic_messages',
-      base_url: supportedVerificationTarget?.anthropicBaseUrl || '',
+      base_url: verificationTarget.anthropicBaseUrl,
       auth_scheme:
-        supportedVerificationTarget?.mode === 'api_key'
-          ? 'x_api_key'
-          : 'bearer',
+        verificationTarget.mode === 'api_key' ? 'x_api_key' : 'bearer',
       enabled: 1,
       core_compatibility: 'none',
       response_start_timeout_ms: null,
@@ -1741,7 +1896,8 @@ export class DirectTalkExecutor implements TalkExecutor {
         },
         modelContextWindowTokens,
         maxOutputTokens,
-        toolDefinitions: connectorToolContext.toolDefinitions,
+        talkDirectives: contextDirectives?.directivesText,
+        toolDefinitions: buildAllToolDefinitionsForBudget(connectorToolContext),
       });
 
       const result = await this.executeProviderAttempt(
@@ -1749,7 +1905,7 @@ export class DirectTalkExecutor implements TalkExecutor {
         context.modelId,
         maxOutputTokens,
         prompt.messages,
-        { apiKey: supportedVerificationTarget?.credential || '' },
+        { apiKey: verificationTarget.credential },
         context,
         emit,
         signal,
@@ -1888,25 +2044,49 @@ export class DirectTalkExecutor implements TalkExecutor {
     }> = [];
 
     for (const toolCall of toolCalls) {
-      const parsedToolName = parseConnectorToolName(toolCall.name);
-      const connector = parsedToolName
-        ? connectorToolContext.connectorsById.get(parsedToolName.connectorId)
-        : null;
-      const execution: {
+      let execution: {
         content: string;
         isError: boolean;
         displaySummary: string;
-      } = connector
-        ? await executeConnectorTool(toolCall.name, toolCall.input, {
-            connector,
-            signal,
-            fetchImpl: this.fetchImpl,
-          })
-        : {
-            content: `Attached connector not found for tool ${toolCall.name}.`,
-            isError: true,
-            displaySummary: `Tool ${toolCall.name} failed`,
-          };
+      };
+
+      // Handle read_context_source tool
+      if (
+        toolCall.name === 'read_context_source' &&
+        connectorToolContext.contextSourceTool
+      ) {
+        const input = toolCall.input as { sourceRef?: string };
+        const sourceRef = input?.sourceRef ?? '';
+        const result = executeReadContextSource(
+          connectorToolContext.contextSourceTool.talkId,
+          sourceRef,
+        );
+        execution = {
+          content: JSON.stringify(result),
+          isError: 'error' in result,
+          displaySummary:
+            'error' in result
+              ? `read_context_source(${sourceRef}) failed`
+              : `read_context_source(${sourceRef})`,
+        };
+      } else {
+        // Connector tools
+        const parsedToolName = parseConnectorToolName(toolCall.name);
+        const connector = parsedToolName
+          ? connectorToolContext.connectorsById.get(parsedToolName.connectorId)
+          : null;
+        execution = connector
+          ? await executeConnectorTool(toolCall.name, toolCall.input, {
+              connector,
+              signal,
+              fetchImpl: this.fetchImpl,
+            })
+          : {
+              content: `Attached connector not found for tool ${toolCall.name}.`,
+              isError: true,
+              displaySummary: `Tool ${toolCall.name} failed`,
+            };
+      }
       nextSequence += 1;
       appendRuntimeTalkMessage({
         id: `msg_${randomUUID()}`,
@@ -2000,6 +2180,7 @@ export class DirectTalkExecutor implements TalkExecutor {
       const { system, messages } = buildAnthropicMessages(promptMessages);
       const toolDefinitions = buildAnthropicToolDefinitions(
         connectorToolContext.toolDefinitions,
+        connectorToolContext.contextSourceTool,
       );
       const conversation = messages.map(
         (message): AnthropicConversationMessage => ({
@@ -2269,6 +2450,7 @@ export class DirectTalkExecutor implements TalkExecutor {
         buildOpenAiMessages(promptMessages);
       const toolDefinitions = buildOpenAiToolDefinitions(
         connectorToolContext.toolDefinitions,
+        connectorToolContext.contextSourceTool,
       );
       let totalUsage: TalkExecutionUsage | undefined;
       let sequenceInRun = 0;
@@ -2469,10 +2651,11 @@ export class DirectTalkExecutor implements TalkExecutor {
     signal: AbortSignal,
     connectorToolContext?: ConnectorToolContext,
   ): Promise<StreamAttemptResult> {
-    if (
+    const hasAnyTools =
       connectorToolContext &&
-      connectorToolContext.toolDefinitions.length > 0
-    ) {
+      (connectorToolContext.toolDefinitions.length > 0 ||
+        connectorToolContext.contextSourceTool != null);
+    if (hasAnyTools) {
       return this.executeToolLoop(
         provider,
         modelId,

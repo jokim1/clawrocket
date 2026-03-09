@@ -41,6 +41,7 @@ export interface ContainerInput {
   isScheduledTask?: boolean;
   assistantName?: string;
   secrets?: Record<string, string>;
+  webTalkConnectorBundle?: ContainerWebTalkConnectorBundle;
 }
 
 export interface ContainerOutput {
@@ -48,6 +49,45 @@ export interface ContainerOutput {
   result: string | null;
   newSessionId?: string;
   error?: string;
+}
+
+export type ContainerConnectorSecretPayload =
+  | {
+      kind: 'posthog';
+      apiKey: string;
+    }
+  | {
+      kind: 'google_sheets';
+      accessToken: string;
+      refreshToken?: string;
+      expiryDate?: string | null;
+      scopes?: string[];
+    };
+
+export interface ContainerWebTalkConnectorRecord {
+  id: string;
+  name: string;
+  connectorKind: 'google_sheets' | 'posthog';
+  config: Record<string, unknown> | null;
+  secret: ContainerConnectorSecretPayload;
+}
+
+export interface ContainerWebTalkConnectorToolDefinition {
+  connectorId: string;
+  connectorKind: 'google_sheets' | 'posthog';
+  connectorName: string;
+  toolName: string;
+  description: string;
+  inputSchema: Record<string, unknown>;
+}
+
+export interface ContainerWebTalkConnectorBundle {
+  connectors: ContainerWebTalkConnectorRecord[];
+  toolDefinitions: ContainerWebTalkConnectorToolDefinition[];
+  googleOAuth?: {
+    clientId: string;
+    clientSecret: string;
+  };
 }
 
 interface VolumeMount {
@@ -310,8 +350,9 @@ export async function runContainerAgent(
     input.secrets = input.secrets ?? readSecrets();
     container.stdin.write(JSON.stringify(input));
     container.stdin.end();
-    // Remove secrets from input so they don't appear in logs
+    // Remove sensitive input so it does not appear in logs on failure.
     delete input.secrets;
+    delete input.webTalkConnectorBundle;
 
     // Streaming output: parse OUTPUT_START/END marker pairs as they arrive
     let parseBuffer = '';

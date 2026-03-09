@@ -15,16 +15,27 @@ import {
   attachTalkDataConnector,
   ApiError,
   cancelTalkRuns,
+  ContextGoal,
+  ContextRule,
+  ContextSource,
+  createTalkContextRule,
+  createTalkContextSource,
   DataConnector,
+  deleteTalkContextRule,
+  deleteTalkContextSource,
   detachTalkDataConnector,
   getAiAgents,
   getDataConnectors,
   getTalk,
   getTalkAgents,
+  getTalkContext,
   getTalkDataConnectors,
   getTalkRuns,
   listTalkMessages,
+  patchTalkContextRule,
+  patchTalkContextSource,
   sendTalkMessage,
+  setTalkGoal,
   Talk,
   TalkAgent,
   TalkDataConnector,
@@ -47,7 +58,7 @@ import type {
   TalkStreamState,
 } from '../lib/talkStream';
 
-type TabKey = 'talk' | 'agents' | 'data-connectors' | 'runs';
+type TabKey = 'talk' | 'agents' | 'context' | 'data-connectors' | 'runs';
 
 type RunView = TalkRun & {
   updatedAt: number;
@@ -590,6 +601,7 @@ function formatTalkRole(role: TalkAgent['role']): string {
 function getTabFromPath(pathname: string, talkId: string): TabKey {
   const base = `/app/talks/${talkId}`;
   if (pathname === `${base}/agents`) return 'agents';
+  if (pathname === `${base}/context`) return 'context';
   if (pathname === `${base}/data-connectors`) return 'data-connectors';
   if (pathname === `${base}/runs`) return 'runs';
   return 'talk';
@@ -861,6 +873,22 @@ export function TalkDetailPage({
     message?: string;
   }>({ status: 'idle' });
 
+  // Context tab state
+  const [contextGoal, setContextGoal] = useState<ContextGoal | null>(null);
+  const [contextRules, setContextRules] = useState<ContextRule[]>([]);
+  const [contextSources, setContextSources] = useState<ContextSource[]>([]);
+  const [contextLoaded, setContextLoaded] = useState(false);
+  const [contextStatus, setContextStatus] = useState<{
+    status: 'idle' | 'loading' | 'saving' | 'error' | 'success';
+    message?: string;
+  }>({ status: 'idle' });
+  const [goalDraft, setGoalDraft] = useState('');
+  const [newRuleText, setNewRuleText] = useState('');
+  const [addSourceType, setAddSourceType] = useState<'text' | 'url'>('text');
+  const [addSourceTitle, setAddSourceTitle] = useState('');
+  const [addSourceUrl, setAddSourceUrl] = useState('');
+  const [addSourceText, setAddSourceText] = useState('');
+
   const timelineRef = useRef<HTMLDivElement | null>(null);
   const endRef = useRef<HTMLDivElement | null>(null);
   const titleInputRef = useRef<HTMLInputElement | null>(null);
@@ -941,6 +969,17 @@ export function TalkDetailPage({
     setOrgConnectors([]);
     setAttachConnectorId('');
     setConnectorState({ status: 'idle' });
+    setContextLoaded(false);
+    setContextGoal(null);
+    setContextRules([]);
+    setContextSources([]);
+    setContextStatus({ status: 'idle' });
+    setGoalDraft('');
+    setNewRuleText('');
+    setAddSourceType('text');
+    setAddSourceTitle('');
+    setAddSourceUrl('');
+    setAddSourceText('');
 
     const load = async () => {
       try {
@@ -1237,6 +1276,7 @@ export function TalkDetailPage({
 
   const talkTabHref = `/app/talks/${talkId}`;
   const agentsTabHref = `/app/talks/${talkId}/agents`;
+  const contextTabHref = `/app/talks/${talkId}/context`;
   const connectorsTabHref = `/app/talks/${talkId}/data-connectors`;
   const runsTabHref = `/app/talks/${talkId}/runs`;
   const manageAgentsHref = `/app/agents?returnTo=${encodeURIComponent(
@@ -1293,6 +1333,137 @@ export function TalkDetailPage({
     }
     setAttachConnectorId(availableConnectors[0]?.id || '');
   }, [attachConnectorId, availableConnectors, currentTab]);
+
+  // Load context data when context tab is selected
+  useEffect(() => {
+    if (state.kind !== 'ready' || currentTab !== 'context') return;
+    if (contextLoaded) return;
+
+    let cancelled = false;
+    setContextStatus({ status: 'loading' });
+
+    const loadContext = async () => {
+      try {
+        const ctx = await getTalkContext(talkId);
+        if (cancelled) return;
+        setContextGoal(ctx.goal);
+        setGoalDraft(ctx.goal?.goalText ?? '');
+        setContextRules(ctx.rules);
+        setContextSources(ctx.sources);
+        setContextLoaded(true);
+        setContextStatus({ status: 'idle' });
+      } catch (err) {
+        if (err instanceof UnauthorizedError) {
+          handleUnauthorized();
+          return;
+        }
+        if (!cancelled) {
+          setContextStatus({
+            status: 'error',
+            message:
+              err instanceof Error ? err.message : 'Failed to load context.',
+          });
+        }
+      }
+    };
+
+    void loadContext();
+    return () => {
+      cancelled = true;
+    };
+  }, [contextLoaded, currentTab, handleUnauthorized, state.kind, talkId]);
+
+  // Context handlers
+  const handleSaveGoal = async () => {
+    setContextStatus({ status: 'saving' });
+    try {
+      const result = await setTalkGoal({ talkId, goalText: goalDraft });
+      setContextGoal(result.goal);
+      setContextStatus({ status: 'success', message: 'Goal saved.' });
+    } catch (err) {
+      setContextStatus({
+        status: 'error',
+        message: err instanceof Error ? err.message : 'Failed to save goal.',
+      });
+    }
+  };
+
+  const handleAddRule = async () => {
+    if (!newRuleText.trim()) return;
+    setContextStatus({ status: 'saving' });
+    try {
+      const rule = await createTalkContextRule({
+        talkId,
+        ruleText: newRuleText.trim(),
+      });
+      setContextRules((prev) => [...prev, rule]);
+      setNewRuleText('');
+      setContextStatus({ status: 'idle' });
+    } catch (err) {
+      setContextStatus({
+        status: 'error',
+        message: err instanceof Error ? err.message : 'Failed to add rule.',
+      });
+    }
+  };
+
+  const handleToggleRule = async (rule: ContextRule) => {
+    try {
+      const updated = await patchTalkContextRule({
+        talkId,
+        ruleId: rule.id,
+        isActive: !rule.isActive,
+      });
+      setContextRules((prev) =>
+        prev.map((r) => (r.id === updated.id ? updated : r)),
+      );
+    } catch {
+      // silent
+    }
+  };
+
+  const handleDeleteRule = async (ruleId: string) => {
+    try {
+      await deleteTalkContextRule({ talkId, ruleId });
+      setContextRules((prev) => prev.filter((r) => r.id !== ruleId));
+    } catch {
+      // silent
+    }
+  };
+
+  const handleAddSource = async () => {
+    if (!addSourceTitle.trim()) return;
+    setContextStatus({ status: 'saving' });
+    try {
+      const source = await createTalkContextSource({
+        talkId,
+        sourceType: addSourceType,
+        title: addSourceTitle.trim(),
+        sourceUrl: addSourceType === 'url' ? addSourceUrl.trim() : undefined,
+        extractedText:
+          addSourceType === 'text' ? addSourceText.trim() : undefined,
+      });
+      setContextSources((prev) => [...prev, source]);
+      setAddSourceTitle('');
+      setAddSourceUrl('');
+      setAddSourceText('');
+      setContextStatus({ status: 'idle' });
+    } catch (err) {
+      setContextStatus({
+        status: 'error',
+        message: err instanceof Error ? err.message : 'Failed to add source.',
+      });
+    }
+  };
+
+  const handleDeleteSource = async (sourceId: string) => {
+    try {
+      await deleteTalkContextSource({ talkId, sourceId });
+      setContextSources((prev) => prev.filter((s) => s.id !== sourceId));
+    } catch {
+      // silent
+    }
+  };
 
   const handleDraftChange = (value: string) => {
     setDraft(value);
@@ -1800,6 +1971,12 @@ export function TalkDetailPage({
                   Agents
                 </Link>
                 <Link
+                  to={contextTabHref}
+                  className={`talk-tab ${currentTab === 'context' ? 'talk-tab-active' : ''}`}
+                >
+                  Context
+                </Link>
+                <Link
                   to={connectorsTabHref}
                   className={`talk-tab ${currentTab === 'data-connectors' ? 'talk-tab-active' : ''}`}
                 >
@@ -2053,6 +2230,287 @@ export function TalkDetailPage({
             </section>
           ) : null}
 
+          {currentTab === 'context' ? (
+            <section className="talk-tab-panel" aria-label="Talk context">
+              {contextStatus.status === 'loading' ? (
+                <p className="page-state">Loading context…</p>
+              ) : contextStatus.status === 'error' ? (
+                <p className="page-state error">{contextStatus.message}</p>
+              ) : (
+                <>
+                  {/* Goal */}
+                  <div className="talk-llm-card">
+                    <div className="connector-card-header">
+                      <div>
+                        <h3>Goal</h3>
+                        <p className="talk-llm-meta">
+                          A single-line goal for what this talk is about. Agents see this every turn.
+                        </p>
+                      </div>
+                    </div>
+                    {canEditAgents ? (
+                      <>
+                        <div className="connector-attach-row">
+                          <label style={{ flex: 1 }}>
+                            <input
+                              type="text"
+                              maxLength={160}
+                              value={goalDraft}
+                              onChange={(e) => setGoalDraft(e.target.value)}
+                              placeholder="e.g. Summarize Q4 earnings calls"
+                              disabled={contextStatus.status === 'saving'}
+                              style={{ width: '100%' }}
+                            />
+                          </label>
+                          <button
+                            type="button"
+                            className="secondary-btn"
+                            onClick={() => void handleSaveGoal()}
+                            disabled={contextStatus.status === 'saving'}
+                          >
+                            Save
+                          </button>
+                        </div>
+                        <p className="talk-llm-meta">{goalDraft.length}/160</p>
+                      </>
+                    ) : (
+                      <p className="talk-llm-meta">
+                        {contextGoal?.goalText || <em>No goal set.</em>}
+                      </p>
+                    )}
+                  </div>
+
+                  {/* Rules */}
+                  <div className="talk-llm-card">
+                    <div className="connector-card-header">
+                      <div>
+                        <h3>Rules</h3>
+                        <p className="talk-llm-meta">
+                          Instructions agents must follow every turn. Up to 8 active rules.
+                        </p>
+                      </div>
+                    </div>
+                    {contextRules.length > 0 ? (
+                      <ul className="context-rules-list" style={{ listStyle: 'none', padding: 0 }}>
+                        {contextRules.map((rule) => (
+                          <li
+                            key={rule.id}
+                            style={{
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: '0.5rem',
+                              padding: '0.25rem 0',
+                              opacity: rule.isActive ? 1 : 0.5,
+                            }}
+                          >
+                            {canEditAgents ? (
+                              <button
+                                type="button"
+                                className="secondary-btn"
+                                onClick={() => void handleToggleRule(rule)}
+                                title={rule.isActive ? 'Pause rule' : 'Activate rule'}
+                                style={{ minWidth: '2rem', padding: '0.2rem 0.4rem' }}
+                              >
+                                {rule.isActive ? '✓' : '—'}
+                              </button>
+                            ) : null}
+                            <span style={{ flex: 1 }}>{rule.ruleText}</span>
+                            {canEditAgents ? (
+                              <button
+                                type="button"
+                                className="secondary-btn"
+                                onClick={() => void handleDeleteRule(rule.id)}
+                                title="Delete rule"
+                                style={{ minWidth: '2rem', padding: '0.2rem 0.4rem' }}
+                              >
+                                ×
+                              </button>
+                            ) : null}
+                          </li>
+                        ))}
+                      </ul>
+                    ) : (
+                      <p className="page-state">No rules yet.</p>
+                    )}
+                    {canEditAgents ? (
+                      <div className="connector-attach-row" style={{ marginTop: '0.5rem' }}>
+                        <label style={{ flex: 1 }}>
+                          <input
+                            type="text"
+                            maxLength={240}
+                            value={newRuleText}
+                            onChange={(e) => setNewRuleText(e.target.value)}
+                            placeholder="Add a rule…"
+                            disabled={contextStatus.status === 'saving'}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') void handleAddRule();
+                            }}
+                            style={{ width: '100%' }}
+                          />
+                        </label>
+                        <button
+                          type="button"
+                          className="secondary-btn"
+                          onClick={() => void handleAddRule()}
+                          disabled={
+                            contextStatus.status === 'saving' || !newRuleText.trim()
+                          }
+                        >
+                          Add Rule
+                        </button>
+                      </div>
+                    ) : null}
+                  </div>
+
+                  {/* Saved Sources */}
+                  <div className="talk-llm-card">
+                    <div className="connector-card-header">
+                      <div>
+                        <h3>Saved Sources</h3>
+                        <p className="talk-llm-meta">
+                          Files, URLs, and text snippets agents can reference. Up to 20 sources.
+                        </p>
+                      </div>
+                    </div>
+                    {contextSources.length > 0 ? (
+                      <ul style={{ listStyle: 'none', padding: 0 }}>
+                        {contextSources.map((source) => (
+                          <li
+                            key={source.id}
+                            style={{
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: '0.5rem',
+                              padding: '0.35rem 0',
+                              borderBottom: '1px solid var(--border, #eee)',
+                            }}
+                          >
+                            <span
+                              style={{
+                                fontFamily: 'monospace',
+                                fontSize: '0.75rem',
+                                opacity: 0.6,
+                              }}
+                            >
+                              {source.sourceRef}
+                            </span>
+                            <span
+                              style={{
+                                fontSize: '0.7rem',
+                                textTransform: 'uppercase',
+                                opacity: 0.5,
+                              }}
+                            >
+                              [{source.sourceType}]
+                            </span>
+                            <span style={{ flex: 1 }}>{source.title}</span>
+                            <span
+                              style={{
+                                fontSize: '0.75rem',
+                                color:
+                                  source.status === 'ready'
+                                    ? 'green'
+                                    : source.status === 'failed'
+                                      ? 'red'
+                                      : 'orange',
+                              }}
+                            >
+                              {source.status}
+                            </span>
+                            {canEditAgents ? (
+                              <button
+                                type="button"
+                                className="secondary-btn"
+                                onClick={() => void handleDeleteSource(source.id)}
+                                title="Remove source"
+                                style={{ minWidth: '2rem', padding: '0.2rem 0.4rem' }}
+                              >
+                                ×
+                              </button>
+                            ) : null}
+                          </li>
+                        ))}
+                      </ul>
+                    ) : (
+                      <p className="page-state">No sources yet.</p>
+                    )}
+
+                    {/* Add source form (editors only) */}
+                    {canEditAgents ? (
+                      <div style={{ marginTop: '0.75rem' }}>
+                        <div className="connector-attach-row" style={{ marginBottom: '0.5rem' }}>
+                          <label>
+                            <span className="settings-label">Type</span>
+                            <select
+                              value={addSourceType}
+                              onChange={(e) =>
+                                setAddSourceType(e.target.value as 'text' | 'url')
+                              }
+                              disabled={contextStatus.status === 'saving'}
+                            >
+                              <option value="text">Text</option>
+                              <option value="url">URL</option>
+                            </select>
+                          </label>
+                          <label style={{ flex: 1 }}>
+                            <span className="settings-label">Title</span>
+                            <input
+                              type="text"
+                              value={addSourceTitle}
+                              onChange={(e) => setAddSourceTitle(e.target.value)}
+                              placeholder="Source title"
+                              disabled={contextStatus.status === 'saving'}
+                              style={{ width: '100%' }}
+                            />
+                          </label>
+                        </div>
+                        {addSourceType === 'url' ? (
+                          <label style={{ display: 'block', marginBottom: '0.5rem' }}>
+                            <span className="settings-label">URL</span>
+                            <input
+                              type="url"
+                              value={addSourceUrl}
+                              onChange={(e) => setAddSourceUrl(e.target.value)}
+                              placeholder="https://example.com/docs"
+                              disabled={contextStatus.status === 'saving'}
+                              style={{ width: '100%' }}
+                            />
+                          </label>
+                        ) : (
+                          <label style={{ display: 'block', marginBottom: '0.5rem' }}>
+                            <span className="settings-label">Content</span>
+                            <textarea
+                              value={addSourceText}
+                              onChange={(e) => setAddSourceText(e.target.value)}
+                              placeholder="Paste text content here…"
+                              rows={4}
+                              disabled={contextStatus.status === 'saving'}
+                              style={{ width: '100%', resize: 'vertical' }}
+                            />
+                          </label>
+                        )}
+                        <button
+                          type="button"
+                          className="secondary-btn"
+                          onClick={() => void handleAddSource()}
+                          disabled={
+                            contextStatus.status === 'saving' || !addSourceTitle.trim()
+                          }
+                        >
+                          Add Source
+                        </button>
+                      </div>
+                    ) : null}
+                  </div>
+
+                  {contextStatus.status === 'success' && contextStatus.message ? (
+                    <p className="page-state">{contextStatus.message}</p>
+                  ) : null}
+                </>
+              )}
+            </section>
+          ) : null}
+
           {currentTab === 'data-connectors' ? (
             <section className="talk-tab-panel" aria-label="Talk data connectors">
               <div className="agents-panel-header">
@@ -2064,9 +2522,8 @@ export function TalkDetailPage({
                 ) : null}
               </div>
               <p className="policy-muted">
-                Attach org-level data sources to this talk. Runtime tool execution is
-                still landing in a follow-up slice, so this tab currently manages the
-                binding layer.
+                Attach org-level data sources to this talk. Tool-capable agents on
+                this talk can use attached verified connectors during runs.
               </p>
 
               {canManageTalkConnectors ? (
