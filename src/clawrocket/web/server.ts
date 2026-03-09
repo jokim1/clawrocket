@@ -507,7 +507,10 @@ function buildApp(opts: WebServerOptions): Hono {
       body = (await c.req.json()) as Record<string, unknown>;
     } catch {
       return c.json(
-        { ok: false, error: { code: 'invalid_body', message: 'Invalid JSON body.' } },
+        {
+          ok: false,
+          error: { code: 'invalid_body', message: 'Invalid JSON body.' },
+        },
         400,
       );
     }
