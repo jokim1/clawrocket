@@ -78,9 +78,7 @@ export interface TalkDataConnectorsListRecord {
   connectors: TalkDataConnectorSnapshot[];
 }
 
-export function listDataConnectorsRoute(input: {
-  auth: AuthContext;
-}): {
+export function listDataConnectorsRoute(input: { auth: AuthContext }): {
   statusCode: number;
   body: ApiEnvelope<DataConnectorsListRecord>;
 } {
@@ -185,8 +183,7 @@ export function patchDataConnectorRoute(input: {
     return notFoundResponse('Data connector not found.');
   }
 
-  const nextName =
-    input.name !== undefined ? input.name.trim() : undefined;
+  const nextName = input.name !== undefined ? input.name.trim() : undefined;
   if (input.name !== undefined && !nextName) {
     return {
       statusCode: 400,
@@ -204,7 +201,9 @@ export function patchDataConnectorRoute(input: {
     connectorId: input.connectorId,
     name: nextName,
     config:
-      input.config !== undefined ? normalizeJsonMap(input.config) ?? {} : undefined,
+      input.config !== undefined
+        ? (normalizeJsonMap(input.config) ?? {})
+        : undefined,
     enabled: input.enabled,
     updatedBy: input.auth.userId,
   });
@@ -305,7 +304,8 @@ export function setDataConnectorCredentialRoute(input: {
         ok: false,
         error: {
           code: 'unsupported_connector_kind',
-          message: 'This connector kind does not support direct API key storage.',
+          message:
+            'This connector kind does not support direct API key storage.',
         },
       },
     };

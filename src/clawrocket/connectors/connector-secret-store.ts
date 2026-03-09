@@ -4,7 +4,8 @@ import { logger } from '../../logger.js';
 import type { ConnectorSecretPayload } from './types.js';
 
 const SECRET_KEY_ENV = 'CLAWROCKET_CONNECTOR_SECRET_KEY';
-const DEV_FALLBACK_SECRET = 'clawrocket-dev-connector-secret-key-unsafe-default';
+const DEV_FALLBACK_SECRET =
+  'clawrocket-dev-connector-secret-key-unsafe-default';
 const AES_ALGO = 'aes-256-gcm';
 let warnedAboutFallbackSecret = false;
 
@@ -24,10 +25,16 @@ function getSecretMaterial(): string {
 }
 
 function deriveKey(): Buffer {
-  return crypto.scryptSync(getSecretMaterial(), 'clawrocket-connector-store', 32);
+  return crypto.scryptSync(
+    getSecretMaterial(),
+    'clawrocket-connector-store',
+    32,
+  );
 }
 
-export function encryptConnectorSecret(payload: ConnectorSecretPayload): string {
+export function encryptConnectorSecret(
+  payload: ConnectorSecretPayload,
+): string {
   const iv = crypto.randomBytes(12);
   const key = deriveKey();
   const cipher = crypto.createCipheriv(AES_ALGO, key, iv);
@@ -82,7 +89,9 @@ export function decryptConnectorSecret(
 
   if (payload.kind === 'google_sheets') {
     if (!payload.accessToken || typeof payload.accessToken !== 'string') {
-      throw new Error('Connector secret payload missing Google Sheets accessToken');
+      throw new Error(
+        'Connector secret payload missing Google Sheets accessToken',
+      );
     }
     if (
       payload.refreshToken !== undefined &&

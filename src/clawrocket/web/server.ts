@@ -1473,7 +1473,10 @@ function buildApp(opts: WebServerOptions): Hono {
     const auth = requireAuth(c);
     if (!auth) return unauthorized(c);
 
-    const rateResult = checkRateLimit({ principalId: auth.userId, bucket: 'write' });
+    const rateResult = checkRateLimit({
+      principalId: auth.userId,
+      bucket: 'write',
+    });
     if (!rateResult.allowed) {
       return rateLimitedResponse(c, rateResult);
     }
@@ -1540,7 +1543,10 @@ function buildApp(opts: WebServerOptions): Hono {
     const auth = requireAuth(c);
     if (!auth) return unauthorized(c);
 
-    const rateResult = checkRateLimit({ principalId: auth.userId, bucket: 'write' });
+    const rateResult = checkRateLimit({
+      principalId: auth.userId,
+      bucket: 'write',
+    });
     if (!rateResult.allowed) {
       return rateLimitedResponse(c, rateResult);
     }
@@ -1608,7 +1614,10 @@ function buildApp(opts: WebServerOptions): Hono {
     const auth = requireAuth(c);
     if (!auth) return unauthorized(c);
 
-    const rateResult = checkRateLimit({ principalId: auth.userId, bucket: 'write' });
+    const rateResult = checkRateLimit({
+      principalId: auth.userId,
+      bucket: 'write',
+    });
     if (!rateResult.allowed) {
       return rateLimitedResponse(c, rateResult);
     }
@@ -1640,7 +1649,10 @@ function buildApp(opts: WebServerOptions): Hono {
     const auth = requireAuth(c);
     if (!auth) return unauthorized(c);
 
-    const rateResult = checkRateLimit({ principalId: auth.userId, bucket: 'write' });
+    const rateResult = checkRateLimit({
+      principalId: auth.userId,
+      bucket: 'write',
+    });
     if (!rateResult.allowed) {
       return rateLimitedResponse(c, rateResult);
     }
@@ -2345,7 +2357,10 @@ function buildApp(opts: WebServerOptions): Hono {
     const auth = requireAuth(c);
     if (!auth) return unauthorized(c);
 
-    const rateResult = checkRateLimit({ principalId: auth.userId, bucket: 'write' });
+    const rateResult = checkRateLimit({
+      principalId: auth.userId,
+      bucket: 'write',
+    });
     if (!rateResult.allowed) {
       return rateLimitedResponse(c, rateResult);
     }
@@ -2397,38 +2412,44 @@ function buildApp(opts: WebServerOptions): Hono {
     });
   });
 
-  app.delete('/api/v1/talks/:talkId/data-connectors/:connectorId', async (c) => {
-    const auth = requireAuth(c);
-    if (!auth) return unauthorized(c);
+  app.delete(
+    '/api/v1/talks/:talkId/data-connectors/:connectorId',
+    async (c) => {
+      const auth = requireAuth(c);
+      if (!auth) return unauthorized(c);
 
-    const rateResult = checkRateLimit({ principalId: auth.userId, bucket: 'write' });
-    if (!rateResult.allowed) {
-      return rateLimitedResponse(c, rateResult);
-    }
+      const rateResult = checkRateLimit({
+        principalId: auth.userId,
+        bucket: 'write',
+      });
+      if (!rateResult.allowed) {
+        return rateLimitedResponse(c, rateResult);
+      }
 
-    const csrf = validateCsrfToken({
-      method: c.req.method,
-      authType: auth.authType,
-      cookieHeader: c.req.header('cookie'),
-      csrfHeader: c.req.header('x-csrf-token'),
-    });
-    if (!csrf.ok) {
-      return c.json(
-        { ok: false, error: { code: 'csrf_failed', message: csrf.reason } },
-        403,
-      );
-    }
+      const csrf = validateCsrfToken({
+        method: c.req.method,
+        authType: auth.authType,
+        cookieHeader: c.req.header('cookie'),
+        csrfHeader: c.req.header('x-csrf-token'),
+      });
+      if (!csrf.ok) {
+        return c.json(
+          { ok: false, error: { code: 'csrf_failed', message: csrf.reason } },
+          403,
+        );
+      }
 
-    const result = detachTalkDataConnectorRoute({
-      auth,
-      talkId: c.req.param('talkId'),
-      connectorId: c.req.param('connectorId'),
-    });
-    return new Response(JSON.stringify(result.body), {
-      status: result.statusCode,
-      headers: { 'content-type': 'application/json; charset=utf-8' },
-    });
-  });
+      const result = detachTalkDataConnectorRoute({
+        auth,
+        talkId: c.req.param('talkId'),
+        connectorId: c.req.param('connectorId'),
+      });
+      return new Response(JSON.stringify(result.body), {
+        status: result.statusCode,
+        headers: { 'content-type': 'application/json; charset=utf-8' },
+      });
+    },
+  );
 
   app.put('/api/v1/talks/:talkId/agents', async (c) => {
     const auth = requireAuth(c);

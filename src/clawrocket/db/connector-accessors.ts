@@ -201,7 +201,10 @@ function connectorHasCredential(connectorId: string): boolean {
   return Boolean(row);
 }
 
-function markConnectorNeedsVerification(connectorId: string, now: string): void {
+function markConnectorNeedsVerification(
+  connectorId: string,
+  now: string,
+): void {
   getDb()
     .prepare(
       `
@@ -310,13 +313,13 @@ export function patchDataConnector(input: {
   if (!current) return undefined;
 
   const now = new Date().toISOString();
-  const nextName =
-    input.name !== undefined ? input.name.trim() : current.name;
+  const nextName = input.name !== undefined ? input.name.trim() : current.name;
   const nextConfigJson =
     input.config !== undefined
       ? serializeJsonMap(input.config)
       : current.config_json;
-  const configChanged = input.config !== undefined && nextConfigJson !== current.config_json;
+  const configChanged =
+    input.config !== undefined && nextConfigJson !== current.config_json;
   const nextEnabled =
     input.enabled !== undefined ? (input.enabled ? 1 : 0) : current.enabled;
 

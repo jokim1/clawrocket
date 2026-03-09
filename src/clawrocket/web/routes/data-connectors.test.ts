@@ -96,28 +96,36 @@ describe('data connector routes', () => {
     expect(credentialRes.status).toBe(200);
     const credentialBody = (await credentialRes.json()) as any;
     expect(credentialBody.data.connector.hasCredential).toBe(true);
-    expect(credentialBody.data.connector.verificationStatus).toBe('not_verified');
+    expect(credentialBody.data.connector.verificationStatus).toBe(
+      'not_verified',
+    );
 
-    const attachRes = await server.request('/api/v1/talks/talk-owner/data-connectors', {
-      method: 'POST',
-      headers: {
-        Authorization: 'Bearer owner-token',
-        'Content-Type': 'application/json',
+    const attachRes = await server.request(
+      '/api/v1/talks/talk-owner/data-connectors',
+      {
+        method: 'POST',
+        headers: {
+          Authorization: 'Bearer owner-token',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          connectorId,
+        }),
       },
-      body: JSON.stringify({
-        connectorId,
-      }),
-    });
+    );
     expect(attachRes.status).toBe(200);
     const attachBody = (await attachRes.json()) as any;
     expect(attachBody.data.connector.id).toBe(connectorId);
     expect(attachBody.data.connector.attachedAt).toBeTruthy();
 
-    const talkListRes = await server.request('/api/v1/talks/talk-owner/data-connectors', {
-      headers: {
-        Authorization: 'Bearer owner-token',
+    const talkListRes = await server.request(
+      '/api/v1/talks/talk-owner/data-connectors',
+      {
+        headers: {
+          Authorization: 'Bearer owner-token',
+        },
       },
-    });
+    );
     expect(talkListRes.status).toBe(200);
     const talkListBody = (await talkListRes.json()) as any;
     expect(talkListBody.data.connectors).toHaveLength(1);
@@ -189,16 +197,19 @@ describe('data connector routes', () => {
     const credentialBody = (await credentialRes.json()) as any;
     expect(credentialBody.error.code).toBe('oauth_required');
 
-    const attachRes = await server.request('/api/v1/talks/talk-owner/data-connectors', {
-      method: 'POST',
-      headers: {
-        Authorization: 'Bearer owner-token',
-        'Content-Type': 'application/json',
+    const attachRes = await server.request(
+      '/api/v1/talks/talk-owner/data-connectors',
+      {
+        method: 'POST',
+        headers: {
+          Authorization: 'Bearer owner-token',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          connectorId: '',
+        }),
       },
-      body: JSON.stringify({
-        connectorId: '',
-      }),
-    });
+    );
     expect(attachRes.status).toBe(400);
     const attachBody = (await attachRes.json()) as any;
     expect(attachBody.error.code).toBe('invalid_connector_id');
