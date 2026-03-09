@@ -40,7 +40,10 @@ import {
   storeChatMetadata,
   storeMessage,
 } from './db.js';
-import { initClawrocketSchema } from './clawrocket/db/index.js';
+import {
+  initClawrocketSchema,
+  syncKnownProviderModels,
+} from './clawrocket/db/index.js';
 import { registerClawrocketSchedulerMaintenanceHook } from './clawrocket/scheduler-maintenance.js';
 import { GroupQueue } from './group-queue.js';
 import { resolveGroupFolderPath } from './group-folder.js';
@@ -569,6 +572,7 @@ async function main(): Promise<void> {
     initDatabase();
     // ClawRocket integration seam: initialize ClawRocket schema in shared DB.
     initClawrocketSchema();
+    syncKnownProviderModels();
     // ClawRocket integration seam: register scheduler maintenance callbacks.
     registerClawrocketSchedulerMaintenanceHook();
     logger.info('Database initialized');

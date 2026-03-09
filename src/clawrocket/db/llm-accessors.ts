@@ -834,6 +834,49 @@ export function listKnownProviderCredentialCards(): AgentProviderCardSnapshot[] 
   });
 }
 
+export function syncKnownProviderModels(updatedAt?: string): void {
+  const now = normalizeTimestamp(updatedAt);
+  const tx = getDb().transaction(() => {
+    const upsertModel = getDb().prepare(
+      `
+      INSERT INTO llm_provider_models (
+        provider_id, model_id, display_name, context_window_tokens,
+        default_max_output_tokens, supports_tools, enabled, updated_at, updated_by
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)
+      ON CONFLICT(provider_id, model_id) DO UPDATE SET
+        display_name = excluded.display_name,
+        context_window_tokens = excluded.context_window_tokens,
+        default_max_output_tokens = excluded.default_max_output_tokens,
+        supports_tools = excluded.supports_tools,
+        enabled = excluded.enabled,
+        updated_at = excluded.updated_at,
+        updated_by = excluded.updated_by
+    `,
+    );
+
+    for (const template of KNOWN_PROVIDER_CATALOG) {
+      const provider = getLlmProviderById(template.id);
+      if (!provider) continue;
+
+      for (const suggestion of template.modelSuggestions) {
+        const existing = getLlmProviderModel(template.id, suggestion.modelId);
+        upsertModel.run(
+          template.id,
+          suggestion.modelId,
+          suggestion.displayName,
+          suggestion.contextWindowTokens,
+          suggestion.defaultMaxOutputTokens,
+          suggestion.supportsTools ? 1 : 0,
+          existing?.enabled ?? 1,
+          now,
+        );
+      }
+    }
+  });
+
+  tx();
+}
+
 export function upsertKnownProviderCredential(input: {
   providerId: string;
   credential: ProviderSecretPayload | null;
