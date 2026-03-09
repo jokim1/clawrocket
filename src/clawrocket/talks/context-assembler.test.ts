@@ -64,8 +64,7 @@ function createHistoricalTurn(input: {
       executor_model: null,
       created_at: assistant.createdAt,
       started_at: assistant.createdAt,
-      ended_at:
-        assistant.status === 'running' ? null : assistant.createdAt,
+      ended_at: assistant.status === 'running' ? null : assistant.createdAt,
       cancel_reason: assistant.status === 'failed' ? 'failed' : null,
     });
     createTalkMessage({
@@ -196,8 +195,7 @@ describe('assembleTalkPromptContext', () => {
     const result = assembleConversation({
       currentRunId: 'run-current',
       currentUserMessageId: 'msg-current',
-      currentUserMessage:
-        'Can you synthesize the parts you both agree with?',
+      currentUserMessage: 'Can you synthesize the parts you both agree with?',
     });
 
     expect(conversationMessages(result)).toEqual([
