@@ -3041,7 +3041,7 @@ function buildApp(opts: WebServerOptions): Hono {
     });
     if (!csrf.ok) {
       return c.json(
-        { ok: false, error: { code: 'csrf_invalid', message: csrf.reason } },
+        { ok: false, error: { code: 'csrf_failed', message: csrf.reason } },
         403,
       );
     }
@@ -3101,7 +3101,7 @@ function buildApp(opts: WebServerOptions): Hono {
     });
     if (!csrf.ok) {
       return c.json(
-        { ok: false, error: { code: 'csrf_invalid', message: csrf.reason } },
+        { ok: false, error: { code: 'csrf_failed', message: csrf.reason } },
         403,
       );
     }
@@ -3147,7 +3147,7 @@ function buildApp(opts: WebServerOptions): Hono {
     });
     if (!csrf.ok) {
       return c.json(
-        { ok: false, error: { code: 'csrf_invalid', message: csrf.reason } },
+        { ok: false, error: { code: 'csrf_failed', message: csrf.reason } },
         403,
       );
     }
@@ -3208,7 +3208,7 @@ function buildApp(opts: WebServerOptions): Hono {
     });
     if (!csrf.ok) {
       return c.json(
-        { ok: false, error: { code: 'csrf_invalid', message: csrf.reason } },
+        { ok: false, error: { code: 'csrf_failed', message: csrf.reason } },
         403,
       );
     }
@@ -3244,7 +3244,7 @@ function buildApp(opts: WebServerOptions): Hono {
     });
     if (!csrf.ok) {
       return c.json(
-        { ok: false, error: { code: 'csrf_invalid', message: csrf.reason } },
+        { ok: false, error: { code: 'csrf_failed', message: csrf.reason } },
         403,
       );
     }
@@ -3322,7 +3322,7 @@ function buildApp(opts: WebServerOptions): Hono {
     });
     if (!csrf.ok) {
       return c.json(
-        { ok: false, error: { code: 'csrf_invalid', message: csrf.reason } },
+        { ok: false, error: { code: 'csrf_failed', message: csrf.reason } },
         403,
       );
     }
@@ -3388,7 +3388,7 @@ function buildApp(opts: WebServerOptions): Hono {
     });
     if (!csrf.ok) {
       return c.json(
-        { ok: false, error: { code: 'csrf_invalid', message: csrf.reason } },
+        { ok: false, error: { code: 'csrf_failed', message: csrf.reason } },
         403,
       );
     }
@@ -3426,7 +3426,7 @@ function buildApp(opts: WebServerOptions): Hono {
       });
       if (!csrf.ok) {
         return c.json(
-          { ok: false, error: { code: 'csrf_invalid', message: csrf.reason } },
+          { ok: false, error: { code: 'csrf_failed', message: csrf.reason } },
           403,
         );
       }
@@ -3474,7 +3474,7 @@ function buildApp(opts: WebServerOptions): Hono {
     });
     if (!csrf.ok) {
       return c.json(
-        { ok: false, error: { code: 'csrf_invalid', message: csrf.reason } },
+        { ok: false, error: { code: 'csrf_failed', message: csrf.reason } },
         403,
       );
     }

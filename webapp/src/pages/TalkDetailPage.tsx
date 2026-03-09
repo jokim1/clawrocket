@@ -315,6 +315,21 @@ function mapRunsById(runs: TalkRun[]): Record<string, RunView> {
   }, {});
 }
 
+function hasFileTransfer(dataTransfer: DataTransfer | null | undefined): boolean {
+  if (!dataTransfer) return false;
+  if (dataTransfer.files.length > 0) return true;
+
+  const { types } = dataTransfer;
+  if (!types) return false;
+
+  const domTypes = types as unknown as DOMStringList;
+  if (typeof domTypes.contains === 'function') {
+    return domTypes.contains('Files');
+  }
+
+  return Array.from(types as ArrayLike<string>).includes('Files');
+}
+
 function withRun(
   state: DetailState,
   runId: string,
@@ -2516,7 +2531,7 @@ export function TalkDetailPage({
     event.preventDefault();
     event.stopPropagation();
     dragCounterRef.current += 1;
-    if (event.dataTransfer.types.includes('Files')) {
+    if (hasFileTransfer(event.dataTransfer)) {
       setIsDragOver(true);
     }
   };
@@ -2524,7 +2539,7 @@ export function TalkDetailPage({
   const handleDragLeave = (event: React.DragEvent) => {
     event.preventDefault();
     event.stopPropagation();
-    dragCounterRef.current -= 1;
+    dragCounterRef.current = Math.max(0, dragCounterRef.current - 1);
     if (dragCounterRef.current === 0) {
       setIsDragOver(false);
     }
@@ -2533,6 +2548,9 @@ export function TalkDetailPage({
   const handleDragOver = (event: React.DragEvent) => {
     event.preventDefault();
     event.stopPropagation();
+    if (hasFileTransfer(event.dataTransfer)) {
+      event.dataTransfer.dropEffect = 'copy';
+    }
   };
 
   const handleDrop = (event: React.DragEvent) => {
@@ -2544,6 +2562,36 @@ export function TalkDetailPage({
       void handleFilesSelected(event.dataTransfer.files);
     }
   };
+
+  useEffect(() => {
+    if (currentTab !== 'talk') {
+      dragCounterRef.current = 0;
+      setIsDragOver(false);
+      return;
+    }
+
+    const preventWindowFileNavigation = (event: DragEvent) => {
+      if (!hasFileTransfer(event.dataTransfer)) return;
+      event.preventDefault();
+      if (event.dataTransfer) {
+        event.dataTransfer.dropEffect = 'copy';
+      }
+      if (event.type === 'drop') {
+        dragCounterRef.current = 0;
+        setIsDragOver(false);
+      }
+    };
+
+    window.addEventListener('dragenter', preventWindowFileNavigation, true);
+    window.addEventListener('dragover', preventWindowFileNavigation, true);
+    window.addEventListener('drop', preventWindowFileNavigation, true);
+
+    return () => {
+      window.removeEventListener('dragenter', preventWindowFileNavigation, true);
+      window.removeEventListener('dragover', preventWindowFileNavigation, true);
+      window.removeEventListener('drop', preventWindowFileNavigation, true);
+    };
+  }, [currentTab]);
 
   const handleToggleTarget = (agentId: string) => {
     setTargetAgentIds((current) => {
