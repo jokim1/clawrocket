@@ -185,11 +185,7 @@ function nodeRequest(
     const isHttps = url.protocol === 'https:';
     const mod = isHttps ? https : http;
 
-    const customLookup: net.LookupFunction = (
-      _hostname,
-      _options,
-      cb,
-    ) => {
+    const customLookup: net.LookupFunction = (_hostname, _options, cb) => {
       const family: 4 | 6 = net.isIPv6(resolvedIp) ? 6 : 4;
       cb(null, resolvedIp, family);
     };
@@ -318,11 +314,10 @@ export async function safeFetchUrl(inputUrl: string): Promise<FetchResult> {
     }
 
     // Validate content type
-    const rawContentType = (
-      Array.isArray(result.headers['content-type'])
+    const rawContentType =
+      (Array.isArray(result.headers['content-type'])
         ? result.headers['content-type'][0]
-        : result.headers['content-type']
-    ) ?? '';
+        : result.headers['content-type']) ?? '';
     const mimeType = rawContentType.split(';')[0].trim().toLowerCase();
     if (!ALLOWED_CONTENT_TYPES.has(mimeType)) {
       throw new SourceIngestionError(
