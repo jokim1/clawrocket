@@ -290,6 +290,50 @@ describe('TalkDetailPage', () => {
     );
   });
 
+  it('submits on Enter and keeps Shift+Enter for a newline in the composer', async () => {
+    const user = userEvent.setup();
+    const sentBodies: Array<{
+      content: string;
+      targetAgentIds: string[];
+    }> = [];
+
+    installTalkDetailFetch({
+      messages: [],
+      runs: [],
+      onSendMessage: (body) => {
+        sentBodies.push(body);
+        return {
+          talkId: 'talk-1',
+          message: buildMessage({
+            id: `msg-posted-${sentBodies.length}`,
+            role: 'user',
+            content: body.content,
+            createdAt: '2026-03-06T00:00:05.000Z',
+          }),
+          runs: [],
+        };
+      },
+    });
+
+    renderDetailPage('/app/talks/talk-1');
+    const composer = await screen.findByPlaceholderText('Send a message to this talk');
+
+    await user.type(composer, 'Line 1');
+    await user.keyboard('{Shift>}{Enter}{/Shift}Line 2');
+
+    expect(composer).toHaveValue('Line 1\nLine 2');
+    expect(sentBodies).toHaveLength(0);
+
+    await user.keyboard('{Enter}');
+
+    await waitFor(() => expect(sentBodies).toHaveLength(1));
+    expect(sentBodies[0]).toMatchObject({
+      content: 'Line 1\nLine 2',
+      targetAgentIds: ['agent-claude'],
+    });
+    await waitFor(() => expect(composer).toHaveValue(''));
+  });
+
   it('renders concurrent live responses as separate streaming bubbles', async () => {
     installTalkDetailFetch();
 

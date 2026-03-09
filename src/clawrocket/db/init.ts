@@ -622,6 +622,59 @@ function createClawrocketSchema(database: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_llm_attempts_run_id ON llm_attempts(run_id);
     CREATE INDEX IF NOT EXISTS idx_llm_attempts_talk_id_created_at
       ON llm_attempts(talk_id, created_at);
+
+    CREATE TABLE IF NOT EXISTS talk_context_goal (
+      talk_id TEXT PRIMARY KEY REFERENCES talks(id) ON DELETE CASCADE,
+      goal_text TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      updated_by TEXT REFERENCES users(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS talk_context_rules (
+      id TEXT PRIMARY KEY,
+      talk_id TEXT NOT NULL REFERENCES talks(id) ON DELETE CASCADE,
+      rule_text TEXT NOT NULL,
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      is_active INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_talk_context_rules_talk_sort
+      ON talk_context_rules(talk_id, sort_order, created_at);
+
+    CREATE TABLE IF NOT EXISTS talk_context_sources (
+      id TEXT PRIMARY KEY,
+      talk_id TEXT NOT NULL REFERENCES talks(id) ON DELETE CASCADE,
+      source_ref TEXT NOT NULL,
+      source_type TEXT NOT NULL
+        CHECK(source_type IN ('url', 'file', 'text')),
+      title TEXT NOT NULL,
+      note TEXT,
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      status TEXT NOT NULL DEFAULT 'pending'
+        CHECK(status IN ('pending', 'ready', 'failed')),
+      source_url TEXT,
+      file_name TEXT,
+      file_size INTEGER,
+      mime_type TEXT,
+      storage_key TEXT,
+      extracted_text TEXT,
+      extracted_at TEXT,
+      extraction_error TEXT,
+      is_truncated INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      created_by TEXT REFERENCES users(id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_talk_context_sources_talk_sort
+      ON talk_context_sources(talk_id, sort_order, created_at);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_talk_context_sources_ref
+      ON talk_context_sources(talk_id, source_ref);
+
+    CREATE TABLE IF NOT EXISTS talk_context_source_ref_counter (
+      talk_id TEXT PRIMARY KEY REFERENCES talks(id) ON DELETE CASCADE,
+      next_ref_number INTEGER NOT NULL DEFAULT 1
+    );
   `);
 
   migrateLlmProvidersForNvidia(database);

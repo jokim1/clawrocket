@@ -89,6 +89,47 @@ export type TalkDataConnector = DataConnector & {
   attachedBy: string | null;
 };
 
+// ---------------------------------------------------------------------------
+// Context tab types
+// ---------------------------------------------------------------------------
+
+export type ContextGoal = {
+  goalText: string;
+  updatedAt: string;
+};
+
+export type ContextRule = {
+  id: string;
+  ruleText: string;
+  isActive: boolean;
+  sortOrder: number;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type ContextSource = {
+  id: string;
+  sourceRef: string;
+  sourceType: 'url' | 'file' | 'text';
+  title: string;
+  note: string | null;
+  sourceUrl: string | null;
+  status: 'pending' | 'ready' | 'failed';
+  extractedTextLength: number | null;
+  isTruncated: boolean;
+  extractionError: string | null;
+  mimeType: string | null;
+  sortOrder: number;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type TalkContext = {
+  goal: ContextGoal | null;
+  rules: ContextRule[];
+  sources: ContextSource[];
+};
+
 export type TalkMessage = {
   id: string;
   role: 'user' | 'assistant' | 'system' | 'tool';
@@ -677,6 +718,129 @@ export async function detachTalkDataConnector(input: {
     {
       method: 'DELETE',
     },
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Context tab API functions
+// ---------------------------------------------------------------------------
+
+export async function getTalkContext(talkId: string): Promise<TalkContext> {
+  return apiRequest<TalkContext>(
+    `/api/v1/talks/${encodeURIComponent(talkId)}/context`,
+  );
+}
+
+export async function setTalkGoal(input: {
+  talkId: string;
+  goalText: string;
+}): Promise<{ goal: ContextGoal | null }> {
+  return apiMutationRequest<{ goal: ContextGoal | null }>(
+    `/api/v1/talks/${encodeURIComponent(input.talkId)}/context/goal`,
+    {
+      method: 'PUT',
+      includeJson: true,
+      body: JSON.stringify({ goalText: input.goalText }),
+    },
+  );
+}
+
+export async function createTalkContextRule(input: {
+  talkId: string;
+  ruleText: string;
+}): Promise<ContextRule> {
+  const envelope = await apiMutationRequest<{ rule: ContextRule }>(
+    `/api/v1/talks/${encodeURIComponent(input.talkId)}/context/rules`,
+    {
+      method: 'POST',
+      includeJson: true,
+      body: JSON.stringify({ ruleText: input.ruleText }),
+    },
+  );
+  return envelope.rule;
+}
+
+export async function patchTalkContextRule(input: {
+  talkId: string;
+  ruleId: string;
+  ruleText?: string;
+  isActive?: boolean;
+  sortOrder?: number;
+}): Promise<ContextRule> {
+  const { talkId, ruleId, ...patch } = input;
+  const envelope = await apiMutationRequest<{ rule: ContextRule }>(
+    `/api/v1/talks/${encodeURIComponent(talkId)}/context/rules/${encodeURIComponent(ruleId)}`,
+    {
+      method: 'PATCH',
+      includeJson: true,
+      body: JSON.stringify(patch),
+    },
+  );
+  return envelope.rule;
+}
+
+export async function deleteTalkContextRule(input: {
+  talkId: string;
+  ruleId: string;
+}): Promise<void> {
+  await apiMutationRequest<{ deleted: true }>(
+    `/api/v1/talks/${encodeURIComponent(input.talkId)}/context/rules/${encodeURIComponent(input.ruleId)}`,
+    { method: 'DELETE' },
+  );
+}
+
+export async function createTalkContextSource(input: {
+  talkId: string;
+  sourceType: 'url' | 'file' | 'text';
+  title: string;
+  note?: string | null;
+  sourceUrl?: string | null;
+  extractedText?: string | null;
+}): Promise<ContextSource> {
+  const envelope = await apiMutationRequest<{ source: ContextSource }>(
+    `/api/v1/talks/${encodeURIComponent(input.talkId)}/context/sources`,
+    {
+      method: 'POST',
+      includeJson: true,
+      body: JSON.stringify({
+        sourceType: input.sourceType,
+        title: input.title,
+        note: input.note,
+        sourceUrl: input.sourceUrl,
+        extractedText: input.extractedText,
+      }),
+    },
+  );
+  return envelope.source;
+}
+
+export async function patchTalkContextSource(input: {
+  talkId: string;
+  sourceId: string;
+  title?: string;
+  note?: string | null;
+  sortOrder?: number;
+  extractedText?: string | null;
+}): Promise<ContextSource> {
+  const { talkId, sourceId, ...patch } = input;
+  const envelope = await apiMutationRequest<{ source: ContextSource }>(
+    `/api/v1/talks/${encodeURIComponent(talkId)}/context/sources/${encodeURIComponent(sourceId)}`,
+    {
+      method: 'PATCH',
+      includeJson: true,
+      body: JSON.stringify(patch),
+    },
+  );
+  return envelope.source;
+}
+
+export async function deleteTalkContextSource(input: {
+  talkId: string;
+  sourceId: string;
+}): Promise<void> {
+  await apiMutationRequest<{ deleted: true }>(
+    `/api/v1/talks/${encodeURIComponent(input.talkId)}/context/sources/${encodeURIComponent(input.sourceId)}`,
+    { method: 'DELETE' },
   );
 }
 

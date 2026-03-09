@@ -7,6 +7,7 @@ import { _initClawrocketTestSchema } from './init.js';
 export { _initClawrocketTestSchema, initClawrocketSchema } from './init.js';
 export * from './accessors.js';
 export * from './connector-accessors.js';
+export * from './context-accessors.js';
 export * from './llm-accessors.js';
 export { isDatabaseHealthy };
 

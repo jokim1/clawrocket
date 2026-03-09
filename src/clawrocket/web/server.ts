@@ -103,6 +103,18 @@ import {
   patchDataConnectorRoute,
   setDataConnectorCredentialRoute,
 } from './routes/data-connectors.js';
+import {
+  createTalkContextRuleRoute,
+  createTalkContextSourceRoute,
+  deleteTalkContextRuleRoute,
+  deleteTalkContextSourceRoute,
+  getTalkContextRoute,
+  listTalkContextRulesRoute,
+  patchTalkContextRuleRoute,
+  patchTalkContextSourceRoute,
+  setTalkGoalRoute,
+} from './routes/talk-context.js';
+import { ingestUrlSource } from '../talks/source-ingestion.js';
 import { authenticateRequest } from './middleware/auth.js';
 import { AuthContext } from './types.js';
 import { DataConnectorVerifier } from '../connectors/connector-verifier.js';
@@ -2456,6 +2468,407 @@ function buildApp(opts: WebServerOptions): Hono {
       });
     },
   );
+
+  // ---------------------------------------------------------------------------
+  // Context tab routes
+  // ---------------------------------------------------------------------------
+
+  app.get('/api/v1/talks/:talkId/context', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+
+    const result = getTalkContextRoute({
+      auth,
+      talkId: c.req.param('talkId'),
+    });
+    return new Response(JSON.stringify(result.body), {
+      status: result.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
+  });
+
+  app.put('/api/v1/talks/:talkId/context/goal', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+
+    const rateResult = checkRateLimit({
+      principalId: auth.userId,
+      bucket: 'write',
+    });
+    if (!rateResult.allowed) {
+      return rateLimitedResponse(c, rateResult);
+    }
+
+    const csrf = validateCsrfToken({
+      method: c.req.method,
+      authType: auth.authType,
+      cookieHeader: c.req.header('cookie'),
+      csrfHeader: c.req.header('x-csrf-token'),
+    });
+    if (!csrf.ok) {
+      return c.json(
+        { ok: false, error: { code: 'csrf_invalid', message: csrf.reason } },
+        403,
+      );
+    }
+
+    const bodyText = await c.req.text();
+    const payload = parseJsonPayload<{ goalText?: string }>(bodyText);
+    if (!payload.ok) {
+      return c.json(
+        { ok: false, error: { code: 'invalid_json', message: payload.error } },
+        400,
+      );
+    }
+
+    const result = setTalkGoalRoute({
+      auth,
+      talkId: c.req.param('talkId'),
+      goalText:
+        typeof payload.data.goalText === 'string' ? payload.data.goalText : '',
+    });
+    return new Response(JSON.stringify(result.body), {
+      status: result.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
+  });
+
+  app.get('/api/v1/talks/:talkId/context/rules', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+
+    const result = listTalkContextRulesRoute({
+      auth,
+      talkId: c.req.param('talkId'),
+    });
+    return new Response(JSON.stringify(result.body), {
+      status: result.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
+  });
+
+  app.post('/api/v1/talks/:talkId/context/rules', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+
+    const rateResult = checkRateLimit({
+      principalId: auth.userId,
+      bucket: 'write',
+    });
+    if (!rateResult.allowed) {
+      return rateLimitedResponse(c, rateResult);
+    }
+
+    const csrf = validateCsrfToken({
+      method: c.req.method,
+      authType: auth.authType,
+      cookieHeader: c.req.header('cookie'),
+      csrfHeader: c.req.header('x-csrf-token'),
+    });
+    if (!csrf.ok) {
+      return c.json(
+        { ok: false, error: { code: 'csrf_invalid', message: csrf.reason } },
+        403,
+      );
+    }
+
+    const bodyText = await c.req.text();
+    const payload = parseJsonPayload<{ ruleText?: string }>(bodyText);
+    if (!payload.ok) {
+      return c.json(
+        { ok: false, error: { code: 'invalid_json', message: payload.error } },
+        400,
+      );
+    }
+
+    const result = createTalkContextRuleRoute({
+      auth,
+      talkId: c.req.param('talkId'),
+      ruleText:
+        typeof payload.data.ruleText === 'string' ? payload.data.ruleText : '',
+    });
+    return new Response(JSON.stringify(result.body), {
+      status: result.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
+  });
+
+  app.patch('/api/v1/talks/:talkId/context/rules/:ruleId', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+
+    const rateResult = checkRateLimit({
+      principalId: auth.userId,
+      bucket: 'write',
+    });
+    if (!rateResult.allowed) {
+      return rateLimitedResponse(c, rateResult);
+    }
+
+    const csrf = validateCsrfToken({
+      method: c.req.method,
+      authType: auth.authType,
+      cookieHeader: c.req.header('cookie'),
+      csrfHeader: c.req.header('x-csrf-token'),
+    });
+    if (!csrf.ok) {
+      return c.json(
+        { ok: false, error: { code: 'csrf_invalid', message: csrf.reason } },
+        403,
+      );
+    }
+
+    const bodyText = await c.req.text();
+    const payload = parseJsonPayload<{
+      ruleText?: string;
+      isActive?: boolean;
+      sortOrder?: number;
+    }>(bodyText);
+    if (!payload.ok) {
+      return c.json(
+        { ok: false, error: { code: 'invalid_json', message: payload.error } },
+        400,
+      );
+    }
+
+    const result = patchTalkContextRuleRoute({
+      auth,
+      talkId: c.req.param('talkId'),
+      ruleId: c.req.param('ruleId'),
+      ruleText:
+        typeof payload.data.ruleText === 'string'
+          ? payload.data.ruleText
+          : undefined,
+      isActive:
+        typeof payload.data.isActive === 'boolean'
+          ? payload.data.isActive
+          : undefined,
+      sortOrder:
+        typeof payload.data.sortOrder === 'number'
+          ? payload.data.sortOrder
+          : undefined,
+    });
+    return new Response(JSON.stringify(result.body), {
+      status: result.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
+  });
+
+  app.delete('/api/v1/talks/:talkId/context/rules/:ruleId', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+
+    const rateResult = checkRateLimit({
+      principalId: auth.userId,
+      bucket: 'write',
+    });
+    if (!rateResult.allowed) {
+      return rateLimitedResponse(c, rateResult);
+    }
+
+    const csrf = validateCsrfToken({
+      method: c.req.method,
+      authType: auth.authType,
+      cookieHeader: c.req.header('cookie'),
+      csrfHeader: c.req.header('x-csrf-token'),
+    });
+    if (!csrf.ok) {
+      return c.json(
+        { ok: false, error: { code: 'csrf_invalid', message: csrf.reason } },
+        403,
+      );
+    }
+
+    const result = deleteTalkContextRuleRoute({
+      auth,
+      talkId: c.req.param('talkId'),
+      ruleId: c.req.param('ruleId'),
+    });
+    return new Response(JSON.stringify(result.body), {
+      status: result.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
+  });
+
+  app.post('/api/v1/talks/:talkId/context/sources', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+
+    const rateResult = checkRateLimit({
+      principalId: auth.userId,
+      bucket: 'write',
+    });
+    if (!rateResult.allowed) {
+      return rateLimitedResponse(c, rateResult);
+    }
+
+    const csrf = validateCsrfToken({
+      method: c.req.method,
+      authType: auth.authType,
+      cookieHeader: c.req.header('cookie'),
+      csrfHeader: c.req.header('x-csrf-token'),
+    });
+    if (!csrf.ok) {
+      return c.json(
+        { ok: false, error: { code: 'csrf_invalid', message: csrf.reason } },
+        403,
+      );
+    }
+
+    const bodyText = await c.req.text();
+    const payload = parseJsonPayload<{
+      sourceType?: string;
+      title?: string;
+      note?: string | null;
+      sourceUrl?: string | null;
+      extractedText?: string | null;
+    }>(bodyText);
+    if (!payload.ok) {
+      return c.json(
+        { ok: false, error: { code: 'invalid_json', message: payload.error } },
+        400,
+      );
+    }
+
+    const sourceType =
+      typeof payload.data.sourceType === 'string'
+        ? payload.data.sourceType
+        : '';
+    const sourceUrl =
+      typeof payload.data.sourceUrl === 'string'
+        ? payload.data.sourceUrl
+        : null;
+
+    const result = createTalkContextSourceRoute({
+      auth,
+      talkId: c.req.param('talkId'),
+      sourceType,
+      title: typeof payload.data.title === 'string' ? payload.data.title : '',
+      note: typeof payload.data.note === 'string' ? payload.data.note : null,
+      sourceUrl,
+      extractedText:
+        typeof payload.data.extractedText === 'string'
+          ? payload.data.extractedText
+          : null,
+    });
+
+    // Fire-and-forget: kick off URL ingestion asynchronously after creation
+    if (result.statusCode === 201 && sourceType === 'url' && sourceUrl) {
+      const createdSource = (
+        result.body as { ok: boolean; data?: { source?: { id: string } } }
+      ).data?.source;
+      if (createdSource?.id) {
+        void ingestUrlSource(createdSource.id, sourceUrl);
+      }
+    }
+
+    return new Response(JSON.stringify(result.body), {
+      status: result.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
+  });
+
+  app.patch('/api/v1/talks/:talkId/context/sources/:sourceId', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+
+    const rateResult = checkRateLimit({
+      principalId: auth.userId,
+      bucket: 'write',
+    });
+    if (!rateResult.allowed) {
+      return rateLimitedResponse(c, rateResult);
+    }
+
+    const csrf = validateCsrfToken({
+      method: c.req.method,
+      authType: auth.authType,
+      cookieHeader: c.req.header('cookie'),
+      csrfHeader: c.req.header('x-csrf-token'),
+    });
+    if (!csrf.ok) {
+      return c.json(
+        { ok: false, error: { code: 'csrf_invalid', message: csrf.reason } },
+        403,
+      );
+    }
+
+    const bodyText = await c.req.text();
+    const payload = parseJsonPayload<{
+      title?: string;
+      note?: string | null;
+      sortOrder?: number;
+      extractedText?: string | null;
+    }>(bodyText);
+    if (!payload.ok) {
+      return c.json(
+        { ok: false, error: { code: 'invalid_json', message: payload.error } },
+        400,
+      );
+    }
+
+    const result = patchTalkContextSourceRoute({
+      auth,
+      talkId: c.req.param('talkId'),
+      sourceId: c.req.param('sourceId'),
+      title:
+        typeof payload.data.title === 'string' ? payload.data.title : undefined,
+      note:
+        payload.data.note !== undefined
+          ? typeof payload.data.note === 'string'
+            ? payload.data.note
+            : null
+          : undefined,
+      sortOrder:
+        typeof payload.data.sortOrder === 'number'
+          ? payload.data.sortOrder
+          : undefined,
+      extractedText:
+        typeof payload.data.extractedText === 'string'
+          ? payload.data.extractedText
+          : undefined,
+    });
+    return new Response(JSON.stringify(result.body), {
+      status: result.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
+  });
+
+  app.delete('/api/v1/talks/:talkId/context/sources/:sourceId', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+
+    const rateResult = checkRateLimit({
+      principalId: auth.userId,
+      bucket: 'write',
+    });
+    if (!rateResult.allowed) {
+      return rateLimitedResponse(c, rateResult);
+    }
+
+    const csrf = validateCsrfToken({
+      method: c.req.method,
+      authType: auth.authType,
+      cookieHeader: c.req.header('cookie'),
+      csrfHeader: c.req.header('x-csrf-token'),
+    });
+    if (!csrf.ok) {
+      return c.json(
+        { ok: false, error: { code: 'csrf_invalid', message: csrf.reason } },
+        403,
+      );
+    }
+
+    const result = deleteTalkContextSourceRoute({
+      auth,
+      talkId: c.req.param('talkId'),
+      sourceId: c.req.param('sourceId'),
+    });
+    return new Response(JSON.stringify(result.body), {
+      status: result.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
+  });
 
   app.put('/api/v1/talks/:talkId/agents', async (c) => {
     const auth = requireAuth(c);
