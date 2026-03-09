@@ -119,12 +119,21 @@ function createCompletedTurn(
   assistantText: string,
   createdAt: string,
 ): void {
+  const userMessageId = `${runId}-user`;
+  createTalkMessage({
+    id: userMessageId,
+    talkId: TALK_ID,
+    role: 'user',
+    content: userText,
+    createdBy: OWNER_ID,
+    createdAt,
+  });
   createTalkRun({
     id: runId,
     talk_id: TALK_ID,
     requested_by: OWNER_ID,
     status: 'completed',
-    trigger_message_id: null,
+    trigger_message_id: userMessageId,
     target_agent_id: null,
     idempotency_key: null,
     executor_alias: null,
@@ -133,15 +142,6 @@ function createCompletedTurn(
     started_at: createdAt,
     ended_at: createdAt,
     cancel_reason: null,
-  });
-  createTalkMessage({
-    id: `${runId}-user`,
-    talkId: TALK_ID,
-    role: 'user',
-    content: userText,
-    createdBy: OWNER_ID,
-    runId,
-    createdAt,
   });
   createTalkMessage({
     id: `${runId}-assistant`,
@@ -159,12 +159,21 @@ function createOrphanUserTurn(
   userText: string,
   createdAt: string,
 ): void {
+  const userMessageId = `${runId}-user`;
+  createTalkMessage({
+    id: userMessageId,
+    talkId: TALK_ID,
+    role: 'user',
+    content: userText,
+    createdBy: OWNER_ID,
+    createdAt,
+  });
   createTalkRun({
     id: runId,
     talk_id: TALK_ID,
     requested_by: OWNER_ID,
     status: 'failed',
-    trigger_message_id: null,
+    trigger_message_id: userMessageId,
     target_agent_id: null,
     idempotency_key: null,
     executor_alias: null,
@@ -173,15 +182,6 @@ function createOrphanUserTurn(
     started_at: createdAt,
     ended_at: createdAt,
     cancel_reason: 'failed',
-  });
-  createTalkMessage({
-    id: `${runId}-user`,
-    talkId: TALK_ID,
-    role: 'user',
-    content: userText,
-    createdBy: OWNER_ID,
-    runId,
-    createdAt,
   });
 }
 
