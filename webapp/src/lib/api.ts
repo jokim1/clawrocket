@@ -22,6 +22,7 @@ export type SessionUser = {
   email: string;
   displayName: string;
   role: string;
+  createdAt: string;
 };
 
 export type Talk = {
@@ -412,6 +413,19 @@ export async function getAuthConfig(): Promise<AuthConfigPayload> {
 
 export async function getSessionMe(): Promise<SessionUser> {
   const envelope = await apiRequest<{ user: SessionUser }>('/api/v1/session/me');
+  return envelope.user;
+}
+
+export async function updateSessionMe(input: {
+  displayName?: string;
+}): Promise<SessionUser> {
+  const envelope = await apiMutationRequest<{ user: SessionUser }>(
+    '/api/v1/session/me',
+    {
+      method: 'PATCH',
+      body: JSON.stringify(input),
+    },
+  );
   return envelope.user;
 }
 

@@ -19,6 +19,7 @@ import {
   getOutboxEventsForTopics,
   getOutboxMinEventIdForTopics,
   getUserById,
+  updateUserDisplayName,
 } from '../db/index.js';
 import {
   completeDeviceAuthFlow,
@@ -484,6 +485,53 @@ function buildApp(opts: WebServerOptions): Hono {
   app.get('/api/v1/session/me', async (c) => {
     const auth = requireAuth(c);
     if (!auth) return unauthorized(c);
+
+    const user = getUserById(auth.userId);
+    if (!user || user.is_active !== 1) return unauthorized(c);
+
+    return c.json({ ok: true, data: { user: normalizeUser(user) } }, 200);
+  });
+
+  app.patch('/api/v1/session/me', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+
+    const rateResult = checkRateLimit({
+      principalId: auth.userId,
+      bucket: 'write',
+    });
+    if (!rateResult.allowed) return rateLimitedResponse(c, rateResult);
+
+    let body: Record<string, unknown>;
+    try {
+      body = (await c.req.json()) as Record<string, unknown>;
+    } catch {
+      return c.json(
+        {
+          ok: false,
+          error: { code: 'invalid_body', message: 'Invalid JSON body.' },
+        },
+        400,
+      );
+    }
+
+    const displayName =
+      typeof body.displayName === 'string' ? body.displayName.trim() : null;
+    if (displayName !== null) {
+      if (displayName.length === 0 || displayName.length > 200) {
+        return c.json(
+          {
+            ok: false,
+            error: {
+              code: 'invalid_display_name',
+              message: 'Display name must be between 1 and 200 characters.',
+            },
+          },
+          400,
+        );
+      }
+      updateUserDisplayName(auth.userId, displayName);
+    }
 
     const user = getUserById(auth.userId);
     if (!user || user.is_active !== 1) return unauthorized(c);
@@ -3976,6 +4024,7 @@ function normalizeUser(user: UserLike) {
     email: user.email,
     displayName: user.display_name,
     role: user.role,
+    createdAt: user.created_at,
   };
 }
 
@@ -4034,4 +4083,5 @@ type UserLike = {
   email: string;
   display_name: string;
   role: string;
+  created_at: string;
 };

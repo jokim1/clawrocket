@@ -111,7 +111,6 @@ describe('App', () => {
     await screen.findByRole('heading', { name: 'Talks' });
     expect(screen.getByText('ClawTalk')).toBeTruthy();
     expect(screen.getByRole('link', { name: 'Home' })).toBeTruthy();
-    expect(screen.getByRole('link', { name: 'Settings' })).toBeTruthy();
     expect(screen.getAllByRole('link', { name: /Family Planning/i })).toHaveLength(
       2,
     );
@@ -199,10 +198,14 @@ describe('App', () => {
     });
 
     renderWithRouter('/app/talks');
-    const signOutButton = await screen.findByRole('button', {
-      name: 'Sign out',
+    const avatarButton = await screen.findByRole('button', {
+      name: 'Owner',
     });
-    signOutButton.click();
+    avatarButton.click();
+    const logOutButton = await screen.findByRole('menuitem', {
+      name: 'Log Out',
+    });
+    logOutButton.click();
 
     await screen.findByRole('heading', { name: 'ClawRocket' });
   });
