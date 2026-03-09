@@ -122,6 +122,19 @@ import {
   uploadTalkAttachmentRoute,
 } from './routes/talk-attachments.js';
 import {
+  listTalkChannelsRoute,
+  createTalkChannelRoute,
+  patchTalkChannelRoute,
+  deleteTalkChannelRoute,
+  testTalkChannelBindingRoute,
+  listTalkChannelIngressFailuresRoute,
+  retryTalkChannelIngressFailureRoute,
+  deleteTalkChannelIngressFailureRoute,
+  listTalkChannelDeliveryFailuresRoute,
+  retryTalkChannelDeliveryFailureRoute,
+  deleteTalkChannelDeliveryFailureRoute,
+} from './routes/channels.js';
+import {
   createDefaultTalkContextSourceIngestionService,
   type TalkContextSourceIngestionService,
 } from '../talks/source-ingestion.js';
@@ -149,6 +162,8 @@ export interface WebServerOptions {
   subscriptionHostAuth: ExecutorSubscriptionHostAuthService;
   dataConnectorVerifier: DataConnectorVerifier;
   sourceIngestion: TalkContextSourceIngestionService;
+  onTalkTerminal?: (talkId: string) => void;
+  sendChannelTestMessage?: (bindingId: string, text: string) => Promise<void>;
 }
 
 export interface WebServerHandle {
@@ -156,6 +171,7 @@ export interface WebServerHandle {
   stop: () => Promise<void>;
   request: (path: string, init?: RequestInit) => Promise<Response>;
   server: ServerType | null;
+  runWorker?: TalkRunWorkerControl;
 }
 
 export function createWebServer(
@@ -3502,39 +3518,13 @@ function buildApp(opts: WebServerOptions): Hono {
     });
     if (!rateResult.allowed) return rateLimitedResponse(c, rateResult);
 
-    const result = listTalkAttachmentsRoute({
+    const attachmentsResult = listTalkAttachmentsRoute({
       auth,
       talkId: c.req.param('talkId'),
     });
 
-    const csrf = validateCsrfToken({
-      method: c.req.method,
-      authType: auth.authType,
-      cookieHeader: c.req.header('cookie'),
-      csrfHeader: c.req.header('x-csrf-token'),
-    });
-    if (!csrf.ok) {
-      return c.json(
-        { ok: false, error: { code: 'csrf_invalid', message: csrf.reason } },
-        403,
-      );
-    }
-
-    const result = retryTalkContextSourceRoute({
-      auth,
-      talkId: c.req.param('talkId'),
-      sourceId: c.req.param('sourceId'),
-    });
-
-    if (result.statusCode === 200 && result.body.ok) {
-      const source = result.body.data.source;
-      if (source.sourceType === 'url' && typeof source.sourceUrl === 'string') {
-        opts.sourceIngestion.enqueueUrlSource(source.id, source.sourceUrl);
-      }
-    }
-
-    return new Response(JSON.stringify(result.body), {
-      status: result.statusCode,
+    return new Response(JSON.stringify(attachmentsResult.body), {
+      status: attachmentsResult.statusCode,
       headers: { 'content-type': 'application/json; charset=utf-8' },
     });
   });
