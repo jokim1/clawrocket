@@ -223,6 +223,7 @@ export class TalkRunWorker implements TalkRunWorkerControl {
         responseMetadataJson: output.metadataJson,
         agentId: output.agentId,
         agentNickname: output.agentNickname,
+        responseSequenceInRun: output.responseSequenceInRun,
       });
       if (!completed.applied) {
         logger.debug(

@@ -13,6 +13,7 @@ import {
   type DataConnectorSnapshot,
   type TalkDataConnectorSnapshot,
 } from '../../db/index.js';
+import { DataConnectorVerifier } from '../../connectors/connector-verifier.js';
 import { encryptConnectorSecret } from '../../connectors/connector-secret-store.js';
 import type { ConnectorKind } from '../../connectors/types.js';
 import { ApiEnvelope, AuthContext } from '../types.js';
@@ -168,59 +169,70 @@ export function patchDataConnectorRoute(input: {
   name?: string;
   config?: unknown;
   enabled?: boolean;
-}): {
+  verifier: DataConnectorVerifier;
+}): Promise<{
   statusCode: number;
   body: ApiEnvelope<{ connector: DataConnectorSnapshot }>;
-} {
-  if (!canManageDataConnectors(input.auth)) {
-    return forbiddenResponse(
-      'You do not have permission to manage data connectors.',
-    );
-  }
+}> {
+  return (async () => {
+    if (!canManageDataConnectors(input.auth)) {
+      return forbiddenResponse(
+        'You do not have permission to manage data connectors.',
+      );
+    }
 
-  const existing = getDataConnectorById(input.connectorId);
-  if (!existing) {
-    return notFoundResponse('Data connector not found.');
-  }
+    const existing = getDataConnectorById(input.connectorId);
+    if (!existing) {
+      return notFoundResponse('Data connector not found.');
+    }
 
-  const nextName = input.name !== undefined ? input.name.trim() : undefined;
-  if (input.name !== undefined && !nextName) {
+    const nextName = input.name !== undefined ? input.name.trim() : undefined;
+    if (input.name !== undefined && !nextName) {
+      return {
+        statusCode: 400,
+        body: {
+          ok: false,
+          error: {
+            code: 'invalid_name',
+            message: 'A connector name is required.',
+          },
+        },
+      };
+    }
+
+    const connector = patchDataConnector({
+      connectorId: input.connectorId,
+      name: nextName,
+      config:
+        input.config !== undefined
+          ? (normalizeJsonMap(input.config) ?? {})
+          : undefined,
+      enabled: input.enabled,
+      updatedBy: input.auth.userId,
+    });
+
+    if (!connector) {
+      return notFoundResponse('Data connector not found.');
+    }
+
+    let verified = connector;
+    if (
+      verified.hasCredential &&
+      verified.verificationStatus === 'not_verified'
+    ) {
+      verified = await input.verifier.verify(verified.id);
+    }
+
     return {
-      statusCode: 400,
+      statusCode: 200,
       body: {
-        ok: false,
-        error: {
-          code: 'invalid_name',
-          message: 'A connector name is required.',
+        ok: true,
+        data: {
+          connector: verified,
         },
       },
     };
-  }
-
-  const connector = patchDataConnector({
-    connectorId: input.connectorId,
-    name: nextName,
-    config:
-      input.config !== undefined
-        ? (normalizeJsonMap(input.config) ?? {})
-        : undefined,
-    enabled: input.enabled,
-    updatedBy: input.auth.userId,
-  });
-
-  if (!connector) {
-    return notFoundResponse('Data connector not found.');
-  }
-
-  return {
-    statusCode: 200,
-    body: {
-      ok: true,
-      data: {
-        connector,
-      },
-    },
-  };
+  })();
 }
 
 export function deleteDataConnectorRoute(input: {
@@ -256,74 +268,82 @@ export function setDataConnectorCredentialRoute(input: {
   auth: AuthContext;
   connectorId: string;
   apiKey?: string | null;
-}): {
+  verifier: DataConnectorVerifier;
+}): Promise<{
   statusCode: number;
   body: ApiEnvelope<{ connector: DataConnectorSnapshot }>;
-} {
-  if (!canManageDataConnectors(input.auth)) {
-    return forbiddenResponse(
-      'You do not have permission to manage data connectors.',
-    );
-  }
+}> {
+  return (async () => {
+    if (!canManageDataConnectors(input.auth)) {
+      return forbiddenResponse(
+        'You do not have permission to manage data connectors.',
+      );
+    }
 
-  const connector = getDataConnectorById(input.connectorId);
-  if (!connector) {
-    return notFoundResponse('Data connector not found.');
-  }
+    const connector = getDataConnectorById(input.connectorId);
+    if (!connector) {
+      return notFoundResponse('Data connector not found.');
+    }
 
-  const apiKey = input.apiKey?.trim() || null;
-  let updated: DataConnectorSnapshot | undefined;
+    const apiKey = input.apiKey?.trim() || null;
+    let updated: DataConnectorSnapshot | undefined;
 
-  if (connector.connectorKind === 'posthog') {
-    updated = apiKey
-      ? setDataConnectorCredential({
-          connectorId: input.connectorId,
-          ciphertext: encryptConnectorSecret({
-            kind: 'posthog',
-            apiKey,
-          }),
-          updatedBy: input.auth.userId,
-        })
-      : deleteDataConnectorCredential(input.connectorId, input.auth.userId);
-  } else if (connector.connectorKind === 'google_sheets') {
+    if (connector.connectorKind === 'posthog') {
+      updated = apiKey
+        ? setDataConnectorCredential({
+            connectorId: input.connectorId,
+            ciphertext: encryptConnectorSecret({
+              kind: 'posthog',
+              apiKey,
+            }),
+            updatedBy: input.auth.userId,
+          })
+        : deleteDataConnectorCredential(input.connectorId, input.auth.userId);
+    } else if (connector.connectorKind === 'google_sheets') {
+      return {
+        statusCode: 400,
+        body: {
+          ok: false,
+          error: {
+            code: 'oauth_required',
+            message:
+              'Google Sheets connectors require OAuth. That flow is not wired into this slice yet.',
+          },
+        },
+      };
+    } else {
+      return {
+        statusCode: 400,
+        body: {
+          ok: false,
+          error: {
+            code: 'unsupported_connector_kind',
+            message:
+              'This connector kind does not support direct API key storage.',
+          },
+        },
+      };
+    }
+
+    if (!updated) {
+      return notFoundResponse('Data connector not found.');
+    }
+
+    let verified = updated;
+    if (apiKey && updated.verificationStatus === 'not_verified') {
+      verified = await input.verifier.verify(updated.id);
+    }
+
     return {
-      statusCode: 400,
+      statusCode: 200,
       body: {
-        ok: false,
-        error: {
-          code: 'oauth_required',
-          message:
-            'Google Sheets connectors require OAuth. That flow is not wired into this slice yet.',
+        ok: true,
+        data: {
+          connector: verified,
         },
       },
     };
-  } else {
-    return {
-      statusCode: 400,
-      body: {
-        ok: false,
-        error: {
-          code: 'unsupported_connector_kind',
-          message:
-            'This connector kind does not support direct API key storage.',
-        },
-      },
-    };
-  }
-
-  if (!updated) {
-    return notFoundResponse('Data connector not found.');
-  }
-
-  return {
-    statusCode: 200,
-    body: {
-      ok: true,
-      data: {
-        connector: updated,
-      },
-    },
-  };
+  })();
 }
 
 export function listTalkDataConnectorsRoute(input: {

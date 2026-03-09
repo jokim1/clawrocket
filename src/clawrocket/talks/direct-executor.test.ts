@@ -3,6 +3,8 @@ import type { ChildProcess } from 'child_process';
 
 import {
   _initTestDatabase,
+  attachDataConnectorToTalk,
+  createDataConnector,
   createTalk,
   createTalkMessage,
   createTalkRun,
@@ -10,12 +12,17 @@ import {
   getProviderSecretByProviderId,
   getTalkRunById,
   listLlmAttemptsForRun,
+  listTalkMessages,
+  patchDataConnectorDiscovery,
   listTalkLlmSettingsSnapshot,
   replaceTalkAgents,
   replaceTalkLlmSettingsSnapshot,
   resetTalkAgentsToDefault,
+  setDataConnectorCredential,
+  upsertDataConnectorVerification,
   upsertUser,
 } from '../db/index.js';
+import { encryptConnectorSecret } from '../connectors/connector-secret-store.js';
 import { decryptProviderSecret } from '../llm/provider-secret-store.js';
 
 import { DirectTalkExecutor } from './direct-executor.js';
@@ -69,6 +76,7 @@ function configureTalkRuntime(input: {
       contextWindowTokens: number;
       defaultMaxOutputTokens: number;
       enabled: boolean;
+      supportsTools?: boolean;
     }>;
     credential?: { apiKey: string; organizationId?: string } | null;
   }>;
@@ -174,6 +182,54 @@ function createOrphanUserTurn(
     runId,
     createdAt,
   });
+}
+
+function attachVerifiedPostHogConnector(input?: {
+  name?: string;
+  hostUrl?: string;
+  projectId?: string;
+  discovered?: {
+    projectName?: string | null;
+    eventNames?: string[];
+  };
+}): string {
+  const connector = createDataConnector({
+    name: input?.name || 'FTUE PostHog',
+    connectorKind: 'posthog',
+    config: {
+      hostUrl: input?.hostUrl || 'https://posthog.example.test',
+      projectId: input?.projectId || '12345',
+    },
+    createdBy: OWNER_ID,
+  });
+
+  setDataConnectorCredential({
+    connectorId: connector.id,
+    ciphertext: encryptConnectorSecret({
+      kind: 'posthog',
+      apiKey: 'phc_test_key',
+    }),
+    updatedBy: OWNER_ID,
+  });
+  patchDataConnectorDiscovery(connector.id, {
+    projectId: input?.projectId || '12345',
+    projectName: input?.discovered?.projectName || 'FTUE',
+    eventNames:
+      input?.discovered?.eventNames || ['session_started', 'ftue_step_viewed'],
+  });
+  upsertDataConnectorVerification({
+    connectorId: connector.id,
+    status: 'verified',
+    lastError: null,
+    lastVerifiedAt: '2024-01-01T00:00:00.000Z',
+  });
+  attachDataConnectorToTalk({
+    talkId: TALK_ID,
+    connectorId: connector.id,
+    userId: OWNER_ID,
+  });
+
+  return connector.id;
 }
 
 function chunkString(value: string, chunkSize: number): string[] {
@@ -305,6 +361,7 @@ describe('DirectTalkExecutor', () => {
               contextWindowTokens: 32_000,
               defaultMaxOutputTokens: 1_024,
               enabled: true,
+              supportsTools: true,
             },
           ],
           credential: { apiKey: 'sk-ant-test', organizationId: 'org-test' },
@@ -715,6 +772,388 @@ describe('DirectTalkExecutor', () => {
       provider_id: 'openai.fast',
       model_id: 'gpt-fast',
       status: 'success',
+    });
+  });
+
+  it('executes an Anthropic tool loop for an attached PostHog connector', async () => {
+    const connectorId = attachVerifiedPostHogConnector();
+    configureTalkRuntime({
+      providers: [
+        {
+          id: 'anthropic.primary',
+          name: 'Anthropic Primary',
+          providerKind: 'anthropic',
+          apiFormat: 'anthropic_messages',
+          baseUrl: 'https://anthropic-tools.example.test',
+          authScheme: 'x_api_key',
+          enabled: true,
+          coreCompatibility: 'none',
+          models: [
+            {
+              modelId: 'claude-tools',
+              displayName: 'Claude Tools',
+              contextWindowTokens: 32_000,
+              defaultMaxOutputTokens: 1_024,
+              enabled: true,
+              supportsTools: true,
+            },
+          ],
+          credential: { apiKey: 'sk-ant-tools' },
+        },
+      ],
+      routes: [
+        {
+          id: 'route.primary',
+          name: 'Primary Route',
+          enabled: true,
+          steps: [
+            {
+              position: 0,
+              providerId: 'anthropic.primary',
+              modelId: 'claude-tools',
+            },
+          ],
+        },
+      ],
+    });
+
+    enqueueTalkTurnAtomic({
+      talkId: TALK_ID,
+      userId: OWNER_ID,
+      content: 'Check PostHog and tell me the biggest FTUE issue.',
+      messageId: 'msg-tools-anthropic',
+      runId: 'run-tools-anthropic',
+    });
+
+    const providerBodies: any[] = [];
+    let anthropicCalls = 0;
+    const executor = new DirectTalkExecutor({
+      fetchImpl: async (url, init) => {
+        const targetUrl = String(url);
+        if (targetUrl.includes('/v1/messages')) {
+          anthropicCalls += 1;
+          providerBodies.push(JSON.parse(String(init?.body)));
+          if (anthropicCalls === 1) {
+            return createStreamingResponse(init?.signal, [
+              'data: {"type":"message_start","message":{"usage":{"input_tokens":10}}}\n\n',
+              `data: {"type":"content_block_start","content_block":{"type":"tool_use","id":"toolu_1","name":"connector_${connectorId}__posthog_query"}}\n\n`,
+              'data: {"type":"content_block_delta","delta":{"partial_json":"{\\"query\\":\\"SELECT event, count() AS total FROM events GROUP BY event ORDER BY total DESC\\",\\"dateFrom\\":\\"2024-01-01\\",\\"dateTo\\":\\"2024-01-07\\",\\"limit\\":3}"}}\n\n',
+              'data: {"type":"message_delta","delta":{"stop_reason":"tool_use"},"message":{"usage":{"output_tokens":4}}}\n\n',
+              'data: [DONE]\n\n',
+            ]);
+          }
+
+          return createStreamingResponse(init?.signal, [
+            'data: {"type":"message_start","message":{"usage":{"input_tokens":8}}}\n\n',
+            'data: {"type":"content_block_start","content_block":{"type":"text","text":""}}\n\n',
+            'data: {"type":"content_block_delta","delta":{"text":"The biggest FTUE issue is tutorial drop-off."}}\n\n',
+            'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"message":{"usage":{"output_tokens":9}}}\n\n',
+            'data: [DONE]\n\n',
+          ]);
+        }
+
+        if (targetUrl.includes('/api/projects/12345/query')) {
+          return new Response(
+            JSON.stringify({
+              results: [
+                { event: 'tutorial_started', total: 3200 },
+                { event: 'tutorial_completed', total: 1900 },
+              ],
+            }),
+            {
+              status: 200,
+              headers: { 'content-type': 'application/json' },
+            },
+          );
+        }
+
+        throw new Error(`Unexpected fetch: ${targetUrl}`);
+      },
+    });
+
+    const events: TalkExecutionEvent[] = [];
+    const output = await executor.execute(
+      {
+        runId: 'run-tools-anthropic',
+        talkId: TALK_ID,
+        requestedBy: OWNER_ID,
+        triggerMessageId: 'msg-tools-anthropic',
+        triggerContent: 'Check PostHog and tell me the biggest FTUE issue.',
+      },
+      new AbortController().signal,
+      (event) => {
+        events.push(event);
+      },
+    );
+
+    expect(output.content).toBe('The biggest FTUE issue is tutorial drop-off.');
+    expect(output.responseSequenceInRun).toBe(3);
+    expect(providerBodies[0].tools).toHaveLength(1);
+    expect(providerBodies[0].tools[0].name).toBe(
+      `connector_${connectorId}__posthog_query`,
+    );
+    expect(providerBodies[1].messages.at(-1).content[0]).toMatchObject({
+      type: 'tool_result',
+      tool_use_id: 'toolu_1',
+    });
+
+    const runtimeMessages = listTalkMessages({ talkId: TALK_ID }).filter(
+      (message) => message.run_id === 'run-tools-anthropic',
+    );
+    expect(runtimeMessages.map((message) => message.role)).toEqual([
+      'assistant',
+      'tool',
+    ]);
+    expect(runtimeMessages[0].sequence_in_run).toBe(1);
+    expect(runtimeMessages[1].sequence_in_run).toBe(2);
+    expect(JSON.parse(String(runtimeMessages[0].metadata_json)).kind).toBe(
+      'assistant_tool_use',
+    );
+    expect(JSON.parse(String(runtimeMessages[1].metadata_json)).kind).toBe(
+      'tool_result',
+    );
+    expect(events.map((event) => event.type)).toEqual([
+      'talk_response_started',
+      'talk_response_delta',
+      'talk_response_usage',
+      'talk_response_completed',
+    ]);
+  });
+
+  it('detects OpenAI-compatible tool calls from accumulated tool_call deltas', async () => {
+    const connectorId = attachVerifiedPostHogConnector();
+    configureTalkRuntime({
+      providers: [
+        {
+          id: 'openai.primary',
+          name: 'OpenAI Primary',
+          providerKind: 'openai',
+          apiFormat: 'openai_chat_completions',
+          baseUrl: 'https://openai-tools.example.test',
+          authScheme: 'bearer',
+          enabled: true,
+          coreCompatibility: 'none',
+          models: [
+            {
+              modelId: 'gpt-tools',
+              displayName: 'GPT Tools',
+              contextWindowTokens: 32_000,
+              defaultMaxOutputTokens: 1_024,
+              enabled: true,
+              supportsTools: true,
+            },
+          ],
+          credential: { apiKey: 'sk-openai-tools' },
+        },
+      ],
+      routes: [
+        {
+          id: 'route.primary',
+          name: 'Primary Route',
+          enabled: true,
+          steps: [
+            {
+              position: 0,
+              providerId: 'openai.primary',
+              modelId: 'gpt-tools',
+            },
+          ],
+        },
+      ],
+    });
+
+    enqueueTalkTurnAtomic({
+      talkId: TALK_ID,
+      userId: OWNER_ID,
+      content: 'Use PostHog to inspect retention.',
+      messageId: 'msg-tools-openai',
+      runId: 'run-tools-openai',
+    });
+
+    let completionCalls = 0;
+    const executor = new DirectTalkExecutor({
+      fetchImpl: async (url, init) => {
+        const targetUrl = String(url);
+        if (targetUrl.includes('/chat/completions')) {
+          completionCalls += 1;
+          if (completionCalls === 1) {
+            return createStreamingResponse(init?.signal, [
+              `data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"connector_${connectorId}__posthog_query","arguments":"{\\"query\\":\\"SELECT count() AS total FROM events\\""}}]}}]}\n\n`,
+              'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"type":"function","function":{"arguments":",\\"dateFrom\\":\\"2024-01-01\\",\\"dateTo\\":\\"2024-01-07\\",\\"limit\\":1}"}}]}}]}\n\n',
+              'data: {"usage":{"prompt_tokens":12,"completion_tokens":4}}\n\n',
+              'data: [DONE]\n\n',
+            ]);
+          }
+
+          return createStreamingResponse(init?.signal, [
+            'data: {"choices":[{"delta":{"content":"Retention is weakest after the tutorial."}}]}\n\n',
+            'data: {"usage":{"prompt_tokens":10,"completion_tokens":6}}\n\n',
+            'data: [DONE]\n\n',
+          ]);
+        }
+
+        if (targetUrl.includes('/api/projects/12345/query')) {
+          return new Response(
+            JSON.stringify({
+              results: [{ total: 412 }],
+            }),
+            {
+              status: 200,
+              headers: { 'content-type': 'application/json' },
+            },
+          );
+        }
+
+        throw new Error(`Unexpected fetch: ${targetUrl}`);
+      },
+    });
+
+    const output = await executor.execute(
+      {
+        runId: 'run-tools-openai',
+        talkId: TALK_ID,
+        requestedBy: OWNER_ID,
+        triggerMessageId: 'msg-tools-openai',
+        triggerContent: 'Use PostHog to inspect retention.',
+      },
+      new AbortController().signal,
+    );
+
+    expect(output.content).toBe('Retention is weakest after the tutorial.');
+    expect(output.responseSequenceInRun).toBe(3);
+
+    const runtimeMessages = listTalkMessages({ talkId: TALK_ID }).filter(
+      (message) => message.run_id === 'run-tools-openai',
+    );
+    expect(runtimeMessages.map((message) => message.role)).toEqual([
+      'assistant',
+      'tool',
+    ]);
+    expect(JSON.parse(String(runtimeMessages[0].metadata_json))).toMatchObject({
+      kind: 'assistant_tool_use',
+    });
+  });
+
+  it('fails closed when connectors are attached but no route step supports tools', async () => {
+    attachVerifiedPostHogConnector();
+    configureTalkRuntime({
+      providers: [
+        {
+          id: 'openai.primary',
+          name: 'OpenAI Primary',
+          providerKind: 'openai',
+          apiFormat: 'openai_chat_completions',
+          baseUrl: 'https://openai.example.test',
+          authScheme: 'bearer',
+          enabled: true,
+          coreCompatibility: 'none',
+          models: [
+            {
+              modelId: 'gpt-no-tools',
+              displayName: 'GPT No Tools',
+              contextWindowTokens: 32_000,
+              defaultMaxOutputTokens: 1_024,
+              enabled: true,
+              supportsTools: false,
+            },
+          ],
+          credential: { apiKey: 'sk-openai-test' },
+        },
+      ],
+      routes: [
+        {
+          id: 'route.primary',
+          name: 'Primary Route',
+          enabled: true,
+          steps: [
+            {
+              position: 0,
+              providerId: 'openai.primary',
+              modelId: 'gpt-no-tools',
+            },
+          ],
+        },
+      ],
+    });
+
+    enqueueTalkTurnAtomic({
+      talkId: TALK_ID,
+      userId: OWNER_ID,
+      content: 'Use the connector.',
+      messageId: 'msg-no-tools',
+      runId: 'run-no-tools',
+    });
+
+    const executor = new DirectTalkExecutor({
+      fetchImpl: vi.fn(async () => {
+        throw new Error('fetch should not run');
+      }),
+    });
+
+    await expect(
+      executor.execute(
+        {
+          runId: 'run-no-tools',
+          talkId: TALK_ID,
+          requestedBy: OWNER_ID,
+          triggerMessageId: 'msg-no-tools',
+          triggerContent: 'Use the connector.',
+        },
+        new AbortController().signal,
+      ),
+    ).rejects.toMatchObject({
+      code: 'connector_tools_require_tool_capable_model',
+    });
+
+    const attempts = listLlmAttemptsForRun('run-no-tools');
+    expect(attempts).toHaveLength(1);
+    expect(attempts[0]).toMatchObject({
+      status: 'skipped',
+      failure_class: 'configuration',
+    });
+  });
+
+  it('rejects Claude default connector runs when executor auth is subscription mode', async () => {
+    const settingsService = new ExecutorSettingsService();
+    settingsService.saveExecutorConfig(
+      {
+        executorAuthMode: 'subscription',
+        claudeOauthToken: 'oauth-subscription',
+      },
+      OWNER_ID,
+    );
+    setActiveExecutorSettingsService(settingsService);
+    resetTalkAgentsToDefault(TALK_ID);
+    attachVerifiedPostHogConnector();
+
+    enqueueTalkTurnAtomic({
+      talkId: TALK_ID,
+      userId: OWNER_ID,
+      content: 'Use PostHog please.',
+      messageId: 'msg-claude-connectors',
+      runId: 'run-claude-connectors',
+    });
+
+    const executor = new DirectTalkExecutor({
+      runContainer: vi.fn(),
+      fetchImpl: vi.fn(async () => {
+        throw new Error('fetch should not run');
+      }),
+    });
+
+    await expect(
+      executor.execute(
+        {
+          runId: 'run-claude-connectors',
+          talkId: TALK_ID,
+          requestedBy: OWNER_ID,
+          triggerMessageId: 'msg-claude-connectors',
+          triggerContent: 'Use PostHog please.',
+        },
+        new AbortController().signal,
+      ),
+    ).rejects.toMatchObject({
+      code: 'connector_auth_mode_unsupported',
     });
   });
 

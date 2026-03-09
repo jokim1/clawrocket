@@ -105,6 +105,7 @@ import {
 } from './routes/data-connectors.js';
 import { authenticateRequest } from './middleware/auth.js';
 import { AuthContext } from './types.js';
+import { DataConnectorVerifier } from '../connectors/connector-verifier.js';
 
 const MAX_REQUEST_BODY_BYTES = 10 * 1024 * 1024; // 10 MB
 const SSE_RETRY_MS = 3000;
@@ -124,6 +125,7 @@ export interface WebServerOptions {
   executorSettings: ExecutorSettingsService;
   executorVerifier: ExecutorCredentialVerifier;
   subscriptionHostAuth: ExecutorSubscriptionHostAuthService;
+  dataConnectorVerifier: DataConnectorVerifier;
 }
 
 export interface WebServerHandle {
@@ -161,6 +163,9 @@ export function createWebServer(
       }),
     subscriptionHostAuth:
       input?.subscriptionHostAuth || new ExecutorSubscriptionHostAuthService(),
+    dataConnectorVerifier:
+      input?.dataConnectorVerifier ||
+      new DataConnectorVerifier(),
   };
 
   // startWebServer() already runs bootstrap migration in production. Repeat it
@@ -1586,7 +1591,7 @@ function buildApp(opts: WebServerOptions): Hono {
       );
     }
 
-    const result = patchDataConnectorRoute({
+    const result = await patchDataConnectorRoute({
       auth,
       connectorId: c.req.param('connectorId'),
       name:
@@ -1603,6 +1608,7 @@ function buildApp(opts: WebServerOptions): Hono {
         typeof payload.data.enabled === 'boolean'
           ? payload.data.enabled
           : undefined,
+      verifier: opts.dataConnectorVerifier,
     });
     return new Response(JSON.stringify(result.body), {
       status: result.statusCode,
@@ -1690,13 +1696,14 @@ function buildApp(opts: WebServerOptions): Hono {
       );
     }
 
-    const result = setDataConnectorCredentialRoute({
+    const result = await setDataConnectorCredentialRoute({
       auth,
       connectorId: c.req.param('connectorId'),
       apiKey:
         typeof payload.data.apiKey === 'string' || payload.data.apiKey === null
           ? payload.data.apiKey
           : undefined,
+      verifier: opts.dataConnectorVerifier,
     });
     return new Response(JSON.stringify(result.body), {
       status: result.statusCode,

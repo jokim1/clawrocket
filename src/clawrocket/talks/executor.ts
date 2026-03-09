@@ -82,6 +82,7 @@ export interface TalkExecutorOutput {
   providerId?: string | null;
   modelId?: string | null;
   usage?: TalkExecutionUsage;
+  responseSequenceInRun?: number | null;
 }
 
 export class TalkExecutorError extends Error {
