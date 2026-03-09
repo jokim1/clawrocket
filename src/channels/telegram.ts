@@ -14,6 +14,7 @@ import {
 export interface TelegramChannelOpts {
   onMessage: OnInboundMessage;
   onChatMetadata: OnChatMetadata;
+  onInboundEvent?: ChannelOpts['onInboundEvent'];
   registeredGroups: () => Record<string, RegisteredGroup>;
 }
 
@@ -55,6 +56,7 @@ export class TelegramChannel implements Channel {
     this.bot.on('message:text', async (ctx) => {
       // Skip commands
       if (ctx.message.text.startsWith('/')) return;
+      if (ctx.from?.is_bot || ctx.from?.id === ctx.me?.id) return;
 
       const chatJid = `tg:${ctx.chat.id}`;
       let content = ctx.message.text;
@@ -77,17 +79,17 @@ export class TelegramChannel implements Channel {
       // Telegram @mentions (e.g., @andy_ai_bot) won't match TRIGGER_PATTERN
       // (e.g., ^@Andy\b), so we prepend the trigger when the bot is @mentioned.
       const botUsername = ctx.me?.username?.toLowerCase();
-      if (botUsername) {
-        const entities = ctx.message.entities || [];
-        const isBotMentioned = entities.some((entity) => {
-          if (entity.type === 'mention') {
+      const entities = ctx.message.entities || [];
+      const isBotMentioned = botUsername
+        ? entities.some((entity) => {
+            if (entity.type !== 'mention') return false;
             const mentionText = content
               .substring(entity.offset, entity.offset + entity.length)
               .toLowerCase();
             return mentionText === `@${botUsername}`;
-          }
-          return false;
-        });
+          })
+        : false;
+      if (botUsername) {
         if (isBotMentioned && !TRIGGER_PATTERN.test(content)) {
           content = `@${ASSISTANT_NAME} ${content}`;
         }
@@ -103,6 +105,33 @@ export class TelegramChannel implements Channel {
         'telegram',
         isGroup,
       );
+
+      const consumed = this.opts.onInboundEvent
+        ? await this.opts.onInboundEvent({
+            platform: 'telegram',
+            target_kind: 'chat',
+            target_id: chatJid,
+            platform_event_id: ctx.update.update_id.toString(),
+            external_message_id: msgId,
+            sender_id: sender,
+            sender_name: senderName,
+            content,
+            timestamp,
+            target_display_name: chatName,
+            is_mentioned: isBotMentioned,
+            metadata: {
+              isGroup,
+              chatType: ctx.chat.type,
+            },
+          })
+        : false;
+      if (consumed) {
+        logger.info(
+          { chatJid, chatName, sender: senderName },
+          'Telegram message routed to talk channel binding',
+        );
+        return;
+      }
 
       // Only deliver full message for registered groups
       const group = this.opts.registeredGroups()[chatJid];
@@ -132,11 +161,9 @@ export class TelegramChannel implements Channel {
     });
 
     // Handle non-text messages with placeholders so the agent knows something was sent
-    const storeNonText = (ctx: any, placeholder: string) => {
+    const storeNonText = async (ctx: any, placeholder: string) => {
+      if (ctx.from?.is_bot || ctx.from?.id === ctx.me?.id) return;
       const chatJid = `tg:${ctx.chat.id}`;
-      const group = this.opts.registeredGroups()[chatJid];
-      if (!group) return;
-
       const timestamp = new Date(ctx.message.date * 1000).toISOString();
       const senderName =
         ctx.from?.first_name ||
@@ -144,41 +171,79 @@ export class TelegramChannel implements Channel {
         ctx.from?.id?.toString() ||
         'Unknown';
       const caption = ctx.message.caption ? ` ${ctx.message.caption}` : '';
+      const content = `${placeholder}${caption}`;
+      const chatName =
+        ctx.chat.type === 'private' ? senderName : ctx.chat.title || chatJid;
 
       const isGroup =
         ctx.chat.type === 'group' || ctx.chat.type === 'supergroup';
       this.opts.onChatMetadata(
         chatJid,
         timestamp,
-        undefined,
+        chatName,
         'telegram',
         isGroup,
       );
+
+      const consumed = this.opts.onInboundEvent
+        ? await this.opts.onInboundEvent({
+            platform: 'telegram',
+            target_kind: 'chat',
+            target_id: chatJid,
+            platform_event_id: ctx.update.update_id.toString(),
+            external_message_id: ctx.message.message_id.toString(),
+            sender_id: ctx.from?.id?.toString() || null,
+            sender_name: senderName,
+            content,
+            timestamp,
+            target_display_name: chatName,
+            is_mentioned: false,
+            metadata: {
+              isGroup,
+              chatType: ctx.chat.type,
+              nonText: true,
+            },
+          })
+        : false;
+      if (consumed) return;
+
+      const group = this.opts.registeredGroups()[chatJid];
+      if (!group) return;
+
       this.opts.onMessage(chatJid, {
         id: ctx.message.message_id.toString(),
         chat_jid: chatJid,
         sender: ctx.from?.id?.toString() || '',
         sender_name: senderName,
-        content: `${placeholder}${caption}`,
+        content,
         timestamp,
         is_from_me: false,
       });
     };
 
-    this.bot.on('message:photo', (ctx) => storeNonText(ctx, '[Photo]'));
-    this.bot.on('message:video', (ctx) => storeNonText(ctx, '[Video]'));
-    this.bot.on('message:voice', (ctx) => storeNonText(ctx, '[Voice message]'));
-    this.bot.on('message:audio', (ctx) => storeNonText(ctx, '[Audio]'));
+    this.bot.on('message:photo', (ctx) => void storeNonText(ctx, '[Photo]'));
+    this.bot.on('message:video', (ctx) => void storeNonText(ctx, '[Video]'));
+    this.bot.on(
+      'message:voice',
+      (ctx) => void storeNonText(ctx, '[Voice message]'),
+    );
+    this.bot.on('message:audio', (ctx) => void storeNonText(ctx, '[Audio]'));
     this.bot.on('message:document', (ctx) => {
       const name = ctx.message.document?.file_name || 'file';
-      storeNonText(ctx, `[Document: ${name}]`);
+      void storeNonText(ctx, `[Document: ${name}]`);
     });
     this.bot.on('message:sticker', (ctx) => {
       const emoji = ctx.message.sticker?.emoji || '';
-      storeNonText(ctx, `[Sticker ${emoji}]`);
+      void storeNonText(ctx, `[Sticker ${emoji}]`);
     });
-    this.bot.on('message:location', (ctx) => storeNonText(ctx, '[Location]'));
-    this.bot.on('message:contact', (ctx) => storeNonText(ctx, '[Contact]'));
+    this.bot.on(
+      'message:location',
+      (ctx) => void storeNonText(ctx, '[Location]'),
+    );
+    this.bot.on(
+      'message:contact',
+      (ctx) => void storeNonText(ctx, '[Contact]'),
+    );
 
     // Handle errors gracefully
     this.bot.catch((err) => {

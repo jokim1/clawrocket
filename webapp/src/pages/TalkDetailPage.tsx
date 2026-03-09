@@ -741,6 +741,8 @@ function formatChannelReasonCode(value: string | null): string {
       return 'Talk state prevented channel enqueue';
     case 'delivery_retries_exhausted':
       return 'Delivery retries exhausted';
+    case 'delivery_transient_failure':
+      return 'Delivery failed and will retry';
     default:
       return value.replace(/_/g, ' ');
   }
