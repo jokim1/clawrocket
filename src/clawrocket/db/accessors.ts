@@ -1538,6 +1538,85 @@ export function getTalkMessageById(
     .get(messageId) as TalkMessageRecord | undefined;
 }
 
+export function deleteTalkMessagesAtomic(input: {
+  talkId: string;
+  messageIds: string[];
+  now?: string;
+}): { deletedCount: number; deletedMessageIds: string[] } {
+  const normalizedIds = Array.from(
+    new Set(
+      input.messageIds
+        .map((messageId) => messageId.trim())
+        .filter((messageId) => messageId.length > 0),
+    ),
+  );
+
+  const tx = getDb().transaction(
+    (
+      txInput: typeof input,
+      ids: string[],
+    ): { deletedCount: number; deletedMessageIds: string[] } => {
+      if (ids.length === 0) {
+        throw new Error('talk history edit requires at least one message');
+      }
+      if (hasActiveTalkRuns(txInput.talkId)) {
+        throw new Error('talk already has an active round');
+      }
+
+      const placeholders = ids.map(() => '?').join(', ');
+      const rows = getDb()
+        .prepare(
+          `
+          SELECT id, role
+          FROM talk_messages
+          WHERE talk_id = ?
+            AND id IN (${placeholders})
+        `,
+        )
+        .all(txInput.talkId, ...ids) as Array<{
+        id: string;
+        role: TalkMessageRole;
+      }>;
+
+      if (rows.length !== ids.length) {
+        throw new Error('one or more talk messages were not found');
+      }
+      if (rows.some((row) => row.role === 'system')) {
+        throw new Error('system messages cannot be deleted');
+      }
+
+      const now = txInput.now || new Date().toISOString();
+      getDb()
+        .prepare(
+          `
+          DELETE FROM talk_messages
+          WHERE talk_id = ?
+            AND id IN (${placeholders})
+        `,
+        )
+        .run(txInput.talkId, ...ids);
+
+      // Reset cached executor session so future runs do not retain deleted context.
+      deleteTalkExecutorSession(txInput.talkId);
+      touchTalkUpdatedAt(txInput.talkId, now);
+      appendOutboxEvent({
+        topic: `talk:${txInput.talkId}`,
+        eventType: 'talk_history_edited',
+        payload: JSON.stringify({
+          talkId: txInput.talkId,
+          deletedCount: ids.length,
+          deletedMessageIds: ids,
+          editedAt: now,
+        }),
+      });
+
+      return { deletedCount: ids.length, deletedMessageIds: ids };
+    },
+  );
+
+  return tx(input, normalizedIds);
+}
+
 export function enqueueTalkTurnAtomic(input: {
   talkId: string;
   userId: string;

@@ -7,6 +7,7 @@ import {
   deleteTalkFolderAndMoveTalksToTopLevel,
   deleteTalkForOwner,
   deleteTalkLlmPolicy,
+  deleteTalkMessagesAtomic,
   enqueueTalkTurnAtomic,
   ensureTalkHasDefaultAgent,
   getPrimaryTalkAgent,
@@ -1275,6 +1276,142 @@ export function listTalkMessagesRoute(input: {
       },
     },
   };
+}
+
+export function deleteTalkMessagesRoute(input: {
+  talkId: string;
+  auth: AuthContext;
+  messageIds: string[];
+}): {
+  statusCode: number;
+  body: ApiEnvelope<{
+    talkId: string;
+    deletedCount: number;
+    deletedMessageIds: string[];
+  }>;
+} {
+  const talk = getTalkForUser(input.talkId, input.auth.userId);
+  if (!talk) {
+    return {
+      statusCode: 404,
+      body: {
+        ok: false,
+        error: {
+          code: 'talk_not_found',
+          message: 'Talk not found',
+        },
+      },
+    };
+  }
+  if (!canEditTalk(input.talkId, input.auth.userId, input.auth.role)) {
+    return {
+      statusCode: 403,
+      body: {
+        ok: false,
+        error: { code: 'forbidden', message: 'Talk is read-only' },
+      },
+    };
+  }
+
+  const normalizedIds = Array.from(
+    new Set(
+      input.messageIds
+        .map((messageId) => messageId.trim())
+        .filter((messageId) => messageId.length > 0),
+    ),
+  );
+  if (normalizedIds.length === 0) {
+    return {
+      statusCode: 400,
+      body: {
+        ok: false,
+        error: {
+          code: 'invalid_message_ids',
+          message: 'Select at least one message to delete.',
+        },
+      },
+    };
+  }
+  if (normalizedIds.length > 200) {
+    return {
+      statusCode: 400,
+      body: {
+        ok: false,
+        error: {
+          code: 'too_many_message_ids',
+          message: 'Delete at most 200 messages at a time.',
+        },
+      },
+    };
+  }
+
+  try {
+    const deleted = deleteTalkMessagesAtomic({
+      talkId: input.talkId,
+      messageIds: normalizedIds,
+    });
+    return {
+      statusCode: 200,
+      body: {
+        ok: true,
+        data: {
+          talkId: input.talkId,
+          deletedCount: deleted.deletedCount,
+          deletedMessageIds: deleted.deletedMessageIds,
+        },
+      },
+    };
+  } catch (error) {
+    const message =
+      error instanceof Error ? error.message : 'Unable to edit talk history';
+    if (message === 'talk already has an active round') {
+      return {
+        statusCode: 409,
+        body: {
+          ok: false,
+          error: {
+            code: 'talk_active_round',
+            message:
+              'Wait for the current round to finish or cancel it before editing history.',
+          },
+        },
+      };
+    }
+    if (message === 'one or more talk messages were not found') {
+      return {
+        statusCode: 404,
+        body: {
+          ok: false,
+          error: {
+            code: 'message_not_found',
+            message: 'One or more selected messages no longer exist.',
+          },
+        },
+      };
+    }
+    if (message === 'system messages cannot be deleted') {
+      return {
+        statusCode: 400,
+        body: {
+          ok: false,
+          error: {
+            code: 'invalid_message_role',
+            message: 'System messages cannot be deleted.',
+          },
+        },
+      };
+    }
+    return {
+      statusCode: 500,
+      body: {
+        ok: false,
+        error: {
+          code: 'talk_history_edit_failed',
+          message,
+        },
+      },
+    };
+  }
 }
 
 export function enqueueTalkChat(input: {
