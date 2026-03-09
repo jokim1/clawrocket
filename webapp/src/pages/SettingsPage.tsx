@@ -179,7 +179,6 @@ export function SettingsPage({ onUnauthorized, userRole }: Props) {
   const [clearAuthToken, setClearAuthToken] = useState(false);
   const [clearBaseUrl, setClearBaseUrl] = useState(false);
   const [aliasRows, setAliasRows] = useState<AliasRow[]>([]);
-  const [defaultAliasDraft, setDefaultAliasDraft] = useState('Mock');
   const [subscriptionHostStatus, setSubscriptionHostStatus] =
     useState<ExecutorSubscriptionHostStatus | null>(null);
   const [subscriptionHostBusy, setSubscriptionHostBusy] = useState<
@@ -192,7 +191,6 @@ export function SettingsPage({ onUnauthorized, userRole }: Props) {
   const applySettingsDrafts = (nextSettings: ExecutorSettings): void => {
     setSettings(nextSettings);
     setAliasRows(configuredAliasRows(nextSettings.configuredAliasMap));
-    setDefaultAliasDraft(nextSettings.defaultAlias);
     setAuthModeDraft(nextSettings.executorAuthMode);
     setBaseUrlDraft(nextSettings.anthropicBaseUrl || '');
     setApiKeyDraft('');
@@ -284,29 +282,6 @@ export function SettingsPage({ onUnauthorized, userRole }: Props) {
     return Array.from(combined);
   }, [settings, status]);
 
-  const baseEffectiveAliasMap = useMemo(() => {
-    if (!settings) return {};
-    return Object.fromEntries(
-      Object.entries(settings.effectiveAliasMap).filter(
-        ([alias]) =>
-          !Object.prototype.hasOwnProperty.call(
-            settings.configuredAliasMap,
-            alias,
-          ),
-      ),
-    );
-  }, [settings]);
-
-  const effectiveAliasOptions = useMemo(() => {
-    try {
-      return {
-        ...baseEffectiveAliasMap,
-        ...normalizeAliasDraft(aliasRows),
-      };
-    } catch {
-      return settings?.effectiveAliasMap || {};
-    }
-  }, [aliasRows, baseEffectiveAliasMap, settings?.effectiveAliasMap]);
 
   const handleApiFailure = (err: unknown, fallback: string): void => {
     if (err instanceof UnauthorizedError) {
@@ -474,13 +449,9 @@ export function SettingsPage({ onUnauthorized, userRole }: Props) {
 
     try {
       const aliasModelMap = normalizeAliasDraft(aliasRows);
-      if (!effectiveAliasOptions[defaultAliasDraft]) {
-        throw new Error('Default alias must exist in the effective alias set.');
-      }
 
       const nextSettings = await updateExecutorSettings({
         aliasModelMap,
-        defaultAlias: defaultAliasDraft,
       });
       applySettingsDrafts(nextSettings);
       const nextStatus = await getExecutorStatus();
@@ -554,10 +525,6 @@ export function SettingsPage({ onUnauthorized, userRole }: Props) {
     return <section className="page-state">Settings are unavailable.</section>;
   }
 
-  const seedAliases = Object.entries(settings.effectiveAliasMap).filter(
-    ([alias]) =>
-      !Object.prototype.hasOwnProperty.call(settings.configuredAliasMap, alias),
-  );
   const standby = standbyCredentials(settings);
   const showBaseUrl =
     authModeDraft === 'api_key' || authModeDraft === 'advanced_bearer';
@@ -722,62 +689,25 @@ export function SettingsPage({ onUnauthorized, userRole }: Props) {
         ) : null}
       </section>
 
-      {userRole === 'owner' || userRole === 'admin' ? (
-        <section className="settings-card">
-          <h2>AI Agents</h2>
-          <p className="settings-copy">
-            Configure the default Claude agent and any additional provider keys
-            on the AI Agents page. Roles and primary-agent behavior are managed
-            inside each talk.
-          </p>
-          <div className="settings-grid settings-status-grid">
-            <div>
-              <span className="settings-label">Current Claude mode</span>
-              <strong>{formatAuthMode(status.executorAuthMode)}</strong>
-            </div>
-            <div>
-              <span className="settings-label">Credential</span>
-              <strong>
-                {status.activeCredentialConfigured ? 'Configured' : 'Missing'}
-              </strong>
-            </div>
-            <div>
-              <span className="settings-label">Verification</span>
-              <strong>{formatVerificationStatus(status.verificationStatus)}</strong>
-            </div>
-            <div>
-              <span className="settings-label">Last verified</span>
-              <strong>{formatDateTime(status.lastVerifiedAt)}</strong>
-            </div>
-          </div>
-          {status.lastVerificationError ? (
-            <p className="settings-copy">
-              <strong>Current verification note:</strong>{' '}
-              {status.lastVerificationError}
-            </p>
-          ) : null}
-          <div className="settings-section-actions">
-            <a className="secondary-btn settings-nav-link" href="/app/agents">
-              Open AI Agents
-            </a>
-          </div>
-        </section>
-      ) : null}
-
       <section className="settings-card">
         <h2>Model Alias Map</h2>
+        <p className="settings-copy">
+          Give friendly names to model identifiers. Each row maps a canonical
+          model name to a short alias used throughout the app.
+        </p>
         <div className="settings-alias-list">
           {aliasRows.map((row) => (
             <div key={row.id} className="settings-alias-row">
               <input
                 type="text"
-                value={row.alias}
-                placeholder="Alias"
+                value={row.model}
+                placeholder="Model name (e.g. claude-opus-4-6)"
+                className="settings-alias-model"
                 onChange={(event) =>
                   setAliasRows((current) =>
                     current.map((item) =>
                       item.id === row.id
-                        ? { ...item, alias: event.target.value }
+                        ? { ...item, model: event.target.value }
                         : item,
                     ),
                   )
@@ -785,13 +715,14 @@ export function SettingsPage({ onUnauthorized, userRole }: Props) {
               />
               <input
                 type="text"
-                value={row.model}
-                placeholder="Model"
+                value={row.alias}
+                placeholder="Alias (e.g. Opus)"
+                className="settings-alias-name"
                 onChange={(event) =>
                   setAliasRows((current) =>
                     current.map((item) =>
                       item.id === row.id
-                        ? { ...item, model: event.target.value }
+                        ? { ...item, alias: event.target.value }
                         : item,
                     ),
                   )
@@ -823,34 +754,6 @@ export function SettingsPage({ onUnauthorized, userRole }: Props) {
         >
           Add Alias
         </button>
-
-        <div className="settings-seed-list">
-          <strong>Seed aliases</strong>
-          <ul>
-            {seedAliases.map(([alias, model]) => (
-              <li key={alias}>
-                <span>{alias}</span>
-                <code>{model}</code>
-              </li>
-            ))}
-          </ul>
-        </div>
-
-        <label className="settings-field-span">
-          <span>Default Alias</span>
-          <select
-            value={defaultAliasDraft}
-            onChange={(event) => setDefaultAliasDraft(event.target.value)}
-          >
-            {Object.keys(effectiveAliasOptions)
-              .sort()
-              .map((alias) => (
-                <option key={alias} value={alias}>
-                  {alias}
-                </option>
-              ))}
-          </select>
-        </label>
 
         <button
           type="button"
