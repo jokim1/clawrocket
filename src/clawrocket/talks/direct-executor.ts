@@ -90,7 +90,10 @@ interface SseEvent {
 interface ConnectorToolContext {
   attachedConnectorCount: number;
   toolDefinitions: ConnectorToolDefinition[];
-  connectorsById: Map<string, ReturnType<typeof listConnectorsForTalkRun>[number]>;
+  connectorsById: Map<
+    string,
+    ReturnType<typeof listConnectorsForTalkRun>[number]
+  >;
 }
 
 type AnthropicContentBlock =
@@ -133,7 +136,10 @@ interface ToolLoopTurnResult {
   usage?: TalkExecutionUsage;
   toolCalls: NormalizedToolCall[];
   anthropicAssistantContent?: AnthropicContentBlock[];
-  openAiAssistantMessage?: Extract<OpenAiConversationMessage, { role: 'assistant' }>;
+  openAiAssistantMessage?: Extract<
+    OpenAiConversationMessage,
+    { role: 'assistant' }
+  >;
 }
 
 export interface DirectTalkExecutorOptions {
@@ -673,7 +679,9 @@ function buildOpenAiMessages(promptMessages: PromptMessage[]): Array<{
   }));
 }
 
-function isToolCapableModel(model: LlmProviderModelRecord | undefined): boolean {
+function isToolCapableModel(
+  model: LlmProviderModelRecord | undefined,
+): boolean {
   return model?.supports_tools === 1;
 }
 
@@ -1006,7 +1014,7 @@ export class DirectTalkExecutor implements TalkExecutor {
           modelId: step.model.model_id,
           status: 'skipped',
           failureClass: 'configuration',
-          });
+        });
         continue;
       }
 
@@ -1659,7 +1667,8 @@ export class DirectTalkExecutor implements TalkExecutor {
     }
 
     const verificationTarget = settingsService.getVerificationTarget();
-    const hasRealConnectorTools = connectorToolContext.toolDefinitions.length > 0;
+    const hasRealConnectorTools =
+      connectorToolContext.toolDefinitions.length > 0;
     if (
       hasRealConnectorTools &&
       (!verificationTarget || verificationTarget.mode === 'subscription')
@@ -2024,7 +2033,9 @@ export class DirectTalkExecutor implements TalkExecutor {
         );
 
         if (!response.ok) {
-          const failure = classifyHttpFailure(await parseErrorResponse(response));
+          const failure = classifyHttpFailure(
+            await parseErrorResponse(response),
+          );
           throw new TalkExecutorError(failure.code, failure.message);
         }
 
@@ -2047,7 +2058,8 @@ export class DirectTalkExecutor implements TalkExecutor {
             const payload = JSON.parse(event.data) as Record<string, unknown>;
             if (payload.type === 'content_block_start') {
               const block =
-                typeof payload.content_block === 'object' && payload.content_block
+                typeof payload.content_block === 'object' &&
+                payload.content_block
                   ? (payload.content_block as Record<string, unknown>)
                   : null;
               if (block?.type === 'text') {
@@ -2061,7 +2073,9 @@ export class DirectTalkExecutor implements TalkExecutor {
                 blocks.push({
                   type: 'tool_use',
                   id:
-                    typeof block.id === 'string' ? String(block.id) : randomUUID(),
+                    typeof block.id === 'string'
+                      ? String(block.id)
+                      : randomUUID(),
                   name:
                     typeof block.name === 'string'
                       ? String(block.name)
@@ -2073,7 +2087,10 @@ export class DirectTalkExecutor implements TalkExecutor {
               return;
             }
 
-            if (payload.type === 'content_block_delta' && currentBlockIndex >= 0) {
+            if (
+              payload.type === 'content_block_delta' &&
+              currentBlockIndex >= 0
+            ) {
               const currentBlock = blocks[currentBlockIndex];
               const delta =
                 typeof payload.delta === 'object' && payload.delta
@@ -2096,7 +2113,8 @@ export class DirectTalkExecutor implements TalkExecutor {
             }
 
             if (
-              (payload.type === 'message_start' || payload.type === 'message_delta') &&
+              (payload.type === 'message_start' ||
+                payload.type === 'message_delta') &&
               typeof payload.message === 'object' &&
               payload.message &&
               'usage' in payload.message
@@ -2159,7 +2177,9 @@ export class DirectTalkExecutor implements TalkExecutor {
           .join('');
         const toolCalls = anthropicBlocks
           .filter(
-            (block): block is Extract<AnthropicContentBlock, { type: 'tool_use' }> =>
+            (
+              block,
+            ): block is Extract<AnthropicContentBlock, { type: 'tool_use' }> =>
               block.type === 'tool_use',
           )
           .map((block) => ({
@@ -2245,9 +2265,8 @@ export class DirectTalkExecutor implements TalkExecutor {
     signal.addEventListener('abort', onAbort, { once: true });
 
     try {
-      const conversation: OpenAiConversationMessage[] = buildOpenAiMessages(
-        promptMessages,
-      );
+      const conversation: OpenAiConversationMessage[] =
+        buildOpenAiMessages(promptMessages);
       const toolDefinitions = buildOpenAiToolDefinitions(
         connectorToolContext.toolDefinitions,
       );
@@ -2276,7 +2295,9 @@ export class DirectTalkExecutor implements TalkExecutor {
         );
 
         if (!response.ok) {
-          const failure = classifyHttpFailure(await parseErrorResponse(response));
+          const failure = classifyHttpFailure(
+            await parseErrorResponse(response),
+          );
           throw new TalkExecutorError(failure.code, failure.message);
         }
 
@@ -2448,7 +2469,10 @@ export class DirectTalkExecutor implements TalkExecutor {
     signal: AbortSignal,
     connectorToolContext?: ConnectorToolContext,
   ): Promise<StreamAttemptResult> {
-    if (connectorToolContext && connectorToolContext.toolDefinitions.length > 0) {
+    if (
+      connectorToolContext &&
+      connectorToolContext.toolDefinitions.length > 0
+    ) {
       return this.executeToolLoop(
         provider,
         modelId,

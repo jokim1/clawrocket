@@ -7,7 +7,11 @@ import {
 } from '../db/index.js';
 
 import { decryptConnectorSecret } from './connector-secret-store.js';
-import { ConnectorHttpError, fetchGoogleSheetsMetadata, fetchPostHogEventDefinitions } from './http.js';
+import {
+  ConnectorHttpError,
+  fetchGoogleSheetsMetadata,
+  fetchPostHogEventDefinitions,
+} from './http.js';
 import {
   parseGoogleSheetsConnectorConfig,
   parsePostHogConnectorConfig,
@@ -18,7 +22,11 @@ function classifyVerificationFailure(error: unknown): {
   message: string;
 } {
   if (error instanceof ConnectorHttpError) {
-    if (error.status === 401 || error.status === 403 || error.code.endsWith('_invalid')) {
+    if (
+      error.status === 401 ||
+      error.status === 403 ||
+      error.code.endsWith('_invalid')
+    ) {
       return {
         status: 'invalid',
         message: error.message,

@@ -76,9 +76,7 @@ function estimateToolDefinitionTokens(toolDefinitions: unknown[]): number {
   return Math.ceil(JSON.stringify(toolDefinitions).length / 4) + 32;
 }
 
-function parseMessageMetadataKind(
-  message: TalkMessageRecord,
-): string | null {
+function parseMessageMetadataKind(message: TalkMessageRecord): string | null {
   if (!message.metadata_json) return null;
   try {
     const parsed = JSON.parse(message.metadata_json) as Record<string, unknown>;

@@ -80,7 +80,9 @@ export function parsePostHogDiscovery(
 ): PostHogConnectorDiscovery {
   const projectName = readString(discovered?.projectName);
   const eventNames = Array.isArray(discovered?.eventNames)
-    ? discovered.eventNames.filter((value): value is string => typeof value === 'string')
+    ? discovered.eventNames.filter(
+        (value): value is string => typeof value === 'string',
+      )
     : [];
 
   return {
@@ -210,7 +212,8 @@ export function buildConnectorToolDefinitions(
             },
             limit: {
               type: 'number',
-              description: 'Optional result row cap from 1 to 1000. Defaults to 100.',
+              description:
+                'Optional result row cap from 1 to 1000. Defaults to 100.',
             },
           },
           required: ['query', 'dateFrom', 'dateTo'],
@@ -243,7 +246,8 @@ export function buildConnectorToolDefinitions(
         properties: {
           range: {
             type: 'string',
-            description: 'A1-style range, for example Summary!A1:C20 or Sheet1!1:1.',
+            description:
+              'A1-style range, for example Summary!A1:C20 or Sheet1!1:1.',
           },
         },
         required: ['range'],

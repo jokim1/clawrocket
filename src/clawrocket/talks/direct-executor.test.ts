@@ -214,8 +214,10 @@ function attachVerifiedPostHogConnector(input?: {
   patchDataConnectorDiscovery(connector.id, {
     projectId: input?.projectId || '12345',
     projectName: input?.discovered?.projectName || 'FTUE',
-    eventNames:
-      input?.discovered?.eventNames || ['session_started', 'ftue_step_viewed'],
+    eventNames: input?.discovered?.eventNames || [
+      'session_started',
+      'ftue_step_viewed',
+    ],
   });
   upsertDataConnectorVerification({
     connectorId: connector.id,

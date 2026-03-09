@@ -17,12 +17,18 @@ const GOOGLE_REFRESH_SKEW_MS = 60_000;
 const DEFAULT_ABORT_MESSAGE = 'Connector request aborted.';
 
 type JsonMap = Record<string, unknown>;
-type GoogleSheetsSecret = Extract<ConnectorSecretPayload, { kind: 'google_sheets' }>;
+type GoogleSheetsSecret = Extract<
+  ConnectorSecretPayload,
+  { kind: 'google_sheets' }
+>;
 
 // Single-flight is keyed by connector ID, not by the observed stale refresh
 // token. Concurrent callers for one connector converge on the same refresh and
 // then read the newly persisted credential on subsequent requests.
-const googleSheetsRefreshInFlight = new Map<string, Promise<GoogleSheetsSecret>>();
+const googleSheetsRefreshInFlight = new Map<
+  string,
+  Promise<GoogleSheetsSecret>
+>();
 
 export class ConnectorHttpError extends Error {
   readonly code: string;
@@ -120,7 +126,9 @@ async function readResponseText(
 
       totalBytes += value.byteLength;
       if (totalBytes > maxBytes) {
-        await reader.cancel('connector_response_too_large').catch(() => undefined);
+        await reader
+          .cancel('connector_response_too_large')
+          .catch(() => undefined);
         throw new ConnectorHttpError(
           'connector_response_too_large',
           'Connector response exceeded the maximum allowed size.',
@@ -154,7 +162,9 @@ async function readJsonResponse(
   } catch (error) {
     throw new ConnectorHttpError(
       'connector_invalid_response',
-      error instanceof Error ? error.message : 'Connector returned invalid JSON.',
+      error instanceof Error
+        ? error.message
+        : 'Connector returned invalid JSON.',
     );
   }
 }
@@ -167,7 +177,9 @@ function buildPostHogAuthHeaders(apiKey: string): Record<string, string> {
   };
 }
 
-function isGoogleSecretExpired(secret: Extract<ConnectorSecretPayload, { kind: 'google_sheets' }>): boolean {
+function isGoogleSecretExpired(
+  secret: Extract<ConnectorSecretPayload, { kind: 'google_sheets' }>,
+): boolean {
   if (!secret.expiryDate) return false;
   const expiresAt = Date.parse(secret.expiryDate);
   if (!Number.isFinite(expiresAt)) return false;
@@ -220,7 +232,8 @@ async function performGoogleSheetsSecretRefresh(input: {
   const accessToken =
     typeof payload.access_token === 'string' ? payload.access_token : null;
   const expiresIn =
-    typeof payload.expires_in === 'number' && Number.isFinite(payload.expires_in)
+    typeof payload.expires_in === 'number' &&
+    Number.isFinite(payload.expires_in)
       ? payload.expires_in
       : 3600;
 
@@ -372,15 +385,11 @@ export async function fetchGoogleSheetsMetadata(input: {
             title,
             rowCount:
               typeof gridProperties?.rowCount === 'number'
-                ? Math.floor(
-                    gridProperties.rowCount,
-                  )
+                ? Math.floor(gridProperties.rowCount)
                 : null,
             columnCount:
               typeof gridProperties?.columnCount === 'number'
-                ? Math.floor(
-                    gridProperties.columnCount,
-                  )
+                ? Math.floor(gridProperties.columnCount)
                 : null,
           } satisfies GoogleSheetDiscoveryItem;
         })

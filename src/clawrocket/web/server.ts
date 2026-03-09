@@ -164,8 +164,7 @@ export function createWebServer(
     subscriptionHostAuth:
       input?.subscriptionHostAuth || new ExecutorSubscriptionHostAuthService(),
     dataConnectorVerifier:
-      input?.dataConnectorVerifier ||
-      new DataConnectorVerifier(),
+      input?.dataConnectorVerifier || new DataConnectorVerifier(),
   };
 
   // startWebServer() already runs bootstrap migration in production. Repeat it
