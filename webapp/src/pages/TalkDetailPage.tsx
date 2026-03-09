@@ -22,6 +22,7 @@ import {
   createTalkContextRule,
   createTalkContextSource,
   DataConnector,
+  deleteTalkMessages,
   deleteTalkContextRule,
   deleteTalkContextSource,
   detachTalkDataConnector,
@@ -45,9 +46,11 @@ import {
   updateTalkAgents,
   UnauthorizedError,
 } from '../lib/api';
+import { TalkHistoryEditor } from '../components/TalkHistoryEditor';
 import { openTalkStream } from '../lib/talkStream';
 import type {
   MessageAppendedEvent,
+  TalkHistoryEditedEvent,
   TalkResponseDeltaEvent,
   TalkResponseStartedEvent,
   TalkResponseTerminalEvent,
@@ -889,6 +892,11 @@ export function TalkDetailPage({
     status: 'idle' | 'loading' | 'saving' | 'error' | 'success';
     message?: string;
   }>({ status: 'idle' });
+  const [historyEditorOpen, setHistoryEditorOpen] = useState(false);
+  const [historyEditState, setHistoryEditState] = useState<{
+    status: 'idle' | 'saving' | 'error' | 'success';
+    message?: string;
+  }>({ status: 'idle' });
 
   // Context tab state
   const [contextGoal, setContextGoal] = useState<ContextGoal | null>(null);
@@ -986,6 +994,8 @@ export function TalkDetailPage({
     setOrgConnectors([]);
     setAttachConnectorId('');
     setConnectorState({ status: 'idle' });
+    setHistoryEditorOpen(false);
+    setHistoryEditState({ status: 'idle' });
     setContextLoaded(false);
     setContextGoal(null);
     setContextRules([]);
@@ -1176,6 +1186,10 @@ export function TalkDetailPage({
         if (event.talkId !== talkId) return;
         dispatch({ type: 'RUN_CANCELLED_BATCH', runIds: event.runIds });
       },
+      onHistoryEdited: (event: TalkHistoryEditedEvent) => {
+        if (event.talkId !== talkId) return;
+        void resyncTalkState();
+      },
       onReplayGap: async () => {
         await resyncTalkState();
       },
@@ -1310,6 +1324,23 @@ export function TalkDetailPage({
         (run) => run.status === 'queued' || run.status === 'running',
       ),
     [state.runsById],
+  );
+  const canEditHistory = useMemo(
+    () =>
+      state.kind === 'ready' &&
+      !activeRound &&
+      state.messages.some((message) => message.role !== 'system'),
+    [activeRound, state],
+  );
+  const resolveMessageActorLabel = useCallback(
+    (message: TalkMessage): string | null => {
+      return (
+        (message.agentId ? agentLabelById[message.agentId] : null) ||
+        message.agentNickname ||
+        null
+      );
+    },
+    [agentLabelById],
   );
   const availableConnectors = useMemo(
     () =>
@@ -1512,6 +1543,81 @@ export function TalkDetailPage({
     }
   };
 
+  const openHistoryEditor = useCallback(() => {
+    if (state.kind !== 'ready') return;
+    if (activeRound) {
+      setHistoryEditState({
+        status: 'error',
+        message:
+          'Wait for the current round to finish or cancel it before editing history.',
+      });
+      return;
+    }
+    if (!state.messages.some((message) => message.role !== 'system')) {
+      setHistoryEditState({
+        status: 'error',
+        message: 'There are no editable messages in this Talk yet.',
+      });
+      return;
+    }
+    setHistoryEditState({ status: 'idle' });
+    setHistoryEditorOpen(true);
+  }, [activeRound, state]);
+
+  const handleCloseHistoryEditor = useCallback(() => {
+    if (historyEditState.status === 'saving') return;
+    setHistoryEditorOpen(false);
+    setHistoryEditState((current) =>
+      current.status === 'success' ? current : { status: 'idle' },
+    );
+  }, [historyEditState.status]);
+
+  const handleDeleteHistoryMessages = useCallback(
+    async (messageIds: string[]) => {
+      if (state.kind !== 'ready' || !state.talk) return;
+      if (messageIds.length === 0) {
+        setHistoryEditState({
+          status: 'error',
+          message: 'Select at least one message to delete.',
+        });
+        return;
+      }
+      const confirmed = window.confirm(
+        `Delete ${messageIds.length} selected message${
+          messageIds.length === 1 ? '' : 's'
+        } from this Talk history?`,
+      );
+      if (!confirmed) return;
+
+      setHistoryEditState({ status: 'saving' });
+      try {
+        const result = await deleteTalkMessages({
+          talkId: state.talk.id,
+          messageIds,
+        });
+        await resyncTalkState();
+        setHistoryEditorOpen(false);
+        setHistoryEditState({
+          status: 'success',
+          message: `Deleted ${result.deletedCount} message${
+            result.deletedCount === 1 ? '' : 's'
+          } from this Talk history.`,
+        });
+      } catch (err) {
+        if (err instanceof UnauthorizedError) {
+          handleUnauthorized();
+          return;
+        }
+        setHistoryEditState({
+          status: 'error',
+          message:
+            err instanceof Error ? err.message : 'Unable to edit Talk history.',
+        });
+      }
+    },
+    [handleUnauthorized, resyncTalkState, state],
+  );
+
   const handleDraftChange = (value: string) => {
     setDraft(value);
     if (state.kind === 'ready' && state.sendState.status === 'error') {
@@ -1540,6 +1646,12 @@ export function TalkDetailPage({
         message: 'Message content is required.',
         lastDraft: draft,
       });
+      return;
+    }
+    if (content === '/edit') {
+      setDraft('');
+      dispatch({ type: 'SEND_CLEARED' });
+      openHistoryEditor();
       return;
     }
     if (content.length > TALK_MESSAGE_MAX_CHARS) {
@@ -2755,6 +2867,35 @@ export function TalkDetailPage({
 
           {currentTab === 'talk' ? (
             <div className="timeline" aria-label="Talk timeline">
+              <div
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  gap: '12px',
+                  marginBottom: '12px',
+                  flexWrap: 'wrap',
+                }}
+              >
+                <p
+                  style={{
+                    margin: 0,
+                    color: '#475569',
+                    fontSize: '0.94rem',
+                  }}
+                >
+                  Use <code>/edit</code> or the button here to remove old Talk
+                  messages.
+                </p>
+                <button
+                  type="button"
+                  className="secondary-btn"
+                  onClick={openHistoryEditor}
+                  disabled={!canEditHistory}
+                >
+                  Edit history
+                </button>
+              </div>
             {talkTimeline.length === 0 ? (
               <p className="page-state">No messages yet.</p>
             ) : (
@@ -2912,6 +3053,18 @@ export function TalkDetailPage({
               </div>
             ) : null}
 
+            {historyEditState.status === 'success' ? (
+              <div className="inline-banner inline-banner-success" role="status">
+                {historyEditState.message}
+              </div>
+            ) : null}
+
+            {historyEditState.status === 'error' ? (
+              <div className="inline-banner inline-banner-error" role="alert">
+                {historyEditState.message}
+              </div>
+            ) : null}
+
             {state.cancelState.status === 'success' ? (
               <div className="inline-banner inline-banner-success" role="status">
                 {state.cancelState.message}
@@ -2926,6 +3079,19 @@ export function TalkDetailPage({
           </form>
         ) : null}
       </div>
+      <TalkHistoryEditor
+        isOpen={historyEditorOpen}
+        messages={state.messages}
+        busy={historyEditState.status === 'saving'}
+        errorMessage={
+          historyEditorOpen && historyEditState.status === 'error'
+            ? historyEditState.message || null
+            : null
+        }
+        onClose={handleCloseHistoryEditor}
+        onConfirm={handleDeleteHistoryMessages}
+        resolveActorLabel={resolveMessageActorLabel}
+      />
     </section>
   );
 }

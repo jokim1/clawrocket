@@ -38,6 +38,7 @@ describe('TalkDetailPage', () => {
   beforeEach(() => {
     document.cookie = 'cr_csrf_token=test-csrf-token';
     streamInput = null;
+    vi.stubGlobal('confirm', vi.fn(() => true));
     openTalkStreamMock.mockImplementation((input) => {
       streamInput = input;
       return {
@@ -505,6 +506,55 @@ describe('TalkDetailPage', () => {
     ).toBeTruthy();
     expect(screen.getByRole('heading', { name: 'Economy Sheet' })).toBeTruthy();
   });
+
+  it('opens edit history from /edit and deletes selected messages', async () => {
+    const user = userEvent.setup();
+
+    installTalkDetailFetch({
+      messages: [
+        buildMessage({
+          id: 'msg-1',
+          role: 'user',
+          content: 'Old user prompt',
+          createdAt: '2026-03-06T00:00:00.000Z',
+        }),
+        buildMessage({
+          id: 'msg-2',
+          role: 'assistant',
+          content: 'Old assistant answer',
+          createdAt: '2026-03-06T00:00:01.000Z',
+        }),
+        buildMessage({
+          id: 'msg-3',
+          role: 'user',
+          content: 'Keep this latest note',
+          createdAt: '2026-03-06T00:00:02.000Z',
+        }),
+      ],
+      runs: [],
+    });
+
+    renderDetailPage('/app/talks/talk-1');
+    const composer = await screen.findByPlaceholderText('Send a message to this talk');
+
+    await user.type(composer, '/edit');
+    await user.keyboard('{Enter}');
+
+    expect(await screen.findByRole('dialog', { name: 'Edit history' })).toBeTruthy();
+    const removeOldUser = screen.getByLabelText(/You.*Old user prompt/i);
+    const removeOldAssistant = screen.getByLabelText(/Assistant.*Old assistant answer/i);
+    await user.click(removeOldUser);
+    await user.click(removeOldAssistant);
+    await user.click(screen.getByRole('button', { name: 'Delete selected' }));
+
+    await waitFor(() =>
+      expect(screen.queryByRole('dialog', { name: 'Edit history' })).toBeNull(),
+    );
+    expect(await screen.findByText('Deleted 2 messages from this Talk history.')).toBeTruthy();
+    expect(screen.queryByText('Old user prompt')).toBeNull();
+    expect(screen.queryByText('Old assistant answer')).toBeNull();
+    expect(screen.getByText('Keep this latest note')).toBeTruthy();
+  });
 });
 
 function renderDetailPage(initialEntry: string): ReturnType<typeof render> {
@@ -690,7 +740,7 @@ function installTalkDetailFetch(input?: {
   }) => { talkId: string; message: TalkMessage; runs: TalkRun[] };
 }) {
   const talk = input?.talk ?? buildTalk();
-  const messages =
+  let messages =
     input?.messages ??
     [
       buildMessage({
@@ -792,6 +842,24 @@ function installTalkDetailFetch(input?: {
             talkId: 'talk-1',
             messages,
             page: { limit: 100, count: messages.length, beforeCreatedAt: null },
+          },
+        });
+      }
+
+      if (url.endsWith('/api/v1/talks/talk-1/messages/delete') && method === 'POST') {
+        const body = JSON.parse(String(init?.body || '{}')) as {
+          messageIds?: string[];
+        };
+        const deletedMessageIds = Array.isArray(body.messageIds) ? body.messageIds : [];
+        messages = messages.filter(
+          (message) => !deletedMessageIds.includes(message.id),
+        );
+        return jsonResponse(200, {
+          ok: true,
+          data: {
+            talkId: 'talk-1',
+            deletedCount: deletedMessageIds.length,
+            deletedMessageIds,
           },
         });
       }
