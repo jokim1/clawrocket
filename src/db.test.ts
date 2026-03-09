@@ -27,6 +27,7 @@ import {
   createTalk,
   createTalkMessage,
   createTalkRun,
+  deleteTalkMessagesAtomic,
   enqueueTalkTurnAtomic as enqueueTalkTurnAtomicRaw,
   failInterruptedRunsOnStartup,
   failRunAndPromoteNextAtomic,
@@ -690,6 +691,69 @@ describe('phase 0 schema and reliability tables', () => {
       beforeCreatedAt: '2024-01-01T00:00:01.000Z',
     });
     expect(before.map((message) => message.id)).toEqual(['tm-1']);
+  });
+
+  it('deletes selected talk messages, clears executor session, and emits a history-edited event', () => {
+    upsertTalkExecutorSession({
+      talkId: 'talk-1',
+      sessionId: 'session-edit-1',
+      executorAlias: 'Claude',
+      executorModel: 'claude-sonnet-4-6',
+      sessionCompatKey: computeSessionCompatKey('Claude', 'claude-sonnet-4-6'),
+      updatedAt: '2024-01-01T00:00:00.000Z',
+    });
+
+    createTalkMessage({
+      id: 'tm-edit-1',
+      talkId: 'talk-1',
+      role: 'user',
+      content: 'old question',
+      createdBy: 'owner-1',
+      createdAt: '2024-01-01T00:00:00.000Z',
+    });
+    createTalkMessage({
+      id: 'tm-edit-2',
+      talkId: 'talk-1',
+      role: 'assistant',
+      content: 'old answer',
+      createdAt: '2024-01-01T00:00:01.000Z',
+    });
+    createTalkMessage({
+      id: 'tm-edit-3',
+      talkId: 'talk-1',
+      role: 'user',
+      content: 'keep me',
+      createdBy: 'owner-1',
+      createdAt: '2024-01-01T00:00:02.000Z',
+    });
+
+    const result = deleteTalkMessagesAtomic({
+      talkId: 'talk-1',
+      messageIds: ['tm-edit-1', 'tm-edit-2'],
+      now: '2024-01-01T00:00:03.000Z',
+    });
+
+    expect(result).toEqual({
+      deletedCount: 2,
+      deletedMessageIds: ['tm-edit-1', 'tm-edit-2'],
+    });
+    expect(
+      listTalkMessages({ talkId: 'talk-1', limit: 10 }).map(
+        (message) => message.id,
+      ),
+    ).toEqual(['tm-edit-3']);
+    expect(getTalkExecutorSession('talk-1')).toBeUndefined();
+
+    const historyEvent = getOutboxEventsForTopics(['talk:talk-1'], 0, 20).find(
+      (event) => event.event_type === 'talk_history_edited',
+    );
+    expect(historyEvent).toBeDefined();
+    expect(JSON.parse(historyEvent!.payload)).toMatchObject({
+      talkId: 'talk-1',
+      deletedCount: 2,
+      deletedMessageIds: ['tm-edit-1', 'tm-edit-2'],
+      editedAt: '2024-01-01T00:00:03.000Z',
+    });
   });
 
   it('orders same-timestamp talk messages by sequence_in_run and includes runtime metadata in outbox events', () => {

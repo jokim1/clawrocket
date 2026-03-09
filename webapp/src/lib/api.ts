@@ -576,6 +576,23 @@ export async function listTalkMessages(talkId: string): Promise<TalkMessage[]> {
   return envelope.messages;
 }
 
+export async function deleteTalkMessages(input: {
+  talkId: string;
+  messageIds: string[];
+}): Promise<{ talkId: string; deletedCount: number; deletedMessageIds: string[] }> {
+  return apiMutationRequest<{
+    talkId: string;
+    deletedCount: number;
+    deletedMessageIds: string[];
+  }>(`/api/v1/talks/${encodeURIComponent(input.talkId)}/messages/delete`, {
+    method: 'POST',
+    includeJson: true,
+    body: JSON.stringify({
+      messageIds: input.messageIds,
+    }),
+  });
+}
+
 export async function getTalkAgents(talkId: string): Promise<TalkAgent[]> {
   const envelope = await apiRequest<{
     talkId: string;

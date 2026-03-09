@@ -67,6 +67,7 @@ import {
   createTalkFolderRoute,
   cancelTalkChat,
   createTalkRoute,
+  deleteTalkMessagesRoute,
   deleteTalkFolderRoute,
   deleteTalkRoute,
   enqueueTalkChat,
@@ -2315,6 +2316,62 @@ function buildApp(opts: WebServerOptions): Hono {
       auth,
       limit: limit ?? undefined,
       beforeCreatedAt,
+    });
+    return new Response(JSON.stringify(result.body), {
+      status: result.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
+  });
+
+  app.post('/api/v1/talks/:talkId/messages/delete', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+
+    const rateResult = checkRateLimit({ userId: auth.userId, bucket: 'write' });
+    if (!rateResult.allowed) {
+      return rateLimitedResponse(c, rateResult);
+    }
+
+    const csrf = validateCsrfToken({
+      method: c.req.method,
+      authType: auth.authType,
+      cookieHeader: c.req.header('cookie'),
+      csrfHeader: c.req.header('x-csrf-token'),
+    });
+    if (!csrf.ok) {
+      return c.json(
+        { ok: false, error: { code: 'csrf_failed', message: csrf.reason } },
+        403,
+      );
+    }
+
+    const bodyText = await c.req.text();
+    const payload = parseJsonPayload<{ messageIds?: unknown }>(bodyText);
+    if (!payload.ok) {
+      return c.json(
+        { ok: false, error: { code: 'invalid_json', message: payload.error } },
+        400,
+      );
+    }
+    if (!payload.data || typeof payload.data !== 'object') {
+      return c.json(
+        {
+          ok: false,
+          error: { code: 'invalid_json', message: 'JSON object expected.' },
+        },
+        400,
+      );
+    }
+
+    const messageIds = Array.isArray(payload.data.messageIds)
+      ? payload.data.messageIds.filter(
+          (value): value is string => typeof value === 'string',
+        )
+      : [];
+    const result = deleteTalkMessagesRoute({
+      talkId: c.req.param('talkId'),
+      auth,
+      messageIds,
     });
     return new Response(JSON.stringify(result.body), {
       status: result.statusCode,

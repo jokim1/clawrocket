@@ -6,12 +6,15 @@ import {
   createTalkRun,
   getQueuedTalkRuns,
   getRunningTalkRun,
+  getTalkExecutorSession,
   upsertTalk,
+  upsertTalkExecutorSession,
   upsertTalkLlmPolicy,
   upsertTalkMember,
   upsertUser,
   upsertWebSession,
 } from '../../db/index.js';
+import { computeSessionCompatKey } from '../../talks/executor-settings.js';
 import { hashSessionToken } from '../../identity/session.js';
 import { _resetRateLimitStateForTests } from '../middleware/rate-limit.js';
 import { createWebServer, WebServerHandle } from '../server.js';
@@ -645,6 +648,119 @@ describe('talk routes', () => {
         displaySummary: 'Checking FTUE funnel',
       },
     });
+  });
+
+  it('deletes selected talk messages and clears the cached executor session', async () => {
+    createTalkMessage({
+      id: 'msg-edit-1',
+      talkId: 'talk-owner',
+      role: 'user',
+      content: 'Remove me',
+      createdBy: 'owner-1',
+      createdAt: '2026-03-07T01:00:00.000Z',
+    });
+    createTalkMessage({
+      id: 'msg-edit-2',
+      talkId: 'talk-owner',
+      role: 'assistant',
+      content: 'Remove me too',
+      createdBy: null,
+      createdAt: '2026-03-07T01:00:01.000Z',
+    });
+    createTalkMessage({
+      id: 'msg-edit-3',
+      talkId: 'talk-owner',
+      role: 'user',
+      content: 'Keep me',
+      createdBy: 'owner-1',
+      createdAt: '2026-03-07T01:00:02.000Z',
+    });
+    upsertTalkExecutorSession({
+      talkId: 'talk-owner',
+      sessionId: 'session-edit-1',
+      executorAlias: 'Claude',
+      executorModel: 'claude-sonnet-4-6',
+      sessionCompatKey: computeSessionCompatKey('Claude', 'claude-sonnet-4-6'),
+      updatedAt: '2026-03-07T01:00:03.000Z',
+    });
+
+    const res = await server.request(
+      '/api/v1/talks/talk-owner/messages/delete',
+      {
+        method: 'POST',
+        headers: {
+          Authorization: 'Bearer owner-token',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ messageIds: ['msg-edit-1', 'msg-edit-2'] }),
+      },
+    );
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as any;
+    expect(body.ok).toBe(true);
+    expect(body.data).toMatchObject({
+      talkId: 'talk-owner',
+      deletedCount: 2,
+      deletedMessageIds: ['msg-edit-1', 'msg-edit-2'],
+    });
+    expect(getTalkExecutorSession('talk-owner')).toBeUndefined();
+
+    const messagesRes = await server.request(
+      '/api/v1/talks/talk-owner/messages',
+      {
+        headers: {
+          Authorization: 'Bearer owner-token',
+        },
+      },
+    );
+    const messagesBody = (await messagesRes.json()) as any;
+    expect(
+      messagesBody.data.messages.map((message: any) => message.id),
+    ).toEqual(['msg-edit-3']);
+  });
+
+  it('rejects history edits while a talk round is active', async () => {
+    createTalkMessage({
+      id: 'msg-edit-active',
+      talkId: 'talk-owner',
+      role: 'user',
+      content: 'Still here',
+      createdBy: 'owner-1',
+      createdAt: '2026-03-07T01:10:00.000Z',
+    });
+    createTalkRun({
+      id: 'run-edit-active',
+      talk_id: 'talk-owner',
+      requested_by: 'owner-1',
+      status: 'queued',
+      trigger_message_id: 'msg-edit-active',
+      target_agent_id: null,
+      idempotency_key: null,
+      executor_alias: null,
+      executor_model: null,
+      created_at: '2026-03-07T01:10:01.000Z',
+      started_at: null,
+      ended_at: null,
+      cancel_reason: null,
+    });
+
+    const res = await server.request(
+      '/api/v1/talks/talk-owner/messages/delete',
+      {
+        method: 'POST',
+        headers: {
+          Authorization: 'Bearer owner-token',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ messageIds: ['msg-edit-active'] }),
+      },
+    );
+
+    expect(res.status).toBe(409);
+    const body = (await res.json()) as any;
+    expect(body.ok).toBe(false);
+    expect(body.error.code).toBe('talk_active_round');
   });
 
   it('requires editor permission to enqueue chat', async () => {

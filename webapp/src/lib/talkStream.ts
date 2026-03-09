@@ -98,6 +98,13 @@ export type TalkRunCancelledEvent = {
   runIds: string[];
 };
 
+export type TalkHistoryEditedEvent = {
+  talkId: string;
+  deletedCount: number;
+  deletedMessageIds: string[];
+  editedAt: string;
+};
+
 interface EventSourceLike {
   onopen: ((event: Event) => void) | null;
   onerror: ((event: Event) => void) | null;
@@ -121,6 +128,7 @@ interface TalkStreamCallbacks {
   onRunCompleted: (event: TalkRunCompletedEvent) => void;
   onRunFailed: (event: TalkRunFailedEvent) => void;
   onRunCancelled: (event: TalkRunCancelledEvent) => void;
+  onHistoryEdited?: (event: TalkHistoryEditedEvent) => void;
   onReplayGap: () => void | Promise<void>;
   onStateChange?: (state: TalkStreamState) => void;
   onUnauthorized: () => void;
@@ -350,6 +358,13 @@ export function openTalkStream(input: OpenTalkStreamInput): TalkStreamHandle {
       const payload = parse<TalkRunCancelledEvent>(event);
       if (!payload) return;
       input.onRunCancelled(payload);
+    });
+
+    next.addEventListener('talk_history_edited', (event) => {
+      if (next !== source || stopped) return;
+      const payload = parse<TalkHistoryEditedEvent>(event);
+      if (!payload) return;
+      input.onHistoryEdited?.(payload);
     });
 
     next.addEventListener('replay_gap', () => {
