@@ -1,6 +1,7 @@
 import {
   act,
   cleanup,
+  fireEvent,
   render,
   screen,
   waitFor,
@@ -25,6 +26,7 @@ import type {
   TalkChannelBinding,
   TalkDataConnector,
   TalkMessage,
+  TalkMessageAttachment,
   TalkRun,
 } from '../lib/api';
 
@@ -486,6 +488,89 @@ describe('TalkDetailPage', () => {
     await waitFor(() => expect(composer).toHaveValue(''));
   });
 
+  it('attaches dropped files from the talk workspace and sends their attachment ids', async () => {
+    const user = userEvent.setup();
+    let uploadedFileName: string | null = null;
+    let sentBody:
+      | {
+          content: string;
+          targetAgentIds: string[];
+          attachmentIds?: string[];
+        }
+      | undefined;
+
+    installTalkDetailFetch({
+      messages: [],
+      runs: [],
+      onUploadAttachment: (formData) => {
+        const file = formData.get('file');
+        if (!(file instanceof File)) {
+          throw new Error('Expected file in attachment upload payload');
+        }
+        uploadedFileName = file.name;
+        return buildMessageAttachment({
+          id: 'att-1',
+          fileName: file.name,
+          fileSize: file.size,
+          mimeType: file.type,
+          extractionStatus: 'extracted',
+        });
+      },
+      onSendMessage: (body) => {
+        sentBody = body;
+        return {
+          talkId: 'talk-1',
+          message: buildMessage({
+            id: 'msg-posted',
+            role: 'user',
+            content: body.content,
+            createdAt: '2026-03-06T00:00:05.000Z',
+          }),
+          runs: [],
+        };
+      },
+    });
+
+    renderDetailPage('/app/talks/talk-1');
+    const composer = await screen.findByPlaceholderText('Send a message to this talk');
+    const workspace = composer.closest('.talk-workspace');
+    if (!workspace) {
+      throw new Error('Expected talk workspace wrapper');
+    }
+
+    const file = new File(['hello world'], 'notes.txt', { type: 'text/plain' });
+    const dataTransfer = createFileDataTransfer([file]);
+
+    const windowDragOverEvent = new Event('dragover', {
+      bubbles: true,
+      cancelable: true,
+    });
+    Object.defineProperty(windowDragOverEvent, 'dataTransfer', {
+      value: dataTransfer,
+    });
+    window.dispatchEvent(windowDragOverEvent);
+    expect(windowDragOverEvent.defaultPrevented).toBe(true);
+
+    fireEvent.dragEnter(workspace, { dataTransfer });
+    expect(await screen.findByText('Drop files to attach')).toBeTruthy();
+
+    fireEvent.drop(workspace, { dataTransfer });
+
+    expect(await screen.findByText('notes.txt')).toBeTruthy();
+    expect(uploadedFileName).toBe('notes.txt');
+
+    await user.type(composer, 'Please review the attachment.');
+    await user.click(screen.getByRole('button', { name: 'Send' }));
+
+    await waitFor(() =>
+      expect(sentBody).toMatchObject({
+        content: 'Please review the attachment.',
+        targetAgentIds: ['agent-claude'],
+        attachmentIds: ['att-1'],
+      }),
+    );
+  });
+
   it('renders concurrent live responses as separate streaming bubbles', async () => {
     installTalkDetailFetch();
 
@@ -777,6 +862,22 @@ function buildMessage(
   };
 }
 
+function buildMessageAttachment(
+  input: Partial<TalkMessageAttachment> &
+    Pick<
+      TalkMessageAttachment,
+      'id' | 'fileName' | 'fileSize' | 'mimeType' | 'extractionStatus'
+    >,
+): TalkMessageAttachment {
+  return {
+    id: input.id,
+    fileName: input.fileName,
+    fileSize: input.fileSize,
+    mimeType: input.mimeType,
+    extractionStatus: input.extractionStatus,
+  };
+}
+
 function buildRun(
   input: Partial<TalkRun> & Pick<TalkRun, 'id' | 'status' | 'createdAt'>,
 ): TalkRun {
@@ -794,6 +895,25 @@ function buildRun(
     executorAlias: input.executorAlias ?? null,
     executorModel: input.executorModel ?? null,
   };
+}
+
+function createFileDataTransfer(files: File[]): DataTransfer {
+  return {
+    files,
+    items: files.map((file) => ({
+      kind: 'file',
+      type: file.type,
+      getAsFile: () => file,
+    })),
+    types: {
+      0: 'Files',
+      length: 1,
+      contains: (value: string) => value === 'Files',
+      item: (index: number) => (index === 0 ? 'Files' : null),
+    },
+    dropEffect: 'copy',
+    effectAllowed: 'all',
+  } as unknown as DataTransfer;
 }
 
 function buildDataConnector(
@@ -1011,9 +1131,11 @@ function installTalkDetailFetch(input?: {
   onPutAgents?: (body: SavedTalkAgentRequest) => TalkAgent[];
   onGetContext?: () => TalkContext;
   onRetryContextSource?: (sourceId: string) => ContextSource;
+  onUploadAttachment?: (formData: FormData) => TalkMessageAttachment;
   onSendMessage?: (body: {
     content: string;
     targetAgentIds: string[];
+    attachmentIds?: string[];
   }) => { talkId: string; message: TalkMessage; runs: TalkRun[] };
 }) {
   const talk = input?.talk ?? buildTalk();
@@ -1155,6 +1277,32 @@ function installTalkDetailFetch(input?: {
             deletedCount: deletedMessageIds.length,
             deletedMessageIds,
           },
+        });
+      }
+
+      if (url.endsWith('/api/v1/talks/talk-1/attachments') && method === 'POST') {
+        if (!(init?.body instanceof FormData)) {
+          throw new Error('Expected attachment uploads to use FormData');
+        }
+
+        const file = init.body.get('file');
+        if (!(file instanceof File)) {
+          throw new Error('Expected file payload for attachment upload');
+        }
+
+        const attachment =
+          input?.onUploadAttachment?.(init.body) ??
+          buildMessageAttachment({
+            id: 'att-1',
+            fileName: file.name,
+            fileSize: file.size,
+            mimeType: file.type,
+            extractionStatus: 'extracted',
+          });
+
+        return jsonResponse(201, {
+          ok: true,
+          data: { attachment },
         });
       }
 

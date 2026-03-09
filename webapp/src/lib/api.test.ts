@@ -363,6 +363,87 @@ describe('api auth retry behavior', () => {
     );
   });
 
+  it('retries multipart attachment uploads after csrf_failed and preserves the file payload', async () => {
+    const mutationHeaders: Array<Record<string, string>> = [];
+    const uploadedFiles: string[] = [];
+
+    cookieValue = '';
+    vi.stubGlobal(
+      'fetch',
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        const path = normalizePath(input);
+        if (path === '/api/v1/talks/talk-1/attachments') {
+          mutationHeaders.push(readHeaders(init));
+
+          if (!(init?.body instanceof FormData)) {
+            throw new Error('Expected multipart FormData upload body');
+          }
+
+          const file = init.body.get('file');
+          if (!(file instanceof File)) {
+            throw new Error('Expected file entry in upload FormData');
+          }
+          uploadedFiles.push(`${file.name}:${file.type}:${file.size}`);
+
+          if (mutationHeaders.length === 1) {
+            return jsonResponse(403, {
+              ok: false,
+              error: {
+                code: 'csrf_failed',
+                message: 'Missing X-CSRF-Token header',
+              },
+            });
+          }
+
+          return jsonResponse(201, {
+            ok: true,
+            data: {
+              attachment: {
+                id: 'att-1',
+                fileName: file.name,
+                fileSize: file.size,
+                mimeType: file.type,
+                extractionStatus: 'extracted',
+              },
+            },
+          });
+        }
+
+        if (path === '/api/v1/auth/refresh') {
+          cookieValue = 'cr_csrf_token=upload-refresh-token';
+          return jsonResponse(200, {
+            ok: true,
+            data: {
+              user: {
+                id: 'u1',
+                email: 'owner@example.com',
+                displayName: 'Owner',
+                role: 'owner',
+              },
+            },
+          });
+        }
+
+        throw new Error(`Unexpected fetch path: ${path}`);
+      },
+    );
+
+    const api = await loadApiModule();
+    const attachment = await api.uploadTalkAttachment(
+      'talk-1',
+      new File(['hello'], 'notes.txt', { type: 'text/plain' }),
+    );
+
+    expect(attachment.attachment.id).toBe('att-1');
+    expect(mutationHeaders).toHaveLength(2);
+    expect(mutationHeaders[0]['x-csrf-token']).toBeUndefined();
+    expect(mutationHeaders[1]['x-csrf-token']).toBe('upload-refresh-token');
+    expect(uploadedFiles).toEqual([
+      'notes.txt:text/plain:5',
+      'notes.txt:text/plain:5',
+    ]);
+  });
+
   it('coalesces concurrent mutation refreshes and rebuilds fresh headers for both retries', async () => {
     const counts = new Map<string, number>();
     const createTalkHeaders: Array<Record<string, string>> = [];

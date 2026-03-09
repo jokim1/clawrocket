@@ -306,6 +306,27 @@ describe('talk routes', () => {
     expect(body.error.code).toBe('csrf_failed');
   });
 
+  it('returns csrf_failed for cookie-authenticated attachment uploads', async () => {
+    const form = new FormData();
+    form.append(
+      'file',
+      new File(['hello'], 'notes.txt', { type: 'text/plain' }),
+    );
+
+    const res = await server.request('/api/v1/talks/talk-owner/attachments', {
+      method: 'POST',
+      headers: {
+        Cookie: 'cr_access_token=owner-token; cr_csrf_token=csrf-a',
+      },
+      body: form,
+    });
+
+    expect(res.status).toBe(403);
+    const body = (await res.json()) as any;
+    expect(body.ok).toBe(false);
+    expect(body.error.code).toBe('csrf_failed');
+  });
+
   it('returns talk detail only for authorized users', async () => {
     const memberRes = await server.request('/api/v1/talks/talk-owner', {
       headers: {
