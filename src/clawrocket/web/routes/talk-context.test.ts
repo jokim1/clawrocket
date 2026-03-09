@@ -1,9 +1,10 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   _initTestDatabase,
-  getTalkContextSourceById,
   getTalkContextForPrompt,
+  type ContextSourceSnapshot,
+  updateSourceExtraction,
   upsertTalk,
   upsertUser,
   upsertWebSession,
@@ -11,6 +12,7 @@ import {
 import { hashSessionToken } from '../../identity/session.js';
 import { _resetRateLimitStateForTests } from '../middleware/rate-limit.js';
 import { createWebServer, WebServerHandle } from '../server.js';
+import type { TalkContextSourceIngestionService } from '../../talks/source-ingestion.js';
 import {
   buildTalkContextDirectives,
   buildTalkContextDirectivesFromData,
@@ -40,6 +42,11 @@ async function json(res: Response) {
 
 describe('talk context routes', () => {
   let server: WebServerHandle;
+  let sourceIngestion: TalkContextSourceIngestionService & {
+    enqueueUrlSource: ReturnType<
+      typeof vi.fn<(sourceId: string, url: string) => void>
+    >;
+  };
   const TALK_ID = 'talk-ctx';
 
   beforeEach(() => {
@@ -65,7 +72,14 @@ describe('talk context routes', () => {
       expiresAt: new Date(Date.now() + 60_000).toISOString(),
     });
 
-    server = createWebServer({ host: '127.0.0.1', port: 0 });
+    sourceIngestion = {
+      enqueueUrlSource: vi.fn<(sourceId: string, url: string) => void>(),
+    };
+    server = createWebServer({
+      host: '127.0.0.1',
+      port: 0,
+      sourceIngestion,
+    });
   });
 
   // =========================================================================
@@ -414,6 +428,56 @@ describe('talk context routes', () => {
         .source as Record<string, unknown>;
       expect(source.status).toBe('pending');
       expect(source.sourceUrl).toBe('https://example.com/docs');
+      expect(source.lastFetchedAt).toBeNull();
+      expect(source.fetchStrategy).toBeNull();
+      expect(sourceIngestion.enqueueUrlSource).toHaveBeenCalledWith(
+        source.id,
+        'https://example.com/docs',
+      );
+    });
+
+    it('retries a failed URL source and re-enqueues ingestion', async () => {
+      const createRes = await server.request(
+        `/api/v1/talks/${TALK_ID}/context/sources`,
+        {
+          method: 'POST',
+          headers: ownerAuth(),
+          body: JSON.stringify({
+            sourceType: 'url',
+            title: 'Docs page',
+            sourceUrl: 'https://example.com/docs',
+          }),
+        },
+      );
+      const source = ((await json(createRes)).data as Record<string, unknown>)
+        .source as ContextSourceSnapshot;
+
+      updateSourceExtraction({
+        sourceId: source.id,
+        extractedText: null,
+        extractionError:
+          'fetch_http_error: HTTP 403 from https://example.com/docs',
+        fetchStrategy: 'http',
+      });
+
+      sourceIngestion.enqueueUrlSource.mockClear();
+
+      const retryRes = await server.request(
+        `/api/v1/talks/${TALK_ID}/context/sources/${source.id}/retry`,
+        {
+          method: 'POST',
+          headers: ownerAuth(),
+        },
+      );
+      expect(retryRes.status).toBe(200);
+      const retried = ((await json(retryRes)).data as Record<string, unknown>)
+        .source as Record<string, unknown>;
+      expect(retried.status).toBe('pending');
+      expect(retried.extractionError).toBeNull();
+      expect(sourceIngestion.enqueueUrlSource).toHaveBeenCalledWith(
+        source.id,
+        'https://example.com/docs',
+      );
     });
 
     it('rejects text source without content', async () => {

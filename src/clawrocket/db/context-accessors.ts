@@ -8,6 +8,7 @@ import { getDb } from '../../db.js';
 
 export type ContextSourceType = 'url' | 'file' | 'text';
 export type ContextSourceStatus = 'pending' | 'ready' | 'failed';
+export type ContextSourceFetchStrategy = 'http' | 'browser' | 'managed';
 
 export interface TalkGoalRecord {
   talk_id: string;
@@ -42,7 +43,9 @@ export interface TalkContextSourceRecord {
   storage_key: string | null;
   extracted_text: string | null;
   extracted_at: string | null;
+  last_fetched_at: string | null;
   extraction_error: string | null;
+  fetch_strategy: ContextSourceFetchStrategy | null;
   is_truncated: number;
   created_at: string;
   updated_at: string;
@@ -82,7 +85,9 @@ export interface ContextSourceSnapshot {
   mimeType: string | null;
   extractedTextLength: number | null;
   extractedAt: string | null;
+  lastFetchedAt: string | null;
   extractionError: string | null;
+  fetchStrategy: ContextSourceFetchStrategy | null;
   isTruncated: boolean;
   createdAt: string;
   updatedAt: string;
@@ -129,7 +134,9 @@ function toSourceSnapshot(row: TalkContextSourceRecord): ContextSourceSnapshot {
     mimeType: row.mime_type,
     extractedTextLength: row.extracted_text?.length ?? null,
     extractedAt: row.extracted_at,
+    lastFetchedAt: row.last_fetched_at,
     extractionError: row.extraction_error,
+    fetchStrategy: row.fetch_strategy,
     isTruncated: row.is_truncated === 1,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -457,9 +464,10 @@ export function createTalkContextSource(input: {
         id, talk_id, source_ref, source_type, title, note,
         sort_order, status, source_url, file_name, file_size,
         mime_type, storage_key, extracted_text, extracted_at,
-        extraction_error, is_truncated, created_at, updated_at, created_by
+        last_fetched_at, extraction_error, fetch_strategy, is_truncated,
+        created_at, updated_at, created_by
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?, ?, ?, ?)
     `,
     )
     .run(
@@ -569,8 +577,11 @@ export function updateSourceExtraction(input: {
   extractedText: string | null;
   extractionError: string | null;
   mimeType?: string | null;
+  fetchStrategy?: ContextSourceFetchStrategy | null;
+  fetchedAt?: string | null;
 }): void {
   const now = new Date().toISOString();
+  const fetchedAt = input.fetchedAt ?? now;
 
   if (input.extractionError) {
     // Failed extraction — keep last-good content if it exists
@@ -579,12 +590,20 @@ export function updateSourceExtraction(input: {
         `
         UPDATE talk_context_sources
         SET extraction_error = ?,
+            last_fetched_at = ?,
+            fetch_strategy = COALESCE(?, fetch_strategy),
             status = CASE WHEN extracted_text IS NOT NULL THEN status ELSE 'failed' END,
             updated_at = ?
         WHERE id = ?
       `,
       )
-      .run(input.extractionError, now, input.sourceId);
+      .run(
+        input.extractionError,
+        fetchedAt,
+        input.fetchStrategy ?? null,
+        now,
+        input.sourceId,
+      );
     return;
   }
 
@@ -601,15 +620,54 @@ export function updateSourceExtraction(input: {
       UPDATE talk_context_sources
       SET extracted_text = ?,
           extracted_at = ?,
+          last_fetched_at = ?,
           extraction_error = NULL,
+          fetch_strategy = COALESCE(?, fetch_strategy),
           is_truncated = ?,
           status = 'ready',
           mime_type = COALESCE(?, mime_type),
           updated_at = ?
       WHERE id = ?
+      `,
+    )
+    .run(
+      text,
+      now,
+      fetchedAt,
+      input.fetchStrategy ?? null,
+      isTruncated,
+      input.mimeType ?? null,
+      now,
+      input.sourceId,
+    );
+}
+
+export function markTalkContextSourcePending(
+  sourceId: string,
+  talkId: string,
+): ContextSourceSnapshot | undefined {
+  const existing = getDb()
+    .prepare(`SELECT * FROM talk_context_sources WHERE id = ? AND talk_id = ?`)
+    .get(sourceId, talkId) as TalkContextSourceRecord | undefined;
+  if (!existing) return undefined;
+
+  const now = new Date().toISOString();
+  getDb()
+    .prepare(
+      `
+      UPDATE talk_context_sources
+      SET status = 'pending',
+          extraction_error = NULL,
+          updated_at = ?
+      WHERE id = ?
     `,
     )
-    .run(text, now, isTruncated, input.mimeType ?? null, now, input.sourceId);
+    .run(now, sourceId);
+
+  const row = getDb()
+    .prepare(`SELECT * FROM talk_context_sources WHERE id = ?`)
+    .get(sourceId) as TalkContextSourceRecord;
+  return toSourceSnapshot(row);
 }
 
 export function deleteTalkContextSource(

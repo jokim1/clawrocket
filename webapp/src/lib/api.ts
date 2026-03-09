@@ -90,6 +90,81 @@ export type TalkDataConnector = DataConnector & {
   attachedBy: string | null;
 };
 
+export type ChannelConnection = {
+  id: string;
+  platform: 'telegram' | 'slack';
+  connectionMode: string;
+  accountKey: string;
+  displayName: string;
+  enabled: boolean;
+  healthStatus: 'healthy' | 'degraded' | 'disconnected' | 'error';
+  lastHealthCheckAt: string | null;
+  lastHealthError: string | null;
+  config: Record<string, unknown> | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type ChannelTarget = {
+  connectionId: string;
+  targetKind: string;
+  targetId: string;
+  displayName: string;
+  metadata: Record<string, unknown> | null;
+  lastSeenAt: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type TalkChannelBinding = {
+  id: string;
+  talkId: string;
+  connectionId: string;
+  platform: 'telegram' | 'slack';
+  connectionDisplayName: string;
+  targetKind: string;
+  targetId: string;
+  displayName: string;
+  active: boolean;
+  responseMode: 'off' | 'mentions' | 'all';
+  responderMode: 'primary' | 'agent';
+  responderAgentId: string | null;
+  deliveryMode: 'reply' | 'channel';
+  channelContextNote: string | null;
+  inboundRateLimitPerMinute: number;
+  maxPendingEvents: number;
+  overflowPolicy: 'drop_oldest' | 'drop_newest';
+  maxDeferredAgeMinutes: number;
+  pendingIngressCount: number;
+  deferredIngressCount: number;
+  lastIngressReasonCode: string | null;
+  lastDeliveryReasonCode: string | null;
+};
+
+export type ChannelQueueFailure = {
+  id: string;
+  bindingId: string;
+  talkId: string;
+  connectionId?: string;
+  targetKind: string;
+  targetId: string;
+  platformEventId?: string | null;
+  externalMessageId?: string | null;
+  senderId?: string | null;
+  senderName?: string | null;
+  runId?: string | null;
+  talkMessageId?: string | null;
+  payload: Record<string, unknown> | null;
+  status: string;
+  reasonCode: string | null;
+  reasonDetail: string | null;
+  dedupeKey: string;
+  availableAt: string;
+  createdAt: string;
+  updatedAt: string;
+  attemptCount: number;
+};
+
 // ---------------------------------------------------------------------------
 // Context tab types
 // ---------------------------------------------------------------------------
@@ -120,6 +195,8 @@ export type ContextSource = {
   isTruncated: boolean;
   extractionError: string | null;
   mimeType: string | null;
+  lastFetchedAt: string | null;
+  fetchStrategy: 'http' | 'browser' | 'managed' | null;
   sortOrder: number;
   createdAt: string;
   updatedAt: string;
@@ -752,6 +829,316 @@ export async function detachTalkDataConnector(input: {
   );
 }
 
+type ChannelConnectionApiRecord = {
+  id: string;
+  platform: 'telegram' | 'slack';
+  connection_mode: string;
+  account_key: string;
+  display_name: string;
+  enabled: number;
+  health_status: 'healthy' | 'degraded' | 'disconnected' | 'error';
+  last_health_check_at: string | null;
+  last_health_error: string | null;
+  config_json: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+type ChannelTargetApiRecord = {
+  connection_id: string;
+  target_kind: string;
+  target_id: string;
+  display_name: string;
+  metadata_json: string | null;
+  last_seen_at: string;
+  created_at: string;
+  updated_at: string;
+};
+
+type ChannelQueueFailureApiRecord = {
+  id: string;
+  binding_id: string;
+  talk_id: string;
+  connection_id?: string;
+  target_kind: string;
+  target_id: string;
+  platform_event_id?: string | null;
+  external_message_id?: string | null;
+  sender_id?: string | null;
+  sender_name?: string | null;
+  run_id?: string | null;
+  talk_message_id?: string | null;
+  payload_json: string | null;
+  status: string;
+  reason_code: string | null;
+  reason_detail: string | null;
+  dedupe_key: string;
+  available_at: string;
+  created_at: string;
+  updated_at: string;
+  attempt_count: number;
+};
+
+function parseJsonObject(
+  value: string | null,
+): Record<string, unknown> | null {
+  if (!value) return null;
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : null;
+  } catch {
+    return null;
+  }
+}
+
+function mapChannelConnection(record: ChannelConnectionApiRecord): ChannelConnection {
+  return {
+    id: record.id,
+    platform: record.platform,
+    connectionMode: record.connection_mode,
+    accountKey: record.account_key,
+    displayName: record.display_name,
+    enabled: record.enabled === 1,
+    healthStatus: record.health_status,
+    lastHealthCheckAt: record.last_health_check_at,
+    lastHealthError: record.last_health_error,
+    config: parseJsonObject(record.config_json),
+    createdAt: record.created_at,
+    updatedAt: record.updated_at,
+  };
+}
+
+function mapChannelTarget(record: ChannelTargetApiRecord): ChannelTarget {
+  return {
+    connectionId: record.connection_id,
+    targetKind: record.target_kind,
+    targetId: record.target_id,
+    displayName: record.display_name,
+    metadata: parseJsonObject(record.metadata_json),
+    lastSeenAt: record.last_seen_at,
+    createdAt: record.created_at,
+    updatedAt: record.updated_at,
+  };
+}
+
+function mapChannelQueueFailure(record: ChannelQueueFailureApiRecord): ChannelQueueFailure {
+  return {
+    id: record.id,
+    bindingId: record.binding_id,
+    talkId: record.talk_id,
+    connectionId: record.connection_id,
+    targetKind: record.target_kind,
+    targetId: record.target_id,
+    platformEventId: record.platform_event_id,
+    externalMessageId: record.external_message_id,
+    senderId: record.sender_id,
+    senderName: record.sender_name,
+    runId: record.run_id,
+    talkMessageId: record.talk_message_id,
+    payload: parseJsonObject(record.payload_json),
+    status: record.status,
+    reasonCode: record.reason_code,
+    reasonDetail: record.reason_detail,
+    dedupeKey: record.dedupe_key,
+    availableAt: record.available_at,
+    createdAt: record.created_at,
+    updatedAt: record.updated_at,
+    attemptCount: record.attempt_count,
+  };
+}
+
+export async function listChannelConnections(): Promise<ChannelConnection[]> {
+  const envelope = await apiRequest<{
+    connections: ChannelConnectionApiRecord[];
+  }>('/api/v1/channel-connections');
+  return envelope.connections.map(mapChannelConnection);
+}
+
+export async function listChannelTargets(input: {
+  connectionId: string;
+  query?: string;
+  limit?: number;
+}): Promise<ChannelTarget[]> {
+  const params = new URLSearchParams();
+  if (input.query?.trim()) {
+    params.set('query', input.query.trim());
+  }
+  if (typeof input.limit === 'number') {
+    params.set('limit', String(input.limit));
+  }
+  const suffix = params.toString() ? `?${params.toString()}` : '';
+  const envelope = await apiRequest<{
+    targets: ChannelTargetApiRecord[];
+  }>(
+    `/api/v1/channel-connections/${encodeURIComponent(input.connectionId)}/targets${suffix}`,
+  );
+  return envelope.targets.map(mapChannelTarget);
+}
+
+export async function listTalkChannels(
+  talkId: string,
+): Promise<TalkChannelBinding[]> {
+  const envelope = await apiRequest<{
+    talkId: string;
+    bindings: TalkChannelBinding[];
+  }>(`/api/v1/talks/${encodeURIComponent(talkId)}/channels`);
+  return envelope.bindings;
+}
+
+export async function createTalkChannel(input: {
+  talkId: string;
+  connectionId: string;
+  targetKind: string;
+  targetId: string;
+  displayName: string;
+  responseMode?: TalkChannelBinding['responseMode'];
+  responderMode?: TalkChannelBinding['responderMode'];
+  responderAgentId?: string | null;
+  deliveryMode?: TalkChannelBinding['deliveryMode'];
+  channelContextNote?: string | null;
+  inboundRateLimitPerMinute?: number;
+  maxPendingEvents?: number;
+  overflowPolicy?: TalkChannelBinding['overflowPolicy'];
+  maxDeferredAgeMinutes?: number;
+}): Promise<TalkChannelBinding> {
+  const envelope = await apiMutationRequest<{ binding: TalkChannelBinding }>(
+    `/api/v1/talks/${encodeURIComponent(input.talkId)}/channels`,
+    {
+      method: 'POST',
+      includeJson: true,
+      body: JSON.stringify(input),
+    },
+  );
+  return envelope.binding;
+}
+
+export async function patchTalkChannel(input: {
+  talkId: string;
+  bindingId: string;
+  active?: boolean;
+  displayName?: string;
+  responseMode?: TalkChannelBinding['responseMode'];
+  responderMode?: TalkChannelBinding['responderMode'];
+  responderAgentId?: string | null;
+  deliveryMode?: TalkChannelBinding['deliveryMode'];
+  channelContextNote?: string | null;
+  inboundRateLimitPerMinute?: number;
+  maxPendingEvents?: number;
+  overflowPolicy?: TalkChannelBinding['overflowPolicy'];
+  maxDeferredAgeMinutes?: number;
+}): Promise<TalkChannelBinding> {
+  const { talkId, bindingId, ...patch } = input;
+  const envelope = await apiMutationRequest<{ binding: TalkChannelBinding }>(
+    `/api/v1/talks/${encodeURIComponent(talkId)}/channels/${encodeURIComponent(bindingId)}`,
+    {
+      method: 'PATCH',
+      includeJson: true,
+      body: JSON.stringify(patch),
+    },
+  );
+  return envelope.binding;
+}
+
+export async function deleteTalkChannel(input: {
+  talkId: string;
+  bindingId: string;
+}): Promise<void> {
+  await apiMutationRequest<{ deleted: true }>(
+    `/api/v1/talks/${encodeURIComponent(input.talkId)}/channels/${encodeURIComponent(input.bindingId)}`,
+    {
+      method: 'DELETE',
+    },
+  );
+}
+
+export async function testTalkChannelBinding(input: {
+  talkId: string;
+  bindingId: string;
+}): Promise<void> {
+  await apiMutationRequest<{ sent: true }>(
+    `/api/v1/talks/${encodeURIComponent(input.talkId)}/channels/${encodeURIComponent(input.bindingId)}/test`,
+    {
+      method: 'POST',
+    },
+  );
+}
+
+export async function listTalkChannelIngressFailures(input: {
+  talkId: string;
+  bindingId: string;
+}): Promise<ChannelQueueFailure[]> {
+  const envelope = await apiRequest<{
+    failures: ChannelQueueFailureApiRecord[];
+  }>(
+    `/api/v1/talks/${encodeURIComponent(input.talkId)}/channels/${encodeURIComponent(input.bindingId)}/ingress-failures`,
+  );
+  return envelope.failures.map(mapChannelQueueFailure);
+}
+
+export async function retryTalkChannelIngressFailure(input: {
+  talkId: string;
+  bindingId: string;
+  rowId: string;
+}): Promise<void> {
+  await apiMutationRequest<{ retried: true }>(
+    `/api/v1/talks/${encodeURIComponent(input.talkId)}/channels/${encodeURIComponent(input.bindingId)}/ingress-failures/${encodeURIComponent(input.rowId)}/retry`,
+    {
+      method: 'POST',
+    },
+  );
+}
+
+export async function deleteTalkChannelIngressFailure(input: {
+  talkId: string;
+  bindingId: string;
+  rowId: string;
+}): Promise<void> {
+  await apiMutationRequest<{ deleted: true }>(
+    `/api/v1/talks/${encodeURIComponent(input.talkId)}/channels/${encodeURIComponent(input.bindingId)}/ingress-failures/${encodeURIComponent(input.rowId)}`,
+    {
+      method: 'DELETE',
+    },
+  );
+}
+
+export async function listTalkChannelDeliveryFailures(input: {
+  talkId: string;
+  bindingId: string;
+}): Promise<ChannelQueueFailure[]> {
+  const envelope = await apiRequest<{
+    failures: ChannelQueueFailureApiRecord[];
+  }>(
+    `/api/v1/talks/${encodeURIComponent(input.talkId)}/channels/${encodeURIComponent(input.bindingId)}/delivery-failures`,
+  );
+  return envelope.failures.map(mapChannelQueueFailure);
+}
+
+export async function retryTalkChannelDeliveryFailure(input: {
+  talkId: string;
+  bindingId: string;
+  rowId: string;
+}): Promise<void> {
+  await apiMutationRequest<{ retried: true }>(
+    `/api/v1/talks/${encodeURIComponent(input.talkId)}/channels/${encodeURIComponent(input.bindingId)}/delivery-failures/${encodeURIComponent(input.rowId)}/retry`,
+    {
+      method: 'POST',
+    },
+  );
+}
+
+export async function deleteTalkChannelDeliveryFailure(input: {
+  talkId: string;
+  bindingId: string;
+  rowId: string;
+}): Promise<void> {
+  await apiMutationRequest<{ deleted: true }>(
+    `/api/v1/talks/${encodeURIComponent(input.talkId)}/channels/${encodeURIComponent(input.bindingId)}/delivery-failures/${encodeURIComponent(input.rowId)}`,
+    {
+      method: 'DELETE',
+    },
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Context tab API functions
 // ---------------------------------------------------------------------------
@@ -873,6 +1260,19 @@ export async function deleteTalkContextSource(input: {
     `/api/v1/talks/${encodeURIComponent(input.talkId)}/context/sources/${encodeURIComponent(input.sourceId)}`,
     { method: 'DELETE' },
   );
+}
+
+export async function retryTalkContextSource(input: {
+  talkId: string;
+  sourceId: string;
+}): Promise<ContextSource> {
+  const envelope = await apiMutationRequest<{ source: ContextSource }>(
+    `/api/v1/talks/${encodeURIComponent(input.talkId)}/context/sources/${encodeURIComponent(input.sourceId)}/retry`,
+    {
+      method: 'POST',
+    },
+  );
+  return envelope.source;
 }
 
 export async function updateDefaultClaudeModel(

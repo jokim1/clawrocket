@@ -114,9 +114,13 @@ import {
   listTalkContextRulesRoute,
   patchTalkContextRuleRoute,
   patchTalkContextSourceRoute,
+  retryTalkContextSourceRoute,
   setTalkGoalRoute,
 } from './routes/talk-context.js';
-import { ingestUrlSource } from '../talks/source-ingestion.js';
+import {
+  createDefaultTalkContextSourceIngestionService,
+  type TalkContextSourceIngestionService,
+} from '../talks/source-ingestion.js';
 import { authenticateRequest } from './middleware/auth.js';
 import { AuthContext } from './types.js';
 import { DataConnectorVerifier } from '../connectors/connector-verifier.js';
@@ -140,6 +144,7 @@ export interface WebServerOptions {
   executorVerifier: ExecutorCredentialVerifier;
   subscriptionHostAuth: ExecutorSubscriptionHostAuthService;
   dataConnectorVerifier: DataConnectorVerifier;
+  sourceIngestion: TalkContextSourceIngestionService;
 }
 
 export interface WebServerHandle {
@@ -179,6 +184,9 @@ export function createWebServer(
       input?.subscriptionHostAuth || new ExecutorSubscriptionHostAuthService(),
     dataConnectorVerifier:
       input?.dataConnectorVerifier || new DataConnectorVerifier(),
+    sourceIngestion:
+      input?.sourceIngestion ||
+      createDefaultTalkContextSourceIngestionService(),
   };
 
   // startWebServer() already runs bootstrap migration in production. Repeat it
@@ -2857,13 +2865,13 @@ function buildApp(opts: WebServerOptions): Hono {
           : null,
     });
 
-    // Fire-and-forget: kick off URL ingestion asynchronously after creation
+    // Fire-and-forget: kick off URL ingestion asynchronously after creation.
     if (result.statusCode === 201 && sourceType === 'url' && sourceUrl) {
       const createdSource = (
         result.body as { ok: boolean; data?: { source?: { id: string } } }
       ).data?.source;
       if (createdSource?.id) {
-        void ingestUrlSource(createdSource.id, sourceUrl);
+        opts.sourceIngestion.enqueueUrlSource(createdSource.id, sourceUrl);
       }
     }
 
@@ -2974,6 +2982,56 @@ function buildApp(opts: WebServerOptions): Hono {
       headers: { 'content-type': 'application/json; charset=utf-8' },
     });
   });
+
+  app.post(
+    '/api/v1/talks/:talkId/context/sources/:sourceId/retry',
+    async (c) => {
+      const auth = requireAuth(c);
+      if (!auth) return unauthorized(c);
+
+      const rateResult = checkRateLimit({
+        principalId: auth.userId,
+        bucket: 'write',
+      });
+      if (!rateResult.allowed) {
+        return rateLimitedResponse(c, rateResult);
+      }
+
+      const csrf = validateCsrfToken({
+        method: c.req.method,
+        authType: auth.authType,
+        cookieHeader: c.req.header('cookie'),
+        csrfHeader: c.req.header('x-csrf-token'),
+      });
+      if (!csrf.ok) {
+        return c.json(
+          { ok: false, error: { code: 'csrf_invalid', message: csrf.reason } },
+          403,
+        );
+      }
+
+      const result = retryTalkContextSourceRoute({
+        auth,
+        talkId: c.req.param('talkId'),
+        sourceId: c.req.param('sourceId'),
+      });
+
+      if (result.statusCode === 200 && result.body.ok) {
+        const source = result.body.data.source;
+        if (
+          source.sourceType === 'url' &&
+          typeof source.sourceUrl === 'string'
+        ) {
+          opts.sourceIngestion.enqueueUrlSource(source.id, source.sourceUrl);
+        }
+      }
+
+      return new Response(JSON.stringify(result.body), {
+        status: result.statusCode,
+        headers: { 'content-type': 'application/json; charset=utf-8' },
+      });
+    },
+  );
 
   app.put('/api/v1/talks/:talkId/agents', async (c) => {
     const auth = requireAuth(c);
