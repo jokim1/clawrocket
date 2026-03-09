@@ -402,6 +402,88 @@ describe('TalkDetailPage', () => {
     expect(screen.getAllByText('GPT-5 Mini (Critic)').length).toBeGreaterThanOrEqual(2);
   });
 
+  it('keeps failed live responses in chronological order in the timeline', async () => {
+    installTalkDetailFetch({
+      messages: [
+        buildMessage({
+          id: 'msg-1',
+          role: 'user',
+          content: 'Can we pull retention data?',
+          createdAt: '2026-03-06T00:00:00.000Z',
+        }),
+        buildMessage({
+          id: 'msg-2',
+          role: 'assistant',
+          content: 'Later persisted answer',
+          createdAt: '2026-03-06T00:00:10.000Z',
+        }),
+      ],
+      runs: [
+        buildRun({
+          id: 'run-failed',
+          status: 'failed',
+          createdAt: '2026-03-06T00:00:05.000Z',
+          startedAt: '2026-03-06T00:00:05.000Z',
+          completedAt: '2026-03-06T00:00:08.000Z',
+          triggerMessageId: 'msg-1',
+          targetAgentId: 'agent-claude',
+          targetAgentNickname: 'Claude Sonnet 4.6',
+          errorCode: 'tool_capability',
+          errorMessage: 'Attached data connectors require a tool-capable model.',
+        }),
+      ],
+    });
+
+    renderDetailPage('/app/talks/talk-1');
+    await screen.findByRole('heading', { name: /Cal Football/i });
+
+    if (!streamInput) {
+      throw new Error('Expected talk stream input');
+    }
+    const stream = streamInput;
+
+    await act(async () => {
+      stream.onResponseStarted?.({
+        talkId: 'talk-1',
+        runId: 'run-failed',
+        agentId: 'agent-claude',
+        agentNickname: 'Claude Sonnet 4.6',
+        providerId: 'provider.anthropic',
+        modelId: 'claude-sonnet-4-6',
+      });
+      stream.onResponseDelta?.({
+        talkId: 'talk-1',
+        runId: 'run-failed',
+        agentId: 'agent-claude',
+        agentNickname: 'Claude Sonnet 4.6',
+        deltaText: 'Failed attempt preview',
+        providerId: 'provider.anthropic',
+        modelId: 'claude-sonnet-4-6',
+      });
+      stream.onRunFailed({
+        talkId: 'talk-1',
+        runId: 'run-failed',
+        triggerMessageId: 'msg-1',
+        errorCode: 'tool_capability',
+        errorMessage: 'Attached data connectors require a tool-capable model.',
+      });
+    });
+
+    const userArticle = screen.getByText('Can we pull retention data?').closest('article');
+    const failedArticle = screen.getByText('Failed attempt preview').closest('article');
+    const persistedArticle = screen.getByText('Later persisted answer').closest('article');
+
+    expect(userArticle).toBeTruthy();
+    expect(failedArticle).toBeTruthy();
+    expect(persistedArticle).toBeTruthy();
+    expect(userArticle?.compareDocumentPosition(failedArticle as Node)).toBe(
+      Node.DOCUMENT_POSITION_FOLLOWING,
+    );
+    expect(failedArticle?.compareDocumentPosition(persistedArticle as Node)).toBe(
+      Node.DOCUMENT_POSITION_FOLLOWING,
+    );
+  });
+
   it('detaches and re-attaches connectors from the Data Connectors tab', async () => {
     const user = userEvent.setup();
 
