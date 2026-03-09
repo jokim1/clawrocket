@@ -2,10 +2,12 @@ import { beforeEach, describe, expect, it } from 'vitest';
 
 import {
   _initTestDatabase,
+  getDataConnectorById,
   upsertTalk,
   upsertUser,
   upsertWebSession,
 } from '../../db/index.js';
+import { DataConnectorVerifier } from '../../connectors/connector-verifier.js';
 import { hashSessionToken } from '../../identity/session.js';
 import { _resetRateLimitStateForTests } from '../middleware/rate-limit.js';
 import { createWebServer, WebServerHandle } from '../server.js';
@@ -52,6 +54,15 @@ describe('data connector routes', () => {
     server = createWebServer({
       host: '127.0.0.1',
       port: 0,
+      dataConnectorVerifier: {
+        verify: async (connectorId: string) => {
+          const connector = getDataConnectorById(connectorId);
+          if (!connector) {
+            throw new Error(`missing connector: ${connectorId}`);
+          }
+          return connector;
+        },
+      } as DataConnectorVerifier,
     });
   });
 

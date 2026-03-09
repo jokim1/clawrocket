@@ -441,6 +441,35 @@ export function setDataConnectorCredential(input: {
   return getDataConnectorById(input.connectorId);
 }
 
+export function replaceDataConnectorCredentialCiphertext(input: {
+  connectorId: string;
+  ciphertext: string;
+  updatedBy?: string | null;
+}): void {
+  const existing = getDataConnectorCredential(input.connectorId);
+  if (!existing) {
+    throw new Error(`connector credential not found: ${input.connectorId}`);
+  }
+
+  const now = new Date().toISOString();
+  getDb()
+    .prepare(
+      `
+      UPDATE data_connector_secrets
+      SET ciphertext = ?,
+          updated_at = ?,
+          updated_by = ?
+      WHERE connector_id = ?
+    `,
+    )
+    .run(
+      input.ciphertext,
+      now,
+      input.updatedBy ?? existing.updated_by,
+      input.connectorId,
+    );
+}
+
 export function deleteDataConnectorCredential(
   connectorId: string,
   updatedBy?: string | null,
@@ -620,11 +649,10 @@ export function listConnectorsForTalkRun(
         ON dc.id = tdc.connector_id
       INNER JOIN data_connector_secrets dcs
         ON dcs.connector_id = dc.id
-      INNER JOIN data_connector_verifications dcv
+      LEFT JOIN data_connector_verifications dcv
         ON dcv.connector_id = dc.id
       WHERE tdc.talk_id = ?
         AND dc.enabled = 1
-        AND dcv.status = 'verified'
       ORDER BY dc.name COLLATE NOCASE ASC, dc.id ASC
     `,
     )

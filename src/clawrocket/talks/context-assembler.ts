@@ -28,6 +28,7 @@ export interface ContextAssemblyInput {
   modelContextWindowTokens: number;
   maxOutputTokens: number;
   talkDirectives?: string | null;
+  toolDefinitions?: unknown[];
 }
 
 interface HistoricalTurn {
@@ -70,6 +71,21 @@ function estimateTokens(text: string): number {
   return Math.ceil(text.length / 4) + 4;
 }
 
+function estimateToolDefinitionTokens(toolDefinitions: unknown[]): number {
+  if (toolDefinitions.length === 0) return 0;
+  return Math.ceil(JSON.stringify(toolDefinitions).length / 4) + 32;
+}
+
+function parseMessageMetadataKind(message: TalkMessageRecord): string | null {
+  if (!message.metadata_json) return null;
+  try {
+    const parsed = JSON.parse(message.metadata_json) as Record<string, unknown>;
+    return typeof parsed.kind === 'string' ? parsed.kind : null;
+  } catch {
+    return null;
+  }
+}
+
 function messageTokenCost(message: PromptMessage): number {
   return estimateTokens(message.text) + 6;
 }
@@ -106,8 +122,12 @@ function buildHistoricalTurns(
     if (!message.run_id || message.run_id === currentRunId) continue;
     const group = byRunId.get(message.run_id) || {};
     if (message.role === 'user' && !group.user) group.user = message;
-    if (message.role === 'assistant' && !group.assistant)
+    if (
+      message.role === 'assistant' &&
+      parseMessageMetadataKind(message) !== 'assistant_tool_use'
+    ) {
       group.assistant = message;
+    }
     byRunId.set(message.run_id, group);
   }
 
@@ -128,10 +148,23 @@ function buildHistoricalTurns(
 export function assembleTalkPromptContext(
   input: ContextAssemblyInput,
 ): ContextAssemblyResult {
-  const inputBudgetTokens = Math.max(
-    256,
-    input.modelContextWindowTokens - input.maxOutputTokens - 256,
+  const toolDefinitionReserve = estimateToolDefinitionTokens(
+    input.toolDefinitions || [],
   );
+  const inputBudgetTokens = Math.max(
+    0,
+    input.modelContextWindowTokens -
+      input.maxOutputTokens -
+      256 -
+      toolDefinitionReserve,
+  );
+
+  if (inputBudgetTokens < 256) {
+    throw new ContextAssemblyError(
+      'tool_definitions_too_large_for_route',
+      'Attached connector tools exceed the available context budget for the selected route.',
+    );
+  }
 
   const systemMessages: PromptMessage[] = [
     {

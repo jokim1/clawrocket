@@ -2318,6 +2318,7 @@ export function completeRunAndPromoteNextAtomic(input: {
   responseMetadataJson?: string | null;
   agentId?: string | null;
   agentNickname?: string | null;
+  responseSequenceInRun?: number | null;
   now?: string;
 }): {
   applied: boolean;
@@ -2377,6 +2378,7 @@ export function completeRunAndPromoteNextAtomic(input: {
         metadataJson: txInput.responseMetadataJson || null,
         agentId: txInput.agentId || run.target_agent_id,
         agentNickname: txInput.agentNickname || null,
+        sequenceInRun: txInput.responseSequenceInRun ?? null,
         createdAt: now,
       });
 

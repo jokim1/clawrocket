@@ -330,9 +330,8 @@ export function DataConnectorsPage({
       <article className="settings-card">
         <h1>Data Connectors</h1>
         <p className="settings-copy">
-          Define org-level data sources, store credentials, then attach them to Talks.
-          Runtime tool execution lands in the next slice; this slice focuses on records
-          and binding.
+          Define org-level data sources, store credentials, and attach them to
+          Talks so tool-capable agents can query those sources during runs.
         </p>
         {error ? (
           <div className="settings-banner settings-banner-error" role="alert">
