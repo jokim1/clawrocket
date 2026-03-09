@@ -32,6 +32,7 @@ import {
   ExecutorSettingsService,
   setActiveExecutorSettingsService,
 } from './executor-settings.js';
+import type { ContainerOutput } from '../../container-runner.js';
 
 const OWNER_ID = 'owner-1';
 const TALK_ID = 'talk-1';
@@ -1115,7 +1116,7 @@ describe('DirectTalkExecutor', () => {
     });
   });
 
-  it('rejects Claude default connector runs when executor auth is subscription mode', async () => {
+  it('routes Claude default connector runs through the container in subscription mode', async () => {
     const settingsService = new ExecutorSettingsService();
     settingsService.saveExecutorConfig(
       {
@@ -1136,8 +1137,12 @@ describe('DirectTalkExecutor', () => {
       runId: 'run-claude-connectors',
     });
 
+    const runContainer = vi.fn(async (): Promise<ContainerOutput> => ({
+      status: 'success',
+      result: 'Container connector response',
+    }));
     const executor = new DirectTalkExecutor({
-      runContainer: vi.fn(),
+      runContainer,
       fetchImpl: vi.fn(async () => {
         throw new Error('fetch should not run');
       }),
@@ -1154,9 +1159,36 @@ describe('DirectTalkExecutor', () => {
         },
         new AbortController().signal,
       ),
-    ).rejects.toMatchObject({
-      code: 'connector_auth_mode_unsupported',
+    ).resolves.toMatchObject({
+      content: 'Container connector response',
+      providerId: 'provider.anthropic',
     });
+
+    expect(runContainer).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        toolProfile: 'web_talk',
+        webTalkConnectorBundle: expect.objectContaining({
+          connectors: [
+            expect.objectContaining({
+              connectorKind: 'posthog',
+              name: 'FTUE PostHog',
+              secret: expect.objectContaining({
+                kind: 'posthog',
+                apiKey: 'phc_test_key',
+              }),
+            }),
+          ],
+          toolDefinitions: [
+            expect.objectContaining({
+              toolName: expect.stringContaining('__posthog_query'),
+            }),
+          ],
+        }),
+      }),
+      expect.any(Function),
+      expect.any(Function),
+    );
   });
 
   it('fails the Claude default path after a response-start timeout', async () => {

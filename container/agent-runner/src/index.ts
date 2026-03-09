@@ -30,6 +30,35 @@ interface ContainerInput {
   isScheduledTask?: boolean;
   assistantName?: string;
   secrets?: Record<string, string>;
+  webTalkConnectorBundle?: {
+    connectors: Array<{
+      id: string;
+      name: string;
+      connectorKind: 'google_sheets' | 'posthog';
+      config: Record<string, unknown> | null;
+      secret:
+        | { kind: 'posthog'; apiKey: string }
+        | {
+            kind: 'google_sheets';
+            accessToken: string;
+            refreshToken?: string;
+            expiryDate?: string | null;
+            scopes?: string[];
+          };
+    }>;
+    toolDefinitions: Array<{
+      connectorId: string;
+      connectorKind: 'google_sheets' | 'posthog';
+      connectorName: string;
+      toolName: string;
+      description: string;
+      inputSchema: Record<string, unknown>;
+    }>;
+    googleOAuth?: {
+      clientId: string;
+      clientSecret: string;
+    };
+  };
 }
 
 interface ContainerOutput {
@@ -371,6 +400,9 @@ async function runQuery(
   const stream = new MessageStream();
   stream.push(prompt);
   const useWebTalkProfile = (containerInput.toolProfile || 'default') === 'web_talk';
+  const hasWebTalkConnectorTools =
+    useWebTalkProfile &&
+    (containerInput.webTalkConnectorBundle?.toolDefinitions.length || 0) > 0;
 
   // Poll IPC for follow-up messages and _close sentinel during the query.
   // Web talk profile is single-turn, so close input stream immediately.
@@ -450,15 +482,16 @@ async function runQuery(
         'TeamCreate', 'TeamDelete', 'SendMessage',
         'TodoWrite', 'ToolSearch', 'Skill',
         'NotebookEdit',
-        ...(useWebTalkProfile ? [] : ['mcp__nanoclaw__*'])
+        ...(!useWebTalkProfile || hasWebTalkConnectorTools
+          ? ['mcp__nanoclaw__*']
+          : [])
       ],
       env: sdkEnv,
       permissionMode: 'bypassPermissions',
       allowDangerouslySkipPermissions: true,
       settingSources: ['project', 'user'],
-      ...(useWebTalkProfile
-        ? {}
-        : {
+      ...(!useWebTalkProfile || hasWebTalkConnectorTools
+        ? {
             mcpServers: {
               nanoclaw: {
                 command: 'node',
@@ -467,10 +500,18 @@ async function runQuery(
                   NANOCLAW_CHAT_JID: containerInput.chatJid,
                   NANOCLAW_GROUP_FOLDER: containerInput.groupFolder,
                   NANOCLAW_IS_MAIN: containerInput.isMain ? '1' : '0',
+                  ...(hasWebTalkConnectorTools
+                    ? {
+                        NANOCLAW_WEB_TALK_CONNECTOR_BUNDLE: JSON.stringify(
+                          containerInput.webTalkConnectorBundle,
+                        ),
+                      }
+                    : {}),
                 },
               },
             },
-          }),
+          }
+        : {}),
       hooks: {
         PreCompact: [{ hooks: [createPreCompactHook(containerInput.assistantName)] }],
         PreToolUse: [{ matcher: 'Bash', hooks: [createSanitizeBashHook()] }],
