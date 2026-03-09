@@ -16,6 +16,7 @@ import {
   listClaudeModelSuggestions,
   listTalkLlmSettingsSnapshot,
   replaceTalkLlmSettingsSnapshot,
+  syncKnownProviderModels,
   upsertKnownProviderCredential,
 } from './llm-accessors.js';
 
@@ -229,5 +230,54 @@ describe('registered agent accessors', () => {
         }),
       ]),
     );
+  });
+
+  it('backfills supportsTools for legacy known provider model rows on startup sync', () => {
+    getDb()
+      .prepare(
+        `
+        INSERT INTO llm_provider_models (
+          provider_id,
+          model_id,
+          display_name,
+          context_window_tokens,
+          default_max_output_tokens,
+          supports_tools,
+          enabled,
+          updated_at,
+          updated_by
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `,
+      )
+      .run(
+        'provider.anthropic',
+        'claude-opus-4-6',
+        'Claude Opus 4.6',
+        200000,
+        4096,
+        0,
+        0,
+        new Date().toISOString(),
+        null,
+      );
+
+    syncKnownProviderModels();
+
+    const row = getDb()
+      .prepare(
+        `
+        SELECT supports_tools, enabled
+        FROM llm_provider_models
+        WHERE provider_id = ? AND model_id = ?
+      `,
+      )
+      .get('provider.anthropic', 'claude-opus-4-6') as
+      | { supports_tools: number; enabled: number }
+      | undefined;
+
+    expect(row).toEqual({
+      supports_tools: 1,
+      enabled: 0,
+    });
   });
 });
