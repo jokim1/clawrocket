@@ -271,22 +271,31 @@ function nodeRequest(
   return new Promise((resolve, reject) => {
     const isHttps = url.protocol === 'https:';
     const mod = isHttps ? https : http;
-
-    const customLookup: net.LookupFunction = (_hostname, _options, cb) => {
-      const family: 4 | 6 = net.isIPv6(resolvedIp) ? 6 : 4;
-      cb(null, resolvedIp, family);
-    };
+    if (!resolvedIp) {
+      reject(
+        new SourceIngestionError(
+          'dns_resolution_failed',
+          `Could not resolve hostname: ${url.hostname}`,
+        ),
+      );
+      return;
+    }
 
     const req = mod.request(
-      url,
       {
+        protocol: url.protocol,
+        hostname: resolvedIp,
+        port: url.port.length > 0 ? Number(url.port) : isHttps ? 443 : 80,
+        path: `${url.pathname}${url.search}`,
         method: 'GET',
         headers: {
+          Host: url.host,
           'User-Agent': 'RocketClaw-SourceIngestion/1.0',
           Accept: 'text/html, text/plain, application/pdf, */*',
         },
         timeout: FETCH_TIMEOUT_MS,
-        lookup: customLookup as net.LookupFunction,
+        servername: isHttps ? url.hostname : undefined,
+        family: net.isIPv6(resolvedIp) ? 6 : 4,
       },
       (res) => {
         const chunks: Buffer[] = [];
