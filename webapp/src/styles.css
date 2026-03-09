@@ -327,9 +327,6 @@ a {
 
 .clawtalk-sidebar-menu,
 .clawtalk-sidebar-submenu {
-  position: absolute;
-  right: 0;
-  top: calc(100% + 0.35rem);
   z-index: 10;
   min-width: 170px;
   display: grid;
@@ -339,6 +336,23 @@ a {
   border-radius: 12px;
   background: #fff;
   box-shadow: 0 12px 28px rgba(31, 52, 88, 0.14);
+}
+
+.clawtalk-sidebar-menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 0.35rem);
+}
+
+.clawtalk-sidebar-menu-portal {
+  position: fixed;
+  right: auto;
+  top: 0;
+  left: 0;
+  z-index: 1000;
+  overflow-y: auto;
+  min-width: min(170px, calc(100vw - 24px));
+  max-width: calc(100vw - 24px);
 }
 
 .clawtalk-sidebar-submenu {

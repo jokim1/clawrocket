@@ -10,7 +10,16 @@ import {
   useSensors,
 } from '@dnd-kit/core';
 import { CSS } from '@dnd-kit/utilities';
-import { FormEvent, KeyboardEvent, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  FormEvent,
+  KeyboardEvent,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
+import { createPortal } from 'react-dom';
 import { NavLink } from 'react-router-dom';
 
 import type { Talk, TalkSidebarFolder, TalkSidebarItem } from '../lib/api';
@@ -19,6 +28,12 @@ type RenameDraft = {
   talkId: string;
   draft: string;
 } | null;
+
+type MenuPosition = {
+  top: number;
+  left: number;
+  maxHeight: number;
+};
 
 type Props = {
   items: TalkSidebarItem[];
@@ -188,7 +203,11 @@ export function ClawTalkSidebar({
   const [renamingFolderId, setRenamingFolderId] = useState<string | null>(null);
   const [folderDrafts, setFolderDrafts] = useState<Record<string, string>>({});
   const [activeDragId, setActiveDragId] = useState<string | null>(null);
+  const [menuPosition, setMenuPosition] = useState<MenuPosition | null>(null);
   const menuRef = useRef<HTMLDivElement | null>(null);
+  const createMenuButtonRef = useRef<HTMLButtonElement | null>(null);
+  const talkMenuButtonRefs = useRef<Record<string, HTMLButtonElement | null>>({});
+  const folderMenuButtonRefs = useRef<Record<string, HTMLButtonElement | null>>({});
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 8 } }));
 
   useEffect(() => {
@@ -214,7 +233,98 @@ export function ClawTalkSidebar({
     return () => window.removeEventListener('mousedown', handlePointerDown);
   }, [menuState]);
 
+  useLayoutEffect(() => {
+    if (!menuState) {
+      setMenuPosition(null);
+      return;
+    }
+
+    const getMenuAnchor = (): HTMLButtonElement | null => {
+      if (menuState.type === 'create') return createMenuButtonRef.current;
+      if (menuState.type === 'talk') return talkMenuButtonRefs.current[menuState.talkId] ?? null;
+      return folderMenuButtonRefs.current[menuState.folderId] ?? null;
+    };
+
+    const updateMenuPosition = () => {
+      const anchor = getMenuAnchor();
+      const menu = menuRef.current;
+      if (!anchor || !menu) return;
+
+      const viewportPadding = 12;
+      const offset = 6;
+      const anchorRect = anchor.getBoundingClientRect();
+      const menuRect = menu.getBoundingClientRect();
+      const menuWidth = Math.min(
+        Math.max(menuRect.width, 170),
+        window.innerWidth - viewportPadding * 2,
+      );
+      const menuHeight = Math.max(menuRect.height, 0);
+      const belowTop = anchorRect.bottom + offset;
+      const belowSpace = window.innerHeight - belowTop - viewportPadding;
+      const aboveSpace = anchorRect.top - offset - viewportPadding;
+      const openAbove = belowSpace < menuHeight && aboveSpace > belowSpace;
+      const maxHeight = Math.max(
+        120,
+        Math.floor(openAbove ? aboveSpace : belowSpace),
+      );
+      const left = Math.max(
+        viewportPadding,
+        Math.min(
+          anchorRect.right - menuWidth,
+          window.innerWidth - menuWidth - viewportPadding,
+        ),
+      );
+      const top = openAbove
+        ? Math.max(
+            viewportPadding,
+            anchorRect.top - offset - Math.min(menuHeight || maxHeight, maxHeight),
+          )
+        : Math.min(
+            belowTop,
+            window.innerHeight -
+              viewportPadding -
+              Math.min(menuHeight || maxHeight, maxHeight),
+          );
+
+      setMenuPosition({
+        top: Math.round(top),
+        left: Math.round(left),
+        maxHeight,
+      });
+    };
+
+    updateMenuPosition();
+    window.addEventListener('resize', updateMenuPosition);
+    window.addEventListener('scroll', updateMenuPosition, true);
+    return () => {
+      window.removeEventListener('resize', updateMenuPosition);
+      window.removeEventListener('scroll', updateMenuPosition, true);
+    };
+  }, [menuState]);
+
   const moveTargets = useMemo(() => buildMoveTargets(items), [items]);
+
+  const renderMenu = (children: React.ReactNode) => {
+    if (typeof document === 'undefined') return null;
+    return createPortal(
+      <div
+        className="clawtalk-sidebar-menu clawtalk-sidebar-menu-portal"
+        ref={menuRef}
+        style={
+          menuPosition
+            ? {
+                top: `${menuPosition.top}px`,
+                left: `${menuPosition.left}px`,
+                maxHeight: `${menuPosition.maxHeight}px`,
+              }
+            : { visibility: 'hidden' }
+        }
+      >
+        {children}
+      </div>,
+      document.body,
+    );
+  };
 
   const handleCreateTalkClick = async () => {
     setMenuState(null);
@@ -352,6 +462,9 @@ export function ClawTalkSidebar({
               <button
                 type="button"
                 className="clawtalk-sidebar-more"
+                ref={(node) => {
+                  talkMenuButtonRefs.current[talk.id] = node;
+                }}
                 aria-label={`Manage ${talk.title || 'Untitled talk'}`}
                 onClick={() =>
                   setMenuState((current) =>
@@ -364,45 +477,47 @@ export function ClawTalkSidebar({
                 …
               </button>
               {menuOpen ? (
-                <div className="clawtalk-sidebar-menu" ref={menuRef}>
-                  <button type="button" onClick={() => onRenameTalk(talk.id, talk.title)}>
-                    Rename Talk
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setMenuState({ type: 'talk', talkId: talk.id, moveOpen: !moveOpen })
-                    }
-                  >
-                    Move To
-                  </button>
-                  {moveOpen ? (
-                    <div className="clawtalk-sidebar-submenu">
-                      {moveTargets.map((target) => (
-                        <button
-                          key={target.id || 'top-level'}
-                          type="button"
-                          onClick={async () => {
-                            setMenuState(null);
-                            await onPatchTalk({ talkId: talk.id, folderId: target.id });
-                          }}
-                        >
-                          {target.label}
-                        </button>
-                      ))}
-                    </div>
-                  ) : null}
-                  <button
-                    type="button"
-                    className="danger"
-                    onClick={async () => {
-                      setMenuState(null);
-                      await onDeleteTalk(talk.id);
-                    }}
-                  >
-                    Delete Talk
-                  </button>
-                </div>
+                renderMenu(
+                  <>
+                    <button type="button" onClick={() => onRenameTalk(talk.id, talk.title)}>
+                      Rename Talk
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setMenuState({ type: 'talk', talkId: talk.id, moveOpen: !moveOpen })
+                      }
+                    >
+                      Move To
+                    </button>
+                    {moveOpen ? (
+                      <div className="clawtalk-sidebar-submenu">
+                        {moveTargets.map((target) => (
+                          <button
+                            key={target.id || 'top-level'}
+                            type="button"
+                            onClick={async () => {
+                              setMenuState(null);
+                              await onPatchTalk({ talkId: talk.id, folderId: target.id });
+                            }}
+                          >
+                            {target.label}
+                          </button>
+                        ))}
+                      </div>
+                    ) : null}
+                    <button
+                      type="button"
+                      className="danger"
+                      onClick={async () => {
+                        setMenuState(null);
+                        await onDeleteTalk(talk.id);
+                      }}
+                    >
+                      Delete Talk
+                    </button>
+                  </>,
+                )
               ) : null}
             </div>
           </div>
@@ -485,6 +600,9 @@ export function ClawTalkSidebar({
                 <button
                   type="button"
                   className="clawtalk-sidebar-more"
+                  ref={(node) => {
+                    folderMenuButtonRefs.current[folder.id] = node;
+                  }}
                   aria-label={`Manage ${folder.title || 'Untitled folder'}`}
                   onClick={() =>
                     setMenuState((current) =>
@@ -497,35 +615,37 @@ export function ClawTalkSidebar({
                   …
                 </button>
                 {menuOpen ? (
-                  <div className="clawtalk-sidebar-menu" ref={menuRef}>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setMenuState(null);
-                        setRenamingFolderId(folder.id);
-                        setFolderDrafts((current) => ({
-                          ...current,
-                          [folder.id]: folder.title,
-                        }));
-                      }}
-                    >
-                      Rename Folder
-                    </button>
-                    <button
-                      type="button"
-                      className="danger"
-                      onClick={async () => {
-                        setMenuState(null);
-                        const confirmed = window.confirm(
-                          `Delete "${folder.title || 'Untitled folder'}"? Its talks will be moved to Top Level.`,
-                        );
-                        if (!confirmed) return;
-                        await onDeleteFolder(folder.id);
-                      }}
-                    >
-                      Delete Folder
-                    </button>
-                  </div>
+                  renderMenu(
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setMenuState(null);
+                          setRenamingFolderId(folder.id);
+                          setFolderDrafts((current) => ({
+                            ...current,
+                            [folder.id]: folder.title,
+                          }));
+                        }}
+                      >
+                        Rename Folder
+                      </button>
+                      <button
+                        type="button"
+                        className="danger"
+                        onClick={async () => {
+                          setMenuState(null);
+                          const confirmed = window.confirm(
+                            `Delete "${folder.title || 'Untitled folder'}"? Its talks will be moved to Top Level.`,
+                          );
+                          if (!confirmed) return;
+                          await onDeleteFolder(folder.id);
+                        }}
+                      >
+                        Delete Folder
+                      </button>
+                    </>,
+                  )
                 ) : null}
               </div>
             </div>
@@ -608,6 +728,7 @@ export function ClawTalkSidebar({
             <button
               type="button"
               className="clawtalk-sidebar-add"
+              ref={createMenuButtonRef}
               aria-label="Create talk or folder"
               onClick={() =>
                 setMenuState((current) => (current?.type === 'create' ? null : { type: 'create' }))
@@ -616,14 +737,16 @@ export function ClawTalkSidebar({
               +
             </button>
             {menuState?.type === 'create' ? (
-              <div className="clawtalk-sidebar-menu" ref={menuRef}>
-                <button type="button" onClick={() => void handleCreateTalkClick()}>
-                  New Talk
-                </button>
-                <button type="button" onClick={() => void handleCreateFolderClick()}>
-                  New Folder
-                </button>
-              </div>
+              renderMenu(
+                <>
+                  <button type="button" onClick={() => void handleCreateTalkClick()}>
+                    New Talk
+                  </button>
+                  <button type="button" onClick={() => void handleCreateFolderClick()}>
+                    New Folder
+                  </button>
+                </>,
+              )
             ) : null}
           </div>
         </div>
