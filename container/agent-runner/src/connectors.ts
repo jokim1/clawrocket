@@ -81,7 +81,10 @@ class ConnectorToolError extends Error {
   }
 }
 
-const googleSheetsRefreshInFlight = new Map<string, Promise<GoogleSheetsSecret>>();
+const googleSheetsRefreshInFlight = new Map<
+  string,
+  Promise<GoogleSheetsSecret>
+>();
 
 function readString(value: unknown): string | null {
   return typeof value === 'string' && value.trim() ? value.trim() : null;
@@ -108,7 +111,9 @@ function serializeToolResult(value: unknown): string {
   return `${serialized.slice(0, MAX_TOOL_RESULT_CHARS)}\n…truncated ${overflow} characters`;
 }
 
-function parseWebTalkConnectorBundleValue(value: unknown): WebTalkConnectorBundle | null {
+function parseWebTalkConnectorBundleValue(
+  value: unknown,
+): WebTalkConnectorBundle | null {
   const parsed = parseJsonMap(value);
   if (!parsed) return null;
 
@@ -121,7 +126,8 @@ function parseWebTalkConnectorBundleValue(value: unknown): WebTalkConnectorBundl
               !Array.isArray(item) &&
               typeof (item as { id?: unknown }).id === 'string' &&
               typeof (item as { name?: unknown }).name === 'string' &&
-              (((item as { connectorKind?: unknown }).connectorKind === 'posthog') ||
+              (((item as { connectorKind?: unknown }).connectorKind ===
+                'posthog') ||
                 (item as { connectorKind?: unknown }).connectorKind ===
                   'google_sheets'),
           ),
@@ -135,9 +141,11 @@ function parseWebTalkConnectorBundleValue(value: unknown): WebTalkConnectorBundl
             item &&
               typeof item === 'object' &&
               !Array.isArray(item) &&
-              typeof (item as { connectorId?: unknown }).connectorId === 'string' &&
+              typeof (item as { connectorId?: unknown }).connectorId ===
+                'string' &&
               typeof (item as { toolName?: unknown }).toolName === 'string' &&
-              typeof (item as { description?: unknown }).description === 'string',
+              typeof (item as { description?: unknown }).description ===
+                'string',
           ),
       )
     : [];
@@ -146,13 +154,14 @@ function parseWebTalkConnectorBundleValue(value: unknown): WebTalkConnectorBundl
     return null;
   }
 
+  const googleOAuthMap = parseJsonMap(parsed.googleOAuth);
   const googleOAuth =
-    parseJsonMap(parsed.googleOAuth) &&
-    typeof parseJsonMap(parsed.googleOAuth)?.clientId === 'string' &&
-    typeof parseJsonMap(parsed.googleOAuth)?.clientSecret === 'string'
+    googleOAuthMap &&
+    typeof googleOAuthMap.clientId === 'string' &&
+    typeof googleOAuthMap.clientSecret === 'string'
       ? {
-          clientId: String(parseJsonMap(parsed.googleOAuth)?.clientId),
-          clientSecret: String(parseJsonMap(parsed.googleOAuth)?.clientSecret),
+          clientId: googleOAuthMap.clientId,
+          clientSecret: googleOAuthMap.clientSecret,
         }
       : undefined;
 
@@ -173,7 +182,9 @@ export function readWebTalkConnectorBundleFromEnv(): WebTalkConnectorBundle | nu
   }
 }
 
-function parsePostHogConnectorConfig(config: JsonMap | null): PostHogConnectorConfig | null {
+function parsePostHogConnectorConfig(
+  config: JsonMap | null,
+): PostHogConnectorConfig | null {
   const hostUrl = readString(config?.hostUrl);
   const projectId = readString(config?.projectId);
   if (!hostUrl || !projectId) return null;
@@ -245,7 +256,9 @@ async function readResponseText(
     reader.releaseLock();
   }
 
-  return Buffer.concat(chunks.map((chunk) => Buffer.from(chunk))).toString('utf8');
+  return Buffer.concat(chunks.map((chunk) => Buffer.from(chunk))).toString(
+    'utf8',
+  );
 }
 
 async function readJsonResponse(
@@ -499,7 +512,9 @@ async function fetchGoogleSheetsMetadata(input: {
     googleOAuth: input.googleOAuth,
     url: joinUrl(
       GOOGLE_SHEETS_BASE_URL,
-      `/v4/spreadsheets/${encodeURIComponent(input.spreadsheetId)}?fields=sheets.properties`,
+      `/v4/spreadsheets/${encodeURIComponent(
+        input.spreadsheetId,
+      )}?fields=sheets.properties`,
     ),
     signal: input.signal,
     maxBytes: DEFAULT_MAX_RESPONSE_BYTES,
@@ -518,7 +533,9 @@ async function fetchGoogleSheetRange(input: {
     googleOAuth: input.googleOAuth,
     url: joinUrl(
       GOOGLE_SHEETS_BASE_URL,
-      `/v4/spreadsheets/${encodeURIComponent(input.spreadsheetId)}/values/${encodeURIComponent(input.range)}`,
+      `/v4/spreadsheets/${encodeURIComponent(
+        input.spreadsheetId,
+      )}/values/${encodeURIComponent(input.range)}`,
     ),
     signal: input.signal,
     maxBytes: DEFAULT_MAX_RESPONSE_BYTES,
@@ -766,7 +783,9 @@ async function executeReadRangeTool(
   }
 }
 
-function parseToolOperation(toolName: string): 'posthog_query' | 'list_sheets' | 'read_range' | null {
+function parseToolOperation(
+  toolName: string,
+): 'posthog_query' | 'list_sheets' | 'read_range' | null {
   if (toolName.endsWith('__posthog_query')) return 'posthog_query';
   if (toolName.endsWith('__list_sheets')) return 'list_sheets';
   if (toolName.endsWith('__read_range')) return 'read_range';
@@ -803,11 +822,19 @@ export function registerConnectorTools(
           tool.description,
           {
             query: z.string().describe('HogQL query string.'),
-            dateFrom: z.string().describe('Inclusive start date in YYYY-MM-DD format.'),
-            dateTo: z.string().describe('Inclusive end date in YYYY-MM-DD format.'),
-            limit: z.number().optional().describe('Optional result row cap from 1 to 1000.'),
+            dateFrom: z
+              .string()
+              .describe('Inclusive start date in YYYY-MM-DD format.'),
+            dateTo: z
+              .string()
+              .describe('Inclusive end date in YYYY-MM-DD format.'),
+            limit: z
+              .number()
+              .optional()
+              .describe('Optional result row cap from 1 to 1000.'),
           },
-          async (args) => formatToolResult(await executePostHogTool(connector, args)),
+          async (args) =>
+            formatToolResult(await executePostHogTool(connector, args)),
         );
         break;
       case 'list_sheets':
@@ -826,7 +853,11 @@ export function registerConnectorTools(
           tool.toolName,
           tool.description,
           {
-            range: z.string().describe('A1-style range, for example Summary!A1:C20 or Sheet1!1:1.'),
+            range: z
+              .string()
+              .describe(
+                'A1-style range, for example Summary!A1:C20 or Sheet1!1:1.',
+              ),
           },
           async (args) =>
             formatToolResult(
