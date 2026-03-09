@@ -33,7 +33,7 @@ export async function runBrowserSourceFetchInContainer(input: {
   const containerName = `nanoclaw-browser-fetch-${Date.now()}`;
   const compileAndRun =
     'cd /app && ' +
-    'npx tsc --outDir /tmp/dist 2>&1 >&2 && ' +
+    './node_modules/.bin/tsc --outDir /tmp/dist >/dev/stderr 2>&1 && ' +
     'ln -sf /app/node_modules /tmp/dist/node_modules && ' +
     'node /tmp/dist/browser-fetch.js';
 
