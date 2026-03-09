@@ -289,7 +289,10 @@ function createInitialDetailState(): DetailState {
   };
 }
 
-function summarizeMessageForRun(message: TalkMessage | undefined, messageId: string): string {
+function summarizeMessageForRun(
+  message: TalkMessage | undefined,
+  messageId: string,
+): string {
   if (!message) return messageId;
   const compact = message.content.trim().replace(/\s+/g, ' ');
   const preview = compact.length > 42 ? `${compact.slice(0, 42)}…` : compact;
@@ -299,7 +302,9 @@ function summarizeMessageForRun(message: TalkMessage | undefined, messageId: str
 function toRunView(run: TalkRun): RunView {
   return {
     ...run,
-    updatedAt: Date.parse(run.completedAt || run.startedAt || run.createdAt) || Date.now(),
+    updatedAt:
+      Date.parse(run.completedAt || run.startedAt || run.createdAt) ||
+      Date.now(),
   };
 }
 
@@ -322,39 +327,44 @@ function withRun(
     [runId]: {
       id: runId,
       status: patch.status,
-      createdAt: patch.createdAt ?? current?.createdAt ?? new Date(now).toISOString(),
+      createdAt:
+        patch.createdAt ?? current?.createdAt ?? new Date(now).toISOString(),
       startedAt:
-        patch.startedAt !== undefined ? patch.startedAt : current?.startedAt ?? null,
+        patch.startedAt !== undefined
+          ? patch.startedAt
+          : (current?.startedAt ?? null),
       completedAt:
         patch.completedAt !== undefined
           ? patch.completedAt
-          : current?.completedAt ?? null,
+          : (current?.completedAt ?? null),
       triggerMessageId:
         patch.triggerMessageId !== undefined
           ? patch.triggerMessageId
-          : current?.triggerMessageId ?? null,
+          : (current?.triggerMessageId ?? null),
       targetAgentId:
         patch.targetAgentId !== undefined
           ? patch.targetAgentId
-          : current?.targetAgentId ?? null,
+          : (current?.targetAgentId ?? null),
       targetAgentNickname:
         patch.targetAgentNickname !== undefined
           ? patch.targetAgentNickname
-          : current?.targetAgentNickname ?? null,
+          : (current?.targetAgentNickname ?? null),
       errorCode:
-        patch.errorCode !== undefined ? patch.errorCode : current?.errorCode ?? null,
+        patch.errorCode !== undefined
+          ? patch.errorCode
+          : (current?.errorCode ?? null),
       errorMessage:
         patch.errorMessage !== undefined
           ? patch.errorMessage
-          : current?.errorMessage ?? null,
+          : (current?.errorMessage ?? null),
       executorAlias:
         patch.executorAlias !== undefined
           ? patch.executorAlias
-          : current?.executorAlias ?? null,
+          : (current?.executorAlias ?? null),
       executorModel:
         patch.executorModel !== undefined
           ? patch.executorModel
-          : current?.executorModel ?? null,
+          : (current?.executorModel ?? null),
       updatedAt: now,
     },
   };
@@ -722,7 +732,9 @@ function connectorStatusClass(
   }
 }
 
-function formatChannelPlatform(platform: ChannelConnection['platform']): string {
+function formatChannelPlatform(
+  platform: ChannelConnection['platform'],
+): string {
   return platform === 'telegram' ? 'Telegram' : 'Slack';
 }
 
@@ -757,7 +769,9 @@ function formatDateTime(value: string | null): string {
   return parsed.toLocaleString();
 }
 
-function buildChannelBindingDraft(binding: TalkChannelBinding): ChannelBindingDraft {
+function buildChannelBindingDraft(
+  binding: TalkChannelBinding,
+): ChannelBindingDraft {
   return {
     displayName: binding.displayName,
     active: binding.active,
@@ -790,11 +804,15 @@ function buildDefaultChannelCreateDraft(): ChannelCreateDraft {
   };
 }
 
-function buildChannelTargetKey(target: Pick<ChannelTarget, 'targetKind' | 'targetId'>): string {
+function buildChannelTargetKey(
+  target: Pick<ChannelTarget, 'targetKind' | 'targetId'>,
+): string {
   return `${target.targetKind}::${target.targetId}`;
 }
 
-function parseChannelTargetKey(value: string): { targetKind: string; targetId: string } | null {
+function parseChannelTargetKey(
+  value: string,
+): { targetKind: string; targetId: string } | null {
   const separatorIndex = value.indexOf('::');
   if (separatorIndex <= 0) return null;
   return {
@@ -807,7 +825,9 @@ function buildAgentLabel(agent: Pick<TalkAgent, 'nickname' | 'role'>): string {
   return `${agent.nickname} (${formatTalkRole(agent.role)})`;
 }
 
-function getConfiguredProviders(data: AiAgentsPageData | null): AgentProviderCard[] {
+function getConfiguredProviders(
+  data: AiAgentsPageData | null,
+): AgentProviderCard[] {
   if (!data) return [];
   return data.additionalProviders.filter((provider) => provider.hasCredential);
 }
@@ -907,7 +927,9 @@ function applySourceModelSelection(
     aiAgents,
   });
   const selectedModel =
-    suggestions.find((entry) => entry.modelId === input.modelId) || suggestions[0] || null;
+    suggestions.find((entry) => entry.modelId === input.modelId) ||
+    suggestions[0] ||
+    null;
   const modelId = selectedModel?.modelId || input.modelId || null;
   const modelDisplayName = selectedModel?.displayName || input.modelId || null;
   const nickname =
@@ -934,7 +956,9 @@ function applySourceModelSelection(
   };
 }
 
-function buildNewAgentDraft(aiAgents: AiAgentsPageData | null): AgentCreationDraft {
+function buildNewAgentDraft(
+  aiAgents: AiAgentsPageData | null,
+): AgentCreationDraft {
   const claudeModel = aiAgents?.claudeModelSuggestions[0];
   return {
     sourceKind: 'claude_default',
@@ -944,7 +968,10 @@ function buildNewAgentDraft(aiAgents: AiAgentsPageData | null): AgentCreationDra
   };
 }
 
-function buildTargetSelection(agents: TalkAgent[], current: string[]): string[] {
+function buildTargetSelection(
+  agents: TalkAgent[],
+  current: string[],
+): string[] {
   const valid = current.filter((id) => agents.some((agent) => agent.id === id));
   if (valid.length > 0) return valid;
   const primary = agents.find((agent) => agent.isPrimary);
@@ -966,7 +993,10 @@ function serializeTalkAgentForDraftCompare(agent: TalkAgent): string {
   });
 }
 
-function haveSameTalkAgentDraftState(left: TalkAgent[], right: TalkAgent[]): boolean {
+function haveSameTalkAgentDraftState(
+  left: TalkAgent[],
+  right: TalkAgent[],
+): boolean {
   if (left.length !== right.length) return false;
   for (let index = 0; index < left.length; index += 1) {
     if (
@@ -997,7 +1027,11 @@ export function TalkDetailPage({
   const { talkId = '' } = useParams<{ talkId: string }>();
   const location = useLocation();
   const currentTab = getTabFromPath(location.pathname, talkId);
-  const [state, dispatch] = useReducer(detailReducer, undefined, createInitialDetailState);
+  const [state, dispatch] = useReducer(
+    detailReducer,
+    undefined,
+    createInitialDetailState,
+  );
   const [draft, setDraft] = useState('');
   const [pendingAttachments, setPendingAttachments] = useState<
     Array<{
@@ -1013,8 +1047,12 @@ export function TalkDetailPage({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [agents, setAgents] = useState<TalkAgent[]>([]);
   const [agentDrafts, setAgentDrafts] = useState<TalkAgent[]>([]);
-  const [aiAgentsData, setAiAgentsData] = useState<AiAgentsPageData | null>(null);
-  const [agentsCatalogError, setAgentsCatalogError] = useState<string | null>(null);
+  const [aiAgentsData, setAiAgentsData] = useState<AiAgentsPageData | null>(
+    null,
+  );
+  const [agentsCatalogError, setAgentsCatalogError] = useState<string | null>(
+    null,
+  );
   const [targetAgentIds, setTargetAgentIds] = useState<string[]>([]);
   const [newAgentDraft, setNewAgentDraft] = useState<AgentCreationDraft>({
     sourceKind: 'claude_default',
@@ -1054,18 +1092,24 @@ export function TalkDetailPage({
   const [addSourceTitle, setAddSourceTitle] = useState('');
   const [addSourceUrl, setAddSourceUrl] = useState('');
   const [addSourceText, setAddSourceText] = useState('');
-  const [channelBindings, setChannelBindings] = useState<TalkChannelBinding[]>([]);
-  const [channelConnections, setChannelConnections] = useState<ChannelConnection[]>([]);
+  const [channelBindings, setChannelBindings] = useState<TalkChannelBinding[]>(
+    [],
+  );
+  const [channelConnections, setChannelConnections] = useState<
+    ChannelConnection[]
+  >([]);
   const [channelTargets, setChannelTargets] = useState<ChannelTarget[]>([]);
-  const [channelDrafts, setChannelDrafts] = useState<Record<string, ChannelBindingDraft>>(
-    {},
-  );
-  const [channelFailuresByBindingId, setChannelFailuresByBindingId] = useState<
-    Record<string, { ingress: ChannelQueueFailure[]; delivery: ChannelQueueFailure[] }>
+  const [channelDrafts, setChannelDrafts] = useState<
+    Record<string, ChannelBindingDraft>
   >({});
-  const [channelCreateDraft, setChannelCreateDraft] = useState<ChannelCreateDraft>(
-    buildDefaultChannelCreateDraft(),
-  );
+  const [channelFailuresByBindingId, setChannelFailuresByBindingId] = useState<
+    Record<
+      string,
+      { ingress: ChannelQueueFailure[]; delivery: ChannelQueueFailure[] }
+    >
+  >({});
+  const [channelCreateDraft, setChannelCreateDraft] =
+    useState<ChannelCreateDraft>(buildDefaultChannelCreateDraft());
   const [channelTargetsLoading, setChannelTargetsLoading] = useState(false);
   const [channelStatus, setChannelStatus] = useState<{
     status: 'idle' | 'loading' | 'saving' | 'error' | 'success';
@@ -1415,7 +1459,12 @@ export function TalkDetailPage({
     autoStickToBottomRef.current = false;
     scrollToBottom('smooth');
     dispatch({ type: 'CLEAR_UNREAD' });
-  }, [scrollToBottom, state.initialScrollPending, state.kind, state.messages.length]);
+  }, [
+    scrollToBottom,
+    state.initialScrollPending,
+    state.kind,
+    state.messages.length,
+  ]);
 
   const accessRole = state.kind === 'ready' ? state.talk?.accessRole : null;
   const canEditAgents =
@@ -1448,7 +1497,9 @@ export function TalkDetailPage({
   );
   const effectiveAgents = hasUnsavedAgentChanges ? agentDrafts : agents;
   useEffect(() => {
-    setTargetAgentIds((current) => buildTargetSelection(effectiveAgents, current));
+    setTargetAgentIds((current) =>
+      buildTargetSelection(effectiveAgents, current),
+    );
   }, [effectiveAgents]);
   const agentLabelById = useMemo(
     () =>
@@ -1459,12 +1510,15 @@ export function TalkDetailPage({
     [effectiveAgents],
   );
   const messageLookup = useMemo(
-    () => new Map(state.messages.map((message) => [message.id, message] as const)),
+    () =>
+      new Map(state.messages.map((message) => [message.id, message] as const)),
     [state.messages],
   );
   const runHistory = useMemo(
     () =>
-      Object.values(state.runsById).sort((left, right) => right.updatedAt - left.updatedAt),
+      Object.values(state.runsById).sort(
+        (left, right) => right.updatedAt - left.updatedAt,
+      ),
     [state.runsById],
   );
   const liveResponses = useMemo(
@@ -1486,7 +1540,9 @@ export function TalkDetailPage({
         })),
         ...liveResponses.map((response, index) => {
           const run = state.runsById[response.runId];
-          const runTimestamp = Date.parse(run?.startedAt || run?.createdAt || '');
+          const runTimestamp = Date.parse(
+            run?.startedAt || run?.createdAt || '',
+          );
           return {
             kind: 'live-response' as const,
             key: response.runId,
@@ -1540,7 +1596,8 @@ export function TalkDetailPage({
   const selectedChannelTarget = useMemo(
     () =>
       channelTargets.find(
-        (target) => buildChannelTargetKey(target) === channelCreateDraft.targetKey,
+        (target) =>
+          buildChannelTargetKey(target) === channelCreateDraft.targetKey,
       ) || null,
     [channelCreateDraft.targetKey, channelTargets],
   );
@@ -1596,11 +1653,21 @@ export function TalkDetailPage({
     return () => {
       cancelled = true;
     };
-  }, [canManageTalkConnectors, currentTab, handleUnauthorized, state.kind, talkId]);
+  }, [
+    canManageTalkConnectors,
+    currentTab,
+    handleUnauthorized,
+    state.kind,
+    talkId,
+  ]);
 
   useEffect(() => {
     if (currentTab !== 'data-connectors') return;
-    if (availableConnectors.some((connector) => connector.id === attachConnectorId)) {
+    if (
+      availableConnectors.some(
+        (connector) => connector.id === attachConnectorId,
+      )
+    ) {
       return;
     }
     setAttachConnectorId(availableConnectors[0]?.id || '');
@@ -1638,16 +1705,21 @@ export function TalkDetailPage({
         );
         setChannelBindings(bindings);
         setChannelDrafts(
-          bindings.reduce<Record<string, ChannelBindingDraft>>((acc, binding) => {
-            acc[binding.id] = buildChannelBindingDraft(binding);
-            return acc;
-          }, {}),
+          bindings.reduce<Record<string, ChannelBindingDraft>>(
+            (acc, binding) => {
+              acc[binding.id] = buildChannelBindingDraft(binding);
+              return acc;
+            },
+            {},
+          ),
         );
         setChannelFailuresByBindingId(Object.fromEntries(failureEntries));
         setChannelConnections(connections);
         setChannelCreateDraft((current) => {
           const nextConnectionId =
-            connections.find((connection) => connection.id === current.connectionId)?.id ||
+            connections.find(
+              (connection) => connection.id === current.connectionId,
+            )?.id ||
             connections[0]?.id ||
             current.connectionId;
           return {
@@ -1666,7 +1738,9 @@ export function TalkDetailPage({
         setChannelStatus({
           status: 'error',
           message:
-            err instanceof Error ? err.message : 'Failed to load talk channels.',
+            err instanceof Error
+              ? err.message
+              : 'Failed to load talk channels.',
         });
       }
     },
@@ -1708,7 +1782,9 @@ export function TalkDetailPage({
             ...current,
             targetKey: nextTarget ? buildChannelTargetKey(nextTarget) : '',
             displayName:
-              current.displayName || !nextTarget ? current.displayName : nextTarget.displayName,
+              current.displayName || !nextTarget
+                ? current.displayName
+                : nextTarget.displayName,
           };
         });
       } catch (err) {
@@ -1720,7 +1796,9 @@ export function TalkDetailPage({
           setChannelStatus({
             status: 'error',
             message:
-              err instanceof Error ? err.message : 'Failed to load channel targets.',
+              err instanceof Error
+                ? err.message
+                : 'Failed to load channel targets.',
           });
         }
       } finally {
@@ -1772,7 +1850,13 @@ export function TalkDetailPage({
     return () => {
       cancelled = true;
     };
-  }, [contextLoaded, currentTab, handleUnauthorized, refreshContext, state.kind]);
+  }, [
+    contextLoaded,
+    currentTab,
+    handleUnauthorized,
+    refreshContext,
+    state.kind,
+  ]);
 
   useEffect(() => {
     if (state.kind !== 'ready' || currentTab !== 'context' || !contextLoaded) {
@@ -1943,7 +2027,8 @@ export function TalkDetailPage({
     if (!channelCreateDraft.connectionId || !parsedTarget) {
       setChannelStatus({
         status: 'error',
-        message: 'Select a connection and target before creating a channel binding.',
+        message:
+          'Select a connection and target before creating a channel binding.',
       });
       return;
     }
@@ -1965,9 +2050,11 @@ export function TalkDetailPage({
             ? channelCreateDraft.responderAgentId || null
             : null,
         deliveryMode: channelCreateDraft.deliveryMode,
-        channelContextNote: channelCreateDraft.channelContextNote.trim() || null,
+        channelContextNote:
+          channelCreateDraft.channelContextNote.trim() || null,
         inboundRateLimitPerMinute:
-          Number.parseInt(channelCreateDraft.inboundRateLimitPerMinute, 10) || 10,
+          Number.parseInt(channelCreateDraft.inboundRateLimitPerMinute, 10) ||
+          10,
         maxPendingEvents:
           Number.parseInt(channelCreateDraft.maxPendingEvents, 10) || 20,
         overflowPolicy: channelCreateDraft.overflowPolicy,
@@ -1991,7 +2078,9 @@ export function TalkDetailPage({
       setChannelStatus({
         status: 'error',
         message:
-          err instanceof Error ? err.message : 'Failed to create talk channel binding.',
+          err instanceof Error
+            ? err.message
+            : 'Failed to create talk channel binding.',
       });
     }
   }, [
@@ -2018,14 +2107,17 @@ export function TalkDetailPage({
           responseMode: draft.responseMode,
           responderMode: draft.responderMode,
           responderAgentId:
-            draft.responderMode === 'agent' ? draft.responderAgentId || null : null,
+            draft.responderMode === 'agent'
+              ? draft.responderAgentId || null
+              : null,
           deliveryMode: draft.deliveryMode,
           channelContextNote: draft.channelContextNote.trim() || null,
           inboundRateLimitPerMinute:
             Number.parseInt(draft.inboundRateLimitPerMinute, 10) ||
             binding.inboundRateLimitPerMinute,
           maxPendingEvents:
-            Number.parseInt(draft.maxPendingEvents, 10) || binding.maxPendingEvents,
+            Number.parseInt(draft.maxPendingEvents, 10) ||
+            binding.maxPendingEvents,
           overflowPolicy: draft.overflowPolicy,
           maxDeferredAgeMinutes:
             Number.parseInt(draft.maxDeferredAgeMinutes, 10) ||
@@ -2044,11 +2136,19 @@ export function TalkDetailPage({
         setChannelStatus({
           status: 'error',
           message:
-            err instanceof Error ? err.message : 'Failed to save talk channel settings.',
+            err instanceof Error
+              ? err.message
+              : 'Failed to save talk channel settings.',
         });
       }
     },
-    [canEditChannels, channelDrafts, handleUnauthorized, reloadTalkChannels, talkId],
+    [
+      canEditChannels,
+      channelDrafts,
+      handleUnauthorized,
+      reloadTalkChannels,
+      talkId,
+    ],
   );
 
   const handleDeleteChannelBinding = useCallback(
@@ -2077,7 +2177,9 @@ export function TalkDetailPage({
         setChannelStatus({
           status: 'error',
           message:
-            err instanceof Error ? err.message : 'Failed to delete talk channel binding.',
+            err instanceof Error
+              ? err.message
+              : 'Failed to delete talk channel binding.',
         });
       }
     },
@@ -2105,7 +2207,9 @@ export function TalkDetailPage({
         setChannelStatus({
           status: 'error',
           message:
-            err instanceof Error ? err.message : 'Failed to send test channel message.',
+            err instanceof Error
+              ? err.message
+              : 'Failed to send test channel message.',
         });
       }
     },
@@ -2130,7 +2234,9 @@ export function TalkDetailPage({
         setChannelStatus({
           status: 'error',
           message:
-            err instanceof Error ? err.message : 'Failed to retry ingress failure.',
+            err instanceof Error
+              ? err.message
+              : 'Failed to retry ingress failure.',
         });
       }
     },
@@ -2155,7 +2261,9 @@ export function TalkDetailPage({
         setChannelStatus({
           status: 'error',
           message:
-            err instanceof Error ? err.message : 'Failed to dismiss ingress failure.',
+            err instanceof Error
+              ? err.message
+              : 'Failed to dismiss ingress failure.',
         });
       }
     },
@@ -2180,7 +2288,9 @@ export function TalkDetailPage({
         setChannelStatus({
           status: 'error',
           message:
-            err instanceof Error ? err.message : 'Failed to retry delivery failure.',
+            err instanceof Error
+              ? err.message
+              : 'Failed to retry delivery failure.',
         });
       }
     },
@@ -2205,7 +2315,9 @@ export function TalkDetailPage({
         setChannelStatus({
           status: 'error',
           message:
-            err instanceof Error ? err.message : 'Failed to dismiss delivery failure.',
+            err instanceof Error
+              ? err.message
+              : 'Failed to dismiss delivery failure.',
         });
       }
     },
@@ -2341,7 +2453,13 @@ export function TalkDetailPage({
       const localId = `local-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
       setPendingAttachments((prev) => [
         ...prev,
-        { localId, file, fileName: file.name, fileSize: file.size, status: 'uploading' },
+        {
+          localId,
+          file,
+          fileName: file.name,
+          fileSize: file.size,
+          status: 'uploading',
+        },
       ]);
 
       try {
@@ -2349,7 +2467,11 @@ export function TalkDetailPage({
         setPendingAttachments((prev) =>
           prev.map((a) =>
             a.localId === localId
-              ? { ...a, status: 'ready' as const, attachmentId: result.attachment.id }
+              ? {
+                  ...a,
+                  status: 'ready' as const,
+                  attachmentId: result.attachment.id,
+                }
               : a,
           ),
         );
@@ -2360,7 +2482,8 @@ export function TalkDetailPage({
               ? {
                   ...a,
                   status: 'error' as const,
-                  errorMessage: err instanceof Error ? err.message : 'Upload failed',
+                  errorMessage:
+                    err instanceof Error ? err.message : 'Upload failed',
                 }
               : a,
           ),
@@ -2377,7 +2500,9 @@ export function TalkDetailPage({
     fileInputRef.current?.click();
   };
 
-  const handleFileInputChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileInputChange = (
+    event: React.ChangeEvent<HTMLInputElement>,
+  ) => {
     if (event.target.files && event.target.files.length > 0) {
       void handleFilesSelected(event.target.files);
       event.target.value = '';
@@ -2478,7 +2603,9 @@ export function TalkDetailPage({
     const readyAttachments = pendingAttachments.filter(
       (a) => a.status === 'ready' && a.attachmentId,
     );
-    const stillUploading = pendingAttachments.some((a) => a.status === 'uploading');
+    const stillUploading = pendingAttachments.some(
+      (a) => a.status === 'uploading',
+    );
     if (stillUploading) {
       dispatch({
         type: 'SEND_FAILED',
@@ -2607,7 +2734,9 @@ export function TalkDetailPage({
       setConnectorState({
         status: 'error',
         message:
-          err instanceof Error ? err.message : 'Failed to attach data connector.',
+          err instanceof Error
+            ? err.message
+            : 'Failed to attach data connector.',
       });
     }
   };
@@ -2646,7 +2775,9 @@ export function TalkDetailPage({
       setConnectorState({
         status: 'error',
         message:
-          err instanceof Error ? err.message : 'Failed to detach data connector.',
+          err instanceof Error
+            ? err.message
+            : 'Failed to detach data connector.',
       });
     }
   };
@@ -2670,7 +2801,8 @@ export function TalkDetailPage({
           aiAgents: aiAgentsData,
         });
         const nextModelId =
-          suggestions.find((entry) => entry.modelId === agent.modelId)?.modelId ||
+          suggestions.find((entry) => entry.modelId === agent.modelId)
+            ?.modelId ||
           suggestions[0]?.modelId ||
           '';
         return applySourceModelSelection(
@@ -2692,7 +2824,8 @@ export function TalkDetailPage({
               agent,
               {
                 sourceKind: agent.sourceKind,
-                providerId: agent.sourceKind === 'provider' ? agent.providerId : null,
+                providerId:
+                  agent.sourceKind === 'provider' ? agent.providerId : null,
                 modelId,
               },
               current,
@@ -2742,7 +2875,9 @@ export function TalkDetailPage({
 
   const handleAgentRoleChange = (agentId: string, role: TalkAgent['role']) => {
     setAgentDrafts((current) =>
-      current.map((agent) => (agent.id === agentId ? { ...agent, role } : agent)),
+      current.map((agent) =>
+        agent.id === agentId ? { ...agent, role } : agent,
+      ),
     );
     setAgentState({ status: 'idle' });
   };
@@ -2789,7 +2924,8 @@ export function TalkDetailPage({
       aiAgents: aiAgentsData,
     });
     const selectedModel =
-      suggestions.find((entry) => entry.modelId === newAgentDraft.modelId) || suggestions[0];
+      suggestions.find((entry) => entry.modelId === newAgentDraft.modelId) ||
+      suggestions[0];
     if (!selectedModel) return;
     setAgentDrafts((current) => [
       ...current,
@@ -2803,7 +2939,9 @@ export function TalkDetailPage({
         displayOrder: current.length,
         health: 'unknown',
         providerId:
-          newAgentDraft.sourceKind === 'provider' ? newAgentDraft.providerId : null,
+          newAgentDraft.sourceKind === 'provider'
+            ? newAgentDraft.providerId
+            : null,
         modelId: selectedModel.modelId,
         modelDisplayName: selectedModel.displayName,
       },
@@ -2842,7 +2980,8 @@ export function TalkDetailPage({
       }
       setAgentState({
         status: 'error',
-        message: err instanceof Error ? err.message : 'Failed to update talk agents',
+        message:
+          err instanceof Error ? err.message : 'Failed to update talk agents',
       });
     }
   };
@@ -2884,12 +3023,24 @@ export function TalkDetailPage({
   }
 
   const talk = state.talk;
-  const displayedTitle =
-    isRenaming ? renameDraft?.draft ?? '' : titleOverride || talk.title;
+  const displayedTitle = isRenaming
+    ? (renameDraft?.draft ?? '')
+    : titleOverride || talk.title;
 
   return (
     <section className="page-shell talk-detail-shell">
-      <div className="talk-workspace">
+      <div
+        className={`talk-workspace${isDragOver ? ' talk-workspace-drag-over' : ''}`}
+        onDragEnter={handleDragEnter}
+        onDragLeave={handleDragLeave}
+        onDragOver={handleDragOver}
+        onDrop={handleDrop}
+      >
+        {isDragOver ? (
+          <div className="talk-workspace-drop-overlay">
+            Drop files to attach
+          </div>
+        ) : null}
         <div className="talk-workspace-header">
           <header className="page-header talk-page-header">
             <div className="talk-page-heading">
@@ -2905,7 +3056,10 @@ export function TalkDetailPage({
                   onKeyDown={async (event) => {
                     if (event.key === 'Enter') {
                       event.preventDefault();
-                      await onRenameDraftCommit(talkId, renameDraft?.draft ?? '');
+                      await onRenameDraftCommit(
+                        talkId,
+                        renameDraft?.draft ?? '',
+                      );
                     }
                     if (event.key === 'Escape') {
                       event.preventDefault();
@@ -2927,7 +3081,11 @@ export function TalkDetailPage({
               )}
               <p>Event-authoritative live timeline.</p>
               {effectiveAgents.length > 0 ? (
-                <div className="talk-status-strip" role="list" aria-label="Talk agent status">
+                <div
+                  className="talk-status-strip"
+                  role="list"
+                  aria-label="Talk agent status"
+                >
                   {effectiveAgents.map((agent) => (
                     <span
                       key={agent.id}
@@ -2992,42 +3150,175 @@ export function TalkDetailPage({
         <div className="talk-workspace-scroll" ref={timelineRef}>
           {currentTab === 'agents' ? (
             <section className="talk-tab-panel" aria-label="Talk agents">
-          <div className="agents-panel-header">
-            <h2>Agents</h2>
-            <Link className="secondary-btn" to={manageAgentsHref}>
-              Manage AI Agents
-            </Link>
-          </div>
-          <p className="policy-muted">
-            Nicknames are local to this talk. The primary agent responds to normal user
-            messages by default.
-          </p>
-          {agentDrafts.map((agent) => {
-            const modelOptions = getModelSuggestionsForSource({
-              sourceKind: agent.sourceKind,
-              providerId: agent.sourceKind === 'provider' ? agent.providerId : null,
-              aiAgents: aiAgentsData,
-            });
-            return (
-              <div key={agent.id} className="agent-editor-card">
+              <div className="agents-panel-header">
+                <h2>Agents</h2>
+                <Link className="secondary-btn" to={manageAgentsHref}>
+                  Manage AI Agents
+                </Link>
+              </div>
+              <p className="policy-muted">
+                Nicknames are local to this talk. The primary agent responds to
+                normal user messages by default.
+              </p>
+              {agentDrafts.map((agent) => {
+                const modelOptions = getModelSuggestionsForSource({
+                  sourceKind: agent.sourceKind,
+                  providerId:
+                    agent.sourceKind === 'provider' ? agent.providerId : null,
+                  aiAgents: aiAgentsData,
+                });
+                return (
+                  <div key={agent.id} className="agent-editor-card">
+                    <label>
+                      <span>Agent source</span>
+                      <select
+                        value={
+                          agent.sourceKind === 'claude_default'
+                            ? 'claude_default'
+                            : agent.providerId || ''
+                        }
+                        onChange={(event) => {
+                          const selected = sourceOptions.find(
+                            (option) => option.id === event.target.value,
+                          );
+                          if (!selected) return;
+                          handleAgentSourceChange(
+                            agent.id,
+                            selected.sourceKind,
+                            selected.providerId,
+                          );
+                        }}
+                        disabled={
+                          !canEditAgents || agentState.status === 'saving'
+                        }
+                      >
+                        {sourceOptions.map((option) => (
+                          <option key={option.id} value={option.id}>
+                            {option.label}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label>
+                      <span>Model</span>
+                      <select
+                        value={agent.modelId || ''}
+                        onChange={(event) =>
+                          handleAgentModelChange(agent.id, event.target.value)
+                        }
+                        disabled={
+                          !canEditAgents || agentState.status === 'saving'
+                        }
+                      >
+                        {modelOptions.map((model) => (
+                          <option key={model.modelId} value={model.modelId}>
+                            {model.displayName}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label>
+                      <span>Nickname</span>
+                      <input
+                        type="text"
+                        value={agent.nickname}
+                        onChange={(event) =>
+                          handleAgentNicknameChange(
+                            agent.id,
+                            event.target.value,
+                          )
+                        }
+                        disabled={
+                          !canEditAgents || agentState.status === 'saving'
+                        }
+                      />
+                    </label>
+                    <label>
+                      <span>Role</span>
+                      <select
+                        value={agent.role}
+                        onChange={(event) =>
+                          handleAgentRoleChange(
+                            agent.id,
+                            event.target.value as TalkAgent['role'],
+                          )
+                        }
+                        disabled={
+                          !canEditAgents || agentState.status === 'saving'
+                        }
+                      >
+                        {TALK_AGENT_ROLE_OPTIONS.map((role) => (
+                          <option key={role} value={role}>
+                            {formatTalkRole(role)}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <div className="agent-editor-actions">
+                      <label className="policy-primary-toggle">
+                        <input
+                          type="radio"
+                          name="primary-talk-agent"
+                          checked={agent.isPrimary}
+                          onChange={() => handleSetPrimaryAgent(agent.id)}
+                          disabled={
+                            !canEditAgents || agentState.status === 'saving'
+                          }
+                        />
+                        <span>Primary Agent</span>
+                      </label>
+                      <button
+                        type="button"
+                        className="secondary-btn"
+                        onClick={() => handleResetNickname(agent.id)}
+                        disabled={
+                          !canEditAgents || agentState.status === 'saving'
+                        }
+                      >
+                        Reset name
+                      </button>
+                      <button
+                        type="button"
+                        className="secondary-btn"
+                        onClick={() => handleRemoveAgent(agent.id)}
+                        disabled={
+                          !canEditAgents ||
+                          agentState.status === 'saving' ||
+                          agentDrafts.length <= 1
+                        }
+                      >
+                        Remove
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+
+              <div className="agent-editor-footer">
                 <label>
-                  <span>Agent source</span>
+                  <span>Source</span>
                   <select
                     value={
-                      agent.sourceKind === 'claude_default'
+                      newAgentDraft.sourceKind === 'claude_default'
                         ? 'claude_default'
-                        : agent.providerId || ''
+                        : newAgentDraft.providerId || ''
                     }
                     onChange={(event) => {
                       const selected = sourceOptions.find(
                         (option) => option.id === event.target.value,
                       );
                       if (!selected) return;
-                      handleAgentSourceChange(
-                        agent.id,
-                        selected.sourceKind,
-                        selected.providerId,
-                      );
+                      const suggestions = getModelSuggestionsForSource({
+                        sourceKind: selected.sourceKind,
+                        providerId: selected.providerId,
+                        aiAgents: aiAgentsData,
+                      });
+                      setNewAgentDraft({
+                        sourceKind: selected.sourceKind,
+                        providerId: selected.providerId,
+                        modelId: suggestions[0]?.modelId || '',
+                        role: 'assistant',
+                      });
                     }}
                     disabled={!canEditAgents || agentState.status === 'saving'}
                   >
@@ -3041,13 +3332,16 @@ export function TalkDetailPage({
                 <label>
                   <span>Model</span>
                   <select
-                    value={agent.modelId || ''}
+                    value={newAgentDraft.modelId}
                     onChange={(event) =>
-                      handleAgentModelChange(agent.id, event.target.value)
+                      setNewAgentDraft((current) => ({
+                        ...current,
+                        modelId: event.target.value,
+                      }))
                     }
                     disabled={!canEditAgents || agentState.status === 'saving'}
                   >
-                    {modelOptions.map((model) => (
+                    {newAgentModelOptions.map((model) => (
                       <option key={model.modelId} value={model.modelId}>
                         {model.displayName}
                       </option>
@@ -3055,22 +3349,14 @@ export function TalkDetailPage({
                   </select>
                 </label>
                 <label>
-                  <span>Nickname</span>
-                  <input
-                    type="text"
-                    value={agent.nickname}
-                    onChange={(event) =>
-                      handleAgentNicknameChange(agent.id, event.target.value)
-                    }
-                    disabled={!canEditAgents || agentState.status === 'saving'}
-                  />
-                </label>
-                <label>
                   <span>Role</span>
                   <select
-                    value={agent.role}
+                    value={newAgentDraft.role}
                     onChange={(event) =>
-                      handleAgentRoleChange(agent.id, event.target.value as TalkAgent['role'])
+                      setNewAgentDraft((current) => ({
+                        ...current,
+                        role: event.target.value as TalkAgent['role'],
+                      }))
                     }
                     disabled={!canEditAgents || agentState.status === 'saving'}
                   >
@@ -3081,147 +3367,45 @@ export function TalkDetailPage({
                     ))}
                   </select>
                 </label>
-                <div className="agent-editor-actions">
-                  <label className="policy-primary-toggle">
-                    <input
-                      type="radio"
-                      name="primary-talk-agent"
-                      checked={agent.isPrimary}
-                      onChange={() => handleSetPrimaryAgent(agent.id)}
-                      disabled={!canEditAgents || agentState.status === 'saving'}
-                    />
-                    <span>Primary Agent</span>
-                  </label>
-                  <button
-                    type="button"
-                    className="secondary-btn"
-                    onClick={() => handleResetNickname(agent.id)}
-                    disabled={!canEditAgents || agentState.status === 'saving'}
-                  >
-                    Reset name
-                  </button>
-                  <button
-                    type="button"
-                    className="secondary-btn"
-                    onClick={() => handleRemoveAgent(agent.id)}
-                    disabled={
-                      !canEditAgents ||
-                      agentState.status === 'saving' ||
-                      agentDrafts.length <= 1
-                    }
-                  >
-                    Remove
-                  </button>
-                </div>
+                <button
+                  type="button"
+                  className="secondary-btn"
+                  onClick={handleAddAgent}
+                  disabled={
+                    !canEditAgents ||
+                    agentState.status === 'saving' ||
+                    !newAgentDraft.modelId
+                  }
+                >
+                  Add Agent
+                </button>
+                <button
+                  type="button"
+                  className="secondary-btn"
+                  onClick={handleSaveAgents}
+                  disabled={!canEditAgents || agentState.status === 'saving'}
+                >
+                  {agentState.status === 'saving' ? 'Saving…' : 'Save Agents'}
+                </button>
               </div>
-            );
-          })}
-
-          <div className="agent-editor-footer">
-            <label>
-              <span>Source</span>
-              <select
-                value={
-                  newAgentDraft.sourceKind === 'claude_default'
-                    ? 'claude_default'
-                    : newAgentDraft.providerId || ''
-                }
-                onChange={(event) => {
-                  const selected = sourceOptions.find(
-                    (option) => option.id === event.target.value,
-                  );
-                  if (!selected) return;
-                  const suggestions = getModelSuggestionsForSource({
-                    sourceKind: selected.sourceKind,
-                    providerId: selected.providerId,
-                    aiAgents: aiAgentsData,
-                  });
-                  setNewAgentDraft({
-                    sourceKind: selected.sourceKind,
-                    providerId: selected.providerId,
-                    modelId: suggestions[0]?.modelId || '',
-                    role: 'assistant',
-                  });
-                }}
-                disabled={!canEditAgents || agentState.status === 'saving'}
-              >
-                {sourceOptions.map((option) => (
-                  <option key={option.id} value={option.id}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label>
-              <span>Model</span>
-              <select
-                value={newAgentDraft.modelId}
-                onChange={(event) =>
-                  setNewAgentDraft((current) => ({
-                    ...current,
-                    modelId: event.target.value,
-                  }))
-                }
-                disabled={!canEditAgents || agentState.status === 'saving'}
-              >
-                {newAgentModelOptions.map((model) => (
-                  <option key={model.modelId} value={model.modelId}>
-                    {model.displayName}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label>
-              <span>Role</span>
-              <select
-                value={newAgentDraft.role}
-                onChange={(event) =>
-                  setNewAgentDraft((current) => ({
-                    ...current,
-                    role: event.target.value as TalkAgent['role'],
-                  }))
-                }
-                disabled={!canEditAgents || agentState.status === 'saving'}
-              >
-                {TALK_AGENT_ROLE_OPTIONS.map((role) => (
-                  <option key={role} value={role}>
-                    {formatTalkRole(role)}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <button
-              type="button"
-              className="secondary-btn"
-              onClick={handleAddAgent}
-              disabled={!canEditAgents || agentState.status === 'saving' || !newAgentDraft.modelId}
-            >
-              Add Agent
-            </button>
-            <button
-              type="button"
-              className="secondary-btn"
-              onClick={handleSaveAgents}
-              disabled={!canEditAgents || agentState.status === 'saving'}
-            >
-              {agentState.status === 'saving' ? 'Saving…' : 'Save Agents'}
-            </button>
-          </div>
-          {agentsCatalogError ? (
-            <div className="inline-banner inline-banner-error" role="alert">
-              {agentsCatalogError}
-            </div>
-          ) : null}
-          {agentState.status === 'error' ? (
-            <div className="inline-banner inline-banner-error" role="alert">
-              {agentState.message}
-            </div>
-          ) : null}
-          {agentState.status === 'success' ? (
-            <div className="inline-banner inline-banner-success" role="status">
-              {agentState.message}
-            </div>
-          ) : null}
+              {agentsCatalogError ? (
+                <div className="inline-banner inline-banner-error" role="alert">
+                  {agentsCatalogError}
+                </div>
+              ) : null}
+              {agentState.status === 'error' ? (
+                <div className="inline-banner inline-banner-error" role="alert">
+                  {agentState.message}
+                </div>
+              ) : null}
+              {agentState.status === 'success' ? (
+                <div
+                  className="inline-banner inline-banner-success"
+                  role="status"
+                >
+                  {agentState.message}
+                </div>
+              ) : null}
             </section>
           ) : null}
 
@@ -3239,7 +3423,8 @@ export function TalkDetailPage({
                       <div>
                         <h3>Goal</h3>
                         <p className="talk-llm-meta">
-                          A single-line goal for what this talk is about. Agents see this every turn.
+                          A single-line goal for what this talk is about. Agents
+                          see this every turn.
                         </p>
                       </div>
                     </div>
@@ -3281,12 +3466,16 @@ export function TalkDetailPage({
                       <div>
                         <h3>Rules</h3>
                         <p className="talk-llm-meta">
-                          Instructions agents must follow every turn. Up to 8 active rules.
+                          Instructions agents must follow every turn. Up to 8
+                          active rules.
                         </p>
                       </div>
                     </div>
                     {contextRules.length > 0 ? (
-                      <ul className="context-rules-list" style={{ listStyle: 'none', padding: 0 }}>
+                      <ul
+                        className="context-rules-list"
+                        style={{ listStyle: 'none', padding: 0 }}
+                      >
                         {contextRules.map((rule) => (
                           <li
                             key={rule.id}
@@ -3303,8 +3492,13 @@ export function TalkDetailPage({
                                 type="button"
                                 className="secondary-btn"
                                 onClick={() => void handleToggleRule(rule)}
-                                title={rule.isActive ? 'Pause rule' : 'Activate rule'}
-                                style={{ minWidth: '2rem', padding: '0.2rem 0.4rem' }}
+                                title={
+                                  rule.isActive ? 'Pause rule' : 'Activate rule'
+                                }
+                                style={{
+                                  minWidth: '2rem',
+                                  padding: '0.2rem 0.4rem',
+                                }}
                               >
                                 {rule.isActive ? '✓' : '—'}
                               </button>
@@ -3316,7 +3510,10 @@ export function TalkDetailPage({
                                 className="secondary-btn"
                                 onClick={() => void handleDeleteRule(rule.id)}
                                 title="Delete rule"
-                                style={{ minWidth: '2rem', padding: '0.2rem 0.4rem' }}
+                                style={{
+                                  minWidth: '2rem',
+                                  padding: '0.2rem 0.4rem',
+                                }}
                               >
                                 ×
                               </button>
@@ -3328,7 +3525,10 @@ export function TalkDetailPage({
                       <p className="page-state">No rules yet.</p>
                     )}
                     {canEditAgents ? (
-                      <div className="connector-attach-row" style={{ marginTop: '0.5rem' }}>
+                      <div
+                        className="connector-attach-row"
+                        style={{ marginTop: '0.5rem' }}
+                      >
                         <label style={{ flex: 1 }}>
                           <input
                             type="text"
@@ -3348,7 +3548,8 @@ export function TalkDetailPage({
                           className="secondary-btn"
                           onClick={() => void handleAddRule()}
                           disabled={
-                            contextStatus.status === 'saving' || !newRuleText.trim()
+                            contextStatus.status === 'saving' ||
+                            !newRuleText.trim()
                           }
                         >
                           Add Rule
@@ -3363,7 +3564,8 @@ export function TalkDetailPage({
                       <div>
                         <h3>Saved Sources</h3>
                         <p className="talk-llm-meta">
-                          Files, URLs, and text snippets agents can reference. Up to 20 sources.
+                          Files, URLs, and text snippets agents can reference.
+                          Up to 20 sources.
                         </p>
                       </div>
                     </div>
@@ -3427,11 +3629,15 @@ export function TalkDetailPage({
                               >
                                 {source.status}
                               </span>
-                              {canEditAgents && source.sourceType === 'url' && source.status === 'failed' ? (
+                              {canEditAgents &&
+                              source.sourceType === 'url' &&
+                              source.status === 'failed' ? (
                                 <button
                                   type="button"
                                   className="secondary-btn"
-                                  onClick={() => void handleRetrySource(source.id)}
+                                  onClick={() =>
+                                    void handleRetrySource(source.id)
+                                  }
                                 >
                                   Retry
                                 </button>
@@ -3440,9 +3646,14 @@ export function TalkDetailPage({
                                 <button
                                   type="button"
                                   className="secondary-btn"
-                                  onClick={() => void handleDeleteSource(source.id)}
+                                  onClick={() =>
+                                    void handleDeleteSource(source.id)
+                                  }
                                   title="Remove source"
-                                  style={{ minWidth: '2rem', padding: '0.2rem 0.4rem' }}
+                                  style={{
+                                    minWidth: '2rem',
+                                    padding: '0.2rem 0.4rem',
+                                  }}
                                 >
                                   ×
                                 </button>
@@ -3467,7 +3678,10 @@ export function TalkDetailPage({
                                   opacity: 0.65,
                                 }}
                               >
-                                Last fetched {new Date(source.lastFetchedAt).toLocaleString()}
+                                Last fetched{' '}
+                                {new Date(
+                                  source.lastFetchedAt,
+                                ).toLocaleString()}
                               </p>
                             ) : null}
                           </li>
@@ -3480,13 +3694,18 @@ export function TalkDetailPage({
                     {/* Add source form (editors only) */}
                     {canEditAgents ? (
                       <div style={{ marginTop: '0.75rem' }}>
-                        <div className="connector-attach-row" style={{ marginBottom: '0.5rem' }}>
+                        <div
+                          className="connector-attach-row"
+                          style={{ marginBottom: '0.5rem' }}
+                        >
                           <label>
                             <span className="settings-label">Type</span>
                             <select
                               value={addSourceType}
                               onChange={(e) =>
-                                setAddSourceType(e.target.value as 'text' | 'url')
+                                setAddSourceType(
+                                  e.target.value as 'text' | 'url',
+                                )
                               }
                               disabled={contextStatus.status === 'saving'}
                             >
@@ -3499,7 +3718,9 @@ export function TalkDetailPage({
                             <input
                               type="text"
                               value={addSourceTitle}
-                              onChange={(e) => setAddSourceTitle(e.target.value)}
+                              onChange={(e) =>
+                                setAddSourceTitle(e.target.value)
+                              }
                               placeholder="Source title"
                               disabled={contextStatus.status === 'saving'}
                               style={{ width: '100%' }}
@@ -3507,7 +3728,9 @@ export function TalkDetailPage({
                           </label>
                         </div>
                         {addSourceType === 'url' ? (
-                          <label style={{ display: 'block', marginBottom: '0.5rem' }}>
+                          <label
+                            style={{ display: 'block', marginBottom: '0.5rem' }}
+                          >
                             <span className="settings-label">URL</span>
                             <input
                               type="url"
@@ -3519,7 +3742,9 @@ export function TalkDetailPage({
                             />
                           </label>
                         ) : (
-                          <label style={{ display: 'block', marginBottom: '0.5rem' }}>
+                          <label
+                            style={{ display: 'block', marginBottom: '0.5rem' }}
+                          >
                             <span className="settings-label">Content</span>
                             <textarea
                               value={addSourceText}
@@ -3536,7 +3761,8 @@ export function TalkDetailPage({
                           className="secondary-btn"
                           onClick={() => void handleAddSource()}
                           disabled={
-                            contextStatus.status === 'saving' || !addSourceTitle.trim()
+                            contextStatus.status === 'saving' ||
+                            !addSourceTitle.trim()
                           }
                         >
                           Add Source
@@ -3545,7 +3771,8 @@ export function TalkDetailPage({
                     ) : null}
                   </div>
 
-                  {contextStatus.status === 'success' && contextStatus.message ? (
+                  {contextStatus.status === 'success' &&
+                  contextStatus.message ? (
                     <p className="page-state">{contextStatus.message}</p>
                   ) : null}
                 </>
@@ -3559,8 +3786,9 @@ export function TalkDetailPage({
                 <h2>Channels</h2>
               </div>
               <p className="policy-muted">
-                Bind this talk to external channels so inbound Telegram messages can
-                create Talk turns and completed replies can be delivered back out.
+                Bind this talk to external channels so inbound Telegram messages
+                can create Talk turns and completed replies can be delivered
+                back out.
               </p>
 
               {channelStatus.status === 'error' ? (
@@ -3569,7 +3797,10 @@ export function TalkDetailPage({
                 </div>
               ) : null}
               {channelStatus.status === 'success' ? (
-                <div className="inline-banner inline-banner-success" role="status">
+                <div
+                  className="inline-banner inline-banner-success"
+                  role="status"
+                >
                   {channelStatus.message}
                 </div>
               ) : null}
@@ -3580,8 +3811,8 @@ export function TalkDetailPage({
                     <div>
                       <h3>Add Channel Binding</h3>
                       <p className="talk-llm-meta">
-                        V1 uses your system-managed Telegram connection and cached
-                        chat targets discovered by inbound traffic.
+                        V1 uses your system-managed Telegram connection and
+                        cached chat targets discovered by inbound traffic.
                       </p>
                     </div>
                   </div>
@@ -3608,7 +3839,8 @@ export function TalkDetailPage({
                           >
                             {channelConnections.map((connection) => (
                               <option key={connection.id} value={connection.id}>
-                                {connection.displayName} ({formatChannelPlatform(connection.platform)})
+                                {connection.displayName} (
+                                {formatChannelPlatform(connection.platform)})
                               </option>
                             ))}
                           </select>
@@ -3621,7 +3853,8 @@ export function TalkDetailPage({
                               const nextTarget =
                                 channelTargets.find(
                                   (target) =>
-                                    buildChannelTargetKey(target) === event.target.value,
+                                    buildChannelTargetKey(target) ===
+                                    event.target.value,
                                 ) || null;
                               setChannelCreateDraft((current) => ({
                                 ...current,
@@ -3633,7 +3866,8 @@ export function TalkDetailPage({
                               }));
                             }}
                             disabled={
-                              channelStatus.status === 'saving' || channelTargetsLoading
+                              channelStatus.status === 'saving' ||
+                              channelTargetsLoading
                             }
                           >
                             <option value="">
@@ -3666,18 +3900,24 @@ export function TalkDetailPage({
                                 displayName: event.target.value,
                               }))
                             }
-                            placeholder={selectedChannelTarget?.displayName || 'Telegram channel'}
+                            placeholder={
+                              selectedChannelTarget?.displayName ||
+                              'Telegram channel'
+                            }
                             disabled={channelStatus.status === 'saving'}
                           />
                         </label>
                         <label>
                           <span className="settings-label">Response Mode</span>
                           <select
-                            value={channelCreateDraft.responseMode ?? 'mentions'}
+                            value={
+                              channelCreateDraft.responseMode ?? 'mentions'
+                            }
                             onChange={(event) =>
                               setChannelCreateDraft((current) => ({
                                 ...current,
-                                responseMode: event.target.value as TalkChannelBinding['responseMode'],
+                                responseMode: event.target
+                                  .value as TalkChannelBinding['responseMode'],
                               }))
                             }
                             disabled={channelStatus.status === 'saving'}
@@ -3694,7 +3934,8 @@ export function TalkDetailPage({
                             onChange={(event) =>
                               setChannelCreateDraft((current) => ({
                                 ...current,
-                                deliveryMode: event.target.value as TalkChannelBinding['deliveryMode'],
+                                deliveryMode: event.target
+                                  .value as TalkChannelBinding['deliveryMode'],
                               }))
                             }
                             disabled={channelStatus.status === 'saving'}
@@ -3708,11 +3949,14 @@ export function TalkDetailPage({
                         <label>
                           <span className="settings-label">Responder</span>
                           <select
-                            value={channelCreateDraft.responderMode ?? 'primary'}
+                            value={
+                              channelCreateDraft.responderMode ?? 'primary'
+                            }
                             onChange={(event) =>
                               setChannelCreateDraft((current) => ({
                                 ...current,
-                                responderMode: event.target.value as TalkChannelBinding['responderMode'],
+                                responderMode: event.target
+                                  .value as TalkChannelBinding['responderMode'],
                               }))
                             }
                             disabled={channelStatus.status === 'saving'}
@@ -3750,7 +3994,9 @@ export function TalkDetailPage({
                           <input
                             type="number"
                             min={1}
-                            value={channelCreateDraft.inboundRateLimitPerMinute ?? ''}
+                            value={
+                              channelCreateDraft.inboundRateLimitPerMinute ?? ''
+                            }
                             onChange={(event) =>
                               setChannelCreateDraft((current) => ({
                                 ...current,
@@ -3778,11 +4024,14 @@ export function TalkDetailPage({
                         <label>
                           <span className="settings-label">Overflow</span>
                           <select
-                            value={channelCreateDraft.overflowPolicy ?? 'drop_oldest'}
+                            value={
+                              channelCreateDraft.overflowPolicy ?? 'drop_oldest'
+                            }
                             onChange={(event) =>
                               setChannelCreateDraft((current) => ({
                                 ...current,
-                                overflowPolicy: event.target.value as TalkChannelBinding['overflowPolicy'],
+                                overflowPolicy: event.target
+                                  .value as TalkChannelBinding['overflowPolicy'],
                               }))
                             }
                             disabled={channelStatus.status === 'saving'}
@@ -3792,11 +4041,15 @@ export function TalkDetailPage({
                           </select>
                         </label>
                         <label>
-                          <span className="settings-label">Busy timeout (min)</span>
+                          <span className="settings-label">
+                            Busy timeout (min)
+                          </span>
                           <input
                             type="number"
                             min={1}
-                            value={channelCreateDraft.maxDeferredAgeMinutes ?? ''}
+                            value={
+                              channelCreateDraft.maxDeferredAgeMinutes ?? ''
+                            }
                             onChange={(event) =>
                               setChannelCreateDraft((current) => ({
                                 ...current,
@@ -3808,7 +4061,9 @@ export function TalkDetailPage({
                         </label>
                       </div>
                       <label style={{ display: 'block', marginTop: '0.75rem' }}>
-                        <span className="settings-label">Channel Context Note</span>
+                        <span className="settings-label">
+                          Channel Context Note
+                        </span>
                         <textarea
                           value={channelCreateDraft.channelContextNote ?? ''}
                           onChange={(event) =>
@@ -3823,7 +4078,10 @@ export function TalkDetailPage({
                           disabled={channelStatus.status === 'saving'}
                         />
                       </label>
-                      <div className="settings-button-row" style={{ marginTop: '0.75rem' }}>
+                      <div
+                        className="settings-button-row"
+                        style={{ marginTop: '0.75rem' }}
+                      >
                         <button
                           type="button"
                           className="secondary-btn"
@@ -3834,39 +4092,51 @@ export function TalkDetailPage({
                             !channelCreateDraft.targetKey
                           }
                         >
-                          {channelStatus.status === 'saving' ? 'Saving…' : 'Create Binding'}
+                          {channelStatus.status === 'saving'
+                            ? 'Saving…'
+                            : 'Create Binding'}
                         </button>
                       </div>
                     </>
                   )}
                 </div>
               ) : canEditChannels ? (
-                <div className="inline-banner inline-banner-warning" role="status">
-                  Only owners and admins can add new channel bindings. You can still
-                  manage existing bindings below.
+                <div
+                  className="inline-banner inline-banner-warning"
+                  role="status"
+                >
+                  Only owners and admins can add new channel bindings. You can
+                  still manage existing bindings below.
                 </div>
               ) : null}
 
               {channelStatus.status === 'loading' ? (
                 <p className="page-state">Loading channels…</p>
               ) : channelBindings.length === 0 ? (
-                <p className="page-state">No external channels are bound to this talk yet.</p>
+                <p className="page-state">
+                  No external channels are bound to this talk yet.
+                </p>
               ) : (
                 <div className="connector-card-list">
                   {channelBindings.map((binding) => {
                     const draft =
-                      channelDrafts[binding.id] || buildChannelBindingDraft(binding);
+                      channelDrafts[binding.id] ||
+                      buildChannelBindingDraft(binding);
                     const failures = channelFailuresByBindingId[binding.id] || {
                       ingress: [],
                       delivery: [],
                     };
                     return (
-                      <article key={binding.id} className="talk-llm-card connector-card">
+                      <article
+                        key={binding.id}
+                        className="talk-llm-card connector-card"
+                      >
                         <div className="connector-card-header">
                           <div>
                             <h3>{binding.displayName}</h3>
                             <p className="talk-llm-meta">
-                              {formatChannelPlatform(binding.platform)} · {binding.targetKind} ·{' '}
+                              {formatChannelPlatform(binding.platform)} ·{' '}
+                              {binding.targetKind} ·{' '}
                               <code>{binding.targetId}</code>
                             </p>
                           </div>
@@ -3895,11 +4165,19 @@ export function TalkDetailPage({
                           </div>
                           <div>
                             <strong>Last ingress issue</strong>
-                            <p>{formatChannelReasonCode(binding.lastIngressReasonCode)}</p>
+                            <p>
+                              {formatChannelReasonCode(
+                                binding.lastIngressReasonCode,
+                              )}
+                            </p>
                           </div>
                           <div>
                             <strong>Last delivery issue</strong>
-                            <p>{formatChannelReasonCode(binding.lastDeliveryReasonCode)}</p>
+                            <p>
+                              {formatChannelReasonCode(
+                                binding.lastDeliveryReasonCode,
+                              )}
+                            </p>
                           </div>
                         </div>
                         <div className="connector-attach-row">
@@ -3913,19 +4191,28 @@ export function TalkDetailPage({
                                   displayName: event.target.value,
                                 })
                               }
-                              disabled={!canEditChannels || channelStatus.status === 'saving'}
+                              disabled={
+                                !canEditChannels ||
+                                channelStatus.status === 'saving'
+                              }
                             />
                           </label>
                           <label>
-                            <span className="settings-label">Response Mode</span>
+                            <span className="settings-label">
+                              Response Mode
+                            </span>
                             <select
                               value={draft.responseMode ?? 'mentions'}
                               onChange={(event) =>
                                 handleChannelDraftChange(binding.id, {
-                                  responseMode: event.target.value as TalkChannelBinding['responseMode'],
+                                  responseMode: event.target
+                                    .value as TalkChannelBinding['responseMode'],
                                 })
                               }
-                              disabled={!canEditChannels || channelStatus.status === 'saving'}
+                              disabled={
+                                !canEditChannels ||
+                                channelStatus.status === 'saving'
+                              }
                             >
                               <option value="off">Off</option>
                               <option value="mentions">Mentions</option>
@@ -3938,10 +4225,14 @@ export function TalkDetailPage({
                               value={draft.deliveryMode ?? 'reply'}
                               onChange={(event) =>
                                 handleChannelDraftChange(binding.id, {
-                                  deliveryMode: event.target.value as TalkChannelBinding['deliveryMode'],
+                                  deliveryMode: event.target
+                                    .value as TalkChannelBinding['deliveryMode'],
                                 })
                               }
-                              disabled={!canEditChannels || channelStatus.status === 'saving'}
+                              disabled={
+                                !canEditChannels ||
+                                channelStatus.status === 'saving'
+                              }
                             >
                               <option value="reply">Reply</option>
                               <option value="channel">Channel</option>
@@ -3955,10 +4246,14 @@ export function TalkDetailPage({
                               value={draft.responderMode ?? 'primary'}
                               onChange={(event) =>
                                 handleChannelDraftChange(binding.id, {
-                                  responderMode: event.target.value as TalkChannelBinding['responderMode'],
+                                  responderMode: event.target
+                                    .value as TalkChannelBinding['responderMode'],
                                 })
                               }
-                              disabled={!canEditChannels || channelStatus.status === 'saving'}
+                              disabled={
+                                !canEditChannels ||
+                                channelStatus.status === 'saving'
+                              }
                             >
                               <option value="primary">Primary agent</option>
                               <option value="agent">Specific agent</option>
@@ -3974,7 +4269,10 @@ export function TalkDetailPage({
                                     responderAgentId: event.target.value,
                                   })
                                 }
-                                disabled={!canEditChannels || channelStatus.status === 'saving'}
+                                disabled={
+                                  !canEditChannels ||
+                                  channelStatus.status === 'saving'
+                                }
                               >
                                 <option value="">Select an agent</option>
                                 {effectiveAgents.map((agent) => (
@@ -3994,7 +4292,10 @@ export function TalkDetailPage({
                                   active: event.target.value === 'active',
                                 })
                               }
-                              disabled={!canEditChannels || channelStatus.status === 'saving'}
+                              disabled={
+                                !canEditChannels ||
+                                channelStatus.status === 'saving'
+                              }
                             >
                               <option value="active">Active</option>
                               <option value="inactive">Inactive</option>
@@ -4013,7 +4314,10 @@ export function TalkDetailPage({
                                   inboundRateLimitPerMinute: event.target.value,
                                 })
                               }
-                              disabled={!canEditChannels || channelStatus.status === 'saving'}
+                              disabled={
+                                !canEditChannels ||
+                                channelStatus.status === 'saving'
+                              }
                             />
                           </label>
                           <label>
@@ -4027,7 +4331,10 @@ export function TalkDetailPage({
                                   maxPendingEvents: event.target.value,
                                 })
                               }
-                              disabled={!canEditChannels || channelStatus.status === 'saving'}
+                              disabled={
+                                !canEditChannels ||
+                                channelStatus.status === 'saving'
+                              }
                             />
                           </label>
                           <label>
@@ -4036,17 +4343,23 @@ export function TalkDetailPage({
                               value={draft.overflowPolicy ?? 'drop_oldest'}
                               onChange={(event) =>
                                 handleChannelDraftChange(binding.id, {
-                                  overflowPolicy: event.target.value as TalkChannelBinding['overflowPolicy'],
+                                  overflowPolicy: event.target
+                                    .value as TalkChannelBinding['overflowPolicy'],
                                 })
                               }
-                              disabled={!canEditChannels || channelStatus.status === 'saving'}
+                              disabled={
+                                !canEditChannels ||
+                                channelStatus.status === 'saving'
+                              }
                             >
                               <option value="drop_oldest">Drop oldest</option>
                               <option value="drop_newest">Drop newest</option>
                             </select>
                           </label>
                           <label>
-                            <span className="settings-label">Busy timeout (min)</span>
+                            <span className="settings-label">
+                              Busy timeout (min)
+                            </span>
                             <input
                               type="number"
                               min={1}
@@ -4056,12 +4369,19 @@ export function TalkDetailPage({
                                   maxDeferredAgeMinutes: event.target.value,
                                 })
                               }
-                              disabled={!canEditChannels || channelStatus.status === 'saving'}
+                              disabled={
+                                !canEditChannels ||
+                                channelStatus.status === 'saving'
+                              }
                             />
                           </label>
                         </div>
-                        <label style={{ display: 'block', marginTop: '0.75rem' }}>
-                          <span className="settings-label">Channel Context Note</span>
+                        <label
+                          style={{ display: 'block', marginTop: '0.75rem' }}
+                        >
+                          <span className="settings-label">
+                            Channel Context Note
+                          </span>
                           <textarea
                             value={draft.channelContextNote ?? ''}
                             onChange={(event) =>
@@ -4071,15 +4391,26 @@ export function TalkDetailPage({
                             }
                             rows={3}
                             style={{ width: '100%', resize: 'vertical' }}
-                            disabled={!canEditChannels || channelStatus.status === 'saving'}
+                            disabled={
+                              !canEditChannels ||
+                              channelStatus.status === 'saving'
+                            }
                           />
                         </label>
-                        <div className="settings-button-row" style={{ marginTop: '0.75rem' }}>
+                        <div
+                          className="settings-button-row"
+                          style={{ marginTop: '0.75rem' }}
+                        >
                           <button
                             type="button"
                             className="secondary-btn"
-                            onClick={() => void handleSaveChannelBinding(binding)}
-                            disabled={!canEditChannels || channelStatus.status === 'saving'}
+                            onClick={() =>
+                              void handleSaveChannelBinding(binding)
+                            }
+                            disabled={
+                              !canEditChannels ||
+                              channelStatus.status === 'saving'
+                            }
                           >
                             Save
                           </button>
@@ -4094,8 +4425,13 @@ export function TalkDetailPage({
                           <button
                             type="button"
                             className="secondary-btn"
-                            onClick={() => void handleDeleteChannelBinding(binding)}
-                            disabled={!canEditChannels || channelStatus.status === 'saving'}
+                            onClick={() =>
+                              void handleDeleteChannelBinding(binding)
+                            }
+                            disabled={
+                              !canEditChannels ||
+                              channelStatus.status === 'saving'
+                            }
                           >
                             Delete
                           </button>
@@ -4104,33 +4440,56 @@ export function TalkDetailPage({
                         {failures.ingress.length > 0 ? (
                           <div style={{ marginTop: '1rem' }}>
                             <h4>Ingress Failures</h4>
-                            <ul style={{ listStyle: 'none', padding: 0, margin: '0.5rem 0 0 0' }}>
+                            <ul
+                              style={{
+                                listStyle: 'none',
+                                padding: 0,
+                                margin: '0.5rem 0 0 0',
+                              }}
+                            >
                               {failures.ingress.map((failure) => (
                                 <li
                                   key={failure.id}
                                   style={{
                                     padding: '0.5rem 0',
-                                    borderTop: '1px solid var(--border, #e6e9ef)',
+                                    borderTop:
+                                      '1px solid var(--border, #e6e9ef)',
                                   }}
                                 >
                                   <p style={{ margin: 0, fontWeight: 600 }}>
-                                    {formatChannelReasonCode(failure.reasonCode)}
+                                    {formatChannelReasonCode(
+                                      failure.reasonCode,
+                                    )}
                                   </p>
-                                  <p style={{ margin: '0.25rem 0', opacity: 0.75 }}>
-                                    {failure.senderName || failure.senderId || 'Unknown sender'} ·{' '}
-                                    {formatDateTime(failure.createdAt)}
+                                  <p
+                                    style={{
+                                      margin: '0.25rem 0',
+                                      opacity: 0.75,
+                                    }}
+                                  >
+                                    {failure.senderName ||
+                                      failure.senderId ||
+                                      'Unknown sender'}{' '}
+                                    · {formatDateTime(failure.createdAt)}
                                   </p>
                                   {failure.reasonDetail ? (
-                                    <p style={{ margin: '0.25rem 0' }}>{failure.reasonDetail}</p>
+                                    <p style={{ margin: '0.25rem 0' }}>
+                                      {failure.reasonDetail}
+                                    </p>
                                   ) : null}
                                   <div className="settings-button-row">
                                     <button
                                       type="button"
                                       className="secondary-btn"
                                       onClick={() =>
-                                        void handleRetryIngressFailure(binding.id, failure.id)
+                                        void handleRetryIngressFailure(
+                                          binding.id,
+                                          failure.id,
+                                        )
                                       }
-                                      disabled={channelStatus.status === 'saving'}
+                                      disabled={
+                                        channelStatus.status === 'saving'
+                                      }
                                     >
                                       Retry
                                     </button>
@@ -4138,9 +4497,14 @@ export function TalkDetailPage({
                                       type="button"
                                       className="secondary-btn"
                                       onClick={() =>
-                                        void handleDismissIngressFailure(binding.id, failure.id)
+                                        void handleDismissIngressFailure(
+                                          binding.id,
+                                          failure.id,
+                                        )
                                       }
-                                      disabled={channelStatus.status === 'saving'}
+                                      disabled={
+                                        channelStatus.status === 'saving'
+                                      }
                                     >
                                       Dismiss
                                     </button>
@@ -4154,32 +4518,53 @@ export function TalkDetailPage({
                         {failures.delivery.length > 0 ? (
                           <div style={{ marginTop: '1rem' }}>
                             <h4>Delivery Failures</h4>
-                            <ul style={{ listStyle: 'none', padding: 0, margin: '0.5rem 0 0 0' }}>
+                            <ul
+                              style={{
+                                listStyle: 'none',
+                                padding: 0,
+                                margin: '0.5rem 0 0 0',
+                              }}
+                            >
                               {failures.delivery.map((failure) => (
                                 <li
                                   key={failure.id}
                                   style={{
                                     padding: '0.5rem 0',
-                                    borderTop: '1px solid var(--border, #e6e9ef)',
+                                    borderTop:
+                                      '1px solid var(--border, #e6e9ef)',
                                   }}
                                 >
                                   <p style={{ margin: 0, fontWeight: 600 }}>
-                                    {formatChannelReasonCode(failure.reasonCode)}
+                                    {formatChannelReasonCode(
+                                      failure.reasonCode,
+                                    )}
                                   </p>
-                                  <p style={{ margin: '0.25rem 0', opacity: 0.75 }}>
+                                  <p
+                                    style={{
+                                      margin: '0.25rem 0',
+                                      opacity: 0.75,
+                                    }}
+                                  >
                                     {formatDateTime(failure.createdAt)}
                                   </p>
                                   {failure.reasonDetail ? (
-                                    <p style={{ margin: '0.25rem 0' }}>{failure.reasonDetail}</p>
+                                    <p style={{ margin: '0.25rem 0' }}>
+                                      {failure.reasonDetail}
+                                    </p>
                                   ) : null}
                                   <div className="settings-button-row">
                                     <button
                                       type="button"
                                       className="secondary-btn"
                                       onClick={() =>
-                                        void handleRetryDeliveryFailure(binding.id, failure.id)
+                                        void handleRetryDeliveryFailure(
+                                          binding.id,
+                                          failure.id,
+                                        )
                                       }
-                                      disabled={channelStatus.status === 'saving'}
+                                      disabled={
+                                        channelStatus.status === 'saving'
+                                      }
                                     >
                                       Retry
                                     </button>
@@ -4187,9 +4572,14 @@ export function TalkDetailPage({
                                       type="button"
                                       className="secondary-btn"
                                       onClick={() =>
-                                        void handleDismissDeliveryFailure(binding.id, failure.id)
+                                        void handleDismissDeliveryFailure(
+                                          binding.id,
+                                          failure.id,
+                                        )
                                       }
-                                      disabled={channelStatus.status === 'saving'}
+                                      disabled={
+                                        channelStatus.status === 'saving'
+                                      }
                                     >
                                       Dismiss
                                     </button>
@@ -4208,7 +4598,10 @@ export function TalkDetailPage({
           ) : null}
 
           {currentTab === 'data-connectors' ? (
-            <section className="talk-tab-panel" aria-label="Talk data connectors">
+            <section
+              className="talk-tab-panel"
+              aria-label="Talk data connectors"
+            >
               <div className="agents-panel-header">
                 <h2>Data Connectors</h2>
                 {canManageTalkConnectors ? (
@@ -4218,8 +4611,8 @@ export function TalkDetailPage({
                 ) : null}
               </div>
               <p className="policy-muted">
-                Attach org-level data sources to this talk. Tool-capable agents on
-                this talk can use attached verified connectors during runs.
+                Attach org-level data sources to this talk. Tool-capable agents
+                on this talk can use attached verified connectors during runs.
               </p>
 
               {canManageTalkConnectors ? (
@@ -4234,7 +4627,8 @@ export function TalkDetailPage({
                   </div>
                   {availableConnectors.length === 0 ? (
                     <p className="page-state">
-                      No enabled org-level connectors are available to attach yet.
+                      No enabled org-level connectors are available to attach
+                      yet.
                     </p>
                   ) : (
                     <div className="connector-attach-row">
@@ -4242,12 +4636,15 @@ export function TalkDetailPage({
                         <span className="settings-label">Connector</span>
                         <select
                           value={attachConnectorId}
-                          onChange={(event) => setAttachConnectorId(event.target.value)}
+                          onChange={(event) =>
+                            setAttachConnectorId(event.target.value)
+                          }
                           disabled={connectorState.status === 'saving'}
                         >
                           {availableConnectors.map((connector) => (
                             <option key={connector.id} value={connector.id}>
-                              {connector.name} ({formatConnectorKind(connector.connectorKind)})
+                              {connector.name} (
+                              {formatConnectorKind(connector.connectorKind)})
                             </option>
                           ))}
                         </select>
@@ -4257,7 +4654,8 @@ export function TalkDetailPage({
                         className="secondary-btn"
                         onClick={() => void handleAttachConnector()}
                         disabled={
-                          connectorState.status === 'saving' || !attachConnectorId
+                          connectorState.status === 'saving' ||
+                          !attachConnectorId
                         }
                       >
                         {connectorState.status === 'saving'
@@ -4275,17 +4673,25 @@ export function TalkDetailPage({
                 </div>
               ) : null}
               {connectorState.status === 'success' ? (
-                <div className="inline-banner inline-banner-success" role="status">
+                <div
+                  className="inline-banner inline-banner-success"
+                  role="status"
+                >
                   {connectorState.message}
                 </div>
               ) : null}
 
               {talkConnectors.length === 0 ? (
-                <p className="page-state">No data connectors attached to this talk.</p>
+                <p className="page-state">
+                  No data connectors attached to this talk.
+                </p>
               ) : (
                 <div className="connector-card-list">
                   {talkConnectors.map((connector) => (
-                    <article key={connector.id} className="talk-llm-card connector-card">
+                    <article
+                      key={connector.id}
+                      className="talk-llm-card connector-card"
+                    >
                       <div className="connector-card-header">
                         <div>
                           <h3>{connector.name}</h3>
@@ -4293,14 +4699,20 @@ export function TalkDetailPage({
                             {formatConnectorKind(connector.connectorKind)}
                           </p>
                         </div>
-                        <span className={connectorStatusClass(connector.verificationStatus)}>
+                        <span
+                          className={connectorStatusClass(
+                            connector.verificationStatus,
+                          )}
+                        >
                           {formatConnectorStatus(connector.verificationStatus)}
                         </span>
                       </div>
                       <div className="connector-meta-grid">
                         <div>
                           <strong>Credential</strong>
-                          <p>{connector.hasCredential ? 'Stored' : 'Missing'}</p>
+                          <p>
+                            {connector.hasCredential ? 'Stored' : 'Missing'}
+                          </p>
                         </div>
                         <div>
                           <strong>Attached</strong>
@@ -4312,7 +4724,10 @@ export function TalkDetailPage({
                         </div>
                       </div>
                       {connector.lastVerificationError ? (
-                        <div className="inline-banner inline-banner-warning" role="status">
+                        <div
+                          className="inline-banner inline-banner-warning"
+                          role="status"
+                        >
                           {connector.lastVerificationError}
                         </div>
                       ) : null}
@@ -4321,7 +4736,9 @@ export function TalkDetailPage({
                           <button
                             type="button"
                             className="secondary-btn"
-                            onClick={() => void handleDetachConnector(connector)}
+                            onClick={() =>
+                              void handleDetachConnector(connector)
+                            }
                             disabled={connectorState.status === 'saving'}
                           >
                             Detach
@@ -4336,50 +4753,59 @@ export function TalkDetailPage({
           ) : null}
 
           {currentTab === 'runs' ? (
-            <section className="talk-tab-panel run-history-panel" aria-label="Run history">
-          <h2>Run History</h2>
-          {runHistory.length === 0 ? (
-            <p className="page-state">No runs yet.</p>
-          ) : (
-            <ul className="run-history-list">
-              {runHistory.map((run) => (
-                <li key={run.id} className="run-history-item">
-                  <div className="run-history-main">
-                    <span className={`run-history-status run-history-status-${run.status}`}>
-                      {run.status}
-                    </span>
-                    <code>{run.id}</code>
-                  </div>
-                  {run.targetAgentNickname ? (
-                    <p className="run-history-meta">Agent: {run.targetAgentNickname}</p>
-                  ) : null}
-                  <div className="run-history-links">
-                    {run.triggerMessageId ? (
-                      <button
-                        type="button"
-                        className="run-history-link"
-                        onClick={() => jumpToMessage(run.triggerMessageId!)}
-                      >
-                        Trigger:{' '}
-                        {summarizeMessageForRun(
-                          messageLookup.get(run.triggerMessageId),
-                          run.triggerMessageId,
+            <section
+              className="talk-tab-panel run-history-panel"
+              aria-label="Run history"
+            >
+              <h2>Run History</h2>
+              {runHistory.length === 0 ? (
+                <p className="page-state">No runs yet.</p>
+              ) : (
+                <ul className="run-history-list">
+                  {runHistory.map((run) => (
+                    <li key={run.id} className="run-history-item">
+                      <div className="run-history-main">
+                        <span
+                          className={`run-history-status run-history-status-${run.status}`}
+                        >
+                          {run.status}
+                        </span>
+                        <code>{run.id}</code>
+                      </div>
+                      {run.targetAgentNickname ? (
+                        <p className="run-history-meta">
+                          Agent: {run.targetAgentNickname}
+                        </p>
+                      ) : null}
+                      <div className="run-history-links">
+                        {run.triggerMessageId ? (
+                          <button
+                            type="button"
+                            className="run-history-link"
+                            onClick={() => jumpToMessage(run.triggerMessageId!)}
+                          >
+                            Trigger:{' '}
+                            {summarizeMessageForRun(
+                              messageLookup.get(run.triggerMessageId),
+                              run.triggerMessageId,
+                            )}
+                          </button>
+                        ) : (
+                          <span className="run-history-muted">
+                            Trigger: not available
+                          </span>
                         )}
-                      </button>
-                    ) : (
-                      <span className="run-history-muted">Trigger: not available</span>
-                    )}
-                  </div>
-                  {run.status === 'failed' && run.errorMessage ? (
-                    <p className="run-history-error">
-                      {run.errorCode ? `${run.errorCode}: ` : ''}
-                      {run.errorMessage}
-                    </p>
-                  ) : null}
-                </li>
-              ))}
-            </ul>
-          )}
+                      </div>
+                      {run.status === 'failed' && run.errorMessage ? (
+                        <p className="run-history-error">
+                          {run.errorCode ? `${run.errorCode}: ` : ''}
+                          {run.errorMessage}
+                        </p>
+                      ) : null}
+                    </li>
+                  ))}
+                </ul>
+              )}
             </section>
           ) : null}
 
@@ -4414,106 +4840,114 @@ export function TalkDetailPage({
                   Edit history
                 </button>
               </div>
-            {talkTimeline.length === 0 ? (
-              <p className="page-state">No messages yet.</p>
-            ) : (
-              talkTimeline.map((entry) => {
-                if (entry.kind === 'message') {
-                  const { message } = entry;
-                  const agentLabel =
-                    (message.agentId && agentLabelById[message.agentId]) ||
-                    message.agentNickname ||
-                    null;
+              {talkTimeline.length === 0 ? (
+                <p className="page-state">No messages yet.</p>
+              ) : (
+                talkTimeline.map((entry) => {
+                  if (entry.kind === 'message') {
+                    const { message } = entry;
+                    const agentLabel =
+                      (message.agentId && agentLabelById[message.agentId]) ||
+                      message.agentNickname ||
+                      null;
+                    return (
+                      <article
+                        key={entry.key}
+                        id={`message-${message.id}`}
+                        ref={(element) =>
+                          setMessageElementRef(message.id, element)
+                        }
+                        className={`message message-${message.role}`}
+                      >
+                        <header>
+                          <strong>
+                            {agentLabel ? `${agentLabel} · ` : ''}
+                            {message.role}
+                          </strong>
+                          <time>
+                            {new Date(message.createdAt).toLocaleString()}
+                          </time>
+                        </header>
+                        <p>{message.content}</p>
+                        {message.attachments &&
+                        message.attachments.length > 0 ? (
+                          <div className="message-attachments">
+                            {message.attachments.map((att) => (
+                              <span
+                                key={att.id}
+                                className="message-attachment-chip"
+                                title={att.mimeType}
+                              >
+                                {att.fileName}
+                                <span className="message-attachment-size">
+                                  {' '}
+                                  {att.fileSize < 1024
+                                    ? `${att.fileSize} B`
+                                    : att.fileSize < 1048576
+                                      ? `${(att.fileSize / 1024).toFixed(1)} KB`
+                                      : `${(att.fileSize / 1048576).toFixed(1)} MB`}
+                                </span>
+                              </span>
+                            ))}
+                          </div>
+                        ) : null}
+                      </article>
+                    );
+                  }
+
+                  const { response } = entry;
+                  const label =
+                    (response.agentId && agentLabelById[response.agentId]) ||
+                    response.agentNickname ||
+                    'Assistant';
                   return (
                     <article
                       key={entry.key}
-                      id={`message-${message.id}`}
-                      ref={(element) => setMessageElementRef(message.id, element)}
-                      className={`message message-${message.role}`}
+                      className={`message message-assistant message-live${
+                        response.terminalStatus === 'failed'
+                          ? ' message-error'
+                          : ''
+                      }`}
                     >
                       <header>
-                        <strong>
-                          {agentLabel ? `${agentLabel} · ` : ''}
-                          {message.role}
-                        </strong>
-                        <time>{new Date(message.createdAt).toLocaleString()}</time>
+                        <strong>{label}</strong>
+                        <time>
+                          {response.terminalStatus === 'failed'
+                            ? 'Failed'
+                            : 'Streaming…'}
+                        </time>
                       </header>
-                      <p>{message.content}</p>
-                      {message.attachments && message.attachments.length > 0 ? (
-                        <div className="message-attachments">
-                          {message.attachments.map((att) => (
-                            <span key={att.id} className="message-attachment-chip" title={att.mimeType}>
-                              {att.fileName}
-                              <span className="message-attachment-size">
-                                {' '}
-                                {att.fileSize < 1024
-                                  ? `${att.fileSize} B`
-                                  : att.fileSize < 1048576
-                                    ? `${(att.fileSize / 1024).toFixed(1)} KB`
-                                    : `${(att.fileSize / 1048576).toFixed(1)} MB`}
-                              </span>
-                            </span>
-                          ))}
-                        </div>
+                      <p>{response.text || 'Thinking…'}</p>
+                      {response.errorMessage ? (
+                        <p className="run-history-error">
+                          {response.errorMessage}
+                        </p>
                       ) : null}
                     </article>
                   );
-                }
+                })
+              )}
 
-                const { response } = entry;
-                const label =
-                  (response.agentId && agentLabelById[response.agentId]) ||
-                  response.agentNickname ||
-                  'Assistant';
-                return (
-                  <article
-                    key={entry.key}
-                    className={`message message-assistant message-live${
-                      response.terminalStatus === 'failed' ? ' message-error' : ''
-                    }`}
-                  >
-                    <header>
-                      <strong>{label}</strong>
-                      <time>
-                        {response.terminalStatus === 'failed' ? 'Failed' : 'Streaming…'}
-                      </time>
-                    </header>
-                    <p>{response.text || 'Thinking…'}</p>
-                    {response.errorMessage ? (
-                      <p className="run-history-error">{response.errorMessage}</p>
-                    ) : null}
-                  </article>
-                );
-              })
-            )}
+              {state.hasUnreadBelow ? (
+                <button
+                  type="button"
+                  className="timeline-new-indicator"
+                  onClick={handleClearUnread}
+                >
+                  New messages
+                </button>
+              ) : null}
 
-            {state.hasUnreadBelow ? (
-              <button
-                type="button"
-                className="timeline-new-indicator"
-                onClick={handleClearUnread}
-              >
-                New messages
-              </button>
-            ) : null}
-
-            <div ref={endRef} />
+              <div ref={endRef} />
             </div>
           ) : null}
         </div>
 
         {currentTab === 'talk' ? (
           <form
-            className={`composer talk-workspace-composer${isDragOver ? ' composer-drag-over' : ''}`}
+            className="composer talk-workspace-composer"
             onSubmit={handleSend}
-            onDragEnter={handleDragEnter}
-            onDragLeave={handleDragLeave}
-            onDragOver={handleDragOver}
-            onDrop={handleDrop}
           >
-            {isDragOver ? (
-              <div className="composer-drop-overlay">Drop files to attach</div>
-            ) : null}
             <input
               ref={fileInputRef}
               type="file"
@@ -4522,7 +4956,11 @@ export function TalkDetailPage({
               onChange={handleFileInputChange}
               style={{ display: 'none' }}
             />
-            <div className="composer-targets" role="group" aria-label="Selected agents">
+            <div
+              className="composer-targets"
+              role="group"
+              aria-label="Selected agents"
+            >
               {effectiveAgents.map((agent) => {
                 const selected = targetAgentIds.includes(agent.id);
                 return (
@@ -4548,7 +4986,9 @@ export function TalkDetailPage({
                 );
               })}
             </div>
-            <p className="composer-target-help">Selected agents will respond.</p>
+            <p className="composer-target-help">
+              Selected agents will respond.
+            </p>
 
             <textarea
               value={draft}
@@ -4558,7 +4998,9 @@ export function TalkDetailPage({
               rows={3}
               maxLength={TALK_MESSAGE_MAX_CHARS}
               disabled={
-                state.sendState.status === 'posting' || activeRound || hasUnsavedAgentChanges
+                state.sendState.status === 'posting' ||
+                activeRound ||
+                hasUnsavedAgentChanges
               }
             />
 
@@ -4568,14 +5010,24 @@ export function TalkDetailPage({
                   <span
                     key={att.localId}
                     className={`composer-attachment-chip composer-attachment-${att.status}`}
-                    title={att.status === 'error' ? att.errorMessage : att.fileName}
+                    title={
+                      att.status === 'error' ? att.errorMessage : att.fileName
+                    }
                   >
-                    <span className="composer-attachment-name">{att.fileName}</span>
+                    <span className="composer-attachment-name">
+                      {att.fileName}
+                    </span>
                     {att.status === 'uploading' ? (
-                      <span className="composer-attachment-status"> uploading…</span>
+                      <span className="composer-attachment-status">
+                        {' '}
+                        uploading…
+                      </span>
                     ) : null}
                     {att.status === 'error' ? (
-                      <span className="composer-attachment-status"> failed</span>
+                      <span className="composer-attachment-status">
+                        {' '}
+                        failed
+                      </span>
                     ) : null}
                     <button
                       type="button"
@@ -4599,7 +5051,9 @@ export function TalkDetailPage({
                 className="secondary-btn composer-attach-btn"
                 onClick={handleAttachButtonClick}
                 disabled={
-                  state.sendState.status === 'posting' || activeRound || hasUnsavedAgentChanges
+                  state.sendState.status === 'posting' ||
+                  activeRound ||
+                  hasUnsavedAgentChanges
                 }
                 title="Attach files"
               >
@@ -4609,7 +5063,9 @@ export function TalkDetailPage({
                 type="submit"
                 className="primary-btn"
                 disabled={
-                  state.sendState.status === 'posting' || activeRound || hasUnsavedAgentChanges
+                  state.sendState.status === 'posting' ||
+                  activeRound ||
+                  hasUnsavedAgentChanges
                 }
               >
                 {state.sendState.status === 'posting' ? 'Sending…' : 'Send'}
@@ -4619,22 +5075,32 @@ export function TalkDetailPage({
                   type="button"
                   className="secondary-btn"
                   onClick={handleCancelRuns}
-                  disabled={state.cancelState.status === 'posting' || !activeRound}
+                  disabled={
+                    state.cancelState.status === 'posting' || !activeRound
+                  }
                 >
-                  {state.cancelState.status === 'posting' ? 'Cancelling…' : 'Cancel Runs'}
+                  {state.cancelState.status === 'posting'
+                    ? 'Cancelling…'
+                    : 'Cancel Runs'}
                 </button>
               ) : null}
             </div>
 
             {activeRound ? (
-              <div className="inline-banner inline-banner-warning" role="status">
-                Wait for the current round to finish or cancel it before sending another
-                message.
+              <div
+                className="inline-banner inline-banner-warning"
+                role="status"
+              >
+                Wait for the current round to finish or cancel it before sending
+                another message.
               </div>
             ) : null}
 
             {!activeRound && hasUnsavedAgentChanges ? (
-              <div className="inline-banner inline-banner-warning" role="status">
+              <div
+                className="inline-banner inline-banner-warning"
+                role="status"
+              >
                 Save agent changes before sending a message.
               </div>
             ) : null}
@@ -4646,7 +5112,10 @@ export function TalkDetailPage({
             ) : null}
 
             {historyEditState.status === 'success' ? (
-              <div className="inline-banner inline-banner-success" role="status">
+              <div
+                className="inline-banner inline-banner-success"
+                role="status"
+              >
                 {historyEditState.message}
               </div>
             ) : null}
@@ -4658,7 +5127,10 @@ export function TalkDetailPage({
             ) : null}
 
             {state.cancelState.status === 'success' ? (
-              <div className="inline-banner inline-banner-success" role="status">
+              <div
+                className="inline-banner inline-banner-success"
+                role="status"
+              >
                 {state.cancelState.message}
               </div>
             ) : null}

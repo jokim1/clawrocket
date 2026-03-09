@@ -1,5 +1,5 @@
 :root {
-  font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+  font-family: 'IBM Plex Sans', 'Segoe UI', sans-serif;
   color: #1d2433;
   background: linear-gradient(180deg, #f9f4ed 0%, #f4f9ff 100%);
 }
@@ -1815,13 +1815,11 @@ a {
   font-size: 0.82rem;
 }
 
-.composer-drag-over {
-  outline: 2px dashed #4a8af4;
-  outline-offset: -2px;
+.talk-workspace-drag-over {
   position: relative;
 }
 
-.composer-drop-overlay {
+.talk-workspace-drop-overlay {
   position: absolute;
   inset: 0;
   display: flex;
@@ -1830,10 +1828,11 @@ a {
   background: rgba(74, 138, 244, 0.08);
   color: #4a8af4;
   font-weight: 600;
-  font-size: 0.95rem;
+  font-size: 1.1rem;
   border-radius: 9px;
-  z-index: 10;
+  z-index: 100;
   pointer-events: none;
+  border: 2px dashed #4a8af4;
 }
 
 .composer-attachments {
