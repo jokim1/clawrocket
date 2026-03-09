@@ -77,6 +77,22 @@ type LiveResponseView = {
   terminalStatus?: 'failed';
 };
 
+type TalkTimelineEntry =
+  | {
+      kind: 'message';
+      key: string;
+      timestamp: number;
+      sortOrder: number;
+      message: TalkMessage;
+    }
+  | {
+      kind: 'live-response';
+      key: string;
+      timestamp: number;
+      sortOrder: number;
+      response: LiveResponseView;
+    };
+
 type DetailState = {
   kind: 'loading' | 'ready' | 'unavailable' | 'error';
   talk: Talk | null;
@@ -1257,6 +1273,36 @@ export function TalkDetailPage({
         (left, right) => left.startedAt - right.startedAt,
       ),
     [state.liveResponsesByRunId],
+  );
+  const talkTimeline = useMemo<TalkTimelineEntry[]>(
+    () =>
+      [
+        ...state.messages.map((message, index) => ({
+          kind: 'message' as const,
+          key: message.id,
+          timestamp: Date.parse(message.createdAt) || 0,
+          sortOrder: index,
+          message,
+        })),
+        ...liveResponses.map((response, index) => {
+          const run = state.runsById[response.runId];
+          const runTimestamp = Date.parse(run?.startedAt || run?.createdAt || '');
+          return {
+            kind: 'live-response' as const,
+            key: response.runId,
+            timestamp:
+              Number.isFinite(runTimestamp) && runTimestamp > 0
+                ? runTimestamp
+                : response.startedAt,
+            sortOrder: state.messages.length + index,
+            response,
+          };
+        }),
+      ].sort(
+        (left, right) =>
+          left.timestamp - right.timestamp || left.sortOrder - right.sortOrder,
+      ),
+    [liveResponses, state.messages, state.runsById],
   );
   const activeRound = useMemo(
     () =>
@@ -2709,59 +2755,61 @@ export function TalkDetailPage({
 
           {currentTab === 'talk' ? (
             <div className="timeline" aria-label="Talk timeline">
-            {state.messages.length === 0 ? (
+            {talkTimeline.length === 0 ? (
               <p className="page-state">No messages yet.</p>
             ) : (
-              state.messages.map((message) => {
-                const agentLabel =
-                  (message.agentId && agentLabelById[message.agentId]) ||
-                  message.agentNickname ||
-                  null;
+              talkTimeline.map((entry) => {
+                if (entry.kind === 'message') {
+                  const { message } = entry;
+                  const agentLabel =
+                    (message.agentId && agentLabelById[message.agentId]) ||
+                    message.agentNickname ||
+                    null;
+                  return (
+                    <article
+                      key={entry.key}
+                      id={`message-${message.id}`}
+                      ref={(element) => setMessageElementRef(message.id, element)}
+                      className={`message message-${message.role}`}
+                    >
+                      <header>
+                        <strong>
+                          {agentLabel ? `${agentLabel} · ` : ''}
+                          {message.role}
+                        </strong>
+                        <time>{new Date(message.createdAt).toLocaleString()}</time>
+                      </header>
+                      <p>{message.content}</p>
+                    </article>
+                  );
+                }
+
+                const { response } = entry;
+                const label =
+                  (response.agentId && agentLabelById[response.agentId]) ||
+                  response.agentNickname ||
+                  'Assistant';
                 return (
                   <article
-                    key={message.id}
-                    id={`message-${message.id}`}
-                    ref={(element) => setMessageElementRef(message.id, element)}
-                    className={`message message-${message.role}`}
+                    key={entry.key}
+                    className={`message message-assistant message-live${
+                      response.terminalStatus === 'failed' ? ' message-error' : ''
+                    }`}
                   >
                     <header>
-                      <strong>
-                        {agentLabel ? `${agentLabel} · ` : ''}
-                        {message.role}
-                      </strong>
-                      <time>{new Date(message.createdAt).toLocaleString()}</time>
+                      <strong>{label}</strong>
+                      <time>
+                        {response.terminalStatus === 'failed' ? 'Failed' : 'Streaming…'}
+                      </time>
                     </header>
-                    <p>{message.content}</p>
+                    <p>{response.text || 'Thinking…'}</p>
+                    {response.errorMessage ? (
+                      <p className="run-history-error">{response.errorMessage}</p>
+                    ) : null}
                   </article>
                 );
               })
             )}
-
-            {liveResponses.map((response) => {
-              const label =
-                (response.agentId && agentLabelById[response.agentId]) ||
-                response.agentNickname ||
-                'Assistant';
-              return (
-                <article
-                  key={response.runId}
-                  className={`message message-assistant message-live${
-                    response.terminalStatus === 'failed' ? ' message-error' : ''
-                  }`}
-                >
-                  <header>
-                    <strong>{label}</strong>
-                    <time>
-                      {response.terminalStatus === 'failed' ? 'Failed' : 'Streaming…'}
-                    </time>
-                  </header>
-                  <p>{response.text || 'Thinking…'}</p>
-                  {response.errorMessage ? (
-                    <p className="run-history-error">{response.errorMessage}</p>
-                  ) : null}
-                </article>
-              );
-            })}
 
             {state.hasUnreadBelow ? (
               <button
