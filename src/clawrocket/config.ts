@@ -18,11 +18,25 @@ const envConfig = readEnvFile([
   'TALK_EXECUTOR_DEFAULT_ALIAS',
   'TALK_EXECUTOR_ALIAS_MODEL_MAP_JSON',
   'TALK_EXECUTOR_WEB_GROUP_FOLDER',
+  'TALK_CONTEXT_BROWSER_TIMEOUT_MS',
+  'TALK_CONTEXT_BROWSER_PREFER_HOSTS',
+  'TALK_CONTEXT_BROWSER_DISABLE_HOSTS',
+  'TALK_CONTEXT_MANAGED_FETCH_ENABLED',
+  'TALK_CONTEXT_MANAGED_FETCH_BASE_URL',
+  'TALK_CONTEXT_MANAGED_FETCH_API_KEY',
+  'TALK_CONTEXT_MANAGED_FETCH_TIMEOUT_MS',
   'ANTHROPIC_API_KEY',
   'CLAUDE_CODE_OAUTH_TOKEN',
   'ANTHROPIC_AUTH_TOKEN',
   'ANTHROPIC_BASE_URL',
 ]);
+
+function parseCsvList(value: string): string[] {
+  return value
+    .split(',')
+    .map((entry) => entry.trim().toLowerCase())
+    .filter(Boolean);
+}
 
 export const WEB_ENABLED =
   (process.env.WEB_ENABLED || envConfig.WEB_ENABLED || 'true') === 'true';
@@ -105,6 +119,57 @@ export const TALK_EXECUTOR_WEB_GROUP_FOLDER =
   process.env.TALK_EXECUTOR_WEB_GROUP_FOLDER ||
   envConfig.TALK_EXECUTOR_WEB_GROUP_FOLDER ||
   'web-talks';
+
+const talkContextBrowserTimeoutMs = parseInt(
+  process.env.TALK_CONTEXT_BROWSER_TIMEOUT_MS ||
+    envConfig.TALK_CONTEXT_BROWSER_TIMEOUT_MS ||
+    '30000',
+  10,
+);
+export const TALK_CONTEXT_BROWSER_TIMEOUT_MS = Number.isFinite(
+  talkContextBrowserTimeoutMs,
+)
+  ? Math.max(1_000, talkContextBrowserTimeoutMs)
+  : 30_000;
+
+export const TALK_CONTEXT_BROWSER_PREFER_HOSTS = parseCsvList(
+  process.env.TALK_CONTEXT_BROWSER_PREFER_HOSTS ||
+    envConfig.TALK_CONTEXT_BROWSER_PREFER_HOSTS ||
+    'substack.com',
+);
+
+export const TALK_CONTEXT_BROWSER_DISABLE_HOSTS = parseCsvList(
+  process.env.TALK_CONTEXT_BROWSER_DISABLE_HOSTS ||
+    envConfig.TALK_CONTEXT_BROWSER_DISABLE_HOSTS ||
+    '',
+);
+
+export const TALK_CONTEXT_MANAGED_FETCH_ENABLED =
+  (process.env.TALK_CONTEXT_MANAGED_FETCH_ENABLED ||
+    envConfig.TALK_CONTEXT_MANAGED_FETCH_ENABLED ||
+    'false') === 'true';
+
+export const TALK_CONTEXT_MANAGED_FETCH_BASE_URL =
+  process.env.TALK_CONTEXT_MANAGED_FETCH_BASE_URL ||
+  envConfig.TALK_CONTEXT_MANAGED_FETCH_BASE_URL ||
+  '';
+
+export const TALK_CONTEXT_MANAGED_FETCH_API_KEY =
+  process.env.TALK_CONTEXT_MANAGED_FETCH_API_KEY ||
+  envConfig.TALK_CONTEXT_MANAGED_FETCH_API_KEY ||
+  '';
+
+const talkContextManagedTimeoutMs = parseInt(
+  process.env.TALK_CONTEXT_MANAGED_FETCH_TIMEOUT_MS ||
+    envConfig.TALK_CONTEXT_MANAGED_FETCH_TIMEOUT_MS ||
+    '30000',
+  10,
+);
+export const TALK_CONTEXT_MANAGED_FETCH_TIMEOUT_MS = Number.isFinite(
+  talkContextManagedTimeoutMs,
+)
+  ? Math.max(1_000, talkContextManagedTimeoutMs)
+  : 30_000;
 
 export const TALK_EXECUTOR_ANTHROPIC_API_KEY =
   process.env.ANTHROPIC_API_KEY || envConfig.ANTHROPIC_API_KEY || '';

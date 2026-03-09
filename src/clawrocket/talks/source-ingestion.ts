@@ -13,7 +13,18 @@ import dns from 'dns/promises';
 import http from 'http';
 import https from 'https';
 
-import { updateSourceExtraction } from '../db/index.js';
+import {
+  TALK_CONTEXT_BROWSER_DISABLE_HOSTS,
+  TALK_CONTEXT_BROWSER_PREFER_HOSTS,
+  TALK_CONTEXT_BROWSER_TIMEOUT_MS,
+  TALK_CONTEXT_MANAGED_FETCH_ENABLED,
+  TALK_CONTEXT_MANAGED_FETCH_TIMEOUT_MS,
+} from '../config.js';
+import {
+  type ContextSourceFetchStrategy,
+  updateSourceExtraction,
+} from '../db/index.js';
+import { runBrowserSourceFetchInContainer } from './browser-source-container.js';
 import { logger } from '../../logger.js';
 
 // ---------------------------------------------------------------------------
@@ -23,13 +34,22 @@ import { logger } from '../../logger.js';
 const MAX_REDIRECTS = 5;
 const FETCH_TIMEOUT_MS = 15_000;
 const MAX_RESPONSE_BYTES = 10 * 1024 * 1024; // 10 MB
-const MAX_EXTRACTED_TEXT = 50_000;
 const ALLOWED_SCHEMES = new Set(['http:', 'https:']);
+const MIN_USEFUL_EXTRACTED_TEXT = 400;
 const ALLOWED_CONTENT_TYPES = new Set([
   'text/plain',
   'text/html',
   'application/pdf',
 ]);
+const CHALLENGE_MARKERS = [
+  'enable javascript',
+  'verify you are human',
+  'captcha',
+  'access denied',
+  'attention required',
+  'bot detection',
+  'cloudflare',
+];
 
 // ---------------------------------------------------------------------------
 // SSRF protection
@@ -162,6 +182,67 @@ interface FetchResult {
   body: string;
   contentType: string;
   finalUrl: string;
+}
+
+export interface BrowserSourceFetchResult {
+  finalUrl: string;
+  pageTitle: string | null;
+  extractedText: string;
+  contentType: 'text/html';
+  strategy: 'browser';
+}
+
+export interface BrowserSourceFetcher {
+  fetch(input: { url: string; timeoutMs: number }): Promise<BrowserSourceFetchResult>;
+}
+
+export interface ManagedSourceFetchResult {
+  finalUrl: string;
+  pageTitle: string | null;
+  extractedText: string;
+  contentType: string;
+  strategy: 'managed';
+}
+
+export interface ManagedSourceFetcher {
+  fetch(input: { url: string; timeoutMs: number }): Promise<ManagedSourceFetchResult>;
+}
+
+export interface UrlSourceIngestionDependencies {
+  httpFetcher?: typeof safeFetchUrl;
+  browserFetcher?: BrowserSourceFetcher;
+  managedFetcher?: ManagedSourceFetcher | null;
+  updateExtraction?: typeof updateSourceExtraction;
+}
+
+export interface TalkContextSourceIngestionService {
+  enqueueUrlSource(sourceId: string, url: string): void;
+}
+
+const DEFAULT_BROWSER_SOURCE_FETCHER: BrowserSourceFetcher = {
+  fetch: (input) => runBrowserSourceFetchInContainer(input),
+};
+
+function getConfiguredManagedSourceFetcher(): ManagedSourceFetcher | null {
+  if (!TALK_CONTEXT_MANAGED_FETCH_ENABLED) return null;
+  logger.warn(
+    '[source-ingestion] Managed source fetch is enabled, but no managed provider is configured.',
+  );
+  return null;
+}
+
+export function createDefaultTalkContextSourceIngestionService(
+  deps?: UrlSourceIngestionDependencies,
+): TalkContextSourceIngestionService {
+  return {
+    enqueueUrlSource(sourceId: string, url: string) {
+      void ingestUrlSource(sourceId, url, deps).catch((err) => {
+        logger.warn(
+          `[source-ingestion] Unexpected URL ingestion crash for ${sourceId}: ${formatStageError(err)}`,
+        );
+      });
+    },
+  };
 }
 
 /**
@@ -403,6 +484,119 @@ function extractText(body: string, contentType: string): string {
   }
 }
 
+function hostnameMatches(hostname: string, candidates: string[]): boolean {
+  return candidates.some(
+    (candidate) =>
+      hostname === candidate || hostname.endsWith(`.${candidate}`),
+  );
+}
+
+function shouldPreferBrowserForUrl(url: string): boolean {
+  try {
+    const hostname = new URL(url).hostname.toLowerCase();
+    return hostnameMatches(hostname, TALK_CONTEXT_BROWSER_PREFER_HOSTS);
+  } catch {
+    return false;
+  }
+}
+
+function shouldDisableBrowserForUrl(url: string): boolean {
+  try {
+    const hostname = new URL(url).hostname.toLowerCase();
+    return hostnameMatches(hostname, TALK_CONTEXT_BROWSER_DISABLE_HOSTS);
+  } catch {
+    return false;
+  }
+}
+
+function looksLikeChallengePage(html: string): boolean {
+  const normalized = html.toLowerCase();
+  return CHALLENGE_MARKERS.some((marker) => normalized.includes(marker));
+}
+
+function shouldAttemptBrowserFallback(input: {
+  url: string;
+  fetchResult?: FetchResult | null;
+  extractedText?: string | null;
+  httpError?: SourceIngestionError | Error | null;
+}): boolean {
+  if (shouldDisableBrowserForUrl(input.url)) return false;
+  if (shouldPreferBrowserForUrl(input.url)) return true;
+
+  if (input.httpError) {
+    if (
+      input.httpError instanceof SourceIngestionError &&
+      ['invalid_scheme', 'ssrf_blocked', 'dns_resolution_failed'].includes(
+        input.httpError.code,
+      )
+    ) {
+      return false;
+    }
+    return true;
+  }
+
+  if (!input.fetchResult || input.fetchResult.contentType !== 'text/html') {
+    return false;
+  }
+
+  if (looksLikeChallengePage(input.fetchResult.body)) return true;
+
+  return (input.extractedText?.trim().length ?? 0) < MIN_USEFUL_EXTRACTED_TEXT;
+}
+
+function formatStageError(err: unknown): string {
+  if (err instanceof SourceIngestionError) {
+    return `${err.code}: ${err.message}`;
+  }
+  if (err instanceof Error) return err.message;
+  return String(err);
+}
+
+function finalStrategyForFailure(input: {
+  managedAttempted: boolean;
+  browserAttempted: boolean;
+}): ContextSourceFetchStrategy | null {
+  if (input.managedAttempted) return 'managed';
+  if (input.browserAttempted) return 'browser';
+  return 'http';
+}
+
+export async function ingestUrlSourceWithBrowser(
+  sourceId: string,
+  url: string,
+  options?: {
+    browserFetcher?: BrowserSourceFetcher;
+    updateExtraction?: typeof updateSourceExtraction;
+    fetchedAt?: string;
+  },
+): Promise<BrowserSourceFetchResult> {
+  const browserFetcher = options?.browserFetcher || DEFAULT_BROWSER_SOURCE_FETCHER;
+  const updateExtractionFn = options?.updateExtraction || updateSourceExtraction;
+  const fetchedAt = options?.fetchedAt ?? new Date().toISOString();
+  const result = await browserFetcher.fetch({
+    url,
+    timeoutMs: TALK_CONTEXT_BROWSER_TIMEOUT_MS,
+  });
+
+  if (!result.extractedText.trim()) {
+    throw new SourceIngestionError(
+      'browser_empty',
+      'Browser fallback rendered the page, but extracted no useful text.',
+    );
+  }
+
+  updateExtractionFn({
+    sourceId,
+    extractedText: result.extractedText,
+    extractionError: null,
+    mimeType: result.contentType,
+    fetchStrategy: 'browser',
+    fetchedAt,
+  });
+
+  return result;
+}
+
 // ---------------------------------------------------------------------------
 // Ingestion entry point
 // ---------------------------------------------------------------------------
@@ -418,38 +612,153 @@ function extractText(body: string, contentType: string): string {
 export async function ingestUrlSource(
   sourceId: string,
   url: string,
+  deps?: UrlSourceIngestionDependencies,
 ): Promise<void> {
+  const httpFetcher = deps?.httpFetcher ?? safeFetchUrl;
+  const browserFetcher = deps?.browserFetcher ?? DEFAULT_BROWSER_SOURCE_FETCHER;
+  const managedFetcher = deps?.managedFetcher ?? getConfiguredManagedSourceFetcher();
+  const updateExtractionFn = deps?.updateExtraction ?? updateSourceExtraction;
+  const fetchedAt = new Date().toISOString();
+  let httpError: SourceIngestionError | Error | null = null;
+  let browserError: Error | null = null;
+  let managedError: Error | null = null;
+  let browserAttempted = false;
+  let managedAttempted = false;
+  let httpFallback:
+    | {
+        extractedText: string;
+        contentType: string;
+      }
+    | null = null;
+  let shouldPreferBrowser = false;
+
   try {
-    const result = await safeFetchUrl(url);
+    const result = await httpFetcher(url);
     const extracted = extractText(result.body, result.contentType);
-
-    updateSourceExtraction({
-      sourceId,
+    httpFallback = {
       extractedText: extracted,
-      extractionError: null,
-      mimeType: result.contentType,
+      contentType: result.contentType,
+    };
+    shouldPreferBrowser = shouldAttemptBrowserFallback({
+      url,
+      fetchResult: result,
+      extractedText: extracted,
     });
 
-    logger.info(
-      `[source-ingestion] URL source ${sourceId} ingested successfully ` +
-        `(${extracted.length} chars, type=${result.contentType}).`,
-    );
+    if (!shouldPreferBrowser) {
+      updateExtractionFn({
+        sourceId,
+        extractedText: extracted,
+        extractionError: null,
+        mimeType: result.contentType,
+        fetchStrategy: 'http',
+        fetchedAt,
+      });
+
+      logger.info(
+        `[source-ingestion] URL source ${sourceId} ingested successfully ` +
+          `(${extracted.length} chars, type=${result.contentType}, strategy=http).`,
+      );
+      return;
+    }
   } catch (err) {
-    const message =
-      err instanceof SourceIngestionError
-        ? `${err.code}: ${err.message}`
-        : String(err);
-
-    updateSourceExtraction({
-      sourceId,
-      extractedText: null,
-      extractionError: message,
-    });
-
-    logger.warn(
-      `[source-ingestion] URL source ${sourceId} ingestion failed: ${message}`,
-    );
+    httpError = err instanceof Error ? err : new Error(String(err));
   }
+
+  if (
+    shouldPreferBrowser ||
+    shouldAttemptBrowserFallback({
+      url,
+      httpError,
+    })
+  ) {
+    browserAttempted = true;
+    try {
+      const browserResult = await ingestUrlSourceWithBrowser(sourceId, url, {
+        browserFetcher,
+        updateExtraction: updateExtractionFn,
+        fetchedAt,
+      });
+
+      logger.info(
+        `[source-ingestion] URL source ${sourceId} ingested successfully ` +
+          `(${browserResult.extractedText.length} chars, type=${browserResult.contentType}, strategy=browser).`,
+      );
+      return;
+    } catch (err) {
+      browserError = err instanceof Error ? err : new Error(String(err));
+    }
+  }
+
+  if (managedFetcher) {
+    managedAttempted = true;
+    try {
+      const managedResult = await managedFetcher.fetch({
+        url,
+        timeoutMs: TALK_CONTEXT_MANAGED_FETCH_TIMEOUT_MS,
+      });
+      updateExtractionFn({
+        sourceId,
+        extractedText: managedResult.extractedText,
+        extractionError: null,
+        mimeType: managedResult.contentType,
+        fetchStrategy: 'managed',
+        fetchedAt,
+      });
+
+      logger.info(
+        `[source-ingestion] URL source ${sourceId} ingested successfully ` +
+          `(${managedResult.extractedText.length} chars, type=${managedResult.contentType}, strategy=managed).`,
+      );
+      return;
+    } catch (err) {
+      managedError = err instanceof Error ? err : new Error(String(err));
+    }
+  }
+
+  if (
+    httpFallback &&
+    !CHALLENGE_MARKERS.some((marker) =>
+      httpFallback.extractedText.toLowerCase().includes(marker),
+    ) &&
+    httpFallback.extractedText.trim().length >= MIN_USEFUL_EXTRACTED_TEXT
+  ) {
+    updateExtractionFn({
+      sourceId,
+      extractedText: httpFallback.extractedText,
+      extractionError: null,
+      mimeType: httpFallback.contentType,
+      fetchStrategy: 'http',
+      fetchedAt,
+    });
+    logger.warn(
+      `[source-ingestion] URL source ${sourceId} fell back to HTTP extraction after browser/managed failure.`,
+    );
+    return;
+  }
+
+  const messageParts = [
+    httpError ? `http: ${formatStageError(httpError)}` : null,
+    browserError ? `browser: ${formatStageError(browserError)}` : null,
+    managedError ? `managed: ${formatStageError(managedError)}` : null,
+  ].filter(Boolean);
+  const message =
+    messageParts.join(' | ') || 'Unknown URL ingestion failure.';
+
+  updateExtractionFn({
+    sourceId,
+    extractedText: null,
+    extractionError: message,
+    fetchStrategy: finalStrategyForFailure({
+      browserAttempted,
+      managedAttempted,
+    }),
+    fetchedAt,
+  });
+
+  logger.warn(
+    `[source-ingestion] URL source ${sourceId} ingestion failed: ${message}`,
+  );
 }
 
 /**

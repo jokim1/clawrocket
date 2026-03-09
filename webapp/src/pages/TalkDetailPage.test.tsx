@@ -14,9 +14,15 @@ import { TalkDetailPage } from './TalkDetailPage';
 import { openTalkStream } from '../lib/talkStream';
 import type {
   AiAgentsPageData,
+  ChannelConnection,
+  ChannelQueueFailure,
+  ChannelTarget,
+  ContextSource,
+  TalkContext,
   DataConnector,
   Talk,
   TalkAgent,
+  TalkChannelBinding,
   TalkDataConnector,
   TalkMessage,
   TalkRun,
@@ -49,6 +55,7 @@ describe('TalkDetailPage', () => {
 
   afterEach(() => {
     cleanup();
+    vi.useRealTimers();
     vi.unstubAllGlobals();
     vi.clearAllMocks();
     document.cookie = 'cr_csrf_token=; Max-Age=0; path=/';
@@ -93,6 +100,72 @@ describe('TalkDetailPage', () => {
     await screen.findByPlaceholderText('Send a message to this talk');
 
     expect(openTalkStreamMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('loads talk channels, saves binding edits, and manages failure queues from the Channels tab', async () => {
+    const user = userEvent.setup();
+
+    installTalkDetailFetch({
+      talkChannels: [
+        buildTalkChannelBinding({
+          id: 'binding-1',
+          displayName: 'Cal Football Chat',
+          responderMode: 'agent',
+          responderAgentId: 'agent-openai',
+          deferredIngressCount: 2,
+          lastIngressReasonCode: 'expired_while_busy',
+          lastDeliveryReasonCode: 'delivery_retries_exhausted',
+        }),
+      ],
+      ingressFailures: [
+        buildChannelQueueFailure({
+          id: 'ingress-1',
+          bindingId: 'binding-1',
+          reasonCode: 'expired_while_busy',
+          senderName: 'Coach',
+        }),
+      ],
+      deliveryFailures: [
+        buildChannelQueueFailure({
+          id: 'delivery-1',
+          bindingId: 'binding-1',
+          reasonCode: 'delivery_retries_exhausted',
+          reasonDetail: 'Telegram delivery exhausted retries.',
+        }),
+      ],
+    });
+
+    renderDetailPage('/app/talks/talk-1/channels');
+    await screen.findByRole('heading', { name: 'Channels' });
+
+    expect(screen.getByText('Cal Football Chat')).toBeTruthy();
+    expect(screen.getByText('Dropped after waiting too long for the talk to become idle')).toBeTruthy();
+    expect(screen.getByText('Delivery retries exhausted')).toBeTruthy();
+
+    const bindingCard = screen.getByRole('heading', { name: 'Cal Football Chat' }).closest('article');
+    if (!bindingCard) {
+      throw new Error('Expected binding card');
+    }
+    const bindingView = within(bindingCard);
+
+    await user.clear(bindingView.getByLabelText('Display Name'));
+    await user.type(bindingView.getByLabelText('Display Name'), 'Cal Strategy Room');
+    await user.selectOptions(bindingView.getByLabelText('Delivery'), 'channel');
+    await user.click(bindingView.getByRole('button', { name: 'Save' }));
+
+    expect(await screen.findByText('Saved channel settings for Cal Football Chat.')).toBeTruthy();
+    expect(bindingView.getByDisplayValue('Cal Strategy Room')).toBeTruthy();
+
+    await user.click(bindingView.getByRole('button', { name: 'Test Send' }));
+    expect(await screen.findByText('Sent a test message to Cal Strategy Room.')).toBeTruthy();
+
+    await user.click(bindingView.getAllByRole('button', { name: 'Retry' })[0]);
+    expect(await screen.findByText('Ingress failure retried.')).toBeTruthy();
+    expect(screen.queryByText('Coach')).toBeNull();
+
+    await user.click(bindingView.getAllByRole('button', { name: 'Dismiss' })[0]);
+    expect(await screen.findByText('Delivery failure dismissed.')).toBeTruthy();
+    expect(screen.queryByText('Telegram delivery exhausted retries.')).toBeNull();
   });
 
   it('updates nicknames in auto and custom modes and saves talk agents from the Agents tab', async () => {
@@ -152,6 +225,84 @@ describe('TalkDetailPage', () => {
       isPrimary: true,
     });
   });
+
+  it(
+    'shows source failures and refreshes URL source status after retry',
+    async () => {
+      const user = userEvent.setup();
+      let currentContext = buildTalkContext({
+        sources: [
+          buildContextSource({
+            id: 'source-failed',
+            title: 'Gamemakers Substack',
+            sourceUrl: 'https://example.substack.com/p/post',
+            status: 'failed',
+            extractionError:
+              'fetch_http_error: HTTP 403 from https://example.substack.com/p/post',
+          }),
+        ],
+      });
+      let pollCount = 0;
+
+      installTalkDetailFetch({
+        context: currentContext,
+        onGetContext: () => {
+          if (
+            currentContext.sources[0]?.status === 'pending' &&
+            pollCount++ >= 0
+          ) {
+            currentContext = buildTalkContext({
+              sources: [
+                buildContextSource({
+                  id: 'source-failed',
+                  title: 'Gamemakers Substack',
+                  sourceUrl: 'https://example.substack.com/p/post',
+                  status: 'ready',
+                  extractionError: null,
+                  fetchStrategy: 'browser',
+                  lastFetchedAt: '2026-03-06T00:05:00.000Z',
+                  extractedTextLength: 1200,
+                }),
+              ],
+            });
+          }
+          return currentContext;
+        },
+        onRetryContextSource: (sourceId) => {
+          pollCount = 0;
+          const updated = buildContextSource({
+            id: sourceId,
+            title: 'Gamemakers Substack',
+            sourceUrl: 'https://example.substack.com/p/post',
+            status: 'pending',
+            extractionError: null,
+          });
+          currentContext = buildTalkContext({ sources: [updated] });
+          return updated;
+        },
+      });
+
+      renderDetailPage('/app/talks/talk-1/context');
+
+      expect(await screen.findByText('Gamemakers Substack')).toBeTruthy();
+      expect(
+        screen.getByText(
+          'fetch_http_error: HTTP 403 from https://example.substack.com/p/post',
+        ),
+      ).toBeTruthy();
+
+      await user.click(screen.getByRole('button', { name: 'Retry' }));
+      expect(screen.getByText('pending')).toBeTruthy();
+
+      await act(async () => {
+        await new Promise((resolve) => window.setTimeout(resolve, 2200));
+      });
+
+      await waitFor(() => expect(screen.getByText('ready')).toBeTruthy());
+      expect(screen.getByText('via browser')).toBeTruthy();
+    },
+    10000,
+  );
 
   it('shows unsaved draft agents in the Talk tab and blocks send until agent changes are saved', async () => {
     const user = userEvent.setup();
@@ -681,6 +832,124 @@ function buildTalkDataConnector(
   };
 }
 
+function buildChannelConnection(
+  input: Partial<ChannelConnection> = {},
+): ChannelConnection {
+  return {
+    id: input.id ?? 'channel-conn:telegram:system',
+    platform: input.platform ?? 'telegram',
+    connectionMode: input.connectionMode ?? 'system_managed',
+    accountKey: input.accountKey ?? 'telegram:system',
+    displayName: input.displayName ?? 'Telegram (System Managed)',
+    enabled: input.enabled ?? true,
+    healthStatus: input.healthStatus ?? 'healthy',
+    lastHealthCheckAt: input.lastHealthCheckAt ?? null,
+    lastHealthError: input.lastHealthError ?? null,
+    config: input.config ?? { managedBy: 'runtime' },
+    createdAt: input.createdAt ?? '2026-03-06T00:00:00.000Z',
+    updatedAt: input.updatedAt ?? '2026-03-06T00:00:00.000Z',
+  };
+}
+
+function buildChannelTarget(input: Partial<ChannelTarget> = {}): ChannelTarget {
+  return {
+    connectionId: input.connectionId ?? 'channel-conn:telegram:system',
+    targetKind: input.targetKind ?? 'chat',
+    targetId: input.targetId ?? 'tg:group:123',
+    displayName: input.displayName ?? 'Cal Football Chat',
+    metadata: input.metadata ?? null,
+    lastSeenAt: input.lastSeenAt ?? '2026-03-06T00:00:00.000Z',
+    createdAt: input.createdAt ?? '2026-03-06T00:00:00.000Z',
+    updatedAt: input.updatedAt ?? '2026-03-06T00:00:00.000Z',
+  };
+}
+
+function buildTalkChannelBinding(
+  input: Partial<TalkChannelBinding> = {},
+): TalkChannelBinding {
+  return {
+    id: input.id ?? 'binding-1',
+    talkId: input.talkId ?? 'talk-1',
+    connectionId: input.connectionId ?? 'channel-conn:telegram:system',
+    platform: input.platform ?? 'telegram',
+    connectionDisplayName: input.connectionDisplayName ?? 'Telegram (System Managed)',
+    targetKind: input.targetKind ?? 'chat',
+    targetId: input.targetId ?? 'tg:group:123',
+    displayName: input.displayName ?? 'Cal Football Chat',
+    active: input.active ?? true,
+    responseMode: input.responseMode ?? 'mentions',
+    responderMode: input.responderMode ?? 'primary',
+    responderAgentId: input.responderAgentId ?? null,
+    deliveryMode: input.deliveryMode ?? 'reply',
+    channelContextNote: input.channelContextNote ?? null,
+    inboundRateLimitPerMinute: input.inboundRateLimitPerMinute ?? 10,
+    maxPendingEvents: input.maxPendingEvents ?? 20,
+    overflowPolicy: input.overflowPolicy ?? 'drop_oldest',
+    maxDeferredAgeMinutes: input.maxDeferredAgeMinutes ?? 10,
+    pendingIngressCount: input.pendingIngressCount ?? 1,
+    deferredIngressCount: input.deferredIngressCount ?? 0,
+    lastIngressReasonCode: input.lastIngressReasonCode ?? null,
+    lastDeliveryReasonCode: input.lastDeliveryReasonCode ?? null,
+  };
+}
+
+function buildChannelQueueFailure(
+  input: Partial<ChannelQueueFailure> = {},
+): ChannelQueueFailure {
+  return {
+    id: input.id ?? 'failure-1',
+    bindingId: input.bindingId ?? 'binding-1',
+    talkId: input.talkId ?? 'talk-1',
+    connectionId: input.connectionId ?? 'channel-conn:telegram:system',
+    targetKind: input.targetKind ?? 'chat',
+    targetId: input.targetId ?? 'tg:group:123',
+    platformEventId: input.platformEventId ?? 'event-1',
+    externalMessageId: input.externalMessageId ?? null,
+    senderId: input.senderId ?? 'sender-1',
+    senderName: input.senderName ?? 'Joe',
+    runId: input.runId ?? null,
+    talkMessageId: input.talkMessageId ?? null,
+    payload: input.payload ?? { text: 'hello' },
+    status: input.status ?? 'dead_letter',
+    reasonCode: input.reasonCode ?? 'expired_while_busy',
+    reasonDetail: input.reasonDetail ?? 'Talk stayed busy too long.',
+    dedupeKey: input.dedupeKey ?? 'dedupe-1',
+    availableAt: input.availableAt ?? '2026-03-06T00:00:00.000Z',
+    createdAt: input.createdAt ?? '2026-03-06T00:00:00.000Z',
+    updatedAt: input.updatedAt ?? '2026-03-06T00:00:00.000Z',
+    attemptCount: input.attemptCount ?? 1,
+  };
+}
+
+function buildContextSource(input: Partial<ContextSource> = {}): ContextSource {
+  return {
+    id: input.id ?? 'source-1',
+    sourceRef: input.sourceRef ?? 'S1',
+    sourceType: input.sourceType ?? 'url',
+    title: input.title ?? 'Saved URL',
+    note: input.note ?? null,
+    sourceUrl: input.sourceUrl ?? 'https://example.com/post',
+    status: input.status ?? 'failed',
+    extractedTextLength: input.extractedTextLength ?? null,
+    isTruncated: input.isTruncated ?? false,
+    extractionError: input.extractionError ?? 'fetch_http_error: HTTP 403',
+    mimeType: input.mimeType ?? null,
+    lastFetchedAt: input.lastFetchedAt ?? null,
+    fetchStrategy: input.fetchStrategy ?? null,
+    sortOrder: input.sortOrder ?? 0,
+    createdAt: input.createdAt ?? '2026-03-06T00:00:00.000Z',
+    updatedAt: input.updatedAt ?? '2026-03-06T00:00:00.000Z',
+  };
+}
+
+function buildTalkContext(input?: Partial<TalkContext>): TalkContext {
+  return {
+    goal: input?.goal ?? null,
+    rules: input?.rules ?? [],
+    sources: input?.sources ?? [],
+  };
+}
+
 function buildAiAgentsData(): AiAgentsPageData {
   return {
     defaultClaudeModelId: 'claude-sonnet-4-6',
@@ -730,10 +999,18 @@ function installTalkDetailFetch(input?: {
   messages?: TalkMessage[];
   runs?: TalkRun[];
   talkAgents?: TalkAgent[];
+  context?: TalkContext;
   dataConnectors?: DataConnector[];
   talkDataConnectors?: TalkDataConnector[];
+  channelConnections?: ChannelConnection[];
+  channelTargets?: ChannelTarget[];
+  talkChannels?: TalkChannelBinding[];
+  ingressFailures?: ChannelQueueFailure[];
+  deliveryFailures?: ChannelQueueFailure[];
   aiAgents?: AiAgentsPageData;
   onPutAgents?: (body: SavedTalkAgentRequest) => TalkAgent[];
+  onGetContext?: () => TalkContext;
+  onRetryContextSource?: (sourceId: string) => ContextSource;
   onSendMessage?: (body: {
     content: string;
     targetAgentIds: string[];
@@ -816,6 +1093,23 @@ function installTalkDetailFetch(input?: {
         attachedAt: '2026-03-06T00:00:10.000Z',
       }),
     ];
+  let context = input?.context ?? buildTalkContext();
+  const channelConnections =
+    input?.channelConnections ?? [buildChannelConnection()];
+  const channelTargets =
+    input?.channelTargets ?? [buildChannelTarget()];
+  let talkChannels = input?.talkChannels ?? [buildTalkChannelBinding()];
+  let ingressFailures =
+    input?.ingressFailures ?? [buildChannelQueueFailure()];
+  let deliveryFailures =
+    input?.deliveryFailures ??
+    [
+      buildChannelQueueFailure({
+        id: 'failure-delivery-1',
+        reasonCode: 'delivery_retries_exhausted',
+        reasonDetail: 'Telegram delivery exhausted retries.',
+      }),
+    ];
   const aiAgents = input?.aiAgents ?? buildAiAgentsData();
 
   vi.stubGlobal(
@@ -878,6 +1172,192 @@ function installTalkDetailFetch(input?: {
         return jsonResponse(200, {
           ok: true,
           data: { talkId: 'talk-1', agents: talkAgents },
+        });
+      }
+
+      if (url.endsWith('/api/v1/talks/talk-1/context') && method === 'GET') {
+        return jsonResponse(200, {
+          ok: true,
+          data: input?.onGetContext?.() ?? context,
+        });
+      }
+
+      if (url.endsWith('/api/v1/channel-connections') && method === 'GET') {
+        return jsonResponse(200, {
+          ok: true,
+          data: { connections: channelConnections },
+        });
+      }
+
+      if (
+        url.includes('/api/v1/channel-connections/') &&
+        url.includes('/targets') &&
+        method === 'GET'
+      ) {
+        return jsonResponse(200, {
+          ok: true,
+          data: { targets: channelTargets },
+        });
+      }
+
+      if (url.endsWith('/api/v1/talks/talk-1/channels') && method === 'GET') {
+        return jsonResponse(200, {
+          ok: true,
+          data: { talkId: 'talk-1', bindings: talkChannels },
+        });
+      }
+
+      if (url.endsWith('/api/v1/talks/talk-1/channels') && method === 'POST') {
+        const body = JSON.parse(String(init?.body || '{}')) as Record<string, unknown>;
+        const created = buildTalkChannelBinding({
+          id: `binding-${talkChannels.length + 1}`,
+          talkId: 'talk-1',
+          connectionId: String(body.connectionId || 'channel-conn:telegram:system'),
+          targetKind: String(body.targetKind || 'chat'),
+          targetId: String(body.targetId || `tg:group:${talkChannels.length + 100}`),
+          displayName: String(body.displayName || 'New Telegram Binding'),
+          responseMode:
+            (body.responseMode as TalkChannelBinding['responseMode']) ?? 'mentions',
+          responderMode:
+            (body.responderMode as TalkChannelBinding['responderMode']) ?? 'primary',
+          responderAgentId:
+            body.responderAgentId == null ? null : String(body.responderAgentId),
+          deliveryMode:
+            (body.deliveryMode as TalkChannelBinding['deliveryMode']) ?? 'reply',
+          channelContextNote:
+            body.channelContextNote == null ? null : String(body.channelContextNote),
+          inboundRateLimitPerMinute: Number(body.inboundRateLimitPerMinute || 10),
+          maxPendingEvents: Number(body.maxPendingEvents || 20),
+          overflowPolicy:
+            (body.overflowPolicy as TalkChannelBinding['overflowPolicy']) ??
+            'drop_oldest',
+          maxDeferredAgeMinutes: Number(body.maxDeferredAgeMinutes || 10),
+        });
+        talkChannels = [...talkChannels, created];
+        return jsonResponse(201, {
+          ok: true,
+          data: { binding: created },
+        });
+      }
+
+      if (
+        /\/api\/v1\/talks\/talk-1\/channels\/[^/]+$/.test(url) &&
+        method === 'PATCH'
+      ) {
+        const bindingId = url.split('/api/v1/talks/talk-1/channels/')[1];
+        talkChannels = talkChannels.map((binding) =>
+          binding.id === bindingId
+            ? {
+                ...binding,
+                ...JSON.parse(String(init?.body || '{}')),
+              }
+            : binding,
+        );
+        return jsonResponse(200, {
+          ok: true,
+          data: {
+            binding: talkChannels.find((binding) => binding.id === bindingId),
+          },
+        });
+      }
+
+      if (
+        /\/api\/v1\/talks\/talk-1\/channels\/[^/]+$/.test(url) &&
+        method === 'DELETE'
+      ) {
+        const bindingId = url.split('/api/v1/talks/talk-1/channels/')[1];
+        talkChannels = talkChannels.filter((binding) => binding.id !== bindingId);
+        ingressFailures = ingressFailures.filter((failure) => failure.bindingId !== bindingId);
+        deliveryFailures = deliveryFailures.filter(
+          (failure) => failure.bindingId !== bindingId,
+        );
+        return jsonResponse(200, {
+          ok: true,
+          data: { deleted: true },
+        });
+      }
+
+      if (
+        /\/api\/v1\/talks\/talk-1\/channels\/[^/]+\/test$/.test(url) &&
+        method === 'POST'
+      ) {
+        return jsonResponse(200, {
+          ok: true,
+          data: { sent: true },
+        });
+      }
+
+      if (
+        /\/api\/v1\/talks\/talk-1\/channels\/[^/]+\/ingress-failures$/.test(url) &&
+        method === 'GET'
+      ) {
+        const bindingId = url.split('/api/v1/talks/talk-1/channels/')[1].split('/')[0];
+        return jsonResponse(200, {
+          ok: true,
+          data: {
+            failures: ingressFailures.filter((failure) => failure.bindingId === bindingId),
+          },
+        });
+      }
+
+      if (
+        /\/api\/v1\/talks\/talk-1\/channels\/[^/]+\/delivery-failures$/.test(url) &&
+        method === 'GET'
+      ) {
+        const bindingId = url.split('/api/v1/talks/talk-1/channels/')[1].split('/')[0];
+        return jsonResponse(200, {
+          ok: true,
+          data: {
+            failures: deliveryFailures.filter((failure) => failure.bindingId === bindingId),
+          },
+        });
+      }
+
+      if (
+        /\/api\/v1\/talks\/talk-1\/channels\/[^/]+\/ingress-failures\/[^/]+\/retry$/.test(url) &&
+        method === 'POST'
+      ) {
+        const rowId = url.split('/ingress-failures/')[1].split('/')[0];
+        ingressFailures = ingressFailures.filter((failure) => failure.id !== rowId);
+        return jsonResponse(200, {
+          ok: true,
+          data: { retried: true },
+        });
+      }
+
+      if (
+        /\/api\/v1\/talks\/talk-1\/channels\/[^/]+\/delivery-failures\/[^/]+\/retry$/.test(url) &&
+        method === 'POST'
+      ) {
+        const rowId = url.split('/delivery-failures/')[1].split('/')[0];
+        deliveryFailures = deliveryFailures.filter((failure) => failure.id !== rowId);
+        return jsonResponse(200, {
+          ok: true,
+          data: { retried: true },
+        });
+      }
+
+      if (
+        /\/api\/v1\/talks\/talk-1\/channels\/[^/]+\/ingress-failures\/[^/]+$/.test(url) &&
+        method === 'DELETE'
+      ) {
+        const rowId = url.split('/ingress-failures/')[1];
+        ingressFailures = ingressFailures.filter((failure) => failure.id !== rowId);
+        return jsonResponse(200, {
+          ok: true,
+          data: { deleted: true },
+        });
+      }
+
+      if (
+        /\/api\/v1\/talks\/talk-1\/channels\/[^/]+\/delivery-failures\/[^/]+$/.test(url) &&
+        method === 'DELETE'
+      ) {
+        const rowId = url.split('/delivery-failures/')[1];
+        deliveryFailures = deliveryFailures.filter((failure) => failure.id !== rowId);
+        return jsonResponse(200, {
+          ok: true,
+          data: { deleted: true },
         });
       }
 
@@ -991,6 +1471,33 @@ function installTalkDetailFetch(input?: {
         return jsonResponse(200, {
           ok: true,
           data: { talkId: 'talk-1', cancelledRuns: 2 },
+        });
+      }
+
+      if (
+        url.includes('/api/v1/talks/talk-1/context/sources/') &&
+        url.endsWith('/retry') &&
+        method === 'POST'
+      ) {
+        const sourceId = url
+          .split('/api/v1/talks/talk-1/context/sources/')[1]
+          .replace('/retry', '');
+        const updated =
+          input?.onRetryContextSource?.(sourceId) ??
+          buildContextSource({
+            id: sourceId,
+            status: 'pending',
+            extractionError: null,
+          });
+        context = {
+          ...context,
+          sources: context.sources.map((source) =>
+            source.id === sourceId ? updated : source,
+          ),
+        };
+        return jsonResponse(200, {
+          ok: true,
+          data: { source: updated },
         });
       }
 
