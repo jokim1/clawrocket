@@ -1548,6 +1548,119 @@ export function listTalkMessages(input: {
   return rows;
 }
 
+export interface TalkReplayRow {
+  user: TalkMessageRecord;
+  assistant: TalkMessageRecord;
+}
+
+export function listTalkReplayRows(input: {
+  talkId: string;
+  currentRunId: string;
+  currentUserMessageId: string;
+  limit?: number;
+}): TalkReplayRow[] {
+  const limit =
+    typeof input.limit === 'number'
+      ? Math.min(500, Math.max(1, Math.floor(input.limit)))
+      : 500;
+
+  const rows = getDb()
+    .prepare(
+      `
+      WITH recent_messages AS (
+        SELECT id, talk_id, role, content, created_by, created_at, run_id, metadata_json, sequence_in_run
+        FROM talk_messages
+        WHERE talk_id = ?
+        ORDER BY created_at DESC, COALESCE(sequence_in_run, 0) DESC, id DESC
+        LIMIT ?
+      )
+      SELECT
+        u.id AS user_id,
+        u.talk_id AS user_talk_id,
+        u.role AS user_role,
+        u.content AS user_content,
+        u.created_by AS user_created_by,
+        u.created_at AS user_created_at,
+        u.run_id AS user_run_id,
+        u.metadata_json AS user_metadata_json,
+        u.sequence_in_run AS user_sequence_in_run,
+        a.id AS assistant_id,
+        a.talk_id AS assistant_talk_id,
+        a.role AS assistant_role,
+        a.content AS assistant_content,
+        a.created_by AS assistant_created_by,
+        a.created_at AS assistant_created_at,
+        a.run_id AS assistant_run_id,
+        a.metadata_json AS assistant_metadata_json,
+        a.sequence_in_run AS assistant_sequence_in_run
+      FROM recent_messages a
+      JOIN talk_runs r ON r.id = a.run_id
+      JOIN talk_messages u ON u.id = r.trigger_message_id
+      WHERE a.role = 'assistant'
+        AND a.run_id IS NOT NULL
+        AND a.run_id != ?
+        AND u.role = 'user'
+        AND u.id != ?
+      ORDER BY
+        u.created_at ASC,
+        u.id ASC,
+        a.created_at ASC,
+        COALESCE(a.sequence_in_run, 0) ASC,
+        a.id ASC
+    `,
+    )
+    .all(
+      input.talkId,
+      limit,
+      input.currentRunId,
+      input.currentUserMessageId,
+    ) as Array<{
+      user_id: string;
+      user_talk_id: string;
+      user_role: TalkMessageRole;
+      user_content: string;
+      user_created_by: string | null;
+      user_created_at: string;
+      user_run_id: string | null;
+      user_metadata_json: string | null;
+      user_sequence_in_run: number | null;
+      assistant_id: string;
+      assistant_talk_id: string;
+      assistant_role: TalkMessageRole;
+      assistant_content: string;
+      assistant_created_by: string | null;
+      assistant_created_at: string;
+      assistant_run_id: string | null;
+      assistant_metadata_json: string | null;
+      assistant_sequence_in_run: number | null;
+    }>;
+
+  return rows.map((row) => ({
+    user: {
+      id: row.user_id,
+      talk_id: row.user_talk_id,
+      role: row.user_role,
+      content: row.user_content,
+      created_by: row.user_created_by,
+      created_at: row.user_created_at,
+      run_id: row.user_run_id,
+      metadata_json: row.user_metadata_json,
+      sequence_in_run: row.user_sequence_in_run,
+    },
+    assistant: {
+      id: row.assistant_id,
+      talk_id: row.assistant_talk_id,
+      role: row.assistant_role,
+      content: row.assistant_content,
+      created_by: row.assistant_created_by,
+      created_at: row.assistant_created_at,
+      run_id: row.assistant_run_id,
+      metadata_json: row.assistant_metadata_json,
+      sequence_in_run: row.assistant_sequence_in_run,
+    },
+  }));
+}
+
 export function getTalkMessageById(
   messageId: string,
 ): TalkMessageRecord | undefined {
