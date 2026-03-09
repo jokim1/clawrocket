@@ -53,6 +53,21 @@ export interface NewMessage {
   is_bot_message?: boolean;
 }
 
+export interface TalkChannelInboundEvent {
+  platform: 'telegram' | 'slack';
+  target_kind: string;
+  target_id: string;
+  platform_event_id: string;
+  external_message_id: string | null;
+  sender_id: string | null;
+  sender_name: string | null;
+  content: string;
+  timestamp: string;
+  target_display_name: string | null;
+  is_mentioned: boolean;
+  metadata?: Record<string, unknown> | null;
+}
+
 export interface ScheduledTask {
   id: string;
   group_folder: string;
@@ -94,6 +109,9 @@ export interface Channel {
 
 // Callback type that channels use to deliver inbound messages
 export type OnInboundMessage = (chatJid: string, message: NewMessage) => void;
+export type OnTalkChannelInboundEvent = (
+  event: TalkChannelInboundEvent,
+) => boolean | Promise<boolean>;
 
 // Callback for chat metadata discovery.
 // name is optional — channels that deliver names inline (Telegram) pass it here;

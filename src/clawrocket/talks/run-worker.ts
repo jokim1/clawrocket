@@ -24,6 +24,8 @@ export interface TalkRunWorkerOptions {
   executor?: TalkExecutor;
   pollMs?: number;
   maxConcurrency?: number;
+  onTalkTerminal?: (talkId: string) => void;
+  onChannelDeliveryQueued?: () => void;
 }
 
 export interface TalkRunWorkerControl {
@@ -50,6 +52,8 @@ export class TalkRunWorker implements TalkRunWorkerControl {
   private readonly executor: TalkExecutor;
   private readonly pollMs: number;
   private readonly maxConcurrency: number;
+  private readonly onTalkTerminal?: (talkId: string) => void;
+  private readonly onChannelDeliveryQueued?: () => void;
 
   private running = false;
   private loopPromise: Promise<void> | null = null;
@@ -67,6 +71,8 @@ export class TalkRunWorker implements TalkRunWorkerControl {
       1,
       Math.floor(options.maxConcurrency ?? TALK_RUN_MAX_CONCURRENCY),
     );
+    this.onTalkTerminal = options.onTalkTerminal;
+    this.onChannelDeliveryQueued = options.onChannelDeliveryQueued;
   }
 
   async start(): Promise<void> {
@@ -230,6 +236,11 @@ export class TalkRunWorker implements TalkRunWorkerControl {
           { runId: run.id, talkId: run.talk_id },
           'Run completion skipped due to non-running status',
         );
+      } else {
+        if (completed.deliveryQueued) {
+          this.onChannelDeliveryQueued?.();
+        }
+        this.onTalkTerminal?.(run.talk_id);
       }
     } catch (error) {
       if (isAbortError(error)) {
@@ -270,7 +281,9 @@ export class TalkRunWorker implements TalkRunWorkerControl {
         { runId: run.id, talkId: run.talk_id },
         'Run failure skipped due to non-running status',
       );
+      return;
     }
+    this.onTalkTerminal?.(run.talk_id);
   }
 
   private isCancelled(runId: string): boolean {
