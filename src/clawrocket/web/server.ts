@@ -612,7 +612,10 @@ function buildApp(opts: WebServerOptions): Hono {
     }
 
     const response = getUserGoogleAccountRoute({ auth });
-    return c.json(response.body, response.statusCode);
+    return new Response(JSON.stringify(response.body), {
+      status: response.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
   });
 
   app.post('/api/v1/me/google-account/connect', async (c) => {
@@ -647,7 +650,10 @@ function buildApp(opts: WebServerOptions): Hono {
     }
 
     const response = connectUserGoogleAccountRoute({ auth });
-    return c.json(response.body, response.statusCode);
+    return new Response(JSON.stringify(response.body), {
+      status: response.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
   });
 
   app.post('/api/v1/me/google-account/expand-scopes', async (c) => {
@@ -704,7 +710,10 @@ function buildApp(opts: WebServerOptions): Hono {
           )
         : [],
     });
-    return c.json(response.body, response.statusCode);
+    return new Response(JSON.stringify(response.body), {
+      status: response.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
   });
 
   app.get('/api/v1/settings/executor', async (c) => {
@@ -747,7 +756,10 @@ function buildApp(opts: WebServerOptions): Hono {
     }
 
     const response = getToolRegistryRoute({ auth });
-    return c.json(response.body, response.statusCode);
+    return new Response(JSON.stringify(response.body), {
+      status: response.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
   });
 
   app.put('/api/v1/settings/tools', async (c) => {
@@ -850,7 +862,10 @@ function buildApp(opts: WebServerOptions): Hono {
             : null,
       })),
     });
-    return c.json(response.body, response.statusCode);
+    return new Response(JSON.stringify(response.body), {
+      status: response.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
   });
 
   app.get('/api/v1/settings/executor/subscription-host-status', async (c) => {

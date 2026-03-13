@@ -413,11 +413,17 @@ function mapTalkAuditEntryRow(row: RawTalkAuditEntryRow): TalkAuditEntryRecord {
 export const BUILTIN_TOOL_REGISTRY_DEFAULTS: ReadonlyArray<
   Omit<
     ToolRegistryEntry,
-    'enabled' | 'installStatus' | 'healthStatus' | 'updatedAt' | 'updatedBy'
+    | 'enabled'
+    | 'installStatus'
+    | 'healthStatus'
+    | 'authRequirements'
+    | 'updatedAt'
+    | 'updatedBy'
   > & {
     enabled?: boolean;
     installStatus?: ToolRegistryInstallStatus;
     healthStatus?: ToolRegistryHealthStatus;
+    authRequirements?: JsonMap | null;
   }
 > = [
   {
@@ -606,7 +612,7 @@ export function seedBuiltinToolRegistry(
         entry.enabled === false ? 0 : 1,
         entry.installStatus ?? 'installed',
         entry.healthStatus ?? 'healthy',
-        null,
+        serializeJson(entry.authRequirements ?? null),
         entry.mutatesExternalState ? 1 : 0,
         entry.requiresBinding ? 1 : 0,
         entry.defaultGrant ? 1 : 0,
