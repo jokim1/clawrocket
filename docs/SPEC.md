@@ -120,6 +120,19 @@ Capabilities:
 - SSE-based event delivery
 - settings APIs for both executor settings and Talk LLM settings
 
+Current public-access behavior:
+
+- local-only installs remain the default
+- public mode activates when `PUBLIC_MODE=true`, a trusted proxy mode is set, or the Google redirect URI is non-localhost
+- public mode refuses startup unless secure-cookie, proxy, provider-secret, and Google OAuth requirements are met
+- public mode also requires either `INITIAL_OWNER_EMAIL` or an existing owner in the DB
+- device auth is disabled in public mode
+- once an owner exists, normal invite-based onboarding continues
+- request IP extraction uses `TRUSTED_PROXY_MODE`:
+  - `none` -> socket address only
+  - `cloudflare` -> `CF-Connecting-IP`
+  - `caddy` -> `X-Forwarded-For`
+
 Important routes:
 
 - `/api/v1/health`
@@ -185,6 +198,8 @@ The singleton coordinator:
 - Ubuntu `systemd --user` is the primary production path
 - self-restart from the settings page requires `CLAWROCKET_SELF_RESTART=1`
 - native Windows takeover is out of scope
+- public internet exposure is Cloudflare-first in the current docs
+- local-only installs require no changes to keep working after the public-mode additions
 
 ## 9. Current Constraints
 

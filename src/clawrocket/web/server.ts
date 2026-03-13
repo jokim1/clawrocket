@@ -11,7 +11,9 @@ import {
   ACCESS_TOKEN_TTL_SEC,
   AUTH_DEV_MODE,
   REFRESH_TOKEN_TTL_SEC,
+  TRUSTED_PROXY_MODE,
   WEB_SECURE_COOKIES,
+  isPublicMode,
 } from '../config.js';
 import {
   canUserAccessTalk,
@@ -141,6 +143,7 @@ import {
 import { authenticateRequest } from './middleware/auth.js';
 import { AuthContext } from './types.js';
 import { DataConnectorVerifier } from '../connectors/connector-verifier.js';
+import { logger } from '../../logger.js';
 
 const MAX_REQUEST_BODY_BYTES = 10 * 1024 * 1024; // 10 MB
 const SSE_RETRY_MS = 3000;
@@ -150,6 +153,9 @@ const SSE_STREAM_BATCH_LIMIT = 100;
 const SSE_STREAM_RETRY_AFTER_SEC = 5;
 const MAX_LIVE_SSE_CONNECTIONS_PER_USER = 3;
 const DEFAULT_WEB_APP_DIST_DIR = path.resolve(process.cwd(), 'webapp', 'dist');
+let warnedAboutUnexpectedForwardedHeaders = false;
+let warnedAboutMissingCloudflareClientIp = false;
+let warnedAboutMissingCaddyForwardedFor = false;
 
 export interface WebServerOptions {
   host: string;
@@ -330,6 +336,11 @@ function buildApp(opts: WebServerOptions): Hono {
     }),
   );
 
+  app.use('/api/v1/*', async (c, next) => {
+    maybeWarnAboutUnexpectedForwardedHeaders(c);
+    await next();
+  });
+
   app.get('/api/v1/health', async (c) => {
     const health = await healthResponse();
     return c.json(health, health.ok ? 200 : 503);
@@ -392,7 +403,7 @@ function buildApp(opts: WebServerOptions): Hono {
         code,
         email,
         displayName,
-        ipAddress: getClientIp(c.req.header('x-forwarded-for')),
+        ipAddress: getClientIp(c),
         userAgent: c.req.header('user-agent'),
       });
       setSessionCookies(c, result.session);
@@ -451,6 +462,8 @@ function buildApp(opts: WebServerOptions): Hono {
   });
 
   app.post('/api/v1/auth/device/start', async (c) => {
+    if (isPublicMode) return publicModeDisabledResponse(c);
+
     const rateResult = checkRateLimit({
       principalId: getRequestRateLimitPrincipal(c),
       bucket: 'auth_start',
@@ -466,6 +479,8 @@ function buildApp(opts: WebServerOptions): Hono {
   });
 
   app.post('/api/v1/auth/device/complete', async (c) => {
+    if (isPublicMode) return publicModeDisabledResponse(c);
+
     const rateResult = checkRateLimit({
       principalId: getRequestRateLimitPrincipal(c),
       bucket: 'auth_sensitive',
@@ -482,7 +497,7 @@ function buildApp(opts: WebServerOptions): Hono {
         deviceCode: body.deviceCode || '',
         email: body.email || '',
         displayName: body.displayName,
-        ipAddress: getClientIp(c.req.header('x-forwarded-for')),
+        ipAddress: getClientIp(c),
         userAgent: c.req.header('user-agent'),
       });
 
@@ -4588,25 +4603,135 @@ function normalizeUser(user: UserLike) {
   };
 }
 
-function getClientIp(xForwardedFor: string | undefined): string | undefined {
+type ForwardedHeaderSnapshot = {
+  xForwardedFor?: string;
+  cfConnectingIp?: string;
+};
+
+export function _resetForwardedHeaderWarningStateForTests(): void {
+  warnedAboutUnexpectedForwardedHeaders = false;
+  warnedAboutMissingCloudflareClientIp = false;
+  warnedAboutMissingCaddyForwardedFor = false;
+}
+
+export function _resolveClientIpForTests(input: {
+  xForwardedFor?: string;
+  cfConnectingIp?: string;
+  remoteAddress?: string;
+}): string | undefined {
+  return resolveClientIpFromHeaders(input, input.remoteAddress);
+}
+
+export function _warnAboutUnexpectedForwardedHeadersForTests(input: {
+  xForwardedFor?: string;
+  cfConnectingIp?: string;
+}): void {
+  maybeWarnAboutUnexpectedForwardedHeadersFromHeaders(input);
+}
+
+function publicModeDisabledResponse(c: Context): Response {
+  return c.json(
+    {
+      ok: false,
+      error: {
+        code: 'device_auth_disabled',
+        message: 'Device auth is disabled in public mode',
+      },
+    },
+    403,
+  );
+}
+
+function maybeWarnAboutUnexpectedForwardedHeaders(c: Context): void {
+  maybeWarnAboutUnexpectedForwardedHeadersFromHeaders(getForwardedHeaders(c));
+}
+
+function maybeWarnAboutUnexpectedForwardedHeadersFromHeaders(
+  headers: ForwardedHeaderSnapshot,
+): void {
+  if (isPublicMode || warnedAboutUnexpectedForwardedHeaders) return;
+  if (!headers.xForwardedFor && !headers.cfConnectingIp) return;
+
+  warnedAboutUnexpectedForwardedHeaders = true;
+  logger.warn(
+    'Forwarded headers detected but PUBLIC_MODE is not enabled. If this instance is internet-facing, set PUBLIC_MODE=true.',
+  );
+}
+
+function resolveClientIpFromHeaders(
+  headers: ForwardedHeaderSnapshot,
+  remoteAddress: string | undefined,
+): string | undefined {
+  switch (TRUSTED_PROXY_MODE) {
+    case 'cloudflare': {
+      const cfConnectingIp = normalizeIp(headers.cfConnectingIp);
+      if (cfConnectingIp) return cfConnectingIp;
+      if (!warnedAboutMissingCloudflareClientIp) {
+        warnedAboutMissingCloudflareClientIp = true;
+        logger.error(
+          { remoteAddress: remoteAddress || 'unknown' },
+          'CF-Connecting-IP header missing. Per-client rate limiting is degraded; requests may collapse to a single identity such as 127.0.0.1. Verify cloudflared configuration and request path.',
+        );
+      }
+      return normalizeIp(remoteAddress);
+    }
+    case 'caddy': {
+      const forwarded = getCaddyForwardedClientIp(headers.xForwardedFor);
+      if (forwarded) return forwarded;
+      if (!warnedAboutMissingCaddyForwardedFor) {
+        warnedAboutMissingCaddyForwardedFor = true;
+        logger.error(
+          { remoteAddress: remoteAddress || 'unknown' },
+          'X-Forwarded-For header missing. Per-client rate limiting is degraded; requests may collapse to a single identity at the proxy hop. Verify Caddy proxy configuration.',
+        );
+      }
+      return normalizeIp(remoteAddress);
+    }
+    case 'none':
+    default:
+      return normalizeIp(remoteAddress);
+  }
+}
+
+function getForwardedHeaders(c: Context): ForwardedHeaderSnapshot {
+  return {
+    xForwardedFor: c.req.header('x-forwarded-for') || undefined,
+    cfConnectingIp: c.req.header('cf-connecting-ip') || undefined,
+  };
+}
+
+function getClientIp(c: Context): string | undefined {
+  return resolveClientIpFromHeaders(getForwardedHeaders(c), getRemoteAddress(c));
+}
+
+function normalizeIp(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed || undefined;
+}
+
+function getCaddyForwardedClientIp(
+  xForwardedFor: string | undefined,
+): string | undefined {
   if (!xForwardedFor) return undefined;
-  const first = xForwardedFor.split(',')[0]?.trim();
-  return first || undefined;
+  const parts = xForwardedFor
+    .split(',')
+    .map((part) => part.trim())
+    .filter(Boolean);
+  return parts.at(-1);
+}
+
+function getRemoteAddress(c: Context): string | undefined {
+  try {
+    const connInfo = getConnInfo(c);
+    return normalizeIp(connInfo.remote.address);
+  } catch {
+    return undefined;
+  }
 }
 
 function getRequestRateLimitPrincipal(c: Context): string {
-  const forwarded = getClientIp(c.req.header('x-forwarded-for'));
-  if (forwarded) return `ip:${forwarded}`;
-
-  try {
-    const connInfo = getConnInfo(c);
-    const remoteAddress = connInfo.remote.address?.trim();
-    if (remoteAddress) return `ip:${remoteAddress}`;
-  } catch {
-    // app.request() tests and non-node runtimes may not expose conninfo
-  }
-
-  return 'ip:unknown';
+  const ip = getClientIp(c);
+  return ip ? `ip:${ip}` : 'ip:unknown';
 }
 
 function rateLimitedResponse(

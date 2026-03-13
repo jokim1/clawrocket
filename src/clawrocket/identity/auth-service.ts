@@ -7,7 +7,9 @@ import {
   GOOGLE_OAUTH_CLIENT_ID,
   GOOGLE_OAUTH_CLIENT_SECRET,
   GOOGLE_OAUTH_REDIRECT_URI,
+  INITIAL_OWNER_EMAIL,
   REFRESH_TOKEN_TTL_SEC,
+  isPublicMode,
 } from '../config.js';
 import {
   createDeviceAuthCode,
@@ -334,7 +336,9 @@ function resolveUserForLogin(input: {
   email: string;
   displayName: string;
 }): UserRecord {
-  const existing = getUserByEmail(input.email);
+  const normalizedEmail = input.email.trim().toLowerCase();
+
+  const existing = getUserByEmail(normalizedEmail);
   if (existing) {
     if (existing.is_active !== 1) {
       throw new AuthError('user_inactive', 'Account is inactive', 403);
@@ -344,13 +348,26 @@ function resolveUserForLogin(input: {
 
   const owner = getOwnerUser();
   if (!owner) {
+    if (isPublicMode) {
+      if (
+        !INITIAL_OWNER_EMAIL ||
+        normalizedEmail.toLowerCase() !== INITIAL_OWNER_EMAIL
+      ) {
+        throw new AuthError(
+          'invite_required',
+          'This email is not approved for this installation',
+          403,
+        );
+      }
+    }
+
     // Single-process runtime with synchronous better-sqlite3 keeps this
     // owner-claim path effectively serialized. Multi-instance hardening
     // (DB-level uniqueness/locking) is intentionally deferred.
     const userId = crypto.randomUUID();
     upsertUser({
       id: userId,
-      email: input.email,
+      email: normalizedEmail,
       displayName: input.displayName,
       role: 'owner',
     });
@@ -365,7 +382,7 @@ function resolveUserForLogin(input: {
     return claimed;
   }
 
-  const invite = getActiveInviteByEmail(input.email);
+  const invite = getActiveInviteByEmail(normalizedEmail);
   if (!invite) {
     throw new AuthError(
       'invite_required',
@@ -378,7 +395,7 @@ function resolveUserForLogin(input: {
   const role: UserRole = invite.role === 'admin' ? 'admin' : 'member';
   upsertUser({
     id: userId,
-    email: input.email,
+    email: normalizedEmail,
     displayName: input.displayName,
     role,
   });
