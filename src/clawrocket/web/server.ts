@@ -827,7 +827,8 @@ function buildApp(opts: WebServerOptions): Hono {
           ok: false,
           error: {
             code: 'invalid_tool_registry_payload',
-            message: 'Tool registry updates require id, enabled, installStatus, and healthStatus.',
+            message:
+              'Tool registry updates require id, enabled, installStatus, and healthStatus.',
           },
         },
         400,
@@ -3344,7 +3345,9 @@ function buildApp(opts: WebServerOptions): Hono {
         400,
       );
     }
-    const grants = Array.isArray(payload.data.grants) ? payload.data.grants : [];
+    const grants = Array.isArray(payload.data.grants)
+      ? payload.data.grants
+      : [];
     const invalidGrant = grants.find(
       (grant) =>
         typeof grant?.toolId !== 'string' || typeof grant.enabled !== 'boolean',
@@ -3570,7 +3573,9 @@ function buildApp(opts: WebServerOptions): Hono {
 
       const talkId = safeDecodePathSegment(c.req.param('talkId'));
       const runId = safeDecodePathSegment(c.req.param('runId'));
-      const confirmationId = safeDecodePathSegment(c.req.param('confirmationId'));
+      const confirmationId = safeDecodePathSegment(
+        c.req.param('confirmationId'),
+      );
       if (!talkId || !runId || !confirmationId) {
         return c.json(
           {
@@ -3591,7 +3596,10 @@ function buildApp(opts: WebServerOptions): Hono {
       }>(bodyText);
       if (!payload.ok) {
         return c.json(
-          { ok: false, error: { code: 'invalid_json', message: payload.error } },
+          {
+            ok: false,
+            error: { code: 'invalid_json', message: payload.error },
+          },
           400,
         );
       }
@@ -3644,7 +3652,9 @@ function buildApp(opts: WebServerOptions): Hono {
 
       const talkId = safeDecodePathSegment(c.req.param('talkId'));
       const runId = safeDecodePathSegment(c.req.param('runId'));
-      const confirmationId = safeDecodePathSegment(c.req.param('confirmationId'));
+      const confirmationId = safeDecodePathSegment(
+        c.req.param('confirmationId'),
+      );
       if (!talkId || !runId || !confirmationId) {
         return c.json(
           {
@@ -3663,7 +3673,10 @@ function buildApp(opts: WebServerOptions): Hono {
       const payload = parseJsonPayload<{ reason?: string | null }>(bodyText);
       if (!payload.ok) {
         return c.json(
-          { ok: false, error: { code: 'invalid_json', message: payload.error } },
+          {
+            ok: false,
+            error: { code: 'invalid_json', message: payload.error },
+          },
           400,
         );
       }

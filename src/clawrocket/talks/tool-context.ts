@@ -9,29 +9,7 @@ import {
   listToolRegistryEntries,
   resolveTalkAgent,
 } from '../db/index.js';
-
-function requiredScopesForTool(toolId: string): string[] {
-  switch (toolId) {
-    case 'gmail_read':
-      return ['gmail.readonly'];
-    case 'gmail_send':
-      return ['gmail.send'];
-    case 'google_drive_search':
-    case 'google_drive_read':
-    case 'google_drive_list_folder':
-      return ['drive.readonly'];
-    case 'google_docs_read':
-      return ['documents.readonly'];
-    case 'google_docs_batch_update':
-      return ['documents'];
-    case 'google_sheets_read_range':
-      return ['spreadsheets.readonly'];
-    case 'google_sheets_batch_update':
-      return ['spreadsheets'];
-    default:
-      return [];
-  }
-}
+import { requiredScopesForTool } from './tool-capabilities.js';
 
 export function buildTalkToolContextBlock(input: {
   talkId: string;
@@ -94,10 +72,11 @@ export function buildTalkToolContextBlock(input: {
     lines.push('Public web search and fetch are available.');
   }
 
-  const hasDriveFamily = enabledEntries.some((entry) =>
-    entry.id.startsWith('google_drive') ||
-    entry.id.startsWith('google_docs') ||
-    entry.id.startsWith('google_sheets'),
+  const hasDriveFamily = enabledEntries.some(
+    (entry) =>
+      entry.id.startsWith('google_drive') ||
+      entry.id.startsWith('google_docs') ||
+      entry.id.startsWith('google_sheets'),
   );
   if (hasDriveFamily) {
     if (bindings.length > 0) {
@@ -144,7 +123,9 @@ export function buildTalkToolContextBlock(input: {
     lines.push('Talk attachments may be read when needed.');
   }
   if (connectorCount > 0 && grantSet.has('data_connectors')) {
-    lines.push('Attached data connectors are available when supported by the route.');
+    lines.push(
+      'Attached data connectors are available when supported by the route.',
+    );
   }
 
   return lines.length > 0 ? `## Tool Context\n${lines.join('\n')}` : null;

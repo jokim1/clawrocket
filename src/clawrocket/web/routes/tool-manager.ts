@@ -25,6 +25,7 @@ import {
   type ToolRegistryHealthStatus,
   type ToolRegistryInstallStatus,
 } from '../../db/index.js';
+import { requiredScopesForTool } from '../../talks/tool-capabilities.js';
 import { ApiEnvelope, AuthContext } from '../types.js';
 
 type JsonMap = Record<string, unknown>;
@@ -231,9 +232,7 @@ function canManageToolRegistry(auth: AuthContext): boolean {
   return auth.role === 'owner' || auth.role === 'admin';
 }
 
-function toGoogleAccountApiRecord(
-  userId: string,
-): UserGoogleAccountApiRecord {
+function toGoogleAccountApiRecord(userId: string): UserGoogleAccountApiRecord {
   const credential = getUserGoogleCredential(userId);
   if (!credential) {
     return {
@@ -251,29 +250,6 @@ function toGoogleAccountApiRecord(
     scopes: credential.scopes,
     accessExpiresAt: credential.accessExpiresAt,
   };
-}
-
-function requiredScopesForTool(toolId: string): string[] {
-  switch (toolId) {
-    case 'gmail_read':
-      return ['gmail.readonly'];
-    case 'gmail_send':
-      return ['gmail.send'];
-    case 'google_drive_search':
-    case 'google_drive_read':
-    case 'google_drive_list_folder':
-      return ['drive.readonly'];
-    case 'google_docs_read':
-      return ['documents.readonly'];
-    case 'google_docs_batch_update':
-      return ['documents'];
-    case 'google_sheets_read_range':
-      return ['spreadsheets.readonly'];
-    case 'google_sheets_batch_update':
-      return ['spreadsheets'];
-    default:
-      return [];
-  }
 }
 
 function hasRelevantResources(input: {
@@ -343,19 +319,6 @@ function computeToolState(input: {
     return 'unavailable_due_to_pending_scopes';
   }
   if (
-    input.requiresBinding &&
-    !hasRelevantResources({
-      toolId: input.toolId,
-      bindingsCount: input.bindingsCount,
-      sourcesCount: input.sourcesCount,
-      attachmentsCount: input.attachmentsCount,
-      connectorCount: input.connectorCount,
-    })
-  ) {
-    return 'unavailable_due_to_missing_resource';
-  }
-
-  if (
     !hasRelevantResources({
       toolId: input.toolId,
       bindingsCount: input.bindingsCount,
@@ -404,15 +367,17 @@ function summarizeCapabilities(input: {
     } else if (!input.googleAccount.connected) {
       add('Google Drive tools need a connected Google account');
     } else if (
-      !hasAllScopes([
-        'google_drive_search',
-        'google_drive_read',
-        'google_drive_list_folder',
-        'google_docs_read',
-        'google_docs_batch_update',
-        'google_sheets_read_range',
-        'google_sheets_batch_update',
-      ].filter((toolId) => input.grants.get(toolId) === true))
+      !hasAllScopes(
+        [
+          'google_drive_search',
+          'google_drive_read',
+          'google_drive_list_folder',
+          'google_docs_read',
+          'google_docs_batch_update',
+          'google_sheets_read_range',
+          'google_sheets_batch_update',
+        ].filter((toolId) => input.grants.get(toolId) === true),
+      )
     ) {
       add('Google Drive tools need additional Google permissions');
     } else {
@@ -421,8 +386,7 @@ function summarizeCapabilities(input: {
   }
   if (input.grants.get('gmail_send')) {
     add(
-      input.googleAccount.connected &&
-        hasAllScopes(['gmail_send'])
+      input.googleAccount.connected && hasAllScopes(['gmail_send'])
         ? 'Email sends require user approval'
         : 'Gmail send needs additional Google permissions',
     );
@@ -461,7 +425,9 @@ function buildTalkToolsRecord(input: {
   }));
   const googleAccount = toGoogleAccountApiRecord(input.userId);
   const grantedScopes = new Set(googleAccount.scopes);
-  const grantMap = new Map(grants.map((grant) => [grant.toolId, grant.enabled]));
+  const grantMap = new Map(
+    grants.map((grant) => [grant.toolId, grant.enabled]),
+  );
   const boundDriveResources = bindings.filter(
     (binding) =>
       binding.bindingKind === 'google_drive_folder' ||
@@ -561,9 +527,7 @@ function buildTalkToolsRecord(input: {
   };
 }
 
-export function getToolRegistryRoute(input: {
-  auth: AuthContext;
-}): {
+export function getToolRegistryRoute(input: { auth: AuthContext }): {
   statusCode: number;
   body: ApiEnvelope<{ registry: ToolRegistryEntryApiRecord[] }>;
 } {
@@ -618,7 +582,9 @@ export function updateToolRegistryRoute(input: {
   }
 
   for (const update of input.entries) {
-    const existing = listToolRegistryEntries().find((entry) => entry.id === update.id);
+    const existing = listToolRegistryEntries().find(
+      (entry) => entry.id === update.id,
+    );
     if (!existing) {
       return notFoundResponse(`Tool "${update.id}" was not found.`);
     }
@@ -642,9 +608,7 @@ export function updateToolRegistryRoute(input: {
   return getToolRegistryRoute({ auth: input.auth });
 }
 
-export function getUserGoogleAccountRoute(input: {
-  auth: AuthContext;
-}): {
+export function getUserGoogleAccountRoute(input: { auth: AuthContext }): {
   statusCode: number;
   body: ApiEnvelope<{ googleAccount: UserGoogleAccountApiRecord }>;
 } {
@@ -659,9 +623,7 @@ export function getUserGoogleAccountRoute(input: {
   };
 }
 
-export function connectUserGoogleAccountRoute(input: {
-  auth: AuthContext;
-}): {
+export function connectUserGoogleAccountRoute(input: { auth: AuthContext }): {
   statusCode: number;
   body: ApiEnvelope<{ googleAccount: UserGoogleAccountApiRecord }>;
 } {
@@ -746,10 +708,14 @@ export function updateTalkToolsRoute(input: {
     return notFoundResponse('Talk not found.');
   }
   if (!canUserEditTalk(input.talkId, input.auth.userId)) {
-    return forbiddenResponse('You do not have permission to update Talk tools.');
+    return forbiddenResponse(
+      'You do not have permission to update Talk tools.',
+    );
   }
 
-  const registryIds = new Set(listToolRegistryEntries().map((entry) => entry.id));
+  const registryIds = new Set(
+    listToolRegistryEntries().map((entry) => entry.id),
+  );
   for (const grant of input.grants) {
     if (!registryIds.has(grant.toolId)) {
       return invalidResponse(
@@ -761,7 +727,10 @@ export function updateTalkToolsRoute(input: {
 
   initializeTalkToolGrants(input.talkId, talk.owner_id);
   const existingGrants = new Map(
-    listTalkToolGrants(input.talkId).map((grant) => [grant.toolId, grant.enabled]),
+    listTalkToolGrants(input.talkId).map((grant) => [
+      grant.toolId,
+      grant.enabled,
+    ]),
   );
   const requestedGrants = new Map(
     input.grants.map((grant) => [grant.toolId, grant.enabled]),
@@ -770,7 +739,8 @@ export function updateTalkToolsRoute(input: {
     talkId: input.talkId,
     grants: listToolRegistryEntries().map((entry) => ({
       toolId: entry.id,
-      enabled: requestedGrants.get(entry.id) ?? existingGrants.get(entry.id) ?? false,
+      enabled:
+        requestedGrants.get(entry.id) ?? existingGrants.get(entry.id) ?? false,
     })),
     updatedBy: input.auth.userId,
   });
@@ -786,7 +756,10 @@ export function listTalkResourcesRoute(input: {
   talkId: string;
 }): {
   statusCode: number;
-  body: ApiEnvelope<{ talkId: string; bindings: TalkResourceBindingApiRecord[] }>;
+  body: ApiEnvelope<{
+    talkId: string;
+    bindings: TalkResourceBindingApiRecord[];
+  }>;
 } {
   const talk = getTalkForUser(input.talkId, input.auth.userId);
   if (!talk) {

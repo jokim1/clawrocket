@@ -102,7 +102,9 @@ describe('buildTalkToolContextBlock', () => {
       requestedBy: OWNER_ID,
     });
     expect(initial).toContain('Public web search and fetch are available.');
-    expect(initial).not.toContain('You may search within bound Google Drive resources');
+    expect(initial).not.toContain(
+      'You may search within bound Google Drive resources',
+    );
 
     replaceTalkToolGrants({
       talkId: TALK_ID,

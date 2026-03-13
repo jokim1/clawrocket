@@ -78,11 +78,14 @@ describe('tool manager routes', () => {
   });
 
   it('exposes talk tools, updates grants, and manages Drive bindings', async () => {
-    const initialToolsRes = await server.request('/api/v1/talks/talk-owner/tools', {
-      headers: {
-        Authorization: 'Bearer owner-token',
+    const initialToolsRes = await server.request(
+      '/api/v1/talks/talk-owner/tools',
+      {
+        headers: {
+          Authorization: 'Bearer owner-token',
+        },
       },
-    });
+    );
     expect(initialToolsRes.status).toBe(200);
     const initialToolsBody = (await initialToolsRes.json()) as any;
     expect(initialToolsBody.ok).toBe(true);
@@ -106,12 +109,14 @@ describe('tool manager routes', () => {
     });
     expect(updateRes.status).toBe(200);
     const updateBody = (await updateRes.json()) as any;
-    expect(updateBody.data.grants.find((grant: any) => grant.toolId === 'gmail_send')?.enabled).toBe(
-      true,
-    );
-    expect(updateBody.data.grants.find((grant: any) => grant.toolId === 'web_search')?.enabled).toBe(
-      true,
-    );
+    expect(
+      updateBody.data.grants.find((grant: any) => grant.toolId === 'gmail_send')
+        ?.enabled,
+    ).toBe(true);
+    expect(
+      updateBody.data.grants.find((grant: any) => grant.toolId === 'web_search')
+        ?.enabled,
+    ).toBe(true);
 
     const bindRes = await server.request(
       '/api/v1/talks/talk-owner/resources/google-drive',
@@ -131,11 +136,14 @@ describe('tool manager routes', () => {
     expect(bindRes.status).toBe(201);
     expect(listTalkResourceBindings('talk-owner')).toHaveLength(1);
 
-    const resourcesRes = await server.request('/api/v1/talks/talk-owner/resources', {
-      headers: {
-        Authorization: 'Bearer owner-token',
+    const resourcesRes = await server.request(
+      '/api/v1/talks/talk-owner/resources',
+      {
+        headers: {
+          Authorization: 'Bearer owner-token',
+        },
       },
-    });
+    );
     expect(resourcesRes.status).toBe(200);
     const resourcesBody = (await resourcesRes.json()) as any;
     expect(resourcesBody.data.bindings[0].displayName).toBe('Accounting');
@@ -163,19 +171,22 @@ describe('tool manager routes', () => {
     const initialBody = (await initialRes.json()) as any;
     expect(initialBody.data.googleAccount.connected).toBe(false);
 
-    const connectRes = await server.request('/api/v1/me/google-account/connect', {
-      method: 'POST',
-      headers: {
-        Authorization: 'Bearer owner-token',
-        'Content-Type': 'application/json',
+    const connectRes = await server.request(
+      '/api/v1/me/google-account/connect',
+      {
+        method: 'POST',
+        headers: {
+          Authorization: 'Bearer owner-token',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          googleSubject: 'forged-subject',
+          email: 'forged@example.com',
+          scopes: ['drive.readonly'],
+          ciphertext: 'forged-ciphertext',
+        }),
       },
-      body: JSON.stringify({
-        googleSubject: 'forged-subject',
-        email: 'forged@example.com',
-        scopes: ['drive.readonly'],
-        ciphertext: 'forged-ciphertext',
-      }),
-    });
+    );
     expect(connectRes.status).toBe(200);
     const connectBody = (await connectRes.json()) as any;
     expect(connectBody.data.googleAccount.connected).toBe(true);
@@ -312,8 +323,8 @@ describe('tool manager routes', () => {
     });
     expect(ownerRes.status).toBe(200);
     const ownerBody = (await ownerRes.json()) as any;
-    expect(ownerBody.data.registry.some((entry: any) => entry.id === 'web_search')).toBe(
-      true,
-    );
+    expect(
+      ownerBody.data.registry.some((entry: any) => entry.id === 'web_search'),
+    ).toBe(true);
   });
 });

@@ -21,10 +21,7 @@ export type ToolRegistryInstallStatus =
   | 'disabled'
   | 'unconfigured';
 
-export type ToolRegistryHealthStatus =
-  | 'healthy'
-  | 'degraded'
-  | 'unavailable';
+export type ToolRegistryHealthStatus = 'healthy' | 'degraded' | 'unavailable';
 
 export type TalkResourceBindingKind =
   | 'google_drive_folder'
@@ -394,9 +391,7 @@ function mapTalkRunContinuationRow(
   };
 }
 
-function mapTalkAuditEntryRow(
-  row: RawTalkAuditEntryRow,
-): TalkAuditEntryRecord {
+function mapTalkAuditEntryRow(row: RawTalkAuditEntryRow): TalkAuditEntryRecord {
   return {
     id: row.id,
     talkId: row.talk_id,
@@ -725,7 +720,10 @@ export function upsertToolRegistryEntry(input: {
   return getToolRegistryEntry(input.id)!;
 }
 
-export function initializeTalkToolGrants(talkId: string, updatedBy: string): void {
+export function initializeTalkToolGrants(
+  talkId: string,
+  updatedBy: string,
+): void {
   const now = new Date().toISOString();
   const registry = listToolRegistryEntries();
   const stmt = getDb().prepare(
