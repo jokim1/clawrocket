@@ -5,6 +5,7 @@ import {
   _initTestDatabase,
   attachDataConnectorToTalk,
   createDataConnector,
+  createTalkResourceBinding,
   createTalk,
   createTalkMessage,
   createTalkRun,
@@ -15,10 +16,12 @@ import {
   listTalkMessages,
   patchDataConnectorDiscovery,
   listTalkLlmSettingsSnapshot,
+  replaceTalkToolGrants,
   replaceTalkAgents,
   replaceTalkLlmSettingsSnapshot,
   resetTalkAgentsToDefault,
   setDataConnectorCredential,
+  upsertUserGoogleCredential,
   upsertDataConnectorVerification,
   upsertUser,
 } from '../db/index.js';
@@ -530,6 +533,130 @@ describe('DirectTalkExecutor', () => {
       'anthropic.primary',
     );
     expect(getTalkRunById('run-current')?.executor_model).toBe('claude-test');
+  });
+
+  it('injects tool-context guidance from Talk grants, bindings, and granted scopes', async () => {
+    configureTalkRuntime({
+      providers: [
+        {
+          id: 'anthropic.primary',
+          name: 'Anthropic Primary',
+          providerKind: 'anthropic',
+          apiFormat: 'anthropic_messages',
+          baseUrl: 'https://anthropic.example.test',
+          authScheme: 'x_api_key',
+          enabled: true,
+          coreCompatibility: 'none',
+          models: [
+            {
+              modelId: 'claude-test',
+              displayName: 'Claude Test',
+              contextWindowTokens: 32_000,
+              defaultMaxOutputTokens: 1_024,
+              enabled: true,
+              supportsTools: true,
+            },
+          ],
+          credential: { apiKey: 'sk-ant-test' },
+        },
+      ],
+      routes: [
+        {
+          id: 'route.primary',
+          name: 'Primary Route',
+          enabled: true,
+          steps: [
+            {
+              position: 0,
+              providerId: 'anthropic.primary',
+              modelId: 'claude-test',
+            },
+          ],
+        },
+      ],
+    });
+
+    replaceTalkToolGrants({
+      talkId: TALK_ID,
+      grants: [
+        { toolId: 'web_search', enabled: true },
+        { toolId: 'google_drive_search', enabled: true },
+        { toolId: 'gmail_send', enabled: true },
+      ],
+      updatedBy: OWNER_ID,
+    });
+    createTalkResourceBinding({
+      talkId: TALK_ID,
+      bindingKind: 'google_drive_folder',
+      externalId: 'folder-123',
+      displayName: 'Accounting',
+      createdBy: OWNER_ID,
+    });
+    upsertUserGoogleCredential({
+      userId: OWNER_ID,
+      googleSubject: 'google-owner-1',
+      email: 'owner@example.com',
+      displayName: 'Owner',
+      scopes: ['drive.readonly'],
+      ciphertext: 'encrypted-google-credential',
+      accessExpiresAt: null,
+    });
+
+    enqueueTalkTurnAtomic({
+      talkId: TALK_ID,
+      userId: OWNER_ID,
+      content: 'Find the cap table and prepare an email draft.',
+      messageId: 'msg-tool-context',
+      runId: 'run-tool-context',
+      now: '2024-01-01T00:20:00.000Z',
+    });
+
+    let capturedBody: any = null;
+    const rawStream = [
+      'event: message_start\n',
+      'data: {"type":"message_start","message":{"usage":{"input_tokens":12}}}\n\n',
+      'data: {"type":"content_block_delta","delta":{"text":"Done"}}\n\n',
+      'data: {"type":"message_delta","message":{"usage":{"output_tokens":4}}}\n\n',
+    ].join('');
+
+    const executor = new DirectTalkExecutor({
+      fetchImpl: async (_url, init) => {
+        capturedBody = JSON.parse(String(init?.body));
+        return createStreamingResponse(
+          init?.signal,
+          chunkString(rawStream, 23),
+        );
+      },
+    });
+
+    await executor.execute(
+      {
+        runId: 'run-tool-context',
+        talkId: TALK_ID,
+        requestedBy: OWNER_ID,
+        triggerMessageId: 'msg-tool-context',
+        triggerContent: 'Find the cap table and prepare an email draft.',
+      },
+      new AbortController().signal,
+      () => {},
+    );
+
+    expect(capturedBody.system).toContain('## Tool Context');
+    expect(capturedBody.system).toContain(
+      'Public web search and fetch are available.',
+    );
+    expect(capturedBody.system).toContain(
+      'You may search within bound Google Drive resources: Accounting.',
+    );
+    expect(capturedBody.system).toContain(
+      'Do not assume access outside bound resources.',
+    );
+    expect(capturedBody.system).toContain(
+      'Some granted Google capabilities still require additional Google permissions before they can be used.',
+    );
+    expect(capturedBody.system).toContain(
+      'Email sends require user approval before execution. Compose them as final drafts.',
+    );
   });
 
   it('falls back to the next route step on retryable quota failures', async () => {

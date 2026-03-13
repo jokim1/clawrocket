@@ -28,6 +28,7 @@ import type {
   TalkMessage,
   TalkMessageAttachment,
   TalkRun,
+  TalkTools,
 } from '../lib/api';
 
 vi.mock('../lib/talkStream', () => ({
@@ -102,6 +103,54 @@ describe('TalkDetailPage', () => {
     await screen.findByPlaceholderText('Send a message to this talk');
 
     expect(openTalkStreamMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('loads the Tools tab and renders capability summaries and effective access', async () => {
+    const user = userEvent.setup();
+    installTalkDetailFetch();
+
+    renderDetailPage('/app/talks/talk-1/tools');
+
+    await screen.findByRole('heading', { name: 'Tools' });
+    expect(screen.getByText('This Talk can search the web')).toBeTruthy();
+    expect(screen.getByText('Google Drive unavailable — bind a file or folder to enable')).toBeTruthy();
+    expect(screen.getByText('Claude Sonnet 4.6')).toBeTruthy();
+    expect(screen.getByText(/Web Search: Available/i)).toBeTruthy();
+
+    await user.click(screen.getByLabelText('Gmail Send'));
+    await user.click(screen.getByRole('button', { name: 'Save Tool Grants' }));
+    expect(await screen.findByText('Talk tool grants updated.')).toBeTruthy();
+  });
+
+  it('treats awaiting confirmation runs as active rounds on the Talk tab', async () => {
+    installTalkDetailFetch({
+      runs: [
+        buildRun({
+          id: 'run-awaiting',
+          status: 'awaiting_confirmation',
+          createdAt: '2026-03-06T00:00:01.000Z',
+          startedAt: '2026-03-06T00:00:02.000Z',
+          triggerMessageId: 'msg-1',
+          targetAgentId: 'agent-claude',
+          targetAgentNickname: 'Claude Sonnet 4.6',
+        }),
+      ],
+    });
+
+    renderDetailPage('/app/talks/talk-1');
+
+    await screen.findByPlaceholderText('Send a message to this talk');
+    expect(
+      screen.getByText(
+        'Wait for the current round to finish or cancel it before sending another message.',
+      ),
+    ).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Send' })).toHaveAttribute(
+      'disabled',
+    );
+    expect(
+      screen.getByRole('button', { name: 'Cancel Runs' }),
+    ).not.toHaveAttribute('disabled');
   });
 
   it('loads talk channels, saves binding edits, and manages failure queues from the Channels tab', async () => {
@@ -830,6 +879,86 @@ function buildTalk(): Talk {
   };
 }
 
+function buildTalkTools(): TalkTools {
+  return {
+    talkId: 'talk-1',
+    registry: [
+      {
+        id: 'web_search',
+        family: 'web',
+        displayName: 'Web Search',
+        description: 'Search the public web.',
+        enabled: true,
+        installStatus: 'installed',
+        healthStatus: 'healthy',
+        authRequirements: null,
+        mutatesExternalState: false,
+        requiresBinding: false,
+        defaultGrant: true,
+        sortOrder: 10,
+        updatedAt: '2026-03-06T00:00:00.000Z',
+        updatedBy: null,
+      },
+      {
+        id: 'gmail_send',
+        family: 'gmail',
+        displayName: 'Gmail Send',
+        description: 'Draft and send email.',
+        enabled: true,
+        installStatus: 'installed',
+        healthStatus: 'healthy',
+        authRequirements: null,
+        mutatesExternalState: true,
+        requiresBinding: false,
+        defaultGrant: false,
+        sortOrder: 20,
+        updatedAt: '2026-03-06T00:00:00.000Z',
+        updatedBy: null,
+      },
+    ],
+    grants: [
+      {
+        toolId: 'web_search',
+        enabled: true,
+        updatedAt: '2026-03-06T00:00:00.000Z',
+        updatedBy: 'owner-1',
+      },
+      {
+        toolId: 'gmail_send',
+        enabled: false,
+        updatedAt: '2026-03-06T00:00:00.000Z',
+        updatedBy: 'owner-1',
+      },
+    ],
+    bindings: [],
+    googleAccount: {
+      connected: false,
+      email: null,
+      displayName: null,
+      scopes: [],
+      accessExpiresAt: null,
+    },
+    summary: [
+      'This Talk can search the web',
+      'Google Drive unavailable — bind a file or folder to enable',
+    ],
+    warnings: [],
+    effectiveAccess: [
+      {
+        agentId: 'agent-claude',
+        nickname: 'Claude Sonnet 4.6',
+        sourceKind: 'claude_default',
+        providerId: null,
+        modelId: 'claude-sonnet-4-6',
+        toolAccess: [
+          { toolId: 'web_search', state: 'available' },
+          { toolId: 'gmail_send', state: 'unavailable_due_to_config' },
+        ],
+      },
+    ],
+  };
+}
+
 function buildTalkAgent(input: Partial<TalkAgent> & Pick<TalkAgent, 'id' | 'nickname'>): TalkAgent {
   return {
     id: input.id,
@@ -1127,6 +1256,7 @@ function installTalkDetailFetch(input?: {
   talkChannels?: TalkChannelBinding[];
   ingressFailures?: ChannelQueueFailure[];
   deliveryFailures?: ChannelQueueFailure[];
+  talkTools?: TalkTools;
   aiAgents?: AiAgentsPageData;
   onPutAgents?: (body: SavedTalkAgentRequest) => TalkAgent[];
   onGetContext?: () => TalkContext;
@@ -1232,6 +1362,7 @@ function installTalkDetailFetch(input?: {
         reasonDetail: 'Telegram delivery exhausted retries.',
       }),
     ];
+  let talkTools = input?.talkTools ?? buildTalkTools();
   const aiAgents = input?.aiAgents ?? buildAiAgentsData();
 
   vi.stubGlobal(
@@ -1327,6 +1458,128 @@ function installTalkDetailFetch(input?: {
         return jsonResponse(200, {
           ok: true,
           data: input?.onGetContext?.() ?? context,
+        });
+      }
+
+      if (url.endsWith('/api/v1/talks/talk-1/tools') && method === 'GET') {
+        return jsonResponse(200, {
+          ok: true,
+          data: talkTools,
+        });
+      }
+
+      if (url.endsWith('/api/v1/talks/talk-1/tools') && method === 'PUT') {
+        const body = JSON.parse(String(init?.body || '{}')) as {
+          grants?: Array<{ toolId: string; enabled: boolean }>;
+        };
+        if (Array.isArray(body.grants)) {
+          talkTools = {
+            ...talkTools,
+            grants: talkTools.grants.map((grant) => {
+              const update = body.grants?.find((entry) => entry.toolId === grant.toolId);
+              return update ? { ...grant, enabled: update.enabled } : grant;
+            }),
+          };
+        }
+        return jsonResponse(200, {
+          ok: true,
+          data: talkTools,
+        });
+      }
+
+      if (url.endsWith('/api/v1/me/google-account') && method === 'GET') {
+        return jsonResponse(200, {
+          ok: true,
+          data: { googleAccount: talkTools.googleAccount },
+        });
+      }
+
+      if (url.endsWith('/api/v1/me/google-account/connect') && method === 'POST') {
+        talkTools = {
+          ...talkTools,
+          googleAccount: {
+            connected: true,
+            email: 'owner@example.com',
+            displayName: 'Owner',
+            scopes: talkTools.googleAccount.scopes,
+            accessExpiresAt: null,
+          },
+        };
+        return jsonResponse(200, {
+          ok: true,
+          data: { googleAccount: talkTools.googleAccount },
+        });
+      }
+
+      if (
+        url.endsWith('/api/v1/me/google-account/expand-scopes') &&
+        method === 'POST'
+      ) {
+        const body = JSON.parse(String(init?.body || '{}')) as {
+          scopes?: string[];
+        };
+        talkTools = {
+          ...talkTools,
+          googleAccount: {
+            ...talkTools.googleAccount,
+            connected: true,
+            email: talkTools.googleAccount.email ?? 'owner@example.com',
+            displayName: talkTools.googleAccount.displayName ?? 'Owner',
+            scopes: Array.from(
+              new Set([
+                ...talkTools.googleAccount.scopes,
+                ...(Array.isArray(body.scopes) ? body.scopes : []),
+              ]),
+            ),
+          },
+        };
+        return jsonResponse(200, {
+          ok: true,
+          data: { googleAccount: talkTools.googleAccount },
+        });
+      }
+
+      if (
+        url.endsWith('/api/v1/talks/talk-1/resources/google-drive') &&
+        method === 'POST'
+      ) {
+        const body = JSON.parse(String(init?.body || '{}')) as {
+          bindingKind?: TalkTools['bindings'][number]['bindingKind'];
+          externalId?: string;
+          displayName?: string;
+          metadata?: Record<string, unknown> | null;
+        };
+        const binding = {
+          id: `binding-${talkTools.bindings.length + 1}`,
+          bindingKind: body.bindingKind ?? 'google_drive_folder',
+          externalId: body.externalId ?? 'resource-id',
+          displayName: body.displayName ?? 'Resource',
+          metadata: body.metadata ?? null,
+          createdAt: '2026-03-06T00:00:00.000Z',
+          createdBy: 'owner-1',
+        };
+        talkTools = {
+          ...talkTools,
+          bindings: [...talkTools.bindings, binding],
+        };
+        return jsonResponse(201, {
+          ok: true,
+          data: { binding },
+        });
+      }
+
+      if (
+        url.includes('/api/v1/talks/talk-1/resources/') &&
+        method === 'DELETE'
+      ) {
+        const resourceId = url.split('/').pop() || '';
+        talkTools = {
+          ...talkTools,
+          bindings: talkTools.bindings.filter((binding) => binding.id !== resourceId),
+        };
+        return jsonResponse(200, {
+          ok: true,
+          data: { deleted: true },
         });
       }
 

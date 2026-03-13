@@ -8,6 +8,7 @@ import {
   UserRole,
   UserType,
 } from '../types.js';
+import { initializeTalkToolGrants } from './tool-manager-accessors.js';
 
 // --- Identity and web session accessors ---
 
@@ -710,6 +711,7 @@ export function createTalk(input: {
         now,
         now,
       );
+    initializeTalkToolGrants(txInput.id, txInput.ownerId);
   });
   tx(input);
 }
@@ -1780,7 +1782,7 @@ export function enqueueTalkTurnAtomic(input: {
           `
           SELECT COUNT(*) AS count
           FROM talk_runs
-          WHERE talk_id = ? AND status IN ('queued', 'running')
+          WHERE talk_id = ? AND status IN ('queued', 'running', 'awaiting_confirmation')
         `,
         )
         .get(txInput.talkId) as { count: number };
@@ -2240,8 +2242,13 @@ export function getRunningTalkRun(talkId: string): TalkRunRecord | null {
       `
       SELECT *
       FROM talk_runs
-      WHERE talk_id = ? AND status = 'running'
-      ORDER BY created_at ASC
+      WHERE talk_id = ? AND status IN ('running', 'awaiting_confirmation')
+      ORDER BY
+        CASE status
+          WHEN 'running' THEN 0
+          ELSE 1
+        END ASC,
+        created_at ASC
       LIMIT 1
     `,
     )
@@ -2300,8 +2307,13 @@ export function listRunningTalkRuns(limit = 50): TalkRunRecord[] {
       `
       SELECT *
       FROM talk_runs
-      WHERE status = 'running'
-      ORDER BY created_at ASC
+      WHERE status IN ('running', 'awaiting_confirmation')
+      ORDER BY
+        CASE status
+          WHEN 'running' THEN 0
+          ELSE 1
+        END ASC,
+        created_at ASC
       LIMIT ?
     `,
     )
@@ -2314,7 +2326,7 @@ export function countRunningTalkRuns(): number {
       `
       SELECT COUNT(*) AS count
       FROM talk_runs
-      WHERE status = 'running'
+      WHERE status IN ('running', 'awaiting_confirmation')
     `,
     )
     .get() as { count: number };
@@ -2327,7 +2339,7 @@ export function hasActiveTalkRuns(talkId: string): boolean {
       `
       SELECT COUNT(*) AS count
       FROM talk_runs
-      WHERE talk_id = ? AND status IN ('queued', 'running')
+      WHERE talk_id = ? AND status IN ('queued', 'running', 'awaiting_confirmation')
     `,
     )
     .get(talkId) as { count: number };
@@ -2860,7 +2872,7 @@ export function cancelTalkRunsAtomic(input: {
           `
           SELECT id, status, trigger_message_id, target_agent_id, executor_alias, executor_model
           FROM talk_runs
-          WHERE talk_id = ? AND status IN ('queued', 'running')
+          WHERE talk_id = ? AND status IN ('queued', 'running', 'awaiting_confirmation')
           ORDER BY created_at ASC
         `,
         )
@@ -2881,7 +2893,7 @@ export function cancelTalkRunsAtomic(input: {
         SET status = 'cancelled',
             ended_at = ?,
             cancel_reason = ?
-        WHERE id = ? AND status IN ('queued', 'running')
+        WHERE id = ? AND status IN ('queued', 'running', 'awaiting_confirmation')
       `,
       );
       const eventStmt = getDb().prepare(

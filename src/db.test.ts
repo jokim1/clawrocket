@@ -45,6 +45,7 @@ import {
   getTalkForUser,
   getTalkLlmPolicyByTalkId,
   getTalkRunById,
+  hasActiveTalkRuns,
   searchChannelTargets,
   getUserById,
   listTalkMessages,
@@ -1158,6 +1159,34 @@ describe('phase 0 schema and reliability tables', () => {
           event.payload.includes('\"runId\":\"run-atomic-4\"'),
       ),
     ).toBe(false);
+  });
+
+  it('treats awaiting confirmation runs as active and cancellable', () => {
+    enqueueTalkTurnAtomic({
+      talkId: 'talk-1',
+      userId: 'owner-1',
+      content: 'wait for approval',
+      messageId: 'msg-atomic-awaiting',
+      runId: 'run-atomic-awaiting',
+      now: '2024-01-01T00:00:45.000Z',
+    });
+    markTalkRunStatus(
+      'run-atomic-awaiting',
+      'awaiting_confirmation',
+      null,
+      null,
+      '2024-01-01T00:00:46.000Z',
+    );
+
+    expect(hasActiveTalkRuns('talk-1')).toBe(true);
+
+    const cancelled = cancelTalkRunsAtomic({
+      talkId: 'talk-1',
+      cancelledBy: 'owner-1',
+      now: '2024-01-01T00:00:47.000Z',
+    });
+    expect(cancelled.cancelledRuns).toBe(1);
+    expect(getTalkRunById('run-atomic-awaiting')?.status).toBe('cancelled');
   });
 
   it('fails interrupted running runs on startup and leaves queued runs queued', () => {

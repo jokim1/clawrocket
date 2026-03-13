@@ -1,6 +1,7 @@
 import Database from 'better-sqlite3';
 
 import { getDb } from '../../db.js';
+import { seedBuiltinToolRegistry } from './tool-manager-accessors.js';
 
 function computeSessionCompatKey(alias: string, model: string): string {
   // Keep this backfill logic aligned with the canonical helper in
@@ -169,6 +170,203 @@ function migrateLlmProvidersForNvidia(database: Database.Database): void {
   `);
 }
 
+function migrateTalkRunsForAwaitingConfirmation(
+  database: Database.Database,
+): void {
+  const row = database
+    .prepare(
+      `
+      SELECT sql
+      FROM sqlite_master
+      WHERE type = 'table' AND name = 'talk_runs'
+    `,
+    )
+    .get() as { sql?: string | null } | undefined;
+
+  const sql = row?.sql || '';
+  if (!sql || sql.includes("'awaiting_confirmation'")) {
+    return;
+  }
+
+  database.exec(`
+    PRAGMA foreign_keys = OFF;
+
+    CREATE TABLE talk_runs_new (
+      id TEXT PRIMARY KEY,
+      talk_id TEXT NOT NULL REFERENCES talks(id) ON DELETE CASCADE,
+      requested_by TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      status TEXT NOT NULL
+        CHECK(status IN ('queued', 'running', 'awaiting_confirmation', 'cancelled', 'completed', 'failed')),
+      trigger_message_id TEXT REFERENCES talk_messages(id) ON DELETE SET NULL,
+      target_agent_id TEXT,
+      idempotency_key TEXT,
+      executor_alias TEXT,
+      executor_model TEXT,
+      source_binding_id TEXT,
+      source_external_message_id TEXT,
+      source_thread_key TEXT,
+      created_at TEXT NOT NULL,
+      started_at TEXT,
+      ended_at TEXT,
+      cancel_reason TEXT
+    );
+
+    INSERT INTO talk_runs_new (
+      id,
+      talk_id,
+      requested_by,
+      status,
+      trigger_message_id,
+      target_agent_id,
+      idempotency_key,
+      executor_alias,
+      executor_model,
+      source_binding_id,
+      source_external_message_id,
+      source_thread_key,
+      created_at,
+      started_at,
+      ended_at,
+      cancel_reason
+    )
+    SELECT
+      id,
+      talk_id,
+      requested_by,
+      status,
+      trigger_message_id,
+      target_agent_id,
+      idempotency_key,
+      executor_alias,
+      executor_model,
+      source_binding_id,
+      source_external_message_id,
+      source_thread_key,
+      created_at,
+      started_at,
+      ended_at,
+      cancel_reason
+    FROM talk_runs;
+
+    DROP TABLE talk_runs;
+    ALTER TABLE talk_runs_new RENAME TO talk_runs;
+
+    PRAGMA foreign_keys = ON;
+  `);
+}
+
+function migrateTalkActionConfirmationsForPendingExecution(
+  database: Database.Database,
+): void {
+  const row = database
+    .prepare(
+      `
+      SELECT sql
+      FROM sqlite_master
+      WHERE type = 'table' AND name = 'talk_action_confirmations'
+    `,
+    )
+    .get() as { sql?: string | null } | undefined;
+
+  const sql = row?.sql || '';
+  if (!sql || sql.includes("'approved_pending_execution'")) {
+    return;
+  }
+
+  database.exec(`
+    PRAGMA foreign_keys = OFF;
+
+    CREATE TABLE talk_action_confirmations_new (
+      id TEXT PRIMARY KEY,
+      talk_id TEXT NOT NULL REFERENCES talks(id) ON DELETE CASCADE,
+      run_id TEXT NOT NULL REFERENCES talk_runs(id) ON DELETE CASCADE,
+      tool_name TEXT NOT NULL,
+      confirmation_type TEXT NOT NULL
+        CHECK(confirmation_type IN ('mutation', 'scope_expansion')),
+      status TEXT NOT NULL
+        CHECK(status IN (
+          'pending',
+          'approved_pending_execution',
+          'approved_executed',
+          'approved_failed',
+          'rejected',
+          'superseded'
+        )),
+      proposed_args_json TEXT,
+      modified_args_json TEXT,
+      preview_json TEXT,
+      tool_call_id TEXT,
+      requested_by TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      resolved_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+      reason TEXT,
+      error_category TEXT
+        CHECK(error_category IS NULL OR error_category IN (
+          'auth',
+          'permission',
+          'rate_limit',
+          'quota',
+          'validation',
+          'transient',
+          'unavailable',
+          'user_declined',
+          'revoked_after_confirmation'
+        )),
+      error_message TEXT,
+      created_at TEXT NOT NULL,
+      resolved_at TEXT
+    );
+
+    INSERT INTO talk_action_confirmations_new (
+      id,
+      talk_id,
+      run_id,
+      tool_name,
+      confirmation_type,
+      status,
+      proposed_args_json,
+      modified_args_json,
+      preview_json,
+      tool_call_id,
+      requested_by,
+      resolved_by,
+      reason,
+      error_category,
+      error_message,
+      created_at,
+      resolved_at
+    )
+    SELECT
+      id,
+      talk_id,
+      run_id,
+      tool_name,
+      confirmation_type,
+      status,
+      proposed_args_json,
+      modified_args_json,
+      preview_json,
+      tool_call_id,
+      requested_by,
+      resolved_by,
+      reason,
+      error_category,
+      error_message,
+      created_at,
+      resolved_at
+    FROM talk_action_confirmations;
+
+    DROP TABLE talk_action_confirmations;
+    ALTER TABLE talk_action_confirmations_new RENAME TO talk_action_confirmations;
+
+    CREATE INDEX IF NOT EXISTS idx_talk_action_confirmations_run_status
+      ON talk_action_confirmations(run_id, status, created_at);
+    CREATE INDEX IF NOT EXISTS idx_talk_action_confirmations_talk_created
+      ON talk_action_confirmations(talk_id, created_at, id);
+
+    PRAGMA foreign_keys = ON;
+  `);
+}
+
 function tableExists(database: Database.Database, name: string): boolean {
   const row = database
     .prepare(
@@ -246,6 +444,9 @@ function resetTalkDomainForFolderTree(database: Database.Database): void {
 
 function createClawrocketSchema(database: Database.Database): void {
   resetTalkDomainForFolderTree(database);
+  migrateLlmProvidersForNvidia(database);
+  migrateTalkRunsForAwaitingConfirmation(database);
+  migrateTalkActionConfirmationsForPendingExecution(database);
 
   database.exec(`
     CREATE TABLE IF NOT EXISTS users (
@@ -398,7 +599,7 @@ function createClawrocketSchema(database: Database.Database): void {
       talk_id TEXT NOT NULL REFERENCES talks(id) ON DELETE CASCADE,
       requested_by TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
       status TEXT NOT NULL
-        CHECK(status IN ('queued', 'running', 'cancelled', 'completed', 'failed')),
+        CHECK(status IN ('queued', 'running', 'awaiting_confirmation', 'cancelled', 'completed', 'failed')),
       trigger_message_id TEXT REFERENCES talk_messages(id) ON DELETE SET NULL,
       target_agent_id TEXT,
       idempotency_key TEXT,
@@ -806,9 +1007,6 @@ function createClawrocketSchema(database: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_channel_delivery_outbox_binding_status_available
       ON channel_delivery_outbox(binding_id, status, available_at, created_at);
   `);
-
-  migrateLlmProvidersForNvidia(database);
-
   try {
     database.exec(`
       CREATE VIEW group_llm_policies AS
@@ -1030,7 +1228,7 @@ function createClawrocketSchema(database: Database.Database): void {
   // ---- Message attachments (file uploads in Talk messages) ----
   try {
     database.exec(`
-      CREATE TABLE IF NOT EXISTS talk_message_attachments (
+    CREATE TABLE IF NOT EXISTS talk_message_attachments (
         id TEXT PRIMARY KEY,
         message_id TEXT REFERENCES talk_messages(id) ON DELETE CASCADE,
         talk_id TEXT NOT NULL REFERENCES talks(id) ON DELETE CASCADE,
@@ -1054,7 +1252,181 @@ function createClawrocketSchema(database: Database.Database): void {
     /* table already exists */
   }
 
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS tool_registry_entries (
+      id TEXT PRIMARY KEY,
+      family TEXT NOT NULL
+        CHECK(family IN (
+          'saved_sources',
+          'attachments',
+          'web',
+          'gmail',
+          'google_drive',
+          'google_docs',
+          'google_sheets',
+          'data_connectors'
+        )),
+      display_name TEXT NOT NULL,
+      description TEXT,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      install_status TEXT NOT NULL
+        CHECK(install_status IN ('installed', 'disabled', 'unconfigured')),
+      health_status TEXT NOT NULL
+        CHECK(health_status IN ('healthy', 'degraded', 'unavailable')),
+      auth_requirements_json TEXT,
+      mutates_external_state INTEGER NOT NULL DEFAULT 0,
+      requires_binding INTEGER NOT NULL DEFAULT 0,
+      default_grant INTEGER NOT NULL DEFAULT 0,
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      updated_at TEXT NOT NULL,
+      updated_by TEXT REFERENCES users(id) ON DELETE SET NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_tool_registry_entries_family_sort
+      ON tool_registry_entries(family, sort_order, id);
+
+    CREATE TABLE IF NOT EXISTS talk_tool_grants (
+      talk_id TEXT NOT NULL REFERENCES talks(id) ON DELETE CASCADE,
+      tool_id TEXT NOT NULL REFERENCES tool_registry_entries(id) ON DELETE CASCADE,
+      enabled INTEGER NOT NULL DEFAULT 0,
+      updated_at TEXT NOT NULL,
+      updated_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+      PRIMARY KEY (talk_id, tool_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_talk_tool_grants_tool_id
+      ON talk_tool_grants(tool_id, talk_id);
+
+    CREATE TABLE IF NOT EXISTS talk_resource_bindings (
+      id TEXT PRIMARY KEY,
+      talk_id TEXT NOT NULL REFERENCES talks(id) ON DELETE CASCADE,
+      binding_kind TEXT NOT NULL
+        CHECK(binding_kind IN (
+          'google_drive_folder',
+          'google_drive_file',
+          'data_connector',
+          'saved_source',
+          'message_attachment'
+        )),
+      external_id TEXT NOT NULL,
+      display_name TEXT NOT NULL,
+      metadata_json TEXT,
+      created_at TEXT NOT NULL,
+      created_by TEXT REFERENCES users(id) ON DELETE SET NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_talk_resource_bindings_talk_created
+      ON talk_resource_bindings(talk_id, created_at, id);
+    CREATE INDEX IF NOT EXISTS idx_talk_resource_bindings_talk_external
+      ON talk_resource_bindings(talk_id, binding_kind, external_id);
+
+    CREATE TABLE IF NOT EXISTS user_google_credentials (
+      user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+      google_subject TEXT NOT NULL,
+      email TEXT NOT NULL,
+      display_name TEXT,
+      scopes_json TEXT NOT NULL,
+      ciphertext TEXT NOT NULL,
+      access_expires_at TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS talk_action_confirmations (
+      id TEXT PRIMARY KEY,
+      talk_id TEXT NOT NULL REFERENCES talks(id) ON DELETE CASCADE,
+      run_id TEXT NOT NULL REFERENCES talk_runs(id) ON DELETE CASCADE,
+      tool_name TEXT NOT NULL,
+      confirmation_type TEXT NOT NULL
+        CHECK(confirmation_type IN ('mutation', 'scope_expansion')),
+      status TEXT NOT NULL
+        CHECK(status IN (
+          'pending',
+          'approved_pending_execution',
+          'approved_executed',
+          'approved_failed',
+          'rejected',
+          'superseded'
+        )),
+      proposed_args_json TEXT,
+      modified_args_json TEXT,
+      preview_json TEXT,
+      tool_call_id TEXT,
+      requested_by TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      resolved_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+      reason TEXT,
+      error_category TEXT
+        CHECK(error_category IS NULL OR error_category IN (
+          'auth',
+          'permission',
+          'rate_limit',
+          'quota',
+          'validation',
+          'transient',
+          'unavailable',
+          'user_declined',
+          'revoked_after_confirmation'
+        )),
+      error_message TEXT,
+      created_at TEXT NOT NULL,
+      resolved_at TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_talk_action_confirmations_run_status
+      ON talk_action_confirmations(run_id, status, created_at);
+    CREATE INDEX IF NOT EXISTS idx_talk_action_confirmations_talk_created
+      ON talk_action_confirmations(talk_id, created_at, id);
+
+    CREATE TABLE IF NOT EXISTS talk_run_continuations (
+      run_id TEXT PRIMARY KEY REFERENCES talk_runs(id) ON DELETE CASCADE,
+      talk_id TEXT NOT NULL REFERENCES talks(id) ON DELETE CASCADE,
+      route_id TEXT NOT NULL,
+      route_step_position INTEGER NOT NULL,
+      provider_id TEXT NOT NULL,
+      model_id TEXT NOT NULL,
+      api_format TEXT NOT NULL,
+      state_json TEXT NOT NULL,
+      compacted INTEGER NOT NULL DEFAULT 0,
+      byte_size INTEGER NOT NULL DEFAULT 0,
+      confirmation_id TEXT REFERENCES talk_action_confirmations(id) ON DELETE SET NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_talk_run_continuations_talk_id
+      ON talk_run_continuations(talk_id, updated_at);
+
+    CREATE TABLE IF NOT EXISTS talk_audit_entries (
+      id TEXT PRIMARY KEY,
+      talk_id TEXT NOT NULL REFERENCES talks(id) ON DELETE CASCADE,
+      run_id TEXT NOT NULL REFERENCES talk_runs(id) ON DELETE CASCADE,
+      agent_id TEXT,
+      tool_name TEXT NOT NULL,
+      confirmation_id TEXT REFERENCES talk_action_confirmations(id) ON DELETE SET NULL,
+      target_resource_id TEXT,
+      summary_json TEXT,
+      args_ciphertext TEXT,
+      result_status TEXT NOT NULL
+        CHECK(result_status IN ('success', 'failed')),
+      error_category TEXT
+        CHECK(error_category IS NULL OR error_category IN (
+          'auth',
+          'permission',
+          'rate_limit',
+          'quota',
+          'validation',
+          'transient',
+          'unavailable',
+          'user_declined',
+          'revoked_after_confirmation'
+        )),
+      error_message TEXT,
+      created_at TEXT NOT NULL,
+      created_by TEXT REFERENCES users(id) ON DELETE SET NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_talk_audit_entries_talk_created
+      ON talk_audit_entries(talk_id, created_at, id);
+    CREATE INDEX IF NOT EXISTS idx_talk_audit_entries_run_created
+      ON talk_audit_entries(run_id, created_at, id);
+  `);
+
   seedBuiltinTalkLlmDefaults(database);
+  seedBuiltinToolRegistry(database);
 
   const now = new Date().toISOString();
   database

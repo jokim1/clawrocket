@@ -72,6 +72,7 @@ import {
   listTalkAttachments,
 } from '../db/index.js';
 import type { TalkPersonaRole } from '../llm/types.js';
+import { buildTalkToolContextBlock } from './tool-context.js';
 
 const DEFAULT_RESPONSE_START_TIMEOUT_MS = 60_000;
 const DEFAULT_STREAM_IDLE_TIMEOUT_MS = 20_000;
@@ -1147,6 +1148,16 @@ export class DirectTalkExecutor implements TalkExecutor {
 
     // Append attachment manifest to directives if the talk has file attachments
     let directivesText = contextDirectives.directivesText;
+    const toolContextBlock = buildTalkToolContextBlock({
+      talkId: input.talkId,
+      requestedBy: input.requestedBy,
+      targetAgentId: input.targetAgentId,
+    });
+    if (toolContextBlock) {
+      directivesText = directivesText
+        ? `${directivesText}\n\n${toolContextBlock}`
+        : toolContextBlock;
+    }
     const attachmentManifest = buildAttachmentManifest(input.talkId);
     if (attachmentManifest) {
       directivesText = directivesText

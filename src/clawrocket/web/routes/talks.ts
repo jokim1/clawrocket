@@ -124,7 +124,13 @@ export interface TalkAgentApiRecord {
 
 export interface TalkRunApiRecord {
   id: string;
-  status: 'queued' | 'running' | 'cancelled' | 'completed' | 'failed';
+  status:
+    | 'queued'
+    | 'running'
+    | 'awaiting_confirmation'
+    | 'cancelled'
+    | 'completed'
+    | 'failed';
   createdAt: string;
   startedAt: string | null;
   completedAt: string | null;
@@ -1454,7 +1460,13 @@ export function enqueueTalkChat(input: {
     message: TalkMessageApiRecord;
     runs: Array<{
       id: string;
-      status: 'queued' | 'running' | 'cancelled' | 'completed' | 'failed';
+      status:
+        | 'queued'
+        | 'running'
+        | 'awaiting_confirmation'
+        | 'cancelled'
+        | 'completed'
+        | 'failed';
       createdAt: string;
       startedAt: string | null;
       completedAt: string | null;

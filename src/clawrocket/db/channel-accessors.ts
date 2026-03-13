@@ -1215,7 +1215,7 @@ export function enqueueChannelTurnAtomic(input: {
         `
         SELECT COUNT(*) AS count
         FROM talk_runs
-        WHERE talk_id = ? AND status IN ('queued', 'running')
+        WHERE talk_id = ? AND status IN ('queued', 'running', 'awaiting_confirmation')
       `,
       )
       .get(input.talkId) as { count: number } | undefined;

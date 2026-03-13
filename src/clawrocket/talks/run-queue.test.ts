@@ -6,6 +6,7 @@ import {
   getQueuedTalkRuns,
   getRunningTalkRun,
   getTalkRunById,
+  markTalkRunStatus,
   upsertTalk,
   upsertUser,
 } from '../db/index.js';
@@ -77,5 +78,36 @@ describe('TalkRunQueue', () => {
     const events = getOutboxEventsForTopics(['talk:talk-1'], 0);
     const eventTypes = events.map((event) => event.event_type);
     expect(eventTypes).toContain('talk_run_cancelled');
+  });
+
+  it('treats awaiting confirmation runs as active for enqueue and cancel', () => {
+    const queue = new TalkRunQueue();
+
+    queue.enqueue({
+      runId: 'run-a',
+      talkId: 'talk-1',
+      requestedBy: 'u-owner',
+    });
+    markTalkRunStatus(
+      'run-a',
+      'awaiting_confirmation',
+      null,
+      null,
+      '2026-03-06T00:00:01.000Z',
+    );
+
+    const second = queue.enqueue({
+      runId: 'run-b',
+      talkId: 'talk-1',
+      requestedBy: 'u-owner',
+    });
+
+    expect(second.status).toBe('queued');
+    expect(getRunningTalkRun('talk-1')?.id).toBe('run-a');
+
+    const cancelled = queue.cancelTalkRuns('talk-1', 'u-owner');
+    expect(cancelled).toBe(2);
+    expect(getTalkRunById('run-a')?.status).toBe('cancelled');
+    expect(getTalkRunById('run-b')?.status).toBe('cancelled');
   });
 });
