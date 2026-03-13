@@ -231,7 +231,13 @@ export type TalkMessage = {
 
 export type TalkRun = {
   id: string;
-  status: 'queued' | 'running' | 'cancelled' | 'completed' | 'failed';
+  status:
+    | 'queued'
+    | 'running'
+    | 'awaiting_confirmation'
+    | 'cancelled'
+    | 'completed'
+    | 'failed';
   createdAt: string;
   startedAt: string | null;
   completedAt: string | null;
@@ -242,6 +248,154 @@ export type TalkRun = {
   errorMessage: string | null;
   executorAlias: string | null;
   executorModel: string | null;
+};
+
+export type ToolRegistryEntry = {
+  id: string;
+  family:
+    | 'saved_sources'
+    | 'attachments'
+    | 'web'
+    | 'gmail'
+    | 'google_drive'
+    | 'google_docs'
+    | 'google_sheets'
+    | 'data_connectors';
+  displayName: string;
+  description: string | null;
+  enabled: boolean;
+  installStatus: 'installed' | 'disabled' | 'unconfigured';
+  healthStatus: 'healthy' | 'degraded' | 'unavailable';
+  authRequirements: Record<string, unknown> | null;
+  mutatesExternalState: boolean;
+  requiresBinding: boolean;
+  defaultGrant: boolean;
+  sortOrder: number;
+  updatedAt: string;
+  updatedBy: string | null;
+};
+
+export type TalkToolGrant = {
+  toolId: string;
+  enabled: boolean;
+  updatedAt: string;
+  updatedBy: string | null;
+};
+
+export type TalkResourceBinding = {
+  id: string;
+  bindingKind:
+    | 'google_drive_folder'
+    | 'google_drive_file'
+    | 'data_connector'
+    | 'saved_source'
+    | 'message_attachment';
+  externalId: string;
+  displayName: string;
+  metadata: Record<string, unknown> | null;
+  createdAt: string;
+  createdBy: string | null;
+};
+
+export type UserGoogleAccount = {
+  connected: boolean;
+  email: string | null;
+  displayName: string | null;
+  scopes: string[];
+  accessExpiresAt: string | null;
+};
+
+export type EffectiveToolAccessState =
+  | 'available'
+  | 'unavailable_due_to_route'
+  | 'unavailable_due_to_identity'
+  | 'unavailable_due_to_pending_scopes'
+  | 'unavailable_due_to_scope'
+  | 'unavailable_due_to_config'
+  | 'unavailable_due_to_missing_resource';
+
+export type TalkToolAccessByAgent = {
+  agentId: string;
+  nickname: string;
+  sourceKind: 'claude_default' | 'provider';
+  providerId: string | null;
+  modelId: string | null;
+  toolAccess: Array<{
+    toolId: string;
+    state: EffectiveToolAccessState;
+  }>;
+};
+
+export type TalkTools = {
+  talkId: string;
+  registry: ToolRegistryEntry[];
+  grants: TalkToolGrant[];
+  bindings: TalkResourceBinding[];
+  googleAccount: UserGoogleAccount;
+  summary: string[];
+  warnings: string[];
+  effectiveAccess: TalkToolAccessByAgent[];
+};
+
+export type TalkAuditEntry = {
+  id: string;
+  runId: string;
+  agentId: string | null;
+  toolName: string;
+  confirmationId: string | null;
+  targetResourceId: string | null;
+  summary: Record<string, unknown> | null;
+  resultStatus: 'success' | 'failed';
+  errorCategory:
+    | 'auth'
+    | 'permission'
+    | 'rate_limit'
+    | 'quota'
+    | 'validation'
+    | 'transient'
+    | 'unavailable'
+    | 'user_declined'
+    | 'revoked_after_confirmation'
+    | null;
+  errorMessage: string | null;
+  createdAt: string;
+  createdBy: string | null;
+};
+
+export type TalkActionConfirmation = {
+  id: string;
+  talkId: string;
+  runId: string;
+  toolName: string;
+  confirmationType: 'mutation' | 'scope_expansion';
+  status:
+    | 'pending'
+    | 'approved_pending_execution'
+    | 'approved_executed'
+    | 'approved_failed'
+    | 'rejected'
+    | 'superseded';
+  proposedArgs: Record<string, unknown> | null;
+  modifiedArgs: Record<string, unknown> | null;
+  preview: Record<string, unknown> | null;
+  toolCallId: string | null;
+  requestedBy: string;
+  resolvedBy: string | null;
+  reason: string | null;
+  errorCategory:
+    | 'auth'
+    | 'permission'
+    | 'rate_limit'
+    | 'quota'
+    | 'validation'
+    | 'transient'
+    | 'unavailable'
+    | 'user_declined'
+    | 'revoked_after_confirmation'
+    | null;
+  errorMessage: string | null;
+  createdAt: string;
+  resolvedAt: string | null;
 };
 
 export type TalkPolicy = {
@@ -707,6 +861,148 @@ export async function getTalkRuns(talkId: string): Promise<TalkRun[]> {
     runs: TalkRun[];
   }>(`/api/v1/talks/${encodeURIComponent(talkId)}/runs`);
   return envelope.runs;
+}
+
+export async function getTalkTools(talkId: string): Promise<TalkTools> {
+  return apiRequest<TalkTools>(`/api/v1/talks/${encodeURIComponent(talkId)}/tools`);
+}
+
+export async function updateTalkTools(input: {
+  talkId: string;
+  grants: Array<{ toolId: string; enabled: boolean }>;
+}): Promise<TalkTools> {
+  return apiMutationRequest<TalkTools>(
+    `/api/v1/talks/${encodeURIComponent(input.talkId)}/tools`,
+    {
+      method: 'PUT',
+      includeJson: true,
+      body: JSON.stringify({ grants: input.grants }),
+    },
+  );
+}
+
+export async function getTalkResources(input: {
+  talkId: string;
+}): Promise<{ talkId: string; bindings: TalkResourceBinding[] }> {
+  return apiRequest<{ talkId: string; bindings: TalkResourceBinding[] }>(
+    `/api/v1/talks/${encodeURIComponent(input.talkId)}/resources`,
+  );
+}
+
+export async function createTalkGoogleDriveResource(input: {
+  talkId: string;
+  bindingKind: 'google_drive_folder' | 'google_drive_file';
+  externalId: string;
+  displayName: string;
+  metadata?: Record<string, unknown> | null;
+}): Promise<TalkResourceBinding> {
+  const envelope = await apiMutationRequest<{ binding: TalkResourceBinding }>(
+    `/api/v1/talks/${encodeURIComponent(input.talkId)}/resources/google-drive`,
+    {
+      method: 'POST',
+      includeJson: true,
+      body: JSON.stringify({
+        bindingKind: input.bindingKind,
+        externalId: input.externalId,
+        displayName: input.displayName,
+        metadata: input.metadata ?? null,
+      }),
+    },
+  );
+  return envelope.binding;
+}
+
+export async function deleteTalkResource(input: {
+  talkId: string;
+  resourceId: string;
+}): Promise<void> {
+  await apiMutationRequest<{ deleted: true }>(
+    `/api/v1/talks/${encodeURIComponent(input.talkId)}/resources/${encodeURIComponent(input.resourceId)}`,
+    {
+      method: 'DELETE',
+    },
+  );
+}
+
+export async function getUserGoogleAccount(): Promise<UserGoogleAccount> {
+  const envelope = await apiRequest<{ googleAccount: UserGoogleAccount }>(
+    '/api/v1/me/google-account',
+  );
+  return envelope.googleAccount;
+}
+
+export async function connectUserGoogleAccount(): Promise<UserGoogleAccount> {
+  const envelope = await apiMutationRequest<{ googleAccount: UserGoogleAccount }>(
+    '/api/v1/me/google-account/connect',
+    {
+      method: 'POST',
+      includeJson: true,
+      body: JSON.stringify({}),
+    },
+  );
+  return envelope.googleAccount;
+}
+
+export async function expandUserGoogleScopes(
+  scopes: string[],
+): Promise<UserGoogleAccount> {
+  const envelope = await apiMutationRequest<{ googleAccount: UserGoogleAccount }>(
+    '/api/v1/me/google-account/expand-scopes',
+    {
+      method: 'POST',
+      includeJson: true,
+      body: JSON.stringify({ scopes }),
+    },
+  );
+  return envelope.googleAccount;
+}
+
+export async function getTalkAudit(input: {
+  talkId: string;
+  limit?: number;
+}): Promise<{ talkId: string; entries: TalkAuditEntry[] }> {
+  const query = input.limit ? `?limit=${encodeURIComponent(String(input.limit))}` : '';
+  return apiRequest<{ talkId: string; entries: TalkAuditEntry[] }>(
+    `/api/v1/talks/${encodeURIComponent(input.talkId)}/audit${query}`,
+  );
+}
+
+export async function approveTalkActionConfirmation(input: {
+  talkId: string;
+  runId: string;
+  confirmationId: string;
+  modifiedArgs?: Record<string, unknown> | null;
+}): Promise<TalkActionConfirmation> {
+  const envelope = await apiMutationRequest<{
+    confirmation: TalkActionConfirmation;
+  }>(
+    `/api/v1/talks/${encodeURIComponent(input.talkId)}/runs/${encodeURIComponent(input.runId)}/confirmations/${encodeURIComponent(input.confirmationId)}/approve`,
+    {
+      method: 'POST',
+      includeJson: true,
+      body: JSON.stringify({ modifiedArgs: input.modifiedArgs ?? null }),
+    },
+  );
+  return envelope.confirmation;
+}
+
+export async function rejectTalkActionConfirmation(input: {
+  talkId: string;
+  runId: string;
+  confirmationId: string;
+  reason?: string | null;
+}): Promise<TalkActionConfirmation> {
+  const envelope = await apiMutationRequest<{
+    confirmation: TalkActionConfirmation;
+  }>(
+    `/api/v1/talks/${encodeURIComponent(input.talkId)}/runs/${encodeURIComponent(input.runId)}/confirmations/${encodeURIComponent(input.confirmationId)}/reject`,
+    {
+      method: 'POST',
+      includeJson: true,
+      body: JSON.stringify({ reason: input.reason ?? null }),
+    },
+  );
+  return envelope.confirmation;
 }
 
 export async function updateTalkAgents(input: {

@@ -143,6 +143,21 @@ import {
 import { authenticateRequest } from './middleware/auth.js';
 import { AuthContext } from './types.js';
 import { DataConnectorVerifier } from '../connectors/connector-verifier.js';
+import {
+  approveTalkActionConfirmationRoute,
+  connectUserGoogleAccountRoute,
+  createTalkGoogleDriveResourceRoute,
+  deleteTalkResourceRoute,
+  expandUserGoogleScopesRoute,
+  getTalkToolsRoute,
+  getToolRegistryRoute,
+  getUserGoogleAccountRoute,
+  listTalkAuditRoute,
+  listTalkResourcesRoute,
+  rejectTalkActionConfirmationRoute,
+  updateTalkToolsRoute,
+  updateToolRegistryRoute,
+} from './routes/tool-manager.js';
 import { logger } from '../../logger.js';
 
 const MAX_REQUEST_BODY_BYTES = 10 * 1024 * 1024; // 10 MB
@@ -584,6 +599,123 @@ function buildApp(opts: WebServerOptions): Hono {
     return c.json({ ok: true, data: { user: normalizeUser(user) } }, 200);
   });
 
+  app.get('/api/v1/me/google-account', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+
+    const rateResult = checkRateLimit({
+      principalId: auth.userId,
+      bucket: 'read',
+    });
+    if (!rateResult.allowed) {
+      return rateLimitedResponse(c, rateResult);
+    }
+
+    const response = getUserGoogleAccountRoute({ auth });
+    return new Response(JSON.stringify(response.body), {
+      status: response.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
+  });
+
+  app.post('/api/v1/me/google-account/connect', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+
+    const rateResult = checkRateLimit({
+      principalId: auth.userId,
+      bucket: 'write',
+    });
+    if (!rateResult.allowed) {
+      return rateLimitedResponse(c, rateResult);
+    }
+
+    const csrf = validateCsrfToken({
+      method: c.req.method,
+      authType: auth.authType,
+      cookieHeader: c.req.header('cookie'),
+      csrfHeader: c.req.header('x-csrf-token'),
+    });
+    if (!csrf.ok) {
+      return c.json(
+        {
+          ok: false,
+          error: {
+            code: 'csrf_failed',
+            message: csrf.reason,
+          },
+        },
+        403,
+      );
+    }
+
+    const response = connectUserGoogleAccountRoute({ auth });
+    return new Response(JSON.stringify(response.body), {
+      status: response.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
+  });
+
+  app.post('/api/v1/me/google-account/expand-scopes', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+
+    const rateResult = checkRateLimit({
+      principalId: auth.userId,
+      bucket: 'write',
+    });
+    if (!rateResult.allowed) {
+      return rateLimitedResponse(c, rateResult);
+    }
+
+    const csrf = validateCsrfToken({
+      method: c.req.method,
+      authType: auth.authType,
+      cookieHeader: c.req.header('cookie'),
+      csrfHeader: c.req.header('x-csrf-token'),
+    });
+    if (!csrf.ok) {
+      return c.json(
+        {
+          ok: false,
+          error: {
+            code: 'csrf_failed',
+            message: csrf.reason,
+          },
+        },
+        403,
+      );
+    }
+
+    const bodyText = await c.req.text();
+    const payload = parseJsonPayload<{ scopes?: string[] }>(bodyText);
+    if (!payload.ok) {
+      return c.json(
+        {
+          ok: false,
+          error: {
+            code: 'invalid_json',
+            message: payload.error,
+          },
+        },
+        400,
+      );
+    }
+
+    const response = expandUserGoogleScopesRoute({
+      auth,
+      scopes: Array.isArray(payload.data.scopes)
+        ? payload.data.scopes.filter(
+            (scope): scope is string => typeof scope === 'string',
+          )
+        : [],
+    });
+    return new Response(JSON.stringify(response.body), {
+      status: response.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
+  });
+
   app.get('/api/v1/settings/executor', async (c) => {
     const auth = requireAuth(c);
     if (!auth) return unauthorized(c);
@@ -606,6 +738,134 @@ function buildApp(opts: WebServerOptions): Hono {
       },
       200,
     );
+  });
+
+  app.get('/api/v1/settings/tools', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+    if (auth.role !== 'owner' && auth.role !== 'admin') {
+      return forbidden(c, 'Owner or admin role required');
+    }
+
+    const rateResult = checkRateLimit({
+      principalId: auth.userId,
+      bucket: 'read',
+    });
+    if (!rateResult.allowed) {
+      return rateLimitedResponse(c, rateResult);
+    }
+
+    const response = getToolRegistryRoute({ auth });
+    return new Response(JSON.stringify(response.body), {
+      status: response.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
+  });
+
+  app.put('/api/v1/settings/tools', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+    if (auth.role !== 'owner' && auth.role !== 'admin') {
+      return forbidden(c, 'Owner or admin role required');
+    }
+
+    const rateResult = checkRateLimit({
+      principalId: auth.userId,
+      bucket: 'write',
+    });
+    if (!rateResult.allowed) {
+      return rateLimitedResponse(c, rateResult);
+    }
+
+    const csrf = validateCsrfToken({
+      method: c.req.method,
+      authType: auth.authType,
+      cookieHeader: c.req.header('cookie'),
+      csrfHeader: c.req.header('x-csrf-token'),
+    });
+    if (!csrf.ok) {
+      return c.json(
+        {
+          ok: false,
+          error: {
+            code: 'csrf_failed',
+            message: csrf.reason,
+          },
+        },
+        403,
+      );
+    }
+
+    const bodyText = await c.req.text();
+    const payload = parseJsonPayload<{
+      entries?: Array<{
+        id?: string;
+        enabled?: boolean;
+        installStatus?: 'installed' | 'disabled' | 'unconfigured';
+        healthStatus?: 'healthy' | 'degraded' | 'unavailable';
+        authRequirements?: Record<string, unknown> | null;
+      }>;
+    }>(bodyText);
+    if (!payload.ok) {
+      return c.json(
+        {
+          ok: false,
+          error: {
+            code: 'invalid_json',
+            message: payload.error,
+          },
+        },
+        400,
+      );
+    }
+
+    const entries = Array.isArray(payload.data.entries)
+      ? payload.data.entries
+      : [];
+    const invalidEntry = entries.find(
+      (entry) =>
+        typeof entry?.id !== 'string' ||
+        typeof entry.enabled !== 'boolean' ||
+        (entry.installStatus !== 'installed' &&
+          entry.installStatus !== 'disabled' &&
+          entry.installStatus !== 'unconfigured') ||
+        (entry.healthStatus !== 'healthy' &&
+          entry.healthStatus !== 'degraded' &&
+          entry.healthStatus !== 'unavailable'),
+    );
+    if (invalidEntry) {
+      return c.json(
+        {
+          ok: false,
+          error: {
+            code: 'invalid_tool_registry_payload',
+            message:
+              'Tool registry updates require id, enabled, installStatus, and healthStatus.',
+          },
+        },
+        400,
+      );
+    }
+
+    const response = updateToolRegistryRoute({
+      auth,
+      entries: entries.map((entry) => ({
+        id: entry.id!,
+        enabled: entry.enabled!,
+        installStatus: entry.installStatus!,
+        healthStatus: entry.healthStatus!,
+        authRequirements:
+          entry.authRequirements &&
+          typeof entry.authRequirements === 'object' &&
+          !Array.isArray(entry.authRequirements)
+            ? entry.authRequirements
+            : null,
+      })),
+    });
+    return new Response(JSON.stringify(response.body), {
+      status: response.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
   });
 
   app.get('/api/v1/settings/executor/subscription-host-status', async (c) => {
@@ -3017,6 +3277,476 @@ function buildApp(opts: WebServerOptions): Hono {
       });
     },
   );
+
+  app.get('/api/v1/talks/:talkId/tools', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+
+    const rateResult = checkRateLimit({
+      principalId: auth.userId,
+      bucket: 'read',
+    });
+    if (!rateResult.allowed) {
+      return rateLimitedResponse(c, rateResult);
+    }
+
+    const talkId = safeDecodePathSegment(c.req.param('talkId'));
+    if (!talkId) {
+      return c.json(
+        {
+          ok: false,
+          error: {
+            code: 'invalid_talk_id',
+            message: 'Talk ID path segment is not valid URL encoding',
+          },
+        },
+        400,
+      );
+    }
+
+    const result = getTalkToolsRoute({ auth, talkId });
+    return new Response(JSON.stringify(result.body), {
+      status: result.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
+  });
+
+  app.put('/api/v1/talks/:talkId/tools', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+
+    const rateResult = checkRateLimit({
+      principalId: auth.userId,
+      bucket: 'write',
+    });
+    if (!rateResult.allowed) {
+      return rateLimitedResponse(c, rateResult);
+    }
+
+    const csrf = validateCsrfToken({
+      method: c.req.method,
+      authType: auth.authType,
+      cookieHeader: c.req.header('cookie'),
+      csrfHeader: c.req.header('x-csrf-token'),
+    });
+    if (!csrf.ok) {
+      return c.json(
+        { ok: false, error: { code: 'csrf_failed', message: csrf.reason } },
+        403,
+      );
+    }
+
+    const talkId = safeDecodePathSegment(c.req.param('talkId'));
+    if (!talkId) {
+      return c.json(
+        {
+          ok: false,
+          error: {
+            code: 'invalid_talk_id',
+            message: 'Talk ID path segment is not valid URL encoding',
+          },
+        },
+        400,
+      );
+    }
+
+    const bodyText = await c.req.text();
+    const payload = parseJsonPayload<{
+      grants?: Array<{ toolId?: string; enabled?: boolean }>;
+    }>(bodyText);
+    if (!payload.ok) {
+      return c.json(
+        { ok: false, error: { code: 'invalid_json', message: payload.error } },
+        400,
+      );
+    }
+    const grants = Array.isArray(payload.data.grants)
+      ? payload.data.grants
+      : [];
+    const invalidGrant = grants.find(
+      (grant) =>
+        typeof grant?.toolId !== 'string' || typeof grant.enabled !== 'boolean',
+    );
+    if (invalidGrant) {
+      return c.json(
+        {
+          ok: false,
+          error: {
+            code: 'invalid_tool_grants',
+            message: 'Each Talk tool grant requires a toolId and enabled flag.',
+          },
+        },
+        400,
+      );
+    }
+
+    const result = updateTalkToolsRoute({
+      auth,
+      talkId,
+      grants: grants.map((grant) => ({
+        toolId: grant.toolId!,
+        enabled: grant.enabled!,
+      })),
+    });
+    return new Response(JSON.stringify(result.body), {
+      status: result.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
+  });
+
+  app.get('/api/v1/talks/:talkId/resources', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+
+    const rateResult = checkRateLimit({
+      principalId: auth.userId,
+      bucket: 'read',
+    });
+    if (!rateResult.allowed) {
+      return rateLimitedResponse(c, rateResult);
+    }
+
+    const talkId = safeDecodePathSegment(c.req.param('talkId'));
+    if (!talkId) {
+      return c.json(
+        {
+          ok: false,
+          error: {
+            code: 'invalid_talk_id',
+            message: 'Talk ID path segment is not valid URL encoding',
+          },
+        },
+        400,
+      );
+    }
+
+    const result = listTalkResourcesRoute({ auth, talkId });
+    return new Response(JSON.stringify(result.body), {
+      status: result.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
+  });
+
+  app.post('/api/v1/talks/:talkId/resources/google-drive', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+
+    const rateResult = checkRateLimit({
+      principalId: auth.userId,
+      bucket: 'write',
+    });
+    if (!rateResult.allowed) {
+      return rateLimitedResponse(c, rateResult);
+    }
+
+    const csrf = validateCsrfToken({
+      method: c.req.method,
+      authType: auth.authType,
+      cookieHeader: c.req.header('cookie'),
+      csrfHeader: c.req.header('x-csrf-token'),
+    });
+    if (!csrf.ok) {
+      return c.json(
+        { ok: false, error: { code: 'csrf_failed', message: csrf.reason } },
+        403,
+      );
+    }
+
+    const talkId = safeDecodePathSegment(c.req.param('talkId'));
+    if (!talkId) {
+      return c.json(
+        {
+          ok: false,
+          error: {
+            code: 'invalid_talk_id',
+            message: 'Talk ID path segment is not valid URL encoding',
+          },
+        },
+        400,
+      );
+    }
+
+    const bodyText = await c.req.text();
+    const payload = parseJsonPayload<{
+      bindingKind?: 'google_drive_folder' | 'google_drive_file';
+      externalId?: string;
+      displayName?: string;
+      metadata?: Record<string, unknown> | null;
+    }>(bodyText);
+    if (!payload.ok) {
+      return c.json(
+        { ok: false, error: { code: 'invalid_json', message: payload.error } },
+        400,
+      );
+    }
+
+    const result = createTalkGoogleDriveResourceRoute({
+      auth,
+      talkId,
+      bindingKind:
+        payload.data.bindingKind === 'google_drive_file'
+          ? 'google_drive_file'
+          : 'google_drive_folder',
+      externalId:
+        typeof payload.data.externalId === 'string'
+          ? payload.data.externalId
+          : '',
+      displayName:
+        typeof payload.data.displayName === 'string'
+          ? payload.data.displayName
+          : '',
+      metadata:
+        payload.data.metadata &&
+        typeof payload.data.metadata === 'object' &&
+        !Array.isArray(payload.data.metadata)
+          ? payload.data.metadata
+          : null,
+    });
+    return new Response(JSON.stringify(result.body), {
+      status: result.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
+  });
+
+  app.delete('/api/v1/talks/:talkId/resources/:resourceId', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+
+    const rateResult = checkRateLimit({
+      principalId: auth.userId,
+      bucket: 'write',
+    });
+    if (!rateResult.allowed) {
+      return rateLimitedResponse(c, rateResult);
+    }
+
+    const csrf = validateCsrfToken({
+      method: c.req.method,
+      authType: auth.authType,
+      cookieHeader: c.req.header('cookie'),
+      csrfHeader: c.req.header('x-csrf-token'),
+    });
+    if (!csrf.ok) {
+      return c.json(
+        { ok: false, error: { code: 'csrf_failed', message: csrf.reason } },
+        403,
+      );
+    }
+
+    const talkId = safeDecodePathSegment(c.req.param('talkId'));
+    const resourceId = safeDecodePathSegment(c.req.param('resourceId'));
+    if (!talkId || !resourceId) {
+      return c.json(
+        {
+          ok: false,
+          error: {
+            code: 'invalid_resource_id',
+            message: 'Talk or resource path segment is not valid URL encoding',
+          },
+        },
+        400,
+      );
+    }
+
+    const result = deleteTalkResourceRoute({
+      auth,
+      talkId,
+      bindingId: resourceId,
+    });
+    return new Response(JSON.stringify(result.body), {
+      status: result.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
+  });
+
+  app.post(
+    '/api/v1/talks/:talkId/runs/:runId/confirmations/:confirmationId/approve',
+    async (c) => {
+      const auth = requireAuth(c);
+      if (!auth) return unauthorized(c);
+
+      const rateResult = checkRateLimit({
+        principalId: auth.userId,
+        bucket: 'write',
+      });
+      if (!rateResult.allowed) {
+        return rateLimitedResponse(c, rateResult);
+      }
+
+      const csrf = validateCsrfToken({
+        method: c.req.method,
+        authType: auth.authType,
+        cookieHeader: c.req.header('cookie'),
+        csrfHeader: c.req.header('x-csrf-token'),
+      });
+      if (!csrf.ok) {
+        return c.json(
+          { ok: false, error: { code: 'csrf_failed', message: csrf.reason } },
+          403,
+        );
+      }
+
+      const talkId = safeDecodePathSegment(c.req.param('talkId'));
+      const runId = safeDecodePathSegment(c.req.param('runId'));
+      const confirmationId = safeDecodePathSegment(
+        c.req.param('confirmationId'),
+      );
+      if (!talkId || !runId || !confirmationId) {
+        return c.json(
+          {
+            ok: false,
+            error: {
+              code: 'invalid_confirmation_path',
+              message:
+                'Talk, run, or confirmation path segment is not valid URL encoding',
+            },
+          },
+          400,
+        );
+      }
+
+      const bodyText = await c.req.text();
+      const payload = parseJsonPayload<{
+        modifiedArgs?: Record<string, unknown> | null;
+      }>(bodyText);
+      if (!payload.ok) {
+        return c.json(
+          {
+            ok: false,
+            error: { code: 'invalid_json', message: payload.error },
+          },
+          400,
+        );
+      }
+
+      const result = approveTalkActionConfirmationRoute({
+        auth,
+        talkId,
+        runId,
+        confirmationId,
+        modifiedArgs:
+          payload.data.modifiedArgs &&
+          typeof payload.data.modifiedArgs === 'object' &&
+          !Array.isArray(payload.data.modifiedArgs)
+            ? payload.data.modifiedArgs
+            : null,
+      });
+      return new Response(JSON.stringify(result.body), {
+        status: result.statusCode,
+        headers: { 'content-type': 'application/json; charset=utf-8' },
+      });
+    },
+  );
+
+  app.post(
+    '/api/v1/talks/:talkId/runs/:runId/confirmations/:confirmationId/reject',
+    async (c) => {
+      const auth = requireAuth(c);
+      if (!auth) return unauthorized(c);
+
+      const rateResult = checkRateLimit({
+        principalId: auth.userId,
+        bucket: 'write',
+      });
+      if (!rateResult.allowed) {
+        return rateLimitedResponse(c, rateResult);
+      }
+
+      const csrf = validateCsrfToken({
+        method: c.req.method,
+        authType: auth.authType,
+        cookieHeader: c.req.header('cookie'),
+        csrfHeader: c.req.header('x-csrf-token'),
+      });
+      if (!csrf.ok) {
+        return c.json(
+          { ok: false, error: { code: 'csrf_failed', message: csrf.reason } },
+          403,
+        );
+      }
+
+      const talkId = safeDecodePathSegment(c.req.param('talkId'));
+      const runId = safeDecodePathSegment(c.req.param('runId'));
+      const confirmationId = safeDecodePathSegment(
+        c.req.param('confirmationId'),
+      );
+      if (!talkId || !runId || !confirmationId) {
+        return c.json(
+          {
+            ok: false,
+            error: {
+              code: 'invalid_confirmation_path',
+              message:
+                'Talk, run, or confirmation path segment is not valid URL encoding',
+            },
+          },
+          400,
+        );
+      }
+
+      const bodyText = await c.req.text();
+      const payload = parseJsonPayload<{ reason?: string | null }>(bodyText);
+      if (!payload.ok) {
+        return c.json(
+          {
+            ok: false,
+            error: { code: 'invalid_json', message: payload.error },
+          },
+          400,
+        );
+      }
+
+      const result = rejectTalkActionConfirmationRoute({
+        auth,
+        talkId,
+        runId,
+        confirmationId,
+        reason:
+          typeof payload.data.reason === 'string' ? payload.data.reason : null,
+      });
+      return new Response(JSON.stringify(result.body), {
+        status: result.statusCode,
+        headers: { 'content-type': 'application/json; charset=utf-8' },
+      });
+    },
+  );
+
+  app.get('/api/v1/talks/:talkId/audit', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+
+    const rateResult = checkRateLimit({
+      principalId: auth.userId,
+      bucket: 'read',
+    });
+    if (!rateResult.allowed) {
+      return rateLimitedResponse(c, rateResult);
+    }
+
+    const talkId = safeDecodePathSegment(c.req.param('talkId'));
+    if (!talkId) {
+      return c.json(
+        {
+          ok: false,
+          error: {
+            code: 'invalid_talk_id',
+            message: 'Talk ID path segment is not valid URL encoding',
+          },
+        },
+        400,
+      );
+    }
+
+    const result = listTalkAuditRoute({
+      auth,
+      talkId,
+      limit: parsePositiveInt(c.req.query('limit')) || 50,
+    });
+    return new Response(JSON.stringify(result.body), {
+      status: result.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
+  });
 
   // ---------------------------------------------------------------------------
   // Context tab routes
