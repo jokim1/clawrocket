@@ -349,10 +349,7 @@ function resolveUserForLogin(input: {
   const owner = getOwnerUser();
   if (!owner) {
     if (isPublicMode) {
-      if (
-        !INITIAL_OWNER_EMAIL ||
-        normalizedEmail.toLowerCase() !== INITIAL_OWNER_EMAIL
-      ) {
+      if (!INITIAL_OWNER_EMAIL || normalizedEmail !== INITIAL_OWNER_EMAIL) {
         throw new AuthError(
           'invite_required',
           'This email is not approved for this installation',

@@ -1,5 +1,6 @@
 import crypto from 'crypto';
 
+import { readEnvFile } from '../../env.js';
 import { logger } from '../../logger.js';
 import type { ProviderSecretPayload } from './types.js';
 
@@ -8,9 +9,14 @@ export const PROVIDER_SECRET_DEV_FALLBACK =
   'clawrocket-dev-provider-secret-key-unsafe-default';
 const AES_ALGO = 'aes-256-gcm';
 let warnedAboutFallbackSecret = false;
+const envConfig = readEnvFile([PROVIDER_SECRET_KEY_ENV]);
 
 function getSecretMaterial(): string {
-  const configured = process.env[PROVIDER_SECRET_KEY_ENV]?.trim();
+  const configured = (
+    process.env[PROVIDER_SECRET_KEY_ENV] ||
+    envConfig[PROVIDER_SECRET_KEY_ENV] ||
+    ''
+  ).trim();
   if (configured) return configured;
 
   if (!warnedAboutFallbackSecret && process.env.NODE_ENV !== 'test') {
