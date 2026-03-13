@@ -1059,6 +1059,35 @@ export function getPendingTalkActionConfirmationForRun(
   return row ? mapTalkActionConfirmationRow(row) : undefined;
 }
 
+export function supersedePendingTalkActionConfirmationsForRun(input: {
+  runId: string;
+  resolvedBy?: string | null;
+  reason?: string | null;
+}): number {
+  const now = new Date().toISOString();
+  const result = getDb()
+    .prepare(
+      `
+      UPDATE talk_action_confirmations
+      SET status = 'superseded',
+          modified_args_json = NULL,
+          resolved_by = ?,
+          reason = ?,
+          error_category = NULL,
+          error_message = NULL,
+          resolved_at = ?
+      WHERE run_id = ? AND status = 'pending'
+    `,
+    )
+    .run(
+      input.resolvedBy ?? null,
+      input.reason ?? null,
+      now,
+      input.runId,
+    );
+  return result.changes;
+}
+
 export function resolveTalkActionConfirmation(input: {
   confirmationId: string;
   status: Exclude<ConfirmationStatus, 'pending'>;

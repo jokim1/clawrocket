@@ -4,6 +4,7 @@ import {
   deleteTalkResourceBinding,
   getTalkActionConfirmationById,
   getTalkForUser,
+  getTalkRunById,
   getUserById,
   getUserGoogleCredential,
   initializeTalkToolGrants,
@@ -951,9 +952,19 @@ export function approveTalkActionConfirmationRoute(input: {
   ) {
     return notFoundResponse('Talk confirmation not found.');
   }
+  const run = getTalkRunById(input.runId);
+  if (!run || run.talk_id !== input.talkId) {
+    return notFoundResponse('Talk run not found.');
+  }
   if (confirmation.requestedBy !== input.auth.userId) {
     return forbiddenResponse(
       'Only the triggering user may approve this confirmation.',
+    );
+  }
+  if (run.status !== 'awaiting_confirmation') {
+    return invalidResponse(
+      'run_not_awaiting_confirmation',
+      'This run is no longer awaiting confirmation.',
     );
   }
   if (confirmation.status !== 'pending') {
@@ -1007,9 +1018,19 @@ export function rejectTalkActionConfirmationRoute(input: {
   ) {
     return notFoundResponse('Talk confirmation not found.');
   }
+  const run = getTalkRunById(input.runId);
+  if (!run || run.talk_id !== input.talkId) {
+    return notFoundResponse('Talk run not found.');
+  }
   if (confirmation.requestedBy !== input.auth.userId) {
     return forbiddenResponse(
       'Only the triggering user may reject this confirmation.',
+    );
+  }
+  if (run.status !== 'awaiting_confirmation') {
+    return invalidResponse(
+      'run_not_awaiting_confirmation',
+      'This run is no longer awaiting confirmation.',
     );
   }
   if (confirmation.status !== 'pending') {
