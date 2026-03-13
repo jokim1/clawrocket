@@ -9,7 +9,13 @@ import {
   TELEGRAM_BOT_POOL,
   TRIGGER_PATTERN,
 } from './config.js';
-import { WEB_ENABLED, WEB_HOST, WEB_PORT } from './clawrocket/config.js';
+import {
+  getPublicModeConfigErrors,
+  getPublicModeDatabaseErrors,
+  WEB_ENABLED,
+  WEB_HOST,
+  WEB_PORT,
+} from './clawrocket/config.js';
 import './channels/index.js';
 import {
   getChannelFactory,
@@ -42,6 +48,7 @@ import {
 } from './db.js';
 import {
   ensureSystemManagedTelegramConnection,
+  getOwnerUser,
   getTalkChannelBindingById,
   initClawrocketSchema,
   syncKnownProviderModels,
@@ -75,6 +82,28 @@ let messageLoopRunning = false;
 
 const channels: Channel[] = [];
 const queue = new GroupQueue();
+
+function assertPublicModeConfigReady(): void {
+  const errors = getPublicModeConfigErrors();
+  if (errors.length === 0) return;
+
+  logger.fatal(
+    { errors },
+    'Public mode startup guard failed before database initialization',
+  );
+  throw new Error(errors.join(' '));
+}
+
+function assertPublicModeDatabaseReady(): void {
+  const errors = getPublicModeDatabaseErrors(Boolean(getOwnerUser()));
+  if (errors.length === 0) return;
+
+  logger.fatal(
+    { errors },
+    'Public mode startup guard failed after database initialization',
+  );
+  throw new Error(errors.join(' '));
+}
 
 function loadState(): void {
   lastTimestamp = getRouterState('last_timestamp') || '';
@@ -607,9 +636,11 @@ async function main(): Promise<void> {
 
   try {
     ensureContainerSystemRunning();
+    assertPublicModeConfigReady();
     initDatabase();
     // ClawRocket integration seam: initialize ClawRocket schema in shared DB.
     initClawrocketSchema();
+    assertPublicModeDatabaseReady();
     const telegramConnection = ensureSystemManagedTelegramConnection();
     syncKnownProviderModels();
     // ClawRocket integration seam: register scheduler maintenance callbacks.
