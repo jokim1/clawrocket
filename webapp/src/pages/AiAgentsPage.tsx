@@ -89,7 +89,7 @@ function formatVerificationStatus(
     case 'verifying':
       return 'Verifying…';
     case 'verified':
-      return 'Configured';
+      return 'Verified';
     case 'invalid':
       return 'Invalid';
     case 'unavailable':
@@ -152,7 +152,7 @@ function formatProviderVerificationSummary(
 ): string {
   switch (provider.verificationStatus) {
     case 'verified':
-      return 'Configured';
+      return 'Verified';
     case 'invalid':
       return 'Invalid';
     case 'unavailable':

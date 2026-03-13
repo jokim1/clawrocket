@@ -147,7 +147,7 @@ describe('AiAgentsPage', () => {
         { timeout: 4_000 },
       ),
     ).toBeTruthy();
-    expect(within(nvidiaCard).getByText('Configured')).toBeTruthy();
+    expect(within(nvidiaCard).getByText('Verified')).toBeTruthy();
   });
 
   it('prefers manual token guidance when host import is unavailable', async () => {
@@ -201,6 +201,9 @@ describe('AiAgentsPage', () => {
       await screen.findByText('Claude verification started.'),
     ).toBeTruthy();
     expect(helpers.getExecutorVerifyCalls()).toBe(1);
+    expect(
+      await screen.findByText('Verified', {}, { timeout: 4_000 }),
+    ).toBeTruthy();
   });
 });
 
@@ -209,6 +212,7 @@ function installAiAgentsFetch() {
   let settings = buildExecutorSettings();
   let status = buildExecutorStatus();
   let nvidiaVerificationPending = false;
+  let executorVerificationPending = false;
   let executorVerifyCalls = 0;
 
   vi.stubGlobal(
@@ -254,6 +258,16 @@ function installAiAgentsFetch() {
         url.endsWith('/api/v1/settings/executor-status') &&
         method === 'GET'
       ) {
+        if (executorVerificationPending) {
+          executorVerificationPending = false;
+          status = {
+            ...status,
+            verificationStatus: 'verified',
+            activeCredentialConfigured: true,
+            lastVerifiedAt: '2026-03-13T22:15:00.000Z',
+            lastVerificationError: null,
+          };
+        }
         return jsonResponse(200, { ok: true, data: status });
       }
 
@@ -295,6 +309,7 @@ function installAiAgentsFetch() {
           verificationStatus: 'verifying',
           activeCredentialConfigured: true,
         };
+        executorVerificationPending = true;
         return jsonResponse(200, {
           ok: true,
           data: {
