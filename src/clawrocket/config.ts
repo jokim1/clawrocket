@@ -1,14 +1,23 @@
 import { readEnvFile } from '../env.js';
+import { logger } from '../logger.js';
+import {
+  PROVIDER_SECRET_DEV_FALLBACK,
+  PROVIDER_SECRET_KEY_ENV,
+} from './llm/provider-secret-store.js';
 
 const envConfig = readEnvFile([
   'WEB_ENABLED',
   'WEB_HOST',
   'WEB_PORT',
   'WEB_SECURE_COOKIES',
+  'PUBLIC_MODE',
+  'INITIAL_OWNER_EMAIL',
+  'TRUSTED_PROXY_MODE',
   'AUTH_DEV_MODE',
   'GOOGLE_OAUTH_CLIENT_ID',
   'GOOGLE_OAUTH_CLIENT_SECRET',
   'GOOGLE_OAUTH_REDIRECT_URI',
+  'CLAWROCKET_PROVIDER_SECRET_KEY',
   'ACCESS_TOKEN_TTL_SEC',
   'REFRESH_TOKEN_TTL_SEC',
   'DEVICE_CODE_TTL_SEC',
@@ -31,11 +40,50 @@ const envConfig = readEnvFile([
   'ANTHROPIC_BASE_URL',
 ]);
 
+export type TrustedProxyMode = 'none' | 'cloudflare' | 'caddy';
+
 function parseCsvList(value: string): string[] {
   return value
     .split(',')
     .map((entry) => entry.trim().toLowerCase())
     .filter(Boolean);
+}
+
+function parseTrustedProxyMode(value: string | undefined): TrustedProxyMode {
+  const normalized = (value || 'none').trim().toLowerCase();
+  if (
+    normalized === 'cloudflare' ||
+    normalized === 'caddy' ||
+    normalized === 'none'
+  ) {
+    return normalized;
+  }
+  if (normalized) {
+    logger.warn(
+      { value: normalized },
+      'Unrecognized TRUSTED_PROXY_MODE value, defaulting to none',
+    );
+  }
+  return 'none';
+}
+
+function looksLikeEmailAddress(value: string): boolean {
+  return value.includes('@') && !value.startsWith('@') && !value.endsWith('@');
+}
+
+export function isNonLocalhostRedirectUri(uri: string): boolean {
+  const trimmed = uri.trim();
+  if (!trimmed) return false;
+
+  try {
+    const parsed = new URL(trimmed);
+    const hostname = parsed.hostname.replace(/^\[(.*)\]$/, '$1').toLowerCase();
+    return (
+      hostname !== 'localhost' && hostname !== '127.0.0.1' && hostname !== '::1'
+    );
+  } catch {
+    return true;
+  }
 }
 
 export const WEB_ENABLED =
@@ -50,6 +98,18 @@ export const WEB_SECURE_COOKIES =
   (process.env.WEB_SECURE_COOKIES ||
     envConfig.WEB_SECURE_COOKIES ||
     'false') === 'true';
+export const PUBLIC_MODE =
+  (process.env.PUBLIC_MODE || envConfig.PUBLIC_MODE || 'false') === 'true';
+export const INITIAL_OWNER_EMAIL = (
+  process.env.INITIAL_OWNER_EMAIL ||
+  envConfig.INITIAL_OWNER_EMAIL ||
+  ''
+)
+  .trim()
+  .toLowerCase();
+export const TRUSTED_PROXY_MODE = parseTrustedProxyMode(
+  process.env.TRUSTED_PROXY_MODE || envConfig.TRUSTED_PROXY_MODE || 'none',
+);
 export const AUTH_DEV_MODE =
   (process.env.AUTH_DEV_MODE || envConfig.AUTH_DEV_MODE || 'true') === 'true';
 export const GOOGLE_OAUTH_CLIENT_ID =
@@ -62,6 +122,71 @@ export const GOOGLE_OAUTH_REDIRECT_URI =
   process.env.GOOGLE_OAUTH_REDIRECT_URI ||
   envConfig.GOOGLE_OAUTH_REDIRECT_URI ||
   '';
+export const CLAWROCKET_PROVIDER_SECRET_KEY =
+  process.env.CLAWROCKET_PROVIDER_SECRET_KEY ||
+  envConfig.CLAWROCKET_PROVIDER_SECRET_KEY ||
+  '';
+export const isPublicMode =
+  PUBLIC_MODE ||
+  TRUSTED_PROXY_MODE !== 'none' ||
+  isNonLocalhostRedirectUri(GOOGLE_OAUTH_REDIRECT_URI);
+
+export function getPublicModeConfigErrors(): string[] {
+  if (!isPublicMode) return [];
+
+  const errors: string[] = [];
+
+  if (AUTH_DEV_MODE) {
+    errors.push('AUTH_DEV_MODE must be false when public mode is enabled');
+  }
+  if (!WEB_SECURE_COOKIES) {
+    errors.push('WEB_SECURE_COOKIES must be true when public mode is enabled');
+  }
+  if (
+    !CLAWROCKET_PROVIDER_SECRET_KEY.trim() ||
+    CLAWROCKET_PROVIDER_SECRET_KEY.trim() === PROVIDER_SECRET_DEV_FALLBACK
+  ) {
+    errors.push(
+      `${PROVIDER_SECRET_KEY_ENV} must be set to a non-development key when public mode is enabled`,
+    );
+  }
+  if (TRUSTED_PROXY_MODE === 'none') {
+    errors.push(
+      'TRUSTED_PROXY_MODE must be set to cloudflare or caddy when public mode is enabled',
+    );
+  }
+  if (!GOOGLE_OAUTH_CLIENT_ID.trim()) {
+    errors.push(
+      'GOOGLE_OAUTH_CLIENT_ID must be set when public mode is enabled',
+    );
+  }
+  if (!GOOGLE_OAUTH_CLIENT_SECRET.trim()) {
+    errors.push(
+      'GOOGLE_OAUTH_CLIENT_SECRET must be set when public mode is enabled',
+    );
+  }
+  if (!isNonLocalhostRedirectUri(GOOGLE_OAUTH_REDIRECT_URI)) {
+    errors.push(
+      'GOOGLE_OAUTH_REDIRECT_URI must be set to a non-localhost URL when public mode is enabled',
+    );
+  }
+
+  return errors;
+}
+
+export function getPublicModeDatabaseErrors(hasOwner: boolean): string[] {
+  if (!isPublicMode) return [];
+  if (hasOwner) return [];
+  if (INITIAL_OWNER_EMAIL) {
+    if (looksLikeEmailAddress(INITIAL_OWNER_EMAIL)) return [];
+    return [
+      'INITIAL_OWNER_EMAIL must look like an email address when public mode is enabled and no owner exists',
+    ];
+  }
+  return [
+    'INITIAL_OWNER_EMAIL must be set or an owner must already exist when public mode is enabled',
+  ];
+}
 export const ACCESS_TOKEN_TTL_SEC = parseInt(
   process.env.ACCESS_TOKEN_TTL_SEC || envConfig.ACCESS_TOKEN_TTL_SEC || '3600',
   10,

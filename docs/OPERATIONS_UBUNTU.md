@@ -12,7 +12,7 @@ systemctl --user daemon-reload
 systemctl --user enable --now nanoclaw
 ```
 
-Optional:
+Optional for local-only installs. Required for public mode:
 
 ```bash
 sudo loginctl enable-linger "$USER"
@@ -117,3 +117,79 @@ sqlite3 ~/projects/clawrocket/data/messages.db "SELECT provider_id, model_id, st
 1. Verify Talk LLM settings in the admin UI
 2. Verify provider credentials and routes
 3. Inspect `llm_attempts` for failure class and fallback behavior
+
+## 9. Public Access (Cloudflare-First)
+
+Cloudflare Tunnel is the primary supported public deployment path for this batch.
+
+Use [PUBLIC_ACCESS_PLAN.md](PUBLIC_ACCESS_PLAN.md) for:
+
+- Google OAuth consent-screen setup
+- test-user setup
+- OAuth client creation
+- redirect URI configuration
+
+### Public-mode requirements
+
+- `sudo loginctl enable-linger "$USER"` is required
+- set:
+  - `PUBLIC_MODE=true`
+  - `AUTH_DEV_MODE=false`
+  - `WEB_SECURE_COOKIES=true`
+  - `TRUSTED_PROXY_MODE=cloudflare`
+  - `INITIAL_OWNER_EMAIL=<owner-email>` unless an owner already exists
+  - `GOOGLE_OAUTH_CLIENT_ID`
+  - `GOOGLE_OAUTH_CLIENT_SECRET`
+  - `GOOGLE_OAUTH_REDIRECT_URI=https://<your-domain>/api/v1/auth/google/callback`
+  - `CLAWROCKET_PROVIDER_SECRET_KEY=<non-dev secret>`
+
+### Outbound requirements
+
+- `cloudflared` must reach Cloudflare on port `7844` TCP/UDP
+- ClawRocket must reach `oauth2.googleapis.com` over HTTPS
+
+### Cloudflare Tunnel summary
+
+1. Install `cloudflared`
+2. Run `cloudflared tunnel login`
+3. Create a tunnel
+4. Configure `/etc/cloudflared/config.yml` to forward the public hostname to `http://127.0.0.1:3210`
+5. Install the `cloudflared` system service with an explicit `--config` path
+
+### Cloudflare WAF auth throttling
+
+Recommended free-plan rule:
+
+- URI path starts with `/api/v1/auth/`
+- threshold: `5 requests / 10 seconds / IP`
+- mitigation timeout: `10 seconds`
+
+### Verification summary
+
+After the tunnel is live:
+
+- verify `/api/v1/health`
+- complete Google sign-in over HTTPS
+- verify `/api/v1/session/me`
+- verify a CSRF-protected Talk write
+- verify `/api/v1/events?stream=1` and leave it open for 2-3 minutes
+- verify device auth returns `403`
+- verify app-side auth throttling before enabling Cloudflare WAF
+- verify Cloudflare WAF throttling after enabling the rule
+
+### Rollback
+
+To return to local-only access:
+
+```bash
+sudo systemctl stop cloudflared
+```
+
+Then set:
+
+- `PUBLIC_MODE=false`
+- `TRUSTED_PROXY_MODE=none`
+
+If you also revert to plain localhost HTTP, set:
+
+- `WEB_SECURE_COOKIES=false`

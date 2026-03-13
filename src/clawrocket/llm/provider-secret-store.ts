@@ -1,26 +1,33 @@
 import crypto from 'crypto';
 
+import { readEnvFile } from '../../env.js';
 import { logger } from '../../logger.js';
 import type { ProviderSecretPayload } from './types.js';
 
-const SECRET_KEY_ENV = 'CLAWROCKET_PROVIDER_SECRET_KEY';
-const DEV_FALLBACK_SECRET = 'clawrocket-dev-provider-secret-key-unsafe-default';
+export const PROVIDER_SECRET_KEY_ENV = 'CLAWROCKET_PROVIDER_SECRET_KEY';
+export const PROVIDER_SECRET_DEV_FALLBACK =
+  'clawrocket-dev-provider-secret-key-unsafe-default';
 const AES_ALGO = 'aes-256-gcm';
 let warnedAboutFallbackSecret = false;
+const envConfig = readEnvFile([PROVIDER_SECRET_KEY_ENV]);
 
 function getSecretMaterial(): string {
-  const configured = process.env[SECRET_KEY_ENV]?.trim();
+  const configured = (
+    process.env[PROVIDER_SECRET_KEY_ENV] ||
+    envConfig[PROVIDER_SECRET_KEY_ENV] ||
+    ''
+  ).trim();
   if (configured) return configured;
 
   if (!warnedAboutFallbackSecret && process.env.NODE_ENV !== 'test') {
     warnedAboutFallbackSecret = true;
     logger.warn(
-      { envVar: SECRET_KEY_ENV },
+      { envVar: PROVIDER_SECRET_KEY_ENV },
       'Using unsafe development fallback for Talk provider secret encryption key',
     );
   }
 
-  return DEV_FALLBACK_SECRET;
+  return PROVIDER_SECRET_DEV_FALLBACK;
 }
 
 function deriveKey(): Buffer {
