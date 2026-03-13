@@ -47,11 +47,11 @@ describe('AiAgentsPage', () => {
       screen.queryByRole('button', { name: /Check host Claude login/i }),
     ).toBeNull();
     expect(screen.getByLabelText('Claude Code OAuth token')).toBeTruthy();
-    expect(
-      await screen.findByText(/Checked as user k1min8r/i),
-    ).toBeTruthy();
+    expect(await screen.findByText(/Checked as user k1min8r/i)).toBeTruthy();
 
-    const openAiCard = screen.getByRole('heading', { name: 'OpenAI' }).closest('article');
+    const openAiCard = screen
+      .getByRole('heading', { name: 'OpenAI' })
+      .closest('article');
     if (!openAiCard) {
       throw new Error('Expected OpenAI provider card');
     }
@@ -91,7 +91,9 @@ describe('AiAgentsPage', () => {
 
     await screen.findByRole('heading', { name: 'AI Agents' });
 
-    const openAiCard = screen.getByRole('heading', { name: 'OpenAI' }).closest('article');
+    const openAiCard = screen
+      .getByRole('heading', { name: 'OpenAI' })
+      .closest('article');
     if (!openAiCard) {
       throw new Error('Expected OpenAI provider card');
     }
@@ -100,7 +102,9 @@ describe('AiAgentsPage', () => {
     await user.click(within(openAiCard).getByRole('button', { name: 'Save' }));
 
     expect(
-      await screen.findByText('OpenAI credential saved. Verification status: invalid.'),
+      await screen.findByText(
+        'OpenAI credential saved. Verification status: invalid.',
+      ),
     ).toBeTruthy();
   });
 
@@ -137,9 +141,66 @@ describe('AiAgentsPage', () => {
     expect(within(nvidiaCard).getByText('Needs verification')).toBeTruthy();
 
     expect(
-      await screen.findByText('NVIDIA Kimi2.5 credential verified.', {}, { timeout: 4_000 }),
+      await screen.findByText(
+        'NVIDIA Kimi2.5 credential verified.',
+        {},
+        { timeout: 4_000 },
+      ),
     ).toBeTruthy();
     expect(within(nvidiaCard).getByText('Configured')).toBeTruthy();
+  });
+
+  it('prefers manual token guidance when host import is unavailable', async () => {
+    installAiAgentsFetch();
+
+    render(
+      <MemoryRouter initialEntries={['/app/agents']}>
+        <AiAgentsPage onUnauthorized={vi.fn()} userRole="owner" />
+      </MemoryRouter>,
+    );
+
+    await screen.findByRole('heading', { name: 'AI Agents' });
+    expect(
+      await screen.findByText(
+        /Automatic host import is unavailable for this Claude login/i,
+      ),
+    ).toBeTruthy();
+    expect(screen.queryByText(/^claude login$/)).toBeNull();
+    expect(
+      screen.queryByRole('button', { name: 'Import from host' }),
+    ).toBeNull();
+  });
+
+  it('auto-verifies Claude after saving a manually pasted subscription token', async () => {
+    const user = userEvent.setup();
+    const helpers = installAiAgentsFetch();
+
+    render(
+      <MemoryRouter initialEntries={['/app/agents']}>
+        <AiAgentsPage onUnauthorized={vi.fn()} userRole="owner" />
+      </MemoryRouter>,
+    );
+
+    await screen.findByRole('heading', { name: 'AI Agents' });
+    await user.type(
+      screen.getByLabelText('Claude Code OAuth token'),
+      'oauth-token-test',
+    );
+    expect(
+      screen.getByRole('button', { name: 'Save and verify Claude' }),
+    ).toBeTruthy();
+    expect(
+      screen.queryByRole('button', { name: 'Verify stored credential' }),
+    ).toBeNull();
+
+    await user.click(
+      screen.getByRole('button', { name: 'Save and verify Claude' }),
+    );
+
+    expect(
+      await screen.findByText('Claude verification started.'),
+    ).toBeTruthy();
+    expect(helpers.getExecutorVerifyCalls()).toBe(1);
   });
 });
 
@@ -148,6 +209,7 @@ function installAiAgentsFetch() {
   let settings = buildExecutorSettings();
   let status = buildExecutorStatus();
   let nvidiaVerificationPending = false;
+  let executorVerifyCalls = 0;
 
   vi.stubGlobal(
     'fetch',
@@ -188,8 +250,59 @@ function installAiAgentsFetch() {
         return jsonResponse(200, { ok: true, data: settings });
       }
 
-      if (url.endsWith('/api/v1/settings/executor-status') && method === 'GET') {
+      if (
+        url.endsWith('/api/v1/settings/executor-status') &&
+        method === 'GET'
+      ) {
         return jsonResponse(200, { ok: true, data: status });
+      }
+
+      if (url.endsWith('/api/v1/settings/executor') && method === 'PUT') {
+        const body = JSON.parse(String(init?.body || '{}')) as Record<
+          string,
+          string
+        >;
+        settings = {
+          ...settings,
+          executorAuthMode:
+            body.executorAuthMode === 'api_key' ? 'api_key' : 'subscription',
+          hasApiKey: body.anthropicApiKey ? true : settings.hasApiKey,
+          hasOauthToken: body.claudeOauthToken ? true : settings.hasOauthToken,
+          activeCredentialConfigured:
+            !!body.anthropicApiKey || !!body.claudeOauthToken
+              ? true
+              : settings.activeCredentialConfigured,
+          apiKeyHint: body.anthropicApiKey ? '••••test' : settings.apiKeyHint,
+          oauthTokenHint: body.claudeOauthToken
+            ? '••••uAAA'
+            : settings.oauthTokenHint,
+        };
+        status = {
+          ...status,
+          executorAuthMode: settings.executorAuthMode,
+          activeCredentialConfigured: settings.activeCredentialConfigured,
+        };
+        return jsonResponse(200, { ok: true, data: settings });
+      }
+
+      if (
+        url.endsWith('/api/v1/settings/executor/verify') &&
+        method === 'POST'
+      ) {
+        executorVerifyCalls += 1;
+        status = {
+          ...status,
+          verificationStatus: 'verifying',
+          activeCredentialConfigured: true,
+        };
+        return jsonResponse(200, {
+          ok: true,
+          data: {
+            scheduled: true,
+            code: 'verification_scheduled',
+            message: 'Claude verification started.',
+          },
+        });
       }
 
       if (
@@ -218,7 +331,10 @@ function installAiAgentsFetch() {
         });
       }
 
-      if (url.endsWith('/api/v1/agents/providers/provider.openai') && method === 'PUT') {
+      if (
+        url.endsWith('/api/v1/agents/providers/provider.openai') &&
+        method === 'PUT'
+      ) {
         snapshot = {
           ...snapshot,
           additionalProviders: snapshot.additionalProviders.map((provider) =>
@@ -239,7 +355,10 @@ function installAiAgentsFetch() {
         return jsonResponse(200, { ok: true, data: { provider } });
       }
 
-      if (url.endsWith('/api/v1/agents/providers/provider.nvidia') && method === 'PUT') {
+      if (
+        url.endsWith('/api/v1/agents/providers/provider.nvidia') &&
+        method === 'PUT'
+      ) {
         nvidiaVerificationPending = true;
         snapshot = {
           ...snapshot,
@@ -264,6 +383,10 @@ function installAiAgentsFetch() {
       throw new Error(`Unexpected fetch: ${method} ${url}`);
     }),
   );
+
+  return {
+    getExecutorVerifyCalls: (): number => executorVerifyCalls,
+  };
 }
 
 function buildAiAgentsData(): AiAgentsPageData {

@@ -14,6 +14,7 @@ import {
 } from '../db/index.js';
 
 import type {
+  TalkExecutionEvent,
   TalkExecutor,
   TalkExecutorInput,
   TalkExecutorOutput,
@@ -59,6 +60,53 @@ class AliasUnmappedExecutor implements TalkExecutor {
       'executor_alias_unmapped',
       'No model mapping configured for alias',
     );
+  }
+}
+
+class InternalTagExecutor implements TalkExecutor {
+  async execute(
+    input: TalkExecutorInput,
+    _signal: AbortSignal,
+    emit?: (event: TalkExecutionEvent) => void,
+  ): Promise<TalkExecutorOutput> {
+    emit?.({
+      type: 'talk_response_started',
+      runId: input.runId,
+      talkId: input.talkId,
+      agentNickname: 'Claude Sonnet 4.6',
+    });
+    emit?.({
+      type: 'talk_response_delta',
+      runId: input.runId,
+      talkId: input.talkId,
+      deltaText: '<internal>thinking',
+      agentNickname: 'Claude Sonnet 4.6',
+    });
+    emit?.({
+      type: 'talk_response_delta',
+      runId: input.runId,
+      talkId: input.talkId,
+      deltaText: ' harder</internal>Hello',
+      agentNickname: 'Claude Sonnet 4.6',
+    });
+    emit?.({
+      type: 'talk_response_delta',
+      runId: input.runId,
+      talkId: input.talkId,
+      deltaText: ' world',
+      agentNickname: 'Claude Sonnet 4.6',
+    });
+    emit?.({
+      type: 'talk_response_completed',
+      runId: input.runId,
+      talkId: input.talkId,
+      agentNickname: 'Claude Sonnet 4.6',
+    });
+
+    return {
+      content: '<internal>thinking harder</internal>Hello world',
+      agentNickname: 'Claude Sonnet 4.6',
+    };
   }
 }
 
@@ -368,6 +416,51 @@ describe('TalkRunWorker', () => {
     expect(failedEvent?.payload).toContain(
       '"errorCode":"executor_alias_unmapped"',
     );
+
+    await worker.stop();
+  });
+
+  it('strips internal tags from streamed events and persisted assistant messages', async () => {
+    const worker = new TalkRunWorker({
+      executor: new InternalTagExecutor(),
+      pollMs: 10_000,
+      maxConcurrency: 1,
+    });
+    await worker.start();
+
+    enqueueTalkTurnAtomic({
+      talkId: 'talk-1',
+      userId: 'owner-1',
+      content: 'tell me something',
+      messageId: 'msg-8',
+      runId: 'run-8',
+    });
+
+    worker.wake();
+    await waitFor(() => getTalkRunById('run-8')?.status === 'completed');
+
+    const events = getOutboxEventsForTopics(['talk:talk-1'], 0, 100).filter(
+      (event) =>
+        event.event_type === 'talk_response_delta' &&
+        event.payload.includes('"runId":"run-8"'),
+    );
+    expect(events.map((event) => event.payload).join('')).not.toContain(
+      '<internal>',
+    );
+    expect(
+      events
+        .map((event) => JSON.parse(event.payload) as { deltaText: string })
+        .map((event) => event.deltaText)
+        .join(''),
+    ).toBe('Hello world');
+
+    const assistantMessage = listTalkMessages({
+      talkId: 'talk-1',
+      limit: 20,
+    }).find(
+      (message) => message.run_id === 'run-8' && message.role === 'assistant',
+    );
+    expect(assistantMessage?.content).toBe('Hello world');
 
     await worker.stop();
   });

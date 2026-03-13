@@ -73,6 +73,7 @@ import {
   UnauthorizedError,
 } from '../lib/api';
 import { TalkHistoryEditor } from '../components/TalkHistoryEditor';
+import { stripInternalAssistantText } from '../lib/assistantText';
 import { openTalkStream } from '../lib/talkStream';
 import type {
   MessageAppendedEvent,
@@ -103,6 +104,7 @@ type RunView = TalkRun & {
 
 type LiveResponseView = {
   runId: string;
+  rawText: string;
   text: string;
   agentId?: string | null;
   agentNickname?: string | null;
@@ -323,7 +325,9 @@ function mapRunsById(runs: TalkRun[]): Record<string, RunView> {
   }, {});
 }
 
-function hasFileTransfer(dataTransfer: DataTransfer | null | undefined): boolean {
+function hasFileTransfer(
+  dataTransfer: DataTransfer | null | undefined,
+): boolean {
   if (!dataTransfer) return false;
   if (dataTransfer.files.length > 0) return true;
 
@@ -510,6 +514,7 @@ function detailReducer(state: DetailState, action: DetailAction): DetailState {
           ...state.liveResponsesByRunId,
           [action.runId]: {
             runId: action.runId,
+            rawText: existing?.rawText || '',
             text: existing?.text || '',
             agentId: existing?.agentId,
             agentNickname: existing?.agentNickname,
@@ -570,6 +575,7 @@ function detailReducer(state: DetailState, action: DetailAction): DetailState {
           ...state.liveResponsesByRunId,
           [action.event.runId]: {
             runId: action.event.runId,
+            rawText: '',
             text: '',
             agentId: action.event.agentId,
             agentNickname: action.event.agentNickname,
@@ -582,13 +588,15 @@ function detailReducer(state: DetailState, action: DetailAction): DetailState {
     case 'RESPONSE_DELTA': {
       if (state.kind !== 'ready') return state;
       const existing = state.liveResponsesByRunId[action.event.runId];
+      const rawText = `${existing?.rawText || ''}${action.event.deltaText}`;
       return {
         ...state,
         liveResponsesByRunId: {
           ...state.liveResponsesByRunId,
           [action.event.runId]: {
             runId: action.event.runId,
-            text: `${existing?.text || ''}${action.event.deltaText}`,
+            rawText,
+            text: stripInternalAssistantText(rawText),
             agentId: action.event.agentId,
             agentNickname: action.event.agentNickname,
             providerId: action.event.providerId,
@@ -611,6 +619,7 @@ function detailReducer(state: DetailState, action: DetailAction): DetailState {
           ...state.liveResponsesByRunId,
           [action.event.runId]: {
             runId: action.event.runId,
+            rawText: existing?.rawText || '',
             text: existing?.text || '',
             agentId: action.event.agentId,
             agentNickname: action.event.agentNickname,
@@ -1139,9 +1148,9 @@ export function TalkDetailPage({
     message?: string;
   }>({ status: 'idle' });
   const [talkTools, setTalkTools] = useState<TalkTools | null>(null);
-  const [toolGrantDrafts, setToolGrantDrafts] = useState<Record<string, boolean>>(
-    {},
-  );
+  const [toolGrantDrafts, setToolGrantDrafts] = useState<
+    Record<string, boolean>
+  >({});
   const [toolStatus, setToolStatus] = useState<{
     status: 'idle' | 'loading' | 'saving' | 'error' | 'success';
     message?: string;
@@ -1767,9 +1776,7 @@ export function TalkDetailPage({
           setToolStatus({
             status: 'error',
             message:
-              err instanceof Error
-                ? err.message
-                : 'Failed to load Talk tools.',
+              err instanceof Error ? err.message : 'Failed to load Talk tools.',
           });
         }
       }
@@ -2739,7 +2746,11 @@ export function TalkDetailPage({
     window.addEventListener('drop', preventWindowFileNavigation, true);
 
     return () => {
-      window.removeEventListener('dragenter', preventWindowFileNavigation, true);
+      window.removeEventListener(
+        'dragenter',
+        preventWindowFileNavigation,
+        true,
+      );
       window.removeEventListener('dragover', preventWindowFileNavigation, true);
       window.removeEventListener('drop', preventWindowFileNavigation, true);
     };
@@ -3012,7 +3023,8 @@ export function TalkDetailPage({
       }
       setToolStatus({
         status: 'error',
-        message: err instanceof Error ? err.message : 'Failed to save Talk tools.',
+        message:
+          err instanceof Error ? err.message : 'Failed to save Talk tools.',
       });
     }
   };
@@ -3034,7 +3046,9 @@ export function TalkDetailPage({
       setToolStatus({
         status: 'error',
         message:
-          err instanceof Error ? err.message : 'Failed to connect Google account.',
+          err instanceof Error
+            ? err.message
+            : 'Failed to connect Google account.',
       });
     }
   };
@@ -3077,7 +3091,10 @@ export function TalkDetailPage({
 
   const handleAddDriveBinding = async () => {
     if (!canEditAgents) return;
-    if (!driveBindingDraft.externalId.trim() || !driveBindingDraft.displayName.trim()) {
+    if (
+      !driveBindingDraft.externalId.trim() ||
+      !driveBindingDraft.displayName.trim()
+    ) {
       setToolStatus({
         status: 'error',
         message: 'Drive bindings require both a display name and resource id.',
@@ -3110,7 +3127,8 @@ export function TalkDetailPage({
       }
       setToolStatus({
         status: 'error',
-        message: err instanceof Error ? err.message : 'Failed to add Drive binding.',
+        message:
+          err instanceof Error ? err.message : 'Failed to add Drive binding.',
       });
     }
   };
@@ -3134,7 +3152,9 @@ export function TalkDetailPage({
       setToolStatus({
         status: 'error',
         message:
-          err instanceof Error ? err.message : 'Failed to remove Drive binding.',
+          err instanceof Error
+            ? err.message
+            : 'Failed to remove Drive binding.',
       });
     }
   };
@@ -4176,7 +4196,9 @@ export function TalkDetailPage({
                         ))}
                       </ul>
                     ) : (
-                      <p className="page-state">No Talk tools are enabled yet.</p>
+                      <p className="page-state">
+                        No Talk tools are enabled yet.
+                      </p>
                     )}
                     {talkTools.warnings.map((warning) => (
                       <div
@@ -4246,7 +4268,8 @@ export function TalkDetailPage({
                     <div
                       style={{
                         display: 'grid',
-                        gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
+                        gridTemplateColumns:
+                          'repeat(auto-fit, minmax(220px, 1fr))',
                         gap: '0.75rem',
                       }}
                     >
@@ -4267,8 +4290,11 @@ export function TalkDetailPage({
                             <strong>{entry.displayName}</strong>
                             <input
                               type="checkbox"
+                              aria-label={entry.displayName}
                               checked={toolGrantDrafts[entry.id] ?? false}
-                              disabled={!canEditAgents || toolStatus.status === 'saving'}
+                              disabled={
+                                !canEditAgents || toolStatus.status === 'saving'
+                              }
                               onChange={(event) =>
                                 setToolGrantDrafts((current) => ({
                                   ...current,
@@ -4277,23 +4303,32 @@ export function TalkDetailPage({
                               }
                             />
                           </div>
-                          <p className="talk-llm-meta" style={{ marginBottom: 0 }}>
+                          <p
+                            className="talk-llm-meta"
+                            style={{ marginBottom: 0 }}
+                          >
                             {entry.description}
                           </p>
                         </label>
                       ))}
                     </div>
                     {canEditAgents ? (
-                      <div className="settings-button-row" style={{ marginTop: '0.75rem' }}>
+                      <div
+                        className="settings-button-row"
+                        style={{ marginTop: '0.75rem' }}
+                      >
                         <button
                           type="button"
                           className="secondary-btn"
                           onClick={() => void handleSaveTalkTools()}
                           disabled={
-                            toolStatus.status === 'saving' || !hasUnsavedToolChanges
+                            toolStatus.status === 'saving' ||
+                            !hasUnsavedToolChanges
                           }
                         >
-                          {toolStatus.status === 'saving' ? 'Saving…' : 'Save Tool Grants'}
+                          {toolStatus.status === 'saving'
+                            ? 'Saving…'
+                            : 'Save Tool Grants'}
                         </button>
                       </div>
                     ) : null}
@@ -4335,13 +4370,17 @@ export function TalkDetailPage({
                                   ? 'File'
                                   : binding.bindingKind}
                             </span>
-                            <strong style={{ flex: 1 }}>{binding.displayName}</strong>
+                            <strong style={{ flex: 1 }}>
+                              {binding.displayName}
+                            </strong>
                             <code>{binding.externalId}</code>
                             {canEditAgents ? (
                               <button
                                 type="button"
                                 className="secondary-btn"
-                                onClick={() => void handleDeleteDriveBinding(binding.id)}
+                                onClick={() =>
+                                  void handleDeleteDriveBinding(binding.id)
+                                }
                                 disabled={toolStatus.status === 'saving'}
                               >
                                 Remove
@@ -4372,7 +4411,9 @@ export function TalkDetailPage({
                               }
                               disabled={toolStatus.status === 'saving'}
                             >
-                              <option value="google_drive_folder">Folder</option>
+                              <option value="google_drive_folder">
+                                Folder
+                              </option>
                               <option value="google_drive_file">File</option>
                             </select>
                           </label>
@@ -4393,7 +4434,9 @@ export function TalkDetailPage({
                             />
                           </label>
                         </div>
-                        <label style={{ display: 'block', marginTop: '0.5rem' }}>
+                        <label
+                          style={{ display: 'block', marginTop: '0.5rem' }}
+                        >
                           <span className="settings-label">Resource ID</span>
                           <input
                             type="text"
@@ -4409,7 +4452,10 @@ export function TalkDetailPage({
                             disabled={toolStatus.status === 'saving'}
                           />
                         </label>
-                        <div className="settings-button-row" style={{ marginTop: '0.75rem' }}>
+                        <div
+                          className="settings-button-row"
+                          style={{ marginTop: '0.75rem' }}
+                        >
                           <button
                             type="button"
                             className="secondary-btn"
@@ -4462,7 +4508,8 @@ export function TalkDetailPage({
                                   className="talk-agent-chip"
                                   title={tool.toolId}
                                 >
-                                  {entry.displayName}: {formatToolAccessState(tool.state)}
+                                  {entry.displayName}:{' '}
+                                  {formatToolAccessState(tool.state)}
                                 </span>
                               );
                             })}
@@ -4473,7 +4520,10 @@ export function TalkDetailPage({
                   </div>
 
                   {toolStatus.status === 'success' ? (
-                    <div className="inline-banner inline-banner-success" role="status">
+                    <div
+                      className="inline-banner inline-banner-success"
+                      role="status"
+                    >
                       {toolStatus.message}
                     </div>
                   ) : null}
@@ -5570,7 +5620,11 @@ export function TalkDetailPage({
                             {new Date(message.createdAt).toLocaleString()}
                           </time>
                         </header>
-                        <p>{message.content}</p>
+                        <p>
+                          {message.role === 'assistant'
+                            ? stripInternalAssistantText(message.content)
+                            : message.content}
+                        </p>
                         {message.attachments &&
                         message.attachments.length > 0 ? (
                           <div className="message-attachments">

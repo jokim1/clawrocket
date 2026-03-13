@@ -61,7 +61,9 @@ function validateReturnTo(value: string | null): string | null {
   return value;
 }
 
-function formatClaudeAuthMode(mode: ExecutorSettings['executorAuthMode']): string {
+function formatClaudeAuthMode(
+  mode: ExecutorSettings['executorAuthMode'],
+): string {
   switch (mode) {
     case 'subscription':
       return 'Subscription (Claude Pro/Max)';
@@ -75,7 +77,9 @@ function formatClaudeAuthMode(mode: ExecutorSettings['executorAuthMode']): strin
 }
 
 function formatVerificationStatus(
-  status: ExecutorStatus['verificationStatus'] | AgentProviderCard['verificationStatus'],
+  status:
+    | ExecutorStatus['verificationStatus']
+    | AgentProviderCard['verificationStatus'],
 ): string {
   switch (status) {
     case 'missing':
@@ -96,7 +100,9 @@ function formatVerificationStatus(
 }
 
 function verificationStatusClass(
-  status: ExecutorStatus['verificationStatus'] | AgentProviderCard['verificationStatus'],
+  status:
+    | ExecutorStatus['verificationStatus']
+    | AgentProviderCard['verificationStatus'],
 ): string {
   switch (status) {
     case 'verified':
@@ -129,7 +135,9 @@ function currentClaudeHint(
   settings: ExecutorSettings,
   mode: ClaudeAuthMode,
 ): string | null {
-  return mode === 'subscription' ? settings.oauthTokenHint : settings.apiKeyHint;
+  return mode === 'subscription'
+    ? settings.oauthTokenHint
+    : settings.apiKeyHint;
 }
 
 function currentClaudeStored(
@@ -177,10 +185,7 @@ function delay(ms: number): Promise<void> {
   });
 }
 
-export function AiAgentsPage({
-  onUnauthorized,
-  userRole,
-}: Props): JSX.Element {
+export function AiAgentsPage({ onUnauthorized, userRole }: Props): JSX.Element {
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
   const [data, setData] = useState<AiAgentsPageData | null>(null);
@@ -190,10 +195,11 @@ export function AiAgentsPage({
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [busyKey, setBusyKey] = useState<string | null>(null);
-  const [providerDrafts, setProviderDrafts] = useState<Record<string, ProviderDraft>>(
-    {},
-  );
-  const [claudeModeDraft, setClaudeModeDraft] = useState<ClaudeAuthMode>('subscription');
+  const [providerDrafts, setProviderDrafts] = useState<
+    Record<string, ProviderDraft>
+  >({});
+  const [claudeModeDraft, setClaudeModeDraft] =
+    useState<ClaudeAuthMode>('subscription');
   const [claudeModelDraft, setClaudeModelDraft] = useState('');
   const [claudeApiKeyDraft, setClaudeApiKeyDraft] = useState('');
   const [claudeOauthDraft, setClaudeOauthDraft] = useState('');
@@ -251,7 +257,9 @@ export function AiAgentsPage({
         onUnauthorized();
         return;
       }
-      setError(err instanceof ApiError ? err.message : 'Failed to load AI agents.');
+      setError(
+        err instanceof ApiError ? err.message : 'Failed to load AI agents.',
+      );
     } finally {
       setLoading(false);
     }
@@ -414,6 +422,10 @@ export function AiAgentsPage({
       const update: Record<string, string | null> = {
         executorAuthMode: claudeModeDraft,
       };
+      const shouldAutoVerify =
+        (claudeModeDraft === 'subscription' &&
+          claudeOauthDraft.trim().length > 0) ||
+        (claudeModeDraft === 'api_key' && claudeApiKeyDraft.trim().length > 0);
       if (claudeModeDraft === 'subscription') {
         if (claudeOauthDraft.trim()) {
           update.claudeOauthToken = claudeOauthDraft.trim();
@@ -429,12 +441,18 @@ export function AiAgentsPage({
           : Promise.resolve(data),
       ]);
       syncDrafts(nextAgents, nextSettings);
+      let verifyMessage: string | null = null;
+      if (shouldAutoVerify) {
+        const result = await verifyExecutorCredentials();
+        verifyMessage = result.message || 'Claude verification started.';
+      }
       const nextStatus = await getExecutorStatus();
       setStatus(nextStatus);
       setNotice(
-        claudeModeDraft === 'subscription'
-          ? 'Default Claude Agent updated for subscription mode.'
-          : 'Default Claude Agent updated for API mode.',
+        verifyMessage ||
+          (claudeModeDraft === 'subscription'
+            ? 'Default Claude Agent updated for subscription mode.'
+            : 'Default Claude Agent updated for API mode.'),
       );
     } catch (err) {
       handleApiFailure(err, 'Failed to save Claude settings.');
@@ -499,7 +517,10 @@ export function AiAgentsPage({
       });
       refreshProvider(provider);
       setNotice(formatProviderSaveNotice(provider));
-      if (provider.hasCredential && provider.verificationStatus === 'not_verified') {
+      if (
+        provider.hasCredential &&
+        provider.verificationStatus === 'not_verified'
+      ) {
         void pollProviderAfterSave(provider.id);
       }
     } catch (err) {
@@ -543,10 +564,24 @@ export function AiAgentsPage({
   };
 
   const additionalProviders = data?.additionalProviders || [];
-  const selectedClaudeHint = settings ? currentClaudeHint(settings, claudeModeDraft) : null;
+  const selectedClaudeHint = settings
+    ? currentClaudeHint(settings, claudeModeDraft)
+    : null;
   const selectedClaudeStored = settings
     ? currentClaudeStored(settings, claudeModeDraft)
     : false;
+  const hasUnsavedClaudeCredentialDraft =
+    claudeModeDraft === 'subscription'
+      ? claudeOauthDraft.trim().length > 0
+      : claudeApiKeyDraft.trim().length > 0;
+  const showManualTokenFlow =
+    claudeModeDraft === 'subscription' &&
+    !!subscriptionHostStatus?.hostLoginDetected &&
+    !subscriptionHostStatus.importAvailable;
+  const showHostLoginFlow =
+    claudeModeDraft === 'subscription' && !showManualTokenFlow;
+  const canVerifyStoredClaude =
+    canManage && selectedClaudeStored && !hasUnsavedClaudeCredentialDraft;
 
   const selectedClaudeStatus = useMemo(() => {
     if (!settings || !status) return 'Loading…';
@@ -572,7 +607,10 @@ export function AiAgentsPage({
       <header className="page-header">
         <div>
           <h1>AI Agents</h1>
-          <p>Set up your default Claude agent and any additional provider keys you want available in talks.</p>
+          <p>
+            Set up your default Claude agent and any additional provider keys
+            you want available in talks.
+          </p>
         </div>
         {returnTo ? (
           <button
@@ -601,7 +639,8 @@ export function AiAgentsPage({
           <div>
             <h3>Default Claude Agent</h3>
             <p className="talk-llm-meta">
-              Every new talk starts with Claude as the default agent. You can add other agents and roles inside the talk itself.
+              Every new talk starts with Claude as the default agent. You can
+              add other agents and roles inside the talk itself.
             </p>
           </div>
         </div>
@@ -616,7 +655,8 @@ export function AiAgentsPage({
             </div>
             <span
               className={verificationStatusClass(
-                status.executorAuthMode !== claudeModeDraft || !selectedClaudeStored
+                status.executorAuthMode !== claudeModeDraft ||
+                  !selectedClaudeStored
                   ? 'not_verified'
                   : status.verificationStatus,
               )}
@@ -677,7 +717,9 @@ export function AiAgentsPage({
                 {selectedClaudeStored ? (
                   <div className="talk-llm-stored-key">
                     <div>
-                      <strong>{selectedClaudeHint || 'Stored in settings'}</strong>
+                      <strong>
+                        {selectedClaudeHint || 'Stored in settings'}
+                      </strong>
                       <p className="talk-llm-meta">
                         Last verified {formatDateTime(status.lastVerifiedAt)}
                       </p>
@@ -688,17 +730,27 @@ export function AiAgentsPage({
                     No Claude subscription credential is stored yet.
                   </p>
                 )}
+                {showHostLoginFlow ? (
+                  <p className="talk-llm-meta">
+                    Use Claude Code on the same machine and OS user as
+                    ClawRocket. Run{' '}
+                    <code>claude config set -g forceLoginMethod claudeai</code>{' '}
+                    and then <code>claude login</code>. If host import is
+                    unavailable, you can still run{' '}
+                    <code>claude setup-token</code> and paste the token manually
+                    below.
+                  </p>
+                ) : (
+                  <p className="talk-llm-meta">
+                    Automatic host import is unavailable for this Claude login.
+                    Run <code>claude setup-token</code>, paste the token below,
+                    and save to verify it.
+                  </p>
+                )}
                 <p className="talk-llm-meta">
-                  Use Claude Code on the same machine and OS user as ClawRocket. Run:
-                  <code> claude config set -g forceLoginMethod claudeai </code>
-                  then
-                  <code> claude login</code>.
-                </p>
-                <p className="talk-llm-meta">
-                  If host import is unavailable, you can run <code>claude setup-token</code> and paste the token manually below.
-                </p>
-                <p className="talk-llm-meta">
-                  Re-verify uses the stored subscription login/token. Paste a new token only if the stored one is expired, revoked, or incorrect.
+                  Saving a new token stores it and immediately verifies it.
+                  Verify stored credential only re-checks the subscription
+                  login/token already saved in ClawRocket.
                 </p>
                 <div className="talk-llm-inline-actions">
                   {subscriptionHostStatus?.importAvailable ? (
@@ -706,7 +758,9 @@ export function AiAgentsPage({
                       type="button"
                       className="secondary-btn"
                       onClick={() => void handleImportSubscription()}
-                      disabled={!canManage || subscriptionHostBusy === 'importing'}
+                      disabled={
+                        !canManage || subscriptionHostBusy === 'importing'
+                      }
                     >
                       {subscriptionHostBusy === 'importing'
                         ? 'Importing…'
@@ -715,20 +769,28 @@ export function AiAgentsPage({
                   ) : null}
                 </div>
                 {subscriptionHostBusy === 'checking' ? (
-                  <p className="talk-llm-meta">Checking Claude login on this host…</p>
+                  <p className="talk-llm-meta">
+                    Checking Claude login on this host…
+                  </p>
                 ) : null}
                 {subscriptionHostStatus ? (
                   <div className="talk-llm-host-status">
                     <p className="talk-llm-meta">
-                      Checked as user {subscriptionHostStatus.serviceUser || 'unknown'} · Home{' '}
+                      Checked as user{' '}
+                      {subscriptionHostStatus.serviceUser || 'unknown'} · Home{' '}
                       {subscriptionHostStatus.serviceHomePath}
                     </p>
-                    <p className="talk-llm-meta">{subscriptionHostStatus.message}</p>
-                    {subscriptionHostStatus.recommendedCommands.length > 0 ? (
+                    <p className="talk-llm-meta">
+                      {subscriptionHostStatus.message}
+                    </p>
+                    {!showManualTokenFlow &&
+                    subscriptionHostStatus.recommendedCommands.length > 0 ? (
                       <div className="talk-llm-command-list">
-                        {subscriptionHostStatus.recommendedCommands.map((command) => (
-                          <code key={command}>{command}</code>
-                        ))}
+                        {subscriptionHostStatus.recommendedCommands.map(
+                          (command) => (
+                            <code key={command}>{command}</code>
+                          ),
+                        )}
                       </div>
                     ) : null}
                   </div>
@@ -748,7 +810,9 @@ export function AiAgentsPage({
                     <button
                       type="button"
                       className="talk-llm-eye-toggle"
-                      onClick={() => setShowClaudeOauthToken((current) => !current)}
+                      onClick={() =>
+                        setShowClaudeOauthToken((current) => !current)
+                      }
                       disabled={!canManage || busyKey === 'claude-save'}
                       aria-label={
                         showClaudeOauthToken
@@ -769,10 +833,16 @@ export function AiAgentsPage({
                 {selectedClaudeStored ? (
                   <div className="talk-llm-stored-key">
                     <div>
-                      <strong>{selectedClaudeHint || 'Stored in settings'}</strong>
+                      <strong>
+                        {selectedClaudeHint || 'Stored in settings'}
+                      </strong>
                       <p className="talk-llm-meta">
                         Get a key from{' '}
-                        <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noreferrer">
+                        <a
+                          href="https://console.anthropic.com/settings/keys"
+                          target="_blank"
+                          rel="noreferrer"
+                        >
                           Anthropic Console
                         </a>
                         .
@@ -816,21 +886,31 @@ export function AiAgentsPage({
           )}
 
           <div className="talk-llm-inline-actions">
-            <button
-              type="button"
-              className="secondary-btn"
-              onClick={() => void handleVerifyClaude()}
-              disabled={!canManage || busyKey === 'claude-verify'}
-            >
-              {busyKey === 'claude-verify' ? 'Verifying…' : 'Re-verify'}
-            </button>
+            {canVerifyStoredClaude ? (
+              <button
+                type="button"
+                className="secondary-btn"
+                onClick={() => void handleVerifyClaude()}
+                disabled={busyKey === 'claude-verify'}
+              >
+                {busyKey === 'claude-verify'
+                  ? 'Verifying…'
+                  : 'Verify stored credential'}
+              </button>
+            ) : null}
             <button
               type="button"
               className="primary-btn"
               onClick={() => void handleSaveClaude()}
               disabled={!canManage || busyKey === 'claude-save'}
             >
-              {busyKey === 'claude-save' ? 'Saving…' : 'Save Claude Settings'}
+              {busyKey === 'claude-save'
+                ? hasUnsavedClaudeCredentialDraft
+                  ? 'Saving and verifying…'
+                  : 'Saving…'
+                : hasUnsavedClaudeCredentialDraft
+                  ? 'Save and verify Claude'
+                  : 'Save Claude Settings'}
             </button>
           </div>
         </article>
@@ -841,14 +921,16 @@ export function AiAgentsPage({
           <div>
             <h3>Additional Providers</h3>
             <p className="talk-llm-meta">
-              Add any other provider keys you want available when inviting extra agents into a talk.
+              Add any other provider keys you want available when inviting extra
+              agents into a talk.
             </p>
           </div>
         </div>
 
         <div className="talk-llm-card-list">
           {additionalProviders.map((provider) => {
-            const draft = providerDrafts[provider.id] || buildProviderDraft(provider);
+            const draft =
+              providerDrafts[provider.id] || buildProviderDraft(provider);
             const busySave = busyKey === `provider-save:${provider.id}`;
             const busyVerify = busyKey === `provider-verify:${provider.id}`;
             return (
@@ -863,22 +945,29 @@ export function AiAgentsPage({
                           target="_blank"
                           rel="noreferrer"
                         >
-                          Get key from {PROVIDER_DOCS_LABEL[provider.id] || provider.name}
+                          Get key from{' '}
+                          {PROVIDER_DOCS_LABEL[provider.id] || provider.name}
                         </a>
                       ) : (
                         'Configure this provider for additional talk agents.'
                       )}
                     </p>
                   </div>
-                    <span className={verificationStatusClass(provider.verificationStatus)}>
-                      {formatProviderVerificationSummary(provider)}
-                    </span>
+                  <span
+                    className={verificationStatusClass(
+                      provider.verificationStatus,
+                    )}
+                  >
+                    {formatProviderVerificationSummary(provider)}
+                  </span>
                 </div>
 
                 {provider.hasCredential ? (
                   <div className="talk-llm-stored-key">
                     <div>
-                      <strong>{provider.credentialHint || 'Stored in settings'}</strong>
+                      <strong>
+                        {provider.credentialHint || 'Stored in settings'}
+                      </strong>
                       <p className="talk-llm-meta">
                         Last verified {formatDateTime(provider.lastVerifiedAt)}
                       </p>
@@ -900,11 +989,14 @@ export function AiAgentsPage({
                   open={draft.expanded}
                   onToggle={(event) =>
                     updateProviderDraft(provider.id, {
-                      expanded: (event.currentTarget as HTMLDetailsElement).open,
+                      expanded: (event.currentTarget as HTMLDetailsElement)
+                        .open,
                     })
                   }
                 >
-                  <summary>{provider.hasCredential ? 'Update key' : 'Configure'}</summary>
+                  <summary>
+                    {provider.hasCredential ? 'Update key' : 'Configure'}
+                  </summary>
                   <div className="talk-llm-grid">
                     <label className="talk-llm-field-span">
                       <span>API key</span>
@@ -917,7 +1009,9 @@ export function AiAgentsPage({
                               apiKey: event.target.value,
                             })
                           }
-                          placeholder={PROVIDER_KEY_PLACEHOLDER[provider.id] || 'sk-...'}
+                          placeholder={
+                            PROVIDER_KEY_PLACEHOLDER[provider.id] || 'sk-...'
+                          }
                           disabled={!canManage || busySave}
                         />
                         <button
@@ -946,7 +1040,11 @@ export function AiAgentsPage({
                         onClick={() => void handleSaveProvider(provider.id)}
                         disabled={!canManage || busySave}
                       >
-                        {busySave ? 'Saving…' : provider.hasCredential ? 'Update' : 'Save'}
+                        {busySave
+                          ? 'Saving…'
+                          : provider.hasCredential
+                            ? 'Update'
+                            : 'Save'}
                       </button>
                       {provider.hasCredential ? (
                         <button
@@ -973,7 +1071,8 @@ export function AiAgentsPage({
             <div>
               <h3>Back to Talk</h3>
               <p className="talk-llm-meta">
-                After updating Claude or provider keys, return to your talk and invite additional agents there.
+                After updating Claude or provider keys, return to your talk and
+                invite additional agents there.
               </p>
             </div>
           </div>
