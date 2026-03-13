@@ -18,6 +18,11 @@ import {
   type TalkExecutionEvent,
   type TalkExecutor,
 } from './executor.js';
+import {
+  createTalkResponseStreamSanitizer,
+  stripInternalTalkResponseText,
+  type TalkResponseStreamSanitizer,
+} from './internal-tags.js';
 import { MockTalkExecutor } from './mock-executor.js';
 
 export interface TalkRunWorkerOptions {
@@ -63,6 +68,10 @@ export class TalkRunWorker implements TalkRunWorkerControl {
 
   private readonly activeRunsById = new Map<string, ActiveRun>();
   private readonly activeRunTasks = new Map<string, Promise<void>>();
+  private readonly responseSanitizersByRunId = new Map<
+    string,
+    TalkResponseStreamSanitizer
+  >();
 
   constructor(options: TalkRunWorkerOptions = {}) {
     this.executor = options.executor || new MockTalkExecutor();
@@ -225,7 +234,7 @@ export class TalkRunWorker implements TalkRunWorkerControl {
       const completed = completeRunAndPromoteNextAtomic({
         runId: run.id,
         responseMessageId: `msg_${randomUUID()}`,
-        responseContent: output.content,
+        responseContent: stripInternalTalkResponseText(output.content),
         responseMetadataJson: output.metadataJson,
         agentId: output.agentId,
         agentNickname: output.agentNickname,
@@ -259,6 +268,34 @@ export class TalkRunWorker implements TalkRunWorkerControl {
   }
 
   private emitExecutionEvent(event: TalkExecutionEvent): void {
+    if (event.type === 'talk_response_started') {
+      this.responseSanitizersByRunId.set(
+        event.runId,
+        createTalkResponseStreamSanitizer(),
+      );
+    } else if (event.type === 'talk_response_delta') {
+      const sanitizer =
+        this.responseSanitizersByRunId.get(event.runId) ||
+        createTalkResponseStreamSanitizer();
+      this.responseSanitizersByRunId.set(event.runId, sanitizer);
+
+      const deltaText = sanitizer.push(event.deltaText);
+      if (!deltaText) {
+        return;
+      }
+
+      event = {
+        ...event,
+        deltaText,
+      };
+    } else if (
+      event.type === 'talk_response_completed' ||
+      event.type === 'talk_response_failed' ||
+      event.type === 'talk_response_cancelled'
+    ) {
+      this.responseSanitizersByRunId.delete(event.runId);
+    }
+
     appendOutboxEvent({
       topic: `talk:${event.talkId}`,
       eventType: event.type,
