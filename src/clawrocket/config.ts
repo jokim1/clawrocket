@@ -79,9 +79,7 @@ export function isNonLocalhostRedirectUri(uri: string): boolean {
     const parsed = new URL(trimmed);
     const hostname = parsed.hostname.replace(/^\[(.*)\]$/, '$1').toLowerCase();
     return (
-      hostname !== 'localhost' &&
-      hostname !== '127.0.0.1' &&
-      hostname !== '::1'
+      hostname !== 'localhost' && hostname !== '127.0.0.1' && hostname !== '::1'
     );
   } catch {
     return true;
@@ -142,9 +140,7 @@ export function getPublicModeConfigErrors(): string[] {
     errors.push('AUTH_DEV_MODE must be false when public mode is enabled');
   }
   if (!WEB_SECURE_COOKIES) {
-    errors.push(
-      'WEB_SECURE_COOKIES must be true when public mode is enabled',
-    );
+    errors.push('WEB_SECURE_COOKIES must be true when public mode is enabled');
   }
   if (
     !CLAWROCKET_PROVIDER_SECRET_KEY.trim() ||

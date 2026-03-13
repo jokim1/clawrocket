@@ -4701,7 +4701,10 @@ function getForwardedHeaders(c: Context): ForwardedHeaderSnapshot {
 }
 
 function getClientIp(c: Context): string | undefined {
-  return resolveClientIpFromHeaders(getForwardedHeaders(c), getRemoteAddress(c));
+  return resolveClientIpFromHeaders(
+    getForwardedHeaders(c),
+    getRemoteAddress(c),
+  );
 }
 
 function normalizeIp(value: string | undefined): string | undefined {
