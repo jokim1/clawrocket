@@ -336,12 +336,15 @@ describe('tool manager routes', () => {
       requestedBy: 'owner-1',
     });
 
-    const cancelRes = await server.request('/api/v1/talks/talk-owner/chat/cancel', {
-      method: 'POST',
-      headers: {
-        Authorization: 'Bearer owner-token',
+    const cancelRes = await server.request(
+      '/api/v1/talks/talk-owner/chat/cancel',
+      {
+        method: 'POST',
+        headers: {
+          Authorization: 'Bearer owner-token',
+        },
       },
-    });
+    );
     expect(cancelRes.status).toBe(200);
     expect(getTalkActionConfirmationById(confirmation.id)?.status).toBe(
       'superseded',

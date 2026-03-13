@@ -1079,12 +1079,7 @@ export function supersedePendingTalkActionConfirmationsForRun(input: {
       WHERE run_id = ? AND status = 'pending'
     `,
     )
-    .run(
-      input.resolvedBy ?? null,
-      input.reason ?? null,
-      now,
-      input.runId,
-    );
+    .run(input.resolvedBy ?? null, input.reason ?? null, now, input.runId);
   return result.changes;
 }
 

@@ -2916,10 +2916,11 @@ export function cancelTalkRunsAtomic(input: {
         supersedePendingTalkActionConfirmationsForRun({
           runId: run.id,
           resolvedBy: txInput.cancelledBy,
-          reason: `Run cancelled by ${txInput.cancelledBy} before confirmation was resolved.`.slice(
-            0,
-            500,
-          ),
+          reason:
+            `Run cancelled by ${txInput.cancelledBy} before confirmation was resolved.`.slice(
+              0,
+              500,
+            ),
         });
         if (run.status === 'running') {
           cancelledRunning = true;
