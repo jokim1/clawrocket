@@ -8,7 +8,10 @@ import {
   UserRole,
   UserType,
 } from '../types.js';
-import { initializeTalkToolGrants } from './tool-manager-accessors.js';
+import {
+  initializeTalkToolGrants,
+  supersedePendingTalkActionConfirmationsForRun,
+} from './tool-manager-accessors.js';
 
 // --- Identity and web session accessors ---
 
@@ -2910,6 +2913,15 @@ export function cancelTalkRunsAtomic(input: {
         );
         if (updated.changes !== 1) continue;
         cancelledRunIds.push(run.id);
+        supersedePendingTalkActionConfirmationsForRun({
+          runId: run.id,
+          resolvedBy: txInput.cancelledBy,
+          reason:
+            `Run cancelled by ${txInput.cancelledBy} before confirmation was resolved.`.slice(
+              0,
+              500,
+            ),
+        });
         if (run.status === 'running') {
           cancelledRunning = true;
           eventStmt.run(

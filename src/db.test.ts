@@ -22,6 +22,7 @@ import {
   canUserEditTalk,
   claimNextChannelDeliveryRow,
   cancelTalkRunsAtomic,
+  createTalkActionConfirmation,
   completeRunAndPromoteNextAtomic,
   consumeOAuthStateByHash,
   createTalkChannelBinding,
@@ -44,6 +45,7 @@ import {
   getTalkExecutorSession,
   getTalkForUser,
   getTalkLlmPolicyByTalkId,
+  getTalkActionConfirmationById,
   getTalkRunById,
   hasActiveTalkRuns,
   searchChannelTargets,
@@ -1187,6 +1189,47 @@ describe('phase 0 schema and reliability tables', () => {
     });
     expect(cancelled.cancelledRuns).toBe(1);
     expect(getTalkRunById('run-atomic-awaiting')?.status).toBe('cancelled');
+  });
+
+  it('supersedes pending confirmations when cancelling awaiting confirmation runs', () => {
+    enqueueTalkTurnAtomic({
+      talkId: 'talk-1',
+      userId: 'owner-1',
+      content: 'confirm before send',
+      messageId: 'msg-atomic-confirm',
+      runId: 'run-atomic-confirm',
+      now: '2024-01-01T00:00:48.000Z',
+    });
+    markTalkRunStatus(
+      'run-atomic-confirm',
+      'awaiting_confirmation',
+      null,
+      null,
+      '2024-01-01T00:00:49.000Z',
+    );
+    const confirmation = createTalkActionConfirmation({
+      talkId: 'talk-1',
+      runId: 'run-atomic-confirm',
+      toolName: 'gmail_send_email',
+      confirmationType: 'mutation',
+      proposedArgs: {
+        to: ['alice@example.com'],
+      },
+      requestedBy: 'owner-1',
+    });
+
+    const cancelled = cancelTalkRunsAtomic({
+      talkId: 'talk-1',
+      cancelledBy: 'owner-1',
+      now: '2024-01-01T00:00:50.000Z',
+    });
+
+    expect(cancelled.cancelledRuns).toBe(1);
+    expect(getTalkRunById('run-atomic-confirm')?.status).toBe('cancelled');
+    expect(getTalkActionConfirmationById(confirmation.id)).toMatchObject({
+      status: 'superseded',
+      resolvedBy: 'owner-1',
+    });
   });
 
   it('fails interrupted running runs on startup and leaves queued runs queued', () => {

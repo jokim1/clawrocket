@@ -5,6 +5,7 @@ import {
   createTalkActionConfirmation,
   createTalk,
   createTalkRun,
+  getTalkActionConfirmationById,
   listTalkResourceBindings,
   listTalkToolGrants,
   upsertUser,
@@ -306,6 +307,62 @@ describe('tool manager routes', () => {
     const rejectBody = (await rejectRes.json()) as any;
     expect(rejectBody.data.confirmation.status).toBe('rejected');
     expect(rejectBody.data.confirmation.errorCategory).toBe('user_declined');
+  });
+
+  it('blocks stale confirmation approval after the run is cancelled', async () => {
+    createTalkRun({
+      id: 'run-confirm-cancelled',
+      talk_id: 'talk-owner',
+      requested_by: 'owner-1',
+      status: 'awaiting_confirmation',
+      trigger_message_id: null,
+      target_agent_id: null,
+      idempotency_key: null,
+      executor_alias: null,
+      executor_model: null,
+      created_at: '2026-03-06T00:02:00.000Z',
+      started_at: '2026-03-06T00:02:01.000Z',
+      ended_at: null,
+      cancel_reason: null,
+    });
+    const confirmation = createTalkActionConfirmation({
+      talkId: 'talk-owner',
+      runId: 'run-confirm-cancelled',
+      toolName: 'gmail_send_email',
+      confirmationType: 'mutation',
+      proposedArgs: {
+        to: ['alice@example.com'],
+      },
+      requestedBy: 'owner-1',
+    });
+
+    const cancelRes = await server.request(
+      '/api/v1/talks/talk-owner/chat/cancel',
+      {
+        method: 'POST',
+        headers: {
+          Authorization: 'Bearer owner-token',
+        },
+      },
+    );
+    expect(cancelRes.status).toBe(200);
+    expect(getTalkActionConfirmationById(confirmation.id)?.status).toBe(
+      'superseded',
+    );
+
+    const approveRes = await server.request(
+      `/api/v1/talks/talk-owner/runs/run-confirm-cancelled/confirmations/${confirmation.id}/approve`,
+      {
+        method: 'POST',
+        headers: {
+          Authorization: 'Bearer owner-token',
+          'Content-Type': 'application/json',
+        },
+      },
+    );
+    expect(approveRes.status).toBe(400);
+    const approveBody = (await approveRes.json()) as any;
+    expect(approveBody.error.code).toBe('run_not_awaiting_confirmation');
   });
 
   it('restricts server tool registry management to owners and admins', async () => {
