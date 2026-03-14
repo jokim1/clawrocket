@@ -5,6 +5,7 @@ import {
   upsertUser,
 } from '../db/index.js';
 import { loadTalkContext } from './context-loader.js';
+import { buildToolExecutor } from './new-executor.js';
 import { getDb } from '../../db.js';
 
 // ---------------------------------------------------------------------------
@@ -241,6 +242,149 @@ describe('context-loader', () => {
       const ctx = await loadTalkContext(TALK_ID, 128000);
       expect(ctx.metadata.sourceCount).toBe(1);
       expect(ctx.metadata.talkId).toBe(TALK_ID);
+    });
+  });
+
+  // =========================================================================
+  // Executor tool path: buildToolExecutor end-to-end
+  // =========================================================================
+
+  describe('buildToolExecutor (read_context_source)', () => {
+    it('resolves a source by stable sourceRef and returns extracted_text', async () => {
+      insertSource({
+        id: 'src-uuid-1',
+        sourceRef: 'S1',
+        sourceType: 'text',
+        title: 'Meeting Notes',
+        extractedText: 'We discussed Q4 targets.',
+      });
+
+      const executor = buildToolExecutor(TALK_ID);
+      const result = await executor('read_context_source', { sourceRef: 'S1' });
+
+      expect(result.isError).toBeFalsy();
+      expect(result.result).toBe('We discussed Q4 targets.');
+    });
+
+    it('resolves a source by row ID as fallback', async () => {
+      insertSource({
+        id: 'src-uuid-2',
+        sourceRef: 'S2',
+        sourceType: 'url',
+        title: 'Docs',
+        sourceUrl: 'https://example.com',
+        extractedText: 'Page content here.',
+      });
+
+      // The SQL uses (id = ? OR source_ref = ?), so passing the row ID works
+      const executor = buildToolExecutor(TALK_ID);
+      const result = await executor('read_context_source', { sourceRef: 'src-uuid-2' });
+
+      expect(result.isError).toBeFalsy();
+      expect(result.result).toBe('Page content here.');
+    });
+
+    it('returns error when sourceRef is missing', async () => {
+      const executor = buildToolExecutor(TALK_ID);
+      const result = await executor('read_context_source', {});
+
+      expect(result.isError).toBe(true);
+      expect(result.result).toContain('sourceRef');
+    });
+
+    it('returns error for non-existent source ref', async () => {
+      const executor = buildToolExecutor(TALK_ID);
+      const result = await executor('read_context_source', { sourceRef: 'S99' });
+
+      expect(result.isError).toBe(true);
+      expect(result.result).toContain('not found');
+    });
+
+    it('returns empty string when extracted_text is null', async () => {
+      insertSource({
+        id: 'src-uuid-3',
+        sourceRef: 'S3',
+        sourceType: 'url',
+        title: 'Pending URL',
+        sourceUrl: 'https://example.com/pending',
+        extractedText: null,
+      });
+
+      const executor = buildToolExecutor(TALK_ID);
+      const result = await executor('read_context_source', { sourceRef: 'S3' });
+
+      expect(result.isError).toBeFalsy();
+      expect(result.result).toBe('');
+    });
+
+    it('does NOT resolve when using old "ref" parameter name', async () => {
+      insertSource({
+        id: 'src-uuid-4',
+        sourceRef: 'S4',
+        sourceType: 'text',
+        title: 'Note',
+        extractedText: 'Some content.',
+      });
+
+      // Simulate what a model would send if it used the old parameter name
+      const executor = buildToolExecutor(TALK_ID);
+      const result = await executor('read_context_source', { ref: 'S4' });
+
+      // Should fail because the executor reads args.sourceRef, not args.ref
+      expect(result.isError).toBe(true);
+      expect(result.result).toContain('sourceRef');
+    });
+  });
+
+  // =========================================================================
+  // Executor tool path: buildToolExecutor (read_attachment)
+  // =========================================================================
+
+  describe('buildToolExecutor (read_attachment)', () => {
+    it('resolves an attachment by ID and returns extracted_text', async () => {
+      const now = new Date().toISOString();
+      // Insert a parent message first (FK requirement)
+      getDb()
+        .prepare(
+          `INSERT INTO talk_messages (id, talk_id, role, content, created_at)
+           VALUES (?, ?, ?, ?, ?)`,
+        )
+        .run('msg-1', TALK_ID, 'user', 'See attached', now);
+      getDb()
+        .prepare(
+          `INSERT INTO talk_message_attachments (
+            id, talk_id, message_id, file_name, mime_type, storage_key, extracted_text, created_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run('att-1', TALK_ID, 'msg-1', 'report.pdf', 'application/pdf', 'store/att-1', 'PDF content here.', now);
+
+      const executor = buildToolExecutor(TALK_ID);
+      const result = await executor('read_attachment', { attachmentId: 'att-1' });
+
+      expect(result.isError).toBeFalsy();
+      expect(result.result).toBe('PDF content here.');
+    });
+
+    it('returns error for non-existent attachment', async () => {
+      const executor = buildToolExecutor(TALK_ID);
+      const result = await executor('read_attachment', { attachmentId: 'no-such' });
+
+      expect(result.isError).toBe(true);
+      expect(result.result).toContain('not found');
+    });
+  });
+
+  // =========================================================================
+  // Executor tool path: unknown tools
+  // =========================================================================
+
+  describe('buildToolExecutor (unknown tools)', () => {
+    it('returns error for unknown tool names', async () => {
+      const executor = buildToolExecutor(TALK_ID);
+      const result = await executor('some_random_tool', {});
+
+      expect(result.isError).toBe(true);
+      expect(result.result).toContain('not available');
     });
   });
 });
