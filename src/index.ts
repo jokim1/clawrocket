@@ -298,6 +298,17 @@ export async function runAgent(
   chatJid: string,
   onOutput?: (output: ContainerOutput) => Promise<void>,
 ): Promise<'success' | 'error'> {
+  // --- Pre-flight: check if execution is blocked ---
+  const { getActiveExecutorSettingsService } = await import(
+    './clawrocket/talks/executor-settings.js'
+  );
+  const blockedReason =
+    getActiveExecutorSettingsService().getExecutionBlockedReason();
+  if (blockedReason) {
+    logger.error({ group: group.folder, reason: blockedReason }, 'Execution blocked');
+    return 'error';
+  }
+
   const isMain = group.isMain === true;
   const sessionId = sessions[group.folder];
 
