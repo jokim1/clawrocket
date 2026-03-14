@@ -1,15 +1,8 @@
 import Database from 'better-sqlite3';
 
 import { getDb } from '../../db.js';
-import { seedBuiltinToolRegistry } from './tool-manager-accessors.js';
 
-function computeSessionCompatKey(alias: string, model: string): string {
-  // Keep this backfill logic aligned with the canonical helper in
-  // talks/executor-settings.ts.
-  return JSON.stringify([alias, model]);
-}
-
-function seedBuiltinTalkLlmDefaults(database: Database.Database): void {
+function seedBuiltinLlmProvider(database: Database.Database): void {
   const now = new Date().toISOString();
 
   database
@@ -61,447 +54,92 @@ function seedBuiltinTalkLlmDefaults(database: Database.Database): void {
     `,
     )
     .run(now);
+}
+
+function seedMainAgent(database: Database.Database): void {
+  const now = new Date().toISOString();
+  const toolPermissions = JSON.stringify({
+    shell: true,
+    filesystem: true,
+    web: true,
+    browser: true,
+    connectors: true,
+    google_read: true,
+    google_write: true,
+    gmail_read: true,
+    gmail_send: true,
+    messaging: true,
+  });
 
   database
     .prepare(
       `
-      INSERT INTO talk_routes (id, name, enabled, updated_at, updated_by)
-      VALUES ('route.default.mock', 'Local Mock Default', 1, ?, NULL)
+      INSERT INTO registered_agents (
+        id, name, provider_id, model_id, tool_permissions_json,
+        persona_role, system_prompt, enabled, created_at, updated_at
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO NOTHING
     `,
     )
-    .run(now);
+    .run(
+      'agent.main',
+      'Nanoclaw',
+      'builtin.mock',
+      'mock-default',
+      toolPermissions,
+      'assistant',
+      null,
+      1,
+      now,
+      now,
+    );
+}
+
+function seedSystemUsers(database: Database.Database): void {
+  const now = new Date().toISOString();
 
   database
     .prepare(
       `
-      INSERT INTO talk_route_steps (route_id, position, provider_id, model_id)
-      VALUES ('route.default.mock', 0, 'builtin.mock', 'mock-default')
-      ON CONFLICT(route_id, position) DO NOTHING
+      INSERT INTO users (
+        id, email, display_name, user_type, role, is_active, created_at, last_login_at
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, NULL)
+      ON CONFLICT(id) DO UPDATE SET
+        email = excluded.email,
+        display_name = excluded.display_name,
+        user_type = excluded.user_type,
+        role = excluded.role,
+        is_active = excluded.is_active
     `,
     )
-    .run();
+    .run(
+      'system:channel-ingress',
+      'channel-ingress@local.invalid',
+      'Channel Ingress',
+      'system',
+      'member',
+      0,
+      now,
+    );
+}
+
+function seedDefaultSettings(database: Database.Database): void {
+  const now = new Date().toISOString();
 
   database
     .prepare(
       `
       INSERT INTO settings_kv (key, value, updated_at, updated_by)
-      VALUES ('talkLlm.defaultRouteId', 'route.default.mock', ?, NULL)
+      VALUES (?, ?, ?, NULL)
       ON CONFLICT(key) DO NOTHING
     `,
     )
-    .run(now);
-}
-
-function migrateLlmProvidersForNvidia(database: Database.Database): void {
-  const row = database
-    .prepare(
-      `
-      SELECT sql
-      FROM sqlite_master
-      WHERE type = 'table' AND name = 'llm_providers'
-    `,
-    )
-    .get() as { sql?: string | null } | undefined;
-
-  const sql = row?.sql || '';
-  if (!sql || sql.includes("'nvidia'")) {
-    return;
-  }
-
-  database.exec(`
-    PRAGMA foreign_keys = OFF;
-
-    CREATE TABLE llm_providers_new (
-      id TEXT PRIMARY KEY,
-      name TEXT NOT NULL,
-      provider_kind TEXT NOT NULL
-        CHECK(provider_kind IN ('anthropic', 'openai', 'gemini', 'deepseek', 'kimi', 'nvidia', 'custom')),
-      api_format TEXT NOT NULL
-        CHECK(api_format IN ('anthropic_messages', 'openai_chat_completions')),
-      base_url TEXT NOT NULL,
-      auth_scheme TEXT NOT NULL
-        CHECK(auth_scheme IN ('x_api_key', 'bearer')),
-      enabled INTEGER NOT NULL DEFAULT 1,
-      core_compatibility TEXT NOT NULL DEFAULT 'none'
-        CHECK(core_compatibility IN ('none', 'claude_sdk_proxy')),
-      response_start_timeout_ms INTEGER,
-      stream_idle_timeout_ms INTEGER,
-      absolute_timeout_ms INTEGER,
-      updated_at TEXT NOT NULL,
-      updated_by TEXT REFERENCES users(id)
-    );
-
-    INSERT INTO llm_providers_new (
-      id,
-      name,
-      provider_kind,
-      api_format,
-      base_url,
-      auth_scheme,
-      enabled,
-      core_compatibility,
-      response_start_timeout_ms,
-      stream_idle_timeout_ms,
-      absolute_timeout_ms,
-      updated_at,
-      updated_by
-    )
-    SELECT
-      id,
-      name,
-      provider_kind,
-      api_format,
-      base_url,
-      auth_scheme,
-      enabled,
-      core_compatibility,
-      response_start_timeout_ms,
-      stream_idle_timeout_ms,
-      absolute_timeout_ms,
-      updated_at,
-      updated_by
-    FROM llm_providers;
-
-    DROP TABLE llm_providers;
-    ALTER TABLE llm_providers_new RENAME TO llm_providers;
-
-    PRAGMA foreign_keys = ON;
-  `);
-}
-
-function migrateTalkRunsForAwaitingConfirmation(
-  database: Database.Database,
-): void {
-  const row = database
-    .prepare(
-      `
-      SELECT sql
-      FROM sqlite_master
-      WHERE type = 'table' AND name = 'talk_runs'
-    `,
-    )
-    .get() as { sql?: string | null } | undefined;
-
-  const sql = row?.sql || '';
-  if (!sql || sql.includes("'awaiting_confirmation'")) {
-    return;
-  }
-
-  database.exec(`
-    PRAGMA foreign_keys = OFF;
-
-    CREATE TABLE talk_runs_new (
-      id TEXT PRIMARY KEY,
-      talk_id TEXT NOT NULL REFERENCES talks(id) ON DELETE CASCADE,
-      requested_by TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-      status TEXT NOT NULL
-        CHECK(status IN ('queued', 'running', 'awaiting_confirmation', 'cancelled', 'completed', 'failed')),
-      trigger_message_id TEXT REFERENCES talk_messages(id) ON DELETE SET NULL,
-      target_agent_id TEXT,
-      idempotency_key TEXT,
-      executor_alias TEXT,
-      executor_model TEXT,
-      source_binding_id TEXT,
-      source_external_message_id TEXT,
-      source_thread_key TEXT,
-      created_at TEXT NOT NULL,
-      started_at TEXT,
-      ended_at TEXT,
-      cancel_reason TEXT
-    );
-
-    INSERT INTO talk_runs_new (
-      id,
-      talk_id,
-      requested_by,
-      status,
-      trigger_message_id,
-      target_agent_id,
-      idempotency_key,
-      executor_alias,
-      executor_model,
-      source_binding_id,
-      source_external_message_id,
-      source_thread_key,
-      created_at,
-      started_at,
-      ended_at,
-      cancel_reason
-    )
-    SELECT
-      id,
-      talk_id,
-      requested_by,
-      status,
-      trigger_message_id,
-      target_agent_id,
-      idempotency_key,
-      executor_alias,
-      executor_model,
-      source_binding_id,
-      source_external_message_id,
-      source_thread_key,
-      created_at,
-      started_at,
-      ended_at,
-      cancel_reason
-    FROM talk_runs;
-
-    DROP TABLE talk_runs;
-    ALTER TABLE talk_runs_new RENAME TO talk_runs;
-
-    PRAGMA foreign_keys = ON;
-  `);
-}
-
-function migrateLlmProviderVerificationsForVerifying(
-  database: Database.Database,
-): void {
-  const row = database
-    .prepare(
-      `
-      SELECT sql
-      FROM sqlite_master
-      WHERE type = 'table' AND name = 'llm_provider_verifications'
-    `,
-    )
-    .get() as { sql?: string | null } | undefined;
-
-  const sql = row?.sql || '';
-  if (!sql || sql.includes("'verifying'")) {
-    return;
-  }
-
-  database.exec(`
-    PRAGMA foreign_keys = OFF;
-
-    CREATE TABLE llm_provider_verifications_new (
-      provider_id TEXT PRIMARY KEY REFERENCES llm_providers(id) ON DELETE CASCADE,
-      status TEXT NOT NULL
-        CHECK(status IN ('missing', 'not_verified', 'verifying', 'verified', 'invalid', 'unavailable')),
-      last_verified_at TEXT,
-      last_error TEXT,
-      updated_at TEXT NOT NULL
-    );
-
-    INSERT INTO llm_provider_verifications_new (
-      provider_id,
-      status,
-      last_verified_at,
-      last_error,
-      updated_at
-    )
-    SELECT
-      provider_id,
-      status,
-      last_verified_at,
-      last_error,
-      updated_at
-    FROM llm_provider_verifications;
-
-    DROP TABLE llm_provider_verifications;
-    ALTER TABLE llm_provider_verifications_new
-      RENAME TO llm_provider_verifications;
-
-    PRAGMA foreign_keys = ON;
-  `);
-}
-
-function migrateTalkActionConfirmationsForPendingExecution(
-  database: Database.Database,
-): void {
-  const row = database
-    .prepare(
-      `
-      SELECT sql
-      FROM sqlite_master
-      WHERE type = 'table' AND name = 'talk_action_confirmations'
-    `,
-    )
-    .get() as { sql?: string | null } | undefined;
-
-  const sql = row?.sql || '';
-  if (!sql || sql.includes("'approved_pending_execution'")) {
-    return;
-  }
-
-  database.exec(`
-    PRAGMA foreign_keys = OFF;
-
-    CREATE TABLE talk_action_confirmations_new (
-      id TEXT PRIMARY KEY,
-      talk_id TEXT NOT NULL REFERENCES talks(id) ON DELETE CASCADE,
-      run_id TEXT NOT NULL REFERENCES talk_runs(id) ON DELETE CASCADE,
-      tool_name TEXT NOT NULL,
-      confirmation_type TEXT NOT NULL
-        CHECK(confirmation_type IN ('mutation', 'scope_expansion')),
-      status TEXT NOT NULL
-        CHECK(status IN (
-          'pending',
-          'approved_pending_execution',
-          'approved_executed',
-          'approved_failed',
-          'rejected',
-          'superseded'
-        )),
-      proposed_args_json TEXT,
-      modified_args_json TEXT,
-      preview_json TEXT,
-      tool_call_id TEXT,
-      requested_by TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-      resolved_by TEXT REFERENCES users(id) ON DELETE SET NULL,
-      reason TEXT,
-      error_category TEXT
-        CHECK(error_category IS NULL OR error_category IN (
-          'auth',
-          'permission',
-          'rate_limit',
-          'quota',
-          'validation',
-          'transient',
-          'unavailable',
-          'user_declined',
-          'revoked_after_confirmation'
-        )),
-      error_message TEXT,
-      created_at TEXT NOT NULL,
-      resolved_at TEXT
-    );
-
-    INSERT INTO talk_action_confirmations_new (
-      id,
-      talk_id,
-      run_id,
-      tool_name,
-      confirmation_type,
-      status,
-      proposed_args_json,
-      modified_args_json,
-      preview_json,
-      tool_call_id,
-      requested_by,
-      resolved_by,
-      reason,
-      error_category,
-      error_message,
-      created_at,
-      resolved_at
-    )
-    SELECT
-      id,
-      talk_id,
-      run_id,
-      tool_name,
-      confirmation_type,
-      status,
-      proposed_args_json,
-      modified_args_json,
-      preview_json,
-      tool_call_id,
-      requested_by,
-      resolved_by,
-      reason,
-      error_category,
-      error_message,
-      created_at,
-      resolved_at
-    FROM talk_action_confirmations;
-
-    DROP TABLE talk_action_confirmations;
-    ALTER TABLE talk_action_confirmations_new RENAME TO talk_action_confirmations;
-
-    CREATE INDEX IF NOT EXISTS idx_talk_action_confirmations_run_status
-      ON talk_action_confirmations(run_id, status, created_at);
-    CREATE INDEX IF NOT EXISTS idx_talk_action_confirmations_talk_created
-      ON talk_action_confirmations(talk_id, created_at, id);
-
-    PRAGMA foreign_keys = ON;
-  `);
-}
-
-function tableExists(database: Database.Database, name: string): boolean {
-  const row = database
-    .prepare(
-      `
-      SELECT 1
-      FROM sqlite_master
-      WHERE type = 'table' AND name = ?
-      LIMIT 1
-    `,
-    )
-    .get(name) as { 1: number } | undefined;
-  return Boolean(row);
-}
-
-function listTableColumns(
-  database: Database.Database,
-  table: string,
-): string[] {
-  return (
-    database.prepare(`PRAGMA table_info(${table})`).all() as Array<{
-      name: string;
-    }>
-  ).map((row) => row.name);
-}
-
-// NOTE: This is intentionally destructive. We explicitly discard old talk-domain
-// data if the DB predates the folder-tree schema because this build is treated
-// as greenfield and we do not support backfilling legacy talk ordering.
-function resetTalkDomainForFolderTree(database: Database.Database): void {
-  if (!tableExists(database, 'talks')) {
-    return;
-  }
-
-  const talkColumns = listTableColumns(database, 'talks');
-  const hasFolderTreeColumns =
-    talkColumns.includes('folder_id') && talkColumns.includes('sort_order');
-  const hasFoldersTable = tableExists(database, 'talk_folders');
-  if (hasFolderTreeColumns && hasFoldersTable) {
-    return;
-  }
-
-  const talkCount =
-    (
-      database.prepare(`SELECT COUNT(*) AS count FROM talks`).get() as
-        | { count: number }
-        | undefined
-    )?.count ?? 0;
-  if (talkCount > 0) {
-    console.warn(
-      `[clawrocket] Resetting talk-domain data for folder-tree schema rollout; deleting ${talkCount} existing talks and related records.`,
-    );
-  }
-
-  database.exec(`
-    DROP VIEW IF EXISTS group_llm_policies;
-
-    PRAGMA foreign_keys = OFF;
-
-    DROP TABLE IF EXISTS llm_attempts;
-    DROP TABLE IF EXISTS talk_agents;
-    DROP TABLE IF EXISTS talk_executor_sessions;
-    DROP TABLE IF EXISTS talk_llm_policies;
-    DROP TABLE IF EXISTS talk_messages;
-    DROP TABLE IF EXISTS talk_runs;
-    DROP TABLE IF EXISTS talk_members;
-    DROP TABLE IF EXISTS talks;
-    DROP TABLE IF EXISTS talk_folders;
-    DROP TABLE IF EXISTS registered_agents;
-    DROP TABLE IF EXISTS talk_route_steps;
-    DROP TABLE IF EXISTS talk_routes;
-
-    PRAGMA foreign_keys = ON;
-  `);
+    .run('system.mainAgentId', 'agent.main', now);
 }
 
 function createClawrocketSchema(database: Database.Database): void {
-  resetTalkDomainForFolderTree(database);
-  migrateLlmProvidersForNvidia(database);
-  migrateLlmProviderVerificationsForVerifying(database);
-  migrateTalkRunsForAwaitingConfirmation(database);
-  migrateTalkActionConfirmationsForPendingExecution(database);
-
   database.exec(`
     CREATE TABLE IF NOT EXISTS users (
       id TEXT PRIMARY KEY,
@@ -528,41 +166,6 @@ function createClawrocketSchema(database: Database.Database): void {
       accepted_at TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_user_invites_email ON user_invites(email);
-
-    CREATE TABLE IF NOT EXISTS talk_folders (
-      id TEXT PRIMARY KEY,
-      owner_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-      title TEXT NOT NULL,
-      sort_order INTEGER NOT NULL DEFAULT 0,
-      created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL
-    );
-    CREATE INDEX IF NOT EXISTS idx_talk_folders_owner_sort
-      ON talk_folders(owner_id, sort_order, updated_at);
-
-    CREATE TABLE IF NOT EXISTS talks (
-      id TEXT PRIMARY KEY,
-      owner_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-      folder_id TEXT REFERENCES talk_folders(id) ON DELETE SET NULL,
-      sort_order INTEGER NOT NULL DEFAULT 0,
-      topic_title TEXT,
-      status TEXT NOT NULL DEFAULT 'active'
-        CHECK(status IN ('active', 'paused', 'archived')),
-      version INTEGER NOT NULL DEFAULT 1,
-      created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL
-    );
-    CREATE INDEX IF NOT EXISTS idx_talks_owner_folder_sort
-      ON talks(owner_id, folder_id, sort_order, updated_at);
-
-    CREATE TABLE IF NOT EXISTS talk_members (
-      talk_id TEXT NOT NULL REFERENCES talks(id) ON DELETE CASCADE,
-      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-      role TEXT NOT NULL CHECK(role IN ('viewer', 'editor')),
-      created_at TEXT NOT NULL,
-      PRIMARY KEY (talk_id, user_id)
-    );
-    CREATE INDEX IF NOT EXISTS idx_talk_members_user_id ON talk_members(user_id);
 
     CREATE TABLE IF NOT EXISTS web_sessions (
       id TEXT PRIMARY KEY,
@@ -610,104 +213,19 @@ function createClawrocketSchema(database: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_device_auth_status_expires
       ON device_auth_codes(status, expires_at);
 
-    CREATE TABLE IF NOT EXISTS event_outbox (
-      event_id INTEGER PRIMARY KEY AUTOINCREMENT,
-      topic TEXT NOT NULL,
-      event_type TEXT NOT NULL,
-      payload TEXT NOT NULL,
-      created_at TEXT NOT NULL
-    );
-    CREATE INDEX IF NOT EXISTS idx_event_outbox_topic_event_id
-      ON event_outbox(topic, event_id);
-
-    CREATE TABLE IF NOT EXISTS dead_letter_queue (
+    CREATE TABLE IF NOT EXISTS user_google_credentials (
       id TEXT PRIMARY KEY,
-      source_type TEXT NOT NULL,
-      source_id TEXT NOT NULL,
-      payload TEXT NOT NULL,
-      error_class TEXT NOT NULL,
-      error_detail TEXT,
-      attempts INTEGER DEFAULT 1,
-      created_at TEXT NOT NULL,
-      last_retry_at TEXT,
-      resolved_at TEXT
-    );
-    CREATE INDEX IF NOT EXISTS idx_dead_letter_created_at ON dead_letter_queue(created_at);
-
-    CREATE TABLE IF NOT EXISTS idempotency_cache (
-      idempotency_key TEXT NOT NULL,
       user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-      method TEXT NOT NULL,
-      path TEXT NOT NULL,
-      request_hash TEXT NOT NULL,
-      status_code INTEGER NOT NULL,
-      response_body TEXT NOT NULL,
+      google_subject TEXT NOT NULL,
+      email TEXT NOT NULL,
+      display_name TEXT,
+      scopes_json TEXT NOT NULL,
+      ciphertext TEXT NOT NULL,
+      access_expires_at TEXT,
       created_at TEXT NOT NULL,
-      expires_at TEXT NOT NULL,
-      PRIMARY KEY (idempotency_key, user_id, method, path)
-    );
-    CREATE INDEX IF NOT EXISTS idx_idempotency_expires_at ON idempotency_cache(expires_at);
-
-    CREATE TABLE IF NOT EXISTS talk_runs (
-      id TEXT PRIMARY KEY,
-      talk_id TEXT NOT NULL REFERENCES talks(id) ON DELETE CASCADE,
-      requested_by TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-      status TEXT NOT NULL
-        CHECK(status IN ('queued', 'running', 'awaiting_confirmation', 'cancelled', 'completed', 'failed')),
-      trigger_message_id TEXT REFERENCES talk_messages(id) ON DELETE SET NULL,
-      target_agent_id TEXT,
-      idempotency_key TEXT,
-      executor_alias TEXT,
-      executor_model TEXT,
-      source_binding_id TEXT,
-      source_external_message_id TEXT,
-      source_thread_key TEXT,
-      created_at TEXT NOT NULL,
-      started_at TEXT,
-      ended_at TEXT,
-      cancel_reason TEXT
-    );
-    CREATE INDEX IF NOT EXISTS idx_talk_runs_talk_id_status
-      ON talk_runs(talk_id, status, created_at);
-    CREATE INDEX IF NOT EXISTS idx_talk_runs_status_created_at
-      ON talk_runs(status, created_at);
-
-    CREATE TABLE IF NOT EXISTS talk_messages (
-      id TEXT PRIMARY KEY,
-      talk_id TEXT NOT NULL REFERENCES talks(id) ON DELETE CASCADE,
-      role TEXT NOT NULL
-        CHECK(role IN ('user', 'assistant', 'system', 'tool')),
-      content TEXT NOT NULL,
-      created_by TEXT REFERENCES users(id) ON DELETE SET NULL,
-      created_at TEXT NOT NULL,
-      run_id TEXT REFERENCES talk_runs(id) ON DELETE SET NULL,
-      metadata_json TEXT,
-      sequence_in_run INTEGER
-    );
-    CREATE INDEX IF NOT EXISTS idx_talk_messages_talk_created_at
-      ON talk_messages(talk_id, created_at);
-
-    CREATE TABLE IF NOT EXISTS talk_llm_policies (
-      talk_id TEXT PRIMARY KEY REFERENCES talks(id) ON DELETE CASCADE,
-      llm_policy TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
-
-    CREATE TABLE IF NOT EXISTS settings_kv (
-      key TEXT PRIMARY KEY,
-      value TEXT NOT NULL,
-      updated_at TEXT NOT NULL,
-      updated_by TEXT REFERENCES users(id)
-    );
-
-    CREATE TABLE IF NOT EXISTS talk_executor_sessions (
-      talk_id TEXT PRIMARY KEY REFERENCES talks(id) ON DELETE CASCADE,
-      session_id TEXT NOT NULL,
-      executor_alias TEXT NOT NULL,
-      executor_model TEXT NOT NULL,
-      session_compat_key TEXT NOT NULL DEFAULT '',
-      updated_at TEXT NOT NULL
-    );
+    CREATE INDEX IF NOT EXISTS idx_user_google_credentials_user_id ON user_google_credentials(user_id);
 
     CREATE TABLE IF NOT EXISTS llm_providers (
       id TEXT PRIMARY KEY,
@@ -735,7 +253,6 @@ function createClawrocketSchema(database: Database.Database): void {
       display_name TEXT NOT NULL,
       context_window_tokens INTEGER NOT NULL,
       default_max_output_tokens INTEGER NOT NULL,
-      supports_tools INTEGER NOT NULL DEFAULT 0,
       enabled INTEGER NOT NULL DEFAULT 1,
       updated_at TEXT NOT NULL,
       updated_by TEXT REFERENCES users(id),
@@ -757,6 +274,43 @@ function createClawrocketSchema(database: Database.Database): void {
       last_error TEXT,
       updated_at TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS registered_agents (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      provider_id TEXT NOT NULL REFERENCES llm_providers(id),
+      model_id TEXT NOT NULL,
+      tool_permissions_json TEXT NOT NULL,
+      persona_role TEXT,
+      system_prompt TEXT,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_registered_agents_enabled_name
+      ON registered_agents(enabled, name);
+
+    CREATE TABLE IF NOT EXISTS agent_fallback_steps (
+      agent_id TEXT NOT NULL REFERENCES registered_agents(id) ON DELETE CASCADE,
+      position INTEGER NOT NULL,
+      provider_id TEXT NOT NULL REFERENCES llm_providers(id),
+      model_id TEXT NOT NULL,
+      PRIMARY KEY (agent_id, position),
+      FOREIGN KEY (provider_id, model_id)
+        REFERENCES llm_provider_models(provider_id, model_id)
+        ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS user_tool_permissions (
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      tool_id TEXT NOT NULL,
+      allowed INTEGER NOT NULL DEFAULT 1,
+      requires_approval INTEGER NOT NULL DEFAULT 0,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (user_id, tool_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_user_tool_permissions_user_id
+      ON user_tool_permissions(user_id);
 
     CREATE TABLE IF NOT EXISTS data_connectors (
       id TEXT PRIMARY KEY,
@@ -790,102 +344,119 @@ function createClawrocketSchema(database: Database.Database): void {
       updated_at TEXT NOT NULL
     );
 
-    CREATE TABLE IF NOT EXISTS talk_data_connectors (
-      talk_id TEXT NOT NULL REFERENCES talks(id) ON DELETE CASCADE,
-      connector_id TEXT NOT NULL REFERENCES data_connectors(id) ON DELETE CASCADE,
-      attached_at TEXT NOT NULL,
-      attached_by TEXT REFERENCES users(id),
-      PRIMARY KEY (talk_id, connector_id)
-    );
-    CREATE INDEX IF NOT EXISTS idx_talk_data_connectors_connector
-      ON talk_data_connectors(connector_id);
-
-    CREATE TABLE IF NOT EXISTS talk_routes (
+    CREATE TABLE IF NOT EXISTS channel_connections (
       id TEXT PRIMARY KEY,
-      name TEXT NOT NULL,
+      platform TEXT NOT NULL,
+      connection_mode TEXT NOT NULL,
+      account_key TEXT NOT NULL,
+      display_name TEXT NOT NULL,
       enabled INTEGER NOT NULL DEFAULT 1,
-      updated_at TEXT NOT NULL,
-      updated_by TEXT REFERENCES users(id)
-    );
-
-    CREATE TABLE IF NOT EXISTS talk_route_steps (
-      route_id TEXT NOT NULL REFERENCES talk_routes(id) ON DELETE CASCADE,
-      position INTEGER NOT NULL,
-      provider_id TEXT NOT NULL REFERENCES llm_providers(id) ON DELETE CASCADE,
-      model_id TEXT NOT NULL,
-      PRIMARY KEY (route_id, position),
-      FOREIGN KEY (provider_id, model_id)
-        REFERENCES llm_provider_models(provider_id, model_id)
-        ON DELETE CASCADE
-    );
-
-    CREATE TABLE IF NOT EXISTS registered_agents (
-      id TEXT PRIMARY KEY,
-      name TEXT NOT NULL UNIQUE,
-      provider_id TEXT NOT NULL REFERENCES llm_providers(id) ON DELETE RESTRICT,
-      model_id TEXT NOT NULL,
-      route_id TEXT NOT NULL UNIQUE REFERENCES talk_routes(id) ON DELETE RESTRICT,
-      enabled INTEGER NOT NULL DEFAULT 1,
+      health_status TEXT NOT NULL DEFAULT 'healthy',
+      last_health_check_at TEXT,
+      last_health_error TEXT,
+      config_json TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
-      UNIQUE(provider_id, model_id),
-      FOREIGN KEY (provider_id, model_id)
-        REFERENCES llm_provider_models(provider_id, model_id)
-        ON DELETE RESTRICT
+      created_by TEXT REFERENCES users(id),
+      updated_by TEXT REFERENCES users(id)
     );
-    CREATE INDEX IF NOT EXISTS idx_registered_agents_enabled_name
-      ON registered_agents(enabled, name);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_channel_connections_platform_account
+      ON channel_connections(platform, account_key);
 
-    CREATE TABLE IF NOT EXISTS talk_agents (
+    CREATE TABLE IF NOT EXISTS channel_targets (
+      connection_id TEXT NOT NULL REFERENCES channel_connections(id) ON DELETE CASCADE,
+      target_kind TEXT NOT NULL,
+      target_id TEXT NOT NULL,
+      display_name TEXT NOT NULL,
+      metadata_json TEXT,
+      last_seen_at TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (connection_id, target_kind, target_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_channel_targets_connection_seen
+      ON channel_targets(connection_id, last_seen_at DESC);
+
+    CREATE TABLE IF NOT EXISTS talk_folders (
       id TEXT PRIMARY KEY,
-      talk_id TEXT NOT NULL REFERENCES talks(id) ON DELETE CASCADE,
-      name TEXT NOT NULL,
-      nickname_mode TEXT NOT NULL DEFAULT 'auto'
-        CHECK(nickname_mode IN ('auto', 'custom')),
-      source_kind TEXT NOT NULL DEFAULT 'provider'
-        CHECK(source_kind IN ('claude_default', 'provider')),
-      persona_role TEXT NOT NULL
-        CHECK(persona_role IN ('assistant', 'analyst', 'critic', 'strategist', 'devils-advocate', 'synthesizer', 'editor')),
-      -- Prevent deleting a route while Talk agents still reference it.
-      route_id TEXT NOT NULL REFERENCES talk_routes(id) ON DELETE RESTRICT,
-      registered_agent_id TEXT REFERENCES registered_agents(id) ON DELETE SET NULL,
-      provider_id TEXT REFERENCES llm_providers(id) ON DELETE SET NULL,
-      model_id TEXT,
-      is_primary INTEGER NOT NULL DEFAULT 0,
+      owner_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      title TEXT NOT NULL,
       sort_order INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
-    CREATE INDEX IF NOT EXISTS idx_talk_agents_talk_sort
-      ON talk_agents(talk_id, sort_order, created_at);
-    CREATE INDEX IF NOT EXISTS idx_talk_agents_route_id
-      ON talk_agents(route_id);
+    CREATE INDEX IF NOT EXISTS idx_talk_folders_owner_sort
+      ON talk_folders(owner_id, sort_order, updated_at);
 
-    CREATE TABLE IF NOT EXISTS llm_attempts (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      run_id TEXT NOT NULL REFERENCES talk_runs(id) ON DELETE CASCADE,
-      talk_id TEXT NOT NULL REFERENCES talks(id) ON DELETE CASCADE,
-      agent_id TEXT REFERENCES talk_agents(id) ON DELETE SET NULL,
-      route_id TEXT REFERENCES talk_routes(id) ON DELETE SET NULL,
-      route_step_position INTEGER,
-      provider_id TEXT REFERENCES llm_providers(id) ON DELETE SET NULL,
-      model_id TEXT,
-      status TEXT NOT NULL
-        CHECK(status IN ('success', 'failed', 'skipped', 'cancelled')),
-      failure_class TEXT,
-      latency_ms INTEGER,
-      input_tokens INTEGER,
-      output_tokens INTEGER,
-      estimated_cost_usd REAL,
-      created_at TEXT NOT NULL
+    CREATE TABLE IF NOT EXISTS talks (
+      id TEXT PRIMARY KEY,
+      owner_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      folder_id TEXT REFERENCES talk_folders(id) ON DELETE SET NULL,
+      topic_title TEXT,
+      status TEXT NOT NULL DEFAULT 'active'
+        CHECK(status IN ('active', 'paused', 'archived')),
+      sort_order REAL NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
     );
-    CREATE INDEX IF NOT EXISTS idx_llm_attempts_run_id ON llm_attempts(run_id);
-    CREATE INDEX IF NOT EXISTS idx_llm_attempts_talk_id_created_at
-      ON llm_attempts(talk_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_talks_owner_folder_sort
+      ON talks(owner_id, folder_id, sort_order, updated_at);
+
+    CREATE TABLE IF NOT EXISTS talk_members (
+      talk_id TEXT NOT NULL REFERENCES talks(id) ON DELETE CASCADE,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      role TEXT NOT NULL CHECK(role IN ('viewer', 'editor')),
+      created_at TEXT NOT NULL,
+      PRIMARY KEY (talk_id, user_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_talk_members_user_id ON talk_members(user_id);
+
+    CREATE TABLE IF NOT EXISTS messages (
+      id TEXT PRIMARY KEY,
+      talk_id TEXT REFERENCES talks(id) ON DELETE CASCADE,
+      thread_id TEXT,
+      role TEXT NOT NULL CHECK(role IN ('user', 'assistant', 'system', 'tool')),
+      content TEXT NOT NULL,
+      agent_id TEXT REFERENCES registered_agents(id) ON DELETE SET NULL,
+      created_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+      created_at TEXT NOT NULL,
+      metadata_json TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_messages_talk_created_at
+      ON messages(talk_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_messages_thread_id
+      ON messages(thread_id);
+
+    CREATE TABLE IF NOT EXISTS message_attachments (
+      id TEXT PRIMARY KEY,
+      talk_id TEXT REFERENCES talks(id) ON DELETE CASCADE,
+      message_id TEXT REFERENCES messages(id) ON DELETE CASCADE,
+      file_name TEXT NOT NULL,
+      file_size INTEGER,
+      mime_type TEXT,
+      storage_key TEXT NOT NULL,
+      extracted_text TEXT,
+      extraction_status TEXT NOT NULL DEFAULT 'pending'
+        CHECK(extraction_status IN ('pending', 'ready', 'failed')),
+      extraction_error TEXT,
+      created_at TEXT NOT NULL,
+      created_by TEXT REFERENCES users(id) ON DELETE SET NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_message_attachments_message_id
+      ON message_attachments(message_id);
+    CREATE INDEX IF NOT EXISTS idx_message_attachments_talk_created
+      ON message_attachments(talk_id, created_at);
+
+    CREATE TABLE IF NOT EXISTS talk_context_summary (
+      talk_id TEXT PRIMARY KEY REFERENCES talks(id) ON DELETE CASCADE,
+      summary_text TEXT NOT NULL,
+      covers_through_message_id TEXT REFERENCES messages(id),
+      updated_at TEXT NOT NULL
+    );
 
     CREATE TABLE IF NOT EXISTS talk_context_goal (
       talk_id TEXT PRIMARY KEY REFERENCES talks(id) ON DELETE CASCADE,
-      goal_text TEXT NOT NULL,
+      goal_text TEXT,
       updated_at TEXT NOT NULL,
       updated_by TEXT REFERENCES users(id)
     );
@@ -894,7 +465,7 @@ function createClawrocketSchema(database: Database.Database): void {
       id TEXT PRIMARY KEY,
       talk_id TEXT NOT NULL REFERENCES talks(id) ON DELETE CASCADE,
       rule_text TEXT NOT NULL,
-      sort_order INTEGER NOT NULL DEFAULT 0,
+      sort_order REAL NOT NULL DEFAULT 0,
       is_active INTEGER NOT NULL DEFAULT 1,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
@@ -908,9 +479,9 @@ function createClawrocketSchema(database: Database.Database): void {
       source_ref TEXT NOT NULL,
       source_type TEXT NOT NULL
         CHECK(source_type IN ('url', 'file', 'text')),
-      title TEXT NOT NULL,
+      title TEXT,
       note TEXT,
-      sort_order INTEGER NOT NULL DEFAULT 0,
+      sort_order REAL NOT NULL DEFAULT 0,
       status TEXT NOT NULL DEFAULT 'pending'
         CHECK(status IN ('pending', 'ready', 'failed')),
       source_url TEXT,
@@ -939,45 +510,30 @@ function createClawrocketSchema(database: Database.Database): void {
       next_ref_number INTEGER NOT NULL DEFAULT 1
     );
 
-    CREATE TABLE IF NOT EXISTS channel_connections (
+    CREATE TABLE IF NOT EXISTS talk_agents (
       id TEXT PRIMARY KEY,
-      platform TEXT NOT NULL,
-      connection_mode TEXT NOT NULL,
-      account_key TEXT NOT NULL,
-      display_name TEXT NOT NULL,
-      enabled INTEGER NOT NULL DEFAULT 1,
-      health_status TEXT NOT NULL DEFAULT 'healthy',
-      last_health_check_at TEXT,
-      last_health_error TEXT,
-      config_json TEXT,
+      talk_id TEXT NOT NULL REFERENCES talks(id) ON DELETE CASCADE,
+      registered_agent_id TEXT NOT NULL REFERENCES registered_agents(id) ON DELETE CASCADE,
+      persona_role TEXT,
+      is_primary INTEGER NOT NULL DEFAULT 0,
+      sort_order REAL NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL,
-      created_by TEXT REFERENCES users(id),
-      updated_by TEXT REFERENCES users(id)
+      updated_at TEXT NOT NULL
     );
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_channel_connections_platform_account
-      ON channel_connections(platform, account_key);
+    CREATE INDEX IF NOT EXISTS idx_talk_agents_talk_sort
+      ON talk_agents(talk_id, sort_order, created_at);
+    CREATE INDEX IF NOT EXISTS idx_talk_agents_registered_agent_id
+      ON talk_agents(registered_agent_id);
 
-    CREATE TABLE IF NOT EXISTS channel_connection_secrets (
-      connection_id TEXT PRIMARY KEY REFERENCES channel_connections(id) ON DELETE CASCADE,
-      secrets_json TEXT NOT NULL,
-      updated_at TEXT NOT NULL,
-      updated_by TEXT REFERENCES users(id)
+    CREATE TABLE IF NOT EXISTS talk_data_connectors (
+      talk_id TEXT NOT NULL REFERENCES talks(id) ON DELETE CASCADE,
+      connector_id TEXT NOT NULL REFERENCES data_connectors(id) ON DELETE CASCADE,
+      attached_at TEXT NOT NULL,
+      attached_by TEXT REFERENCES users(id),
+      PRIMARY KEY (talk_id, connector_id)
     );
-
-    CREATE TABLE IF NOT EXISTS channel_targets (
-      connection_id TEXT NOT NULL REFERENCES channel_connections(id) ON DELETE CASCADE,
-      target_kind TEXT NOT NULL,
-      target_id TEXT NOT NULL,
-      display_name TEXT NOT NULL,
-      metadata_json TEXT,
-      last_seen_at TEXT NOT NULL,
-      created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL,
-      PRIMARY KEY (connection_id, target_kind, target_id)
-    );
-    CREATE INDEX IF NOT EXISTS idx_channel_targets_connection_seen
-      ON channel_targets(connection_id, last_seen_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_talk_data_connectors_connector
+      ON talk_data_connectors(connector_id);
 
     CREATE TABLE IF NOT EXISTS talk_channel_bindings (
       id TEXT PRIMARY KEY,
@@ -985,33 +541,79 @@ function createClawrocketSchema(database: Database.Database): void {
       connection_id TEXT NOT NULL REFERENCES channel_connections(id) ON DELETE CASCADE,
       target_kind TEXT NOT NULL,
       target_id TEXT NOT NULL,
-      display_name TEXT NOT NULL,
-      active INTEGER NOT NULL DEFAULT 1,
+      display_name TEXT,
+      response_mode TEXT NOT NULL DEFAULT 'mentions'
+        CHECK(response_mode IN ('off', 'mentions', 'all')),
+      responder_agent_id TEXT REFERENCES registered_agents(id) ON DELETE SET NULL,
+      allowed_senders_json TEXT,
+      rate_limit_json TEXT,
+      is_active INTEGER NOT NULL DEFAULT 1,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       created_by TEXT REFERENCES users(id),
-      updated_by TEXT REFERENCES users(id),
-      UNIQUE (connection_id, target_kind, target_id)
-    );
-    CREATE INDEX IF NOT EXISTS idx_talk_channel_bindings_talk
-      ON talk_channel_bindings(talk_id, active, created_at);
-
-    CREATE TABLE IF NOT EXISTS talk_channel_policies (
-      binding_id TEXT PRIMARY KEY REFERENCES talk_channel_bindings(id) ON DELETE CASCADE,
-      response_mode TEXT NOT NULL DEFAULT 'mentions',
-      responder_mode TEXT NOT NULL DEFAULT 'primary',
-      responder_agent_id TEXT REFERENCES talk_agents(id) ON DELETE SET NULL,
-      delivery_mode TEXT NOT NULL DEFAULT 'reply',
-      thread_mode TEXT NOT NULL DEFAULT 'conversation',
-      channel_context_note TEXT,
-      allowed_senders_json TEXT,
-      inbound_rate_limit_per_minute INTEGER NOT NULL DEFAULT 10,
-      max_pending_events INTEGER NOT NULL DEFAULT 20,
-      overflow_policy TEXT NOT NULL DEFAULT 'drop_oldest',
-      max_deferred_age_minutes INTEGER NOT NULL DEFAULT 10,
-      updated_at TEXT NOT NULL,
       updated_by TEXT REFERENCES users(id)
     );
+    CREATE INDEX IF NOT EXISTS idx_talk_channel_bindings_talk
+      ON talk_channel_bindings(talk_id, is_active, created_at);
+
+    CREATE TABLE IF NOT EXISTS talk_runs (
+      id TEXT PRIMARY KEY,
+      talk_id TEXT REFERENCES talks(id) ON DELETE CASCADE,
+      requested_by TEXT NOT NULL REFERENCES users(id),
+      status TEXT NOT NULL
+        CHECK(status IN ('queued', 'running', 'awaiting_confirmation', 'cancelled', 'completed', 'failed')),
+      trigger_message_id TEXT REFERENCES messages(id),
+      agent_id TEXT REFERENCES registered_agents(id) ON DELETE SET NULL,
+      thread_id TEXT,
+      idempotency_key TEXT,
+      source_binding_id TEXT,
+      source_external_message_id TEXT,
+      source_thread_key TEXT,
+      created_at TEXT NOT NULL,
+      started_at TEXT,
+      ended_at TEXT,
+      cancel_reason TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_talk_runs_talk_id_status
+      ON talk_runs(talk_id, status, created_at);
+    CREATE INDEX IF NOT EXISTS idx_talk_runs_status_created_at
+      ON talk_runs(status, created_at);
+
+    CREATE TABLE IF NOT EXISTS run_confirmations (
+      id TEXT PRIMARY KEY,
+      run_id TEXT NOT NULL REFERENCES talk_runs(id) ON DELETE CASCADE,
+      talk_id TEXT REFERENCES talks(id) ON DELETE CASCADE,
+      tool_id TEXT NOT NULL,
+      action_summary TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending'
+        CHECK(status IN ('pending', 'approved', 'rejected')),
+      metadata_json TEXT,
+      created_at TEXT NOT NULL,
+      resolved_at TEXT,
+      resolved_by TEXT REFERENCES users(id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_run_confirmations_run_status
+      ON run_confirmations(run_id, status, created_at);
+
+    CREATE TABLE IF NOT EXISTS llm_attempts (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      run_id TEXT NOT NULL REFERENCES talk_runs(id) ON DELETE CASCADE,
+      talk_id TEXT REFERENCES talks(id) ON DELETE CASCADE,
+      agent_id TEXT REFERENCES registered_agents(id) ON DELETE SET NULL,
+      provider_id TEXT REFERENCES llm_providers(id) ON DELETE SET NULL,
+      model_id TEXT NOT NULL,
+      status TEXT NOT NULL
+        CHECK(status IN ('success', 'failed', 'skipped', 'cancelled')),
+      failure_class TEXT,
+      latency_ms INTEGER,
+      input_tokens INTEGER,
+      output_tokens INTEGER,
+      estimated_cost_usd REAL,
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_llm_attempts_run_id ON llm_attempts(run_id);
+    CREATE INDEX IF NOT EXISTS idx_llm_attempts_talk_id_created_at
+      ON llm_attempts(talk_id, created_at);
 
     CREATE TABLE IF NOT EXISTS channel_ingress_queue (
       id TEXT PRIMARY KEY,
@@ -1020,12 +622,13 @@ function createClawrocketSchema(database: Database.Database): void {
       connection_id TEXT NOT NULL REFERENCES channel_connections(id) ON DELETE CASCADE,
       target_kind TEXT NOT NULL,
       target_id TEXT NOT NULL,
-      platform_event_id TEXT NOT NULL,
+      platform_event_id TEXT,
       external_message_id TEXT,
       sender_id TEXT,
       sender_name TEXT,
       payload_json TEXT NOT NULL,
-      status TEXT NOT NULL DEFAULT 'pending',
+      status TEXT NOT NULL DEFAULT 'pending'
+        CHECK(status IN ('pending', 'claimed', 'processed', 'dead')),
       reason_code TEXT,
       reason_detail TEXT,
       dedupe_key TEXT NOT NULL UNIQUE,
@@ -1041,475 +644,78 @@ function createClawrocketSchema(database: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_channel_ingress_queue_talk_status_available
       ON channel_ingress_queue(talk_id, status, available_at, created_at);
 
-    CREATE TABLE IF NOT EXISTS channel_delivery_outbox (
+    CREATE TABLE IF NOT EXISTS channel_outbound_queue (
       id TEXT PRIMARY KEY,
+      talk_id TEXT NOT NULL REFERENCES talks(id) ON DELETE CASCADE,
       binding_id TEXT NOT NULL REFERENCES talk_channel_bindings(id) ON DELETE CASCADE,
-      talk_id TEXT NOT NULL REFERENCES talks(id) ON DELETE CASCADE,
       run_id TEXT NOT NULL REFERENCES talk_runs(id) ON DELETE CASCADE,
-      talk_message_id TEXT NOT NULL REFERENCES talk_messages(id) ON DELETE CASCADE,
-      target_kind TEXT NOT NULL,
-      target_id TEXT NOT NULL,
-      payload_json TEXT NOT NULL,
-      status TEXT NOT NULL DEFAULT 'pending',
-      reason_code TEXT,
-      reason_detail TEXT,
-      dedupe_key TEXT NOT NULL UNIQUE,
-      available_at TEXT NOT NULL,
+      platform TEXT NOT NULL,
+      content TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending'
+        CHECK(status IN ('pending', 'sent', 'failed', 'dead')),
+      attempts INTEGER NOT NULL DEFAULT 0,
+      last_error TEXT,
       created_at TEXT NOT NULL,
+      sent_at TEXT,
+      next_retry_at TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_channel_outbound_queue_status_available
+      ON channel_outbound_queue(status, next_retry_at, created_at);
+    CREATE INDEX IF NOT EXISTS idx_channel_outbound_queue_binding_status
+      ON channel_outbound_queue(binding_id, status, created_at);
+
+    CREATE TABLE IF NOT EXISTS settings_kv (
+      key TEXT PRIMARY KEY,
+      value TEXT,
       updated_at TEXT NOT NULL,
-      attempt_count INTEGER NOT NULL DEFAULT 0
-    );
-    CREATE INDEX IF NOT EXISTS idx_channel_delivery_outbox_status_available
-      ON channel_delivery_outbox(status, available_at, created_at);
-    CREATE INDEX IF NOT EXISTS idx_channel_delivery_outbox_binding_status_available
-      ON channel_delivery_outbox(binding_id, status, available_at, created_at);
-  `);
-  try {
-    database.exec(`
-      CREATE VIEW group_llm_policies AS
-      SELECT talk_id AS group_id, llm_policy, updated_at
-      FROM talk_llm_policies
-    `);
-  } catch {
-    // view already exists
-  }
-
-  // Add access_expires_at column if it doesn't exist (migration for existing DBs)
-  try {
-    database.exec(`ALTER TABLE web_sessions ADD COLUMN access_expires_at TEXT`);
-    database.exec(
-      `UPDATE web_sessions SET access_expires_at = expires_at WHERE access_expires_at IS NULL`,
-    );
-  } catch {
-    /* column already exists */
-  }
-
-  // Add code_verifier column if it doesn't exist (migration for existing DBs)
-  try {
-    database.exec(`ALTER TABLE oauth_state ADD COLUMN code_verifier TEXT`);
-  } catch {
-    /* column already exists */
-  }
-
-  // Add return_to column if it doesn't exist (migration for existing DBs)
-  try {
-    database.exec(`ALTER TABLE oauth_state ADD COLUMN return_to TEXT`);
-  } catch {
-    /* column already exists */
-  }
-
-  // Add trigger_message_id column if it doesn't exist (migration for existing DBs)
-  try {
-    database.exec(`ALTER TABLE talk_runs ADD COLUMN trigger_message_id TEXT`);
-  } catch {
-    /* column already exists */
-  }
-
-  try {
-    database.exec(
-      `ALTER TABLE users ADD COLUMN user_type TEXT NOT NULL DEFAULT 'human'`,
-    );
-  } catch {
-    /* column already exists */
-  }
-
-  // Add executor_alias column if it doesn't exist (migration for existing DBs)
-  try {
-    database.exec(`ALTER TABLE talk_runs ADD COLUMN executor_alias TEXT`);
-  } catch {
-    /* column already exists */
-  }
-
-  // Add executor_model column if it doesn't exist (migration for existing DBs)
-  try {
-    database.exec(`ALTER TABLE talk_runs ADD COLUMN executor_model TEXT`);
-  } catch {
-    /* column already exists */
-  }
-
-  // Add session_compat_key column if it doesn't exist (migration for existing DBs)
-  try {
-    database.exec(
-      `ALTER TABLE talk_executor_sessions ADD COLUMN session_compat_key TEXT NOT NULL DEFAULT ''`,
-    );
-  } catch {
-    /* column already exists */
-  }
-
-  try {
-    database.exec(`ALTER TABLE talk_runs ADD COLUMN target_agent_id TEXT`);
-  } catch {
-    /* column already exists */
-  }
-
-  try {
-    database.exec(`ALTER TABLE talk_runs ADD COLUMN source_binding_id TEXT`);
-  } catch {
-    /* column already exists */
-  }
-
-  try {
-    database.exec(
-      `ALTER TABLE talk_runs ADD COLUMN source_external_message_id TEXT`,
-    );
-  } catch {
-    /* column already exists */
-  }
-
-  try {
-    database.exec(`ALTER TABLE talk_runs ADD COLUMN source_thread_key TEXT`);
-  } catch {
-    /* column already exists */
-  }
-
-  try {
-    database.exec(
-      `ALTER TABLE talk_messages ADD COLUMN sequence_in_run INTEGER`,
-    );
-  } catch {
-    /* column already exists */
-  }
-
-  try {
-    database.exec(
-      `ALTER TABLE llm_provider_models ADD COLUMN supports_tools INTEGER NOT NULL DEFAULT 0`,
-    );
-  } catch {
-    /* column already exists */
-  }
-
-  try {
-    database.exec(
-      `ALTER TABLE talk_agents ADD COLUMN registered_agent_id TEXT REFERENCES registered_agents(id) ON DELETE SET NULL`,
-    );
-  } catch {
-    /* column already exists */
-  }
-
-  try {
-    database.exec(
-      `ALTER TABLE talk_agents ADD COLUMN source_kind TEXT NOT NULL DEFAULT 'provider' CHECK(source_kind IN ('claude_default', 'provider'))`,
-    );
-  } catch {
-    /* column already exists */
-  }
-
-  try {
-    database.exec(
-      `ALTER TABLE talk_agents ADD COLUMN provider_id TEXT REFERENCES llm_providers(id) ON DELETE SET NULL`,
-    );
-  } catch {
-    /* column already exists */
-  }
-
-  try {
-    database.exec(`ALTER TABLE talk_agents ADD COLUMN model_id TEXT`);
-  } catch {
-    /* column already exists */
-  }
-
-  try {
-    database.exec(
-      `ALTER TABLE talk_agents ADD COLUMN nickname_mode TEXT NOT NULL DEFAULT 'auto' CHECK(nickname_mode IN ('auto', 'custom'))`,
-    );
-  } catch {
-    /* column already exists */
-  }
-
-  try {
-    database.exec(
-      `ALTER TABLE talk_context_sources ADD COLUMN last_fetched_at TEXT`,
-    );
-  } catch {
-    /* column already exists */
-  }
-
-  try {
-    database.exec(
-      `ALTER TABLE talk_context_sources ADD COLUMN fetch_strategy TEXT CHECK(fetch_strategy IN ('http', 'browser', 'managed') OR fetch_strategy IS NULL)`,
-    );
-  } catch {
-    /* column already exists */
-  }
-
-  database.exec(`
-    CREATE INDEX IF NOT EXISTS idx_talk_agents_registered_agent_id
-      ON talk_agents(registered_agent_id)
-  `);
-
-  const staleSessions = database
-    .prepare(
-      `
-      SELECT talk_id, executor_alias, executor_model
-      FROM talk_executor_sessions
-      WHERE session_compat_key = ''
-        AND executor_alias != ''
-        AND executor_model != ''
-    `,
-    )
-    .all() as Array<{
-    talk_id: string;
-    executor_alias: string;
-    executor_model: string;
-  }>;
-
-  if (staleSessions.length > 0) {
-    const backfill = database.prepare(
-      `
-      UPDATE talk_executor_sessions
-      SET session_compat_key = ?
-      WHERE talk_id = ?
-    `,
+      updated_by TEXT REFERENCES users(id)
     );
 
-    const tx = database.transaction(
-      (
-        rows: Array<{
-          talk_id: string;
-          executor_alias: string;
-          executor_model: string;
-        }>,
-      ) => {
-        for (const row of rows) {
-          backfill.run(
-            computeSessionCompatKey(row.executor_alias, row.executor_model),
-            row.talk_id,
-          );
-        }
-      },
+    CREATE TABLE IF NOT EXISTS event_outbox (
+      event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+      topic TEXT NOT NULL,
+      event_type TEXT NOT NULL,
+      payload TEXT NOT NULL,
+      created_at TEXT NOT NULL
     );
+    CREATE INDEX IF NOT EXISTS idx_event_outbox_topic_event_id
+      ON event_outbox(topic, event_id);
 
-    tx(staleSessions);
-  }
-
-  // ---- Message attachments (file uploads in Talk messages) ----
-  try {
-    database.exec(`
-    CREATE TABLE IF NOT EXISTS talk_message_attachments (
-        id TEXT PRIMARY KEY,
-        message_id TEXT REFERENCES talk_messages(id) ON DELETE CASCADE,
-        talk_id TEXT NOT NULL REFERENCES talks(id) ON DELETE CASCADE,
-        file_name TEXT NOT NULL,
-        file_size INTEGER NOT NULL,
-        mime_type TEXT NOT NULL,
-        storage_key TEXT NOT NULL,
-        extracted_text TEXT,
-        extraction_status TEXT NOT NULL DEFAULT 'pending'
-          CHECK(extraction_status IN ('pending', 'extracted', 'failed')),
-        extraction_error TEXT,
-        created_at TEXT NOT NULL,
-        created_by TEXT REFERENCES users(id) ON DELETE SET NULL
-      );
-      CREATE INDEX IF NOT EXISTS idx_tma_message
-        ON talk_message_attachments(message_id);
-      CREATE INDEX IF NOT EXISTS idx_tma_talk
-        ON talk_message_attachments(talk_id, created_at);
-    `);
-  } catch {
-    /* table already exists */
-  }
-
-  database.exec(`
-    CREATE TABLE IF NOT EXISTS tool_registry_entries (
+    CREATE TABLE IF NOT EXISTS dead_letter_queue (
       id TEXT PRIMARY KEY,
-      family TEXT NOT NULL
-        CHECK(family IN (
-          'saved_sources',
-          'attachments',
-          'web',
-          'gmail',
-          'google_drive',
-          'google_docs',
-          'google_sheets',
-          'data_connectors'
-        )),
-      display_name TEXT NOT NULL,
-      description TEXT,
-      enabled INTEGER NOT NULL DEFAULT 1,
-      install_status TEXT NOT NULL
-        CHECK(install_status IN ('installed', 'disabled', 'unconfigured')),
-      health_status TEXT NOT NULL
-        CHECK(health_status IN ('healthy', 'degraded', 'unavailable')),
-      auth_requirements_json TEXT,
-      mutates_external_state INTEGER NOT NULL DEFAULT 0,
-      requires_binding INTEGER NOT NULL DEFAULT 0,
-      default_grant INTEGER NOT NULL DEFAULT 0,
-      sort_order INTEGER NOT NULL DEFAULT 0,
-      updated_at TEXT NOT NULL,
-      updated_by TEXT REFERENCES users(id) ON DELETE SET NULL
-    );
-    CREATE INDEX IF NOT EXISTS idx_tool_registry_entries_family_sort
-      ON tool_registry_entries(family, sort_order, id);
-
-    CREATE TABLE IF NOT EXISTS talk_tool_grants (
-      talk_id TEXT NOT NULL REFERENCES talks(id) ON DELETE CASCADE,
-      tool_id TEXT NOT NULL REFERENCES tool_registry_entries(id) ON DELETE CASCADE,
-      enabled INTEGER NOT NULL DEFAULT 0,
-      updated_at TEXT NOT NULL,
-      updated_by TEXT REFERENCES users(id) ON DELETE SET NULL,
-      PRIMARY KEY (talk_id, tool_id)
-    );
-    CREATE INDEX IF NOT EXISTS idx_talk_tool_grants_tool_id
-      ON talk_tool_grants(tool_id, talk_id);
-
-    CREATE TABLE IF NOT EXISTS talk_resource_bindings (
-      id TEXT PRIMARY KEY,
-      talk_id TEXT NOT NULL REFERENCES talks(id) ON DELETE CASCADE,
-      binding_kind TEXT NOT NULL
-        CHECK(binding_kind IN (
-          'google_drive_folder',
-          'google_drive_file',
-          'data_connector',
-          'saved_source',
-          'message_attachment'
-        )),
-      external_id TEXT NOT NULL,
-      display_name TEXT NOT NULL,
-      metadata_json TEXT,
+      source_type TEXT NOT NULL,
+      source_id TEXT NOT NULL,
+      payload TEXT,
+      error_class TEXT NOT NULL,
+      error_detail TEXT,
+      attempts INTEGER NOT NULL DEFAULT 1,
       created_at TEXT NOT NULL,
-      created_by TEXT REFERENCES users(id) ON DELETE SET NULL
-    );
-    CREATE INDEX IF NOT EXISTS idx_talk_resource_bindings_talk_created
-      ON talk_resource_bindings(talk_id, created_at, id);
-    CREATE INDEX IF NOT EXISTS idx_talk_resource_bindings_talk_external
-      ON talk_resource_bindings(talk_id, binding_kind, external_id);
-
-    CREATE TABLE IF NOT EXISTS user_google_credentials (
-      user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
-      google_subject TEXT NOT NULL,
-      email TEXT NOT NULL,
-      display_name TEXT,
-      scopes_json TEXT NOT NULL,
-      ciphertext TEXT NOT NULL,
-      access_expires_at TEXT,
-      created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS talk_action_confirmations (
-      id TEXT PRIMARY KEY,
-      talk_id TEXT NOT NULL REFERENCES talks(id) ON DELETE CASCADE,
-      run_id TEXT NOT NULL REFERENCES talk_runs(id) ON DELETE CASCADE,
-      tool_name TEXT NOT NULL,
-      confirmation_type TEXT NOT NULL
-        CHECK(confirmation_type IN ('mutation', 'scope_expansion')),
-      status TEXT NOT NULL
-        CHECK(status IN (
-          'pending',
-          'approved_pending_execution',
-          'approved_executed',
-          'approved_failed',
-          'rejected',
-          'superseded'
-        )),
-      proposed_args_json TEXT,
-      modified_args_json TEXT,
-      preview_json TEXT,
-      tool_call_id TEXT,
-      requested_by TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-      resolved_by TEXT REFERENCES users(id) ON DELETE SET NULL,
-      reason TEXT,
-      error_category TEXT
-        CHECK(error_category IS NULL OR error_category IN (
-          'auth',
-          'permission',
-          'rate_limit',
-          'quota',
-          'validation',
-          'transient',
-          'unavailable',
-          'user_declined',
-          'revoked_after_confirmation'
-        )),
-      error_message TEXT,
-      created_at TEXT NOT NULL,
+      last_retry_at TEXT,
       resolved_at TEXT
     );
-    CREATE INDEX IF NOT EXISTS idx_talk_action_confirmations_run_status
-      ON talk_action_confirmations(run_id, status, created_at);
-    CREATE INDEX IF NOT EXISTS idx_talk_action_confirmations_talk_created
-      ON talk_action_confirmations(talk_id, created_at, id);
+    CREATE INDEX IF NOT EXISTS idx_dead_letter_created_at
+      ON dead_letter_queue(created_at);
 
-    CREATE TABLE IF NOT EXISTS talk_run_continuations (
-      run_id TEXT PRIMARY KEY REFERENCES talk_runs(id) ON DELETE CASCADE,
-      talk_id TEXT NOT NULL REFERENCES talks(id) ON DELETE CASCADE,
-      route_id TEXT NOT NULL,
-      route_step_position INTEGER NOT NULL,
-      provider_id TEXT NOT NULL,
-      model_id TEXT NOT NULL,
-      api_format TEXT NOT NULL,
-      state_json TEXT NOT NULL,
-      compacted INTEGER NOT NULL DEFAULT 0,
-      byte_size INTEGER NOT NULL DEFAULT 0,
-      confirmation_id TEXT REFERENCES talk_action_confirmations(id) ON DELETE SET NULL,
+    CREATE TABLE IF NOT EXISTS idempotency_cache (
+      idempotency_key TEXT NOT NULL,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      method TEXT NOT NULL,
+      path TEXT NOT NULL,
+      request_hash TEXT NOT NULL,
+      status_code INTEGER NOT NULL,
+      response_body TEXT NOT NULL,
       created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL
+      expires_at TEXT NOT NULL,
+      PRIMARY KEY (idempotency_key, user_id, method, path)
     );
-    CREATE INDEX IF NOT EXISTS idx_talk_run_continuations_talk_id
-      ON talk_run_continuations(talk_id, updated_at);
-
-    CREATE TABLE IF NOT EXISTS talk_audit_entries (
-      id TEXT PRIMARY KEY,
-      talk_id TEXT NOT NULL REFERENCES talks(id) ON DELETE CASCADE,
-      run_id TEXT NOT NULL REFERENCES talk_runs(id) ON DELETE CASCADE,
-      agent_id TEXT,
-      tool_name TEXT NOT NULL,
-      confirmation_id TEXT REFERENCES talk_action_confirmations(id) ON DELETE SET NULL,
-      target_resource_id TEXT,
-      summary_json TEXT,
-      args_ciphertext TEXT,
-      result_status TEXT NOT NULL
-        CHECK(result_status IN ('success', 'failed')),
-      error_category TEXT
-        CHECK(error_category IS NULL OR error_category IN (
-          'auth',
-          'permission',
-          'rate_limit',
-          'quota',
-          'validation',
-          'transient',
-          'unavailable',
-          'user_declined',
-          'revoked_after_confirmation'
-        )),
-      error_message TEXT,
-      created_at TEXT NOT NULL,
-      created_by TEXT REFERENCES users(id) ON DELETE SET NULL
-    );
-    CREATE INDEX IF NOT EXISTS idx_talk_audit_entries_talk_created
-      ON talk_audit_entries(talk_id, created_at, id);
-    CREATE INDEX IF NOT EXISTS idx_talk_audit_entries_run_created
-      ON talk_audit_entries(run_id, created_at, id);
+    CREATE INDEX IF NOT EXISTS idx_idempotency_expires_at
+      ON idempotency_cache(expires_at);
   `);
 
-  seedBuiltinTalkLlmDefaults(database);
-  seedBuiltinToolRegistry(database);
-
-  const now = new Date().toISOString();
-  database
-    .prepare(
-      `
-      INSERT INTO users (
-        id, email, display_name, user_type, role, is_active, created_at, last_login_at
-      )
-      VALUES (?, ?, ?, ?, ?, ?, ?, NULL)
-      ON CONFLICT(id) DO UPDATE SET
-        email = excluded.email,
-        display_name = excluded.display_name,
-        user_type = excluded.user_type,
-        role = excluded.role,
-        is_active = excluded.is_active
-    `,
-    )
-    .run(
-      'system:channel-ingress',
-      'channel-ingress@local.invalid',
-      'Channel Ingress',
-      'system',
-      'member',
-      0,
-      now,
-    );
+  seedBuiltinLlmProvider(database);
+  seedMainAgent(database);
+  seedSystemUsers(database);
+  seedDefaultSettings(database);
 }
 
 export function initClawrocketSchema(): void {

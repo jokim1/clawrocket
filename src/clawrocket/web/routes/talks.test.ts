@@ -14,7 +14,6 @@ import {
   upsertUser,
   upsertWebSession,
 } from '../../db/index.js';
-import { computeSessionCompatKey } from '../../talks/executor-settings.js';
 import { hashSessionToken } from '../../identity/session.js';
 import { _resetRateLimitStateForTests } from '../middleware/rate-limit.js';
 import { createWebServer, WebServerHandle } from '../server.js';
@@ -701,7 +700,7 @@ describe('talk routes', () => {
       sessionId: 'session-edit-1',
       executorAlias: 'Claude',
       executorModel: 'claude-sonnet-4-6',
-      sessionCompatKey: computeSessionCompatKey('Claude', 'claude-sonnet-4-6'),
+      sessionCompatKey: 'Claude:claude-sonnet-4-6',
       updatedAt: '2026-03-07T01:00:03.000Z',
     });
 

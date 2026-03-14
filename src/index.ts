@@ -51,7 +51,6 @@ import {
   getOwnerUser,
   getTalkChannelBindingById,
   initClawrocketSchema,
-  syncKnownProviderModels,
   upsertChannelTarget,
 } from './clawrocket/db/index.js';
 import { ChannelDeliveryWorker } from './clawrocket/channels/channel-delivery-worker.js';
@@ -67,7 +66,6 @@ import { findChannel, formatMessages, formatOutbound } from './router.js';
 import { startSchedulerLoop } from './task-scheduler.js';
 import { Channel, NewMessage, RegisteredGroup } from './types.js';
 import { startWebServer } from './clawrocket/web/index.js';
-import { getActiveExecutorSettingsService } from './clawrocket/talks/executor-settings.js';
 import { InstanceCoordinator } from './instance-coordinator.js';
 import { logger } from './logger.js';
 
@@ -300,13 +298,6 @@ export async function runAgent(
   chatJid: string,
   onOutput?: (output: ContainerOutput) => Promise<void>,
 ): Promise<'success' | 'error'> {
-  const blockedReason =
-    getActiveExecutorSettingsService().getExecutionBlockedReason();
-  if (blockedReason) {
-    logger.error({ group: group.name, reason: blockedReason }, 'Agent error');
-    return 'error';
-  }
-
   const isMain = group.isMain === true;
   const sessionId = sessions[group.folder];
 
@@ -642,7 +633,6 @@ async function main(): Promise<void> {
     initClawrocketSchema();
     assertPublicModeDatabaseReady();
     const telegramConnection = ensureSystemManagedTelegramConnection();
-    syncKnownProviderModels();
     // ClawRocket integration seam: register scheduler maintenance callbacks.
     registerClawrocketSchedulerMaintenanceHook();
     logger.info('Database initialized');

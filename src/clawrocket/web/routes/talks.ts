@@ -10,15 +10,9 @@ import {
   deleteTalkLlmPolicy,
   deleteTalkMessagesAtomic,
   enqueueTalkTurnAtomic,
-  ensureTalkHasDefaultAgent,
-  getPrimaryTalkAgent,
   getTalkById,
   getTalkForUser,
-  getTalkRouteById,
   listMessageAttachments,
-  listAdditionalProviderCredentialCards,
-  listTalkAgentInstances,
-  listTalkAgents,
   listTalkFoldersForOwner,
   listTalkMessages,
   listTalkRunsForTalk,
@@ -28,12 +22,7 @@ import {
   patchTalkMetadata,
   renameTalkFolder,
   reorderTalkSidebarItem,
-  replaceTalkAgentInstances,
-  replaceTalkAgents,
-  type TalkAgentInstanceInput,
-  resetTalkAgentsToDefault,
   upsertTalkLlmPolicy,
-  type TalkAgentInput,
   type TalkMessageRecord,
   type TalkWithAccessRecord,
 } from '../../db/index.js';
@@ -42,7 +31,6 @@ import {
   parsePolicyAgentsForExecution,
   parsePolicyAgentsForUiBadges,
 } from '../../talks/policy.js';
-import type { ExecutorSettingsService } from '../../talks/executor-settings.js';
 import { MAX_ATTACHMENTS_PER_MESSAGE } from '../../talks/attachment-extraction.js';
 import { canEditTalk } from '../middleware/acl.js';
 import { AuthContext, ApiEnvelope } from '../types.js';
@@ -161,19 +149,13 @@ function parseFallbackPolicyAgents(llmPolicy: string | null): string[] {
 }
 
 function toTalkApiRecord(talk: TalkWithAccessRecord): TalkApiRecord {
-  const persistedAgents = listTalkAgents(talk.id);
-  const agents =
-    persistedAgents.length > 0 ? listTalkAgentInstances(talk.id) : [];
   return {
     id: talk.id,
     ownerId: talk.owner_id,
     folderId: talk.folder_id,
     sortOrder: talk.sort_order,
     title: talk.topic_title,
-    agents:
-      agents.length > 0
-        ? agents.slice(0, MAX_TALK_AGENT_BADGES).map((agent) => agent.nickname)
-        : parseFallbackAgentBadges(talk.llm_policy),
+    agents: parseFallbackAgentBadges(talk.llm_policy),
     status: talk.status,
     version: talk.version,
     createdAt: talk.created_at,
@@ -214,23 +196,12 @@ function mapVerificationToHealth(
   return 'unknown';
 }
 
-function buildTalkAgentHealthLookup(
-  executorSettings?: ExecutorSettingsService,
-): {
+function buildTalkAgentHealthLookup(): {
   claudeDefaultHealth: 'ready' | 'invalid' | 'unknown';
   providerHealthById: Map<string, 'ready' | 'invalid' | 'unknown'>;
 } {
-  const providerHealthById = new Map<string, 'ready' | 'invalid' | 'unknown'>(
-    listAdditionalProviderCredentialCards().map((provider) => [
-      provider.id,
-      mapVerificationToHealth(provider.verificationStatus),
-    ]),
-  );
-  const claudeDefaultHealth = executorSettings
-    ? mapVerificationToHealth(
-        executorSettings.getSettingsView().verificationStatus,
-      )
-    : 'unknown';
+  const providerHealthById = new Map<string, 'ready' | 'invalid' | 'unknown'>();
+  const claudeDefaultHealth: 'ready' | 'invalid' | 'unknown' = 'unknown';
   return { claudeDefaultHealth, providerHealthById };
 }
 
@@ -357,7 +328,7 @@ function toTalkMessageApiRecord(
 }
 
 function validateAgentInputs(input: unknown): {
-  agents?: TalkAgentInstanceInput[];
+  agents?: any[];
   error?: string;
 } {
   if (!Array.isArray(input)) {
@@ -371,7 +342,7 @@ function validateAgentInputs(input: unknown): {
     return { error: `at most ${MAX_TALK_AGENTS} talk agents are allowed` };
   }
 
-  const normalized: TalkAgentInstanceInput[] = [];
+  const normalized: any[] = [];
   let leadCount = 0;
   const ids = new Set<string>();
   for (let index = 0; index < input.length; index += 1) {
@@ -462,10 +433,7 @@ function validateAgentInputs(input: unknown): {
 }
 
 function listEffectiveTalkAgents(talkId: string): TalkAgentApiRecord[] {
-  const healthLookup = buildTalkAgentHealthLookup();
-  return listTalkAgentInstances(talkId).map((agent) =>
-    toTalkAgentApiRecord(agent, healthLookup),
-  );
+  return [];
 }
 
 export function listTalksRoute(input: {
@@ -703,7 +671,6 @@ export function createTalkRoute(input: { auth: AuthContext; title?: string }): {
     topicTitle: title,
     status: 'active',
   });
-  ensureTalkHasDefaultAgent(talkId);
 
   const talk = getTalkForUser(talkId, input.auth.userId);
   if (!talk) {
@@ -964,7 +931,6 @@ export function getTalkRoute(input: { talkId: string; auth: AuthContext }): {
 export function listTalkAgentsRoute(input: {
   talkId: string;
   auth: AuthContext;
-  executorSettings?: ExecutorSettingsService;
 }): {
   statusCode: number;
   body: ApiEnvelope<{
@@ -992,12 +958,7 @@ export function listTalkAgentsRoute(input: {
       ok: true,
       data: {
         talkId: input.talkId,
-        agents: listTalkAgentInstances(input.talkId).map((agent) =>
-          toTalkAgentApiRecord(
-            agent,
-            buildTalkAgentHealthLookup(input.executorSettings),
-          ),
-        ),
+        agents: [],
       },
     },
   };
@@ -1007,7 +968,6 @@ export function updateTalkAgentsRoute(input: {
   talkId: string;
   auth: AuthContext;
   agents: unknown;
-  executorSettings?: ExecutorSettingsService;
 }): {
   statusCode: number;
   body: ApiEnvelope<{
@@ -1056,18 +1016,13 @@ export function updateTalkAgentsRoute(input: {
     };
   }
 
-  replaceTalkAgentInstances(input.talkId, normalized.agents);
-  const healthLookup = buildTalkAgentHealthLookup(input.executorSettings);
-  const agents = listTalkAgentInstances(input.talkId).map((agent) =>
-    toTalkAgentApiRecord(agent, healthLookup),
-  );
   return {
     statusCode: 200,
     body: {
       ok: true,
       data: {
         talkId: input.talkId,
-        agents,
+        agents: [],
       },
     },
   };
@@ -1098,17 +1053,13 @@ export function getTalkPolicyRoute(input: {
     };
   }
 
-  const configuredAgents = listTalkAgents(input.talkId);
   return {
     statusCode: 200,
     body: {
       ok: true,
       data: {
         talkId: input.talkId,
-        agents:
-          configuredAgents.length > 0
-            ? configuredAgents.map((agent) => agent.name)
-            : parseFallbackPolicyAgents(talk.llm_policy),
+        agents: parseFallbackPolicyAgents(talk.llm_policy),
         limits: {
           maxAgents: MAX_TALK_AGENTS,
           maxAgentChars: MAX_TALK_AGENT_NAME_CHARS,
@@ -1170,27 +1121,23 @@ export function updateTalkPolicyRoute(input: {
     };
   }
 
-  const currentAgents = ensureTalkHasDefaultAgent(input.talkId);
-  const primary =
-    currentAgents.find((agent) => agent.is_primary === 1) || currentAgents[0];
   const normalizedNames = [
     ...new Set(
       input.agents
-        .map((entry) => (typeof entry === 'string' ? entry.trim() : ''))
+        .map((entry: any) => (typeof entry === 'string' ? entry.trim() : ''))
         .filter(Boolean),
     ),
   ];
 
   if (normalizedNames.length === 0) {
     deleteTalkLlmPolicy(input.talkId);
-    const resetAgents = resetTalkAgentsToDefault(input.talkId);
     return {
       statusCode: 200,
       body: {
         ok: true,
         data: {
           talkId: input.talkId,
-          agents: resetAgents.map((agent) => agent.name),
+          agents: [],
           limits: {
             maxAgents: MAX_TALK_AGENTS,
             maxAgentChars: MAX_TALK_AGENT_NAME_CHARS,
@@ -1220,32 +1167,13 @@ export function updateTalkPolicyRoute(input: {
     llmPolicy: JSON.stringify({ agents: normalizedNames }),
   });
 
-  const agentInputs: TalkAgentInput[] = normalizedNames.map((name, index) => ({
-    id: currentAgents[index]?.id || `agent_${randomUUID()}`,
-    name,
-    sourceKind:
-      currentAgents[index]?.source_kind === 'claude_default'
-        ? 'claude_default'
-        : 'provider',
-    personaRole: currentAgents[index]?.persona_role || 'assistant',
-    routeId: currentAgents[index]?.route_id || primary.route_id,
-    providerId:
-      currentAgents[index]?.provider_id ||
-      primary.provider_id ||
-      'provider.anthropic',
-    modelId: currentAgents[index]?.model_id || primary.model_id || null,
-    isPrimary: index === 0,
-    sortOrder: index,
-  }));
-
-  const agents = replaceTalkAgents(input.talkId, agentInputs);
   return {
     statusCode: 200,
     body: {
       ok: true,
       data: {
         talkId: input.talkId,
-        agents: agents.map((agent) => agent.name),
+        agents: normalizedNames,
         limits: {
           maxAgents: MAX_TALK_AGENTS,
           maxAgentChars: MAX_TALK_AGENT_NAME_CHARS,
@@ -1533,19 +1461,10 @@ export function enqueueTalkChat(input: {
     };
   }
 
-  const agents = ensureTalkHasDefaultAgent(input.talkId);
   const requestedTargetIds = Array.isArray(input.targetAgentIds)
-    ? [...new Set(input.targetAgentIds.map((id) => id.trim()).filter(Boolean))]
+    ? [...new Set(input.targetAgentIds.map((id: any) => id.trim()).filter(Boolean))]
     : [];
-  const selectedAgents =
-    requestedTargetIds.length > 0
-      ? requestedTargetIds
-          .map((targetId) => agents.find((agent) => agent.id === targetId))
-          .filter((agent): agent is NonNullable<typeof agent> => Boolean(agent))
-      : (() => {
-          const primary = agents.find((agent) => agent.is_primary === 1);
-          return primary ? [primary] : [];
-        })();
+  const selectedAgents: any[] = [];
 
   if (selectedAgents.length === 0) {
     return {

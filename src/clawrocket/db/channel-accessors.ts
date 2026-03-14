@@ -7,7 +7,7 @@ import {
   createTalkRun,
   touchTalkUpdatedAt,
 } from './accessors.js';
-import { getPrimaryTalkAgent } from './llm-accessors.js';
+import { resolvePrimaryAgent } from '../agents/agent-registry.js';
 
 export type ChannelPlatform = 'telegram' | 'slack';
 export type ChannelHealthStatus =
@@ -514,7 +514,7 @@ function resolveBindingResponderAgentId(
       .get(talkId, responderAgentId) as { id: string } | undefined;
     if (row) return row.id;
   }
-  const primary = getPrimaryTalkAgent(talkId);
+  const primary = resolvePrimaryAgent(talkId);
   if (!primary) {
     throw new Error('talk_primary_agent_missing');
   }

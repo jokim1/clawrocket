@@ -24,7 +24,6 @@ import {
 } from './container-runtime.js';
 import { validateAdditionalMounts } from './mount-security.js';
 import { RegisteredGroup } from './types.js';
-import { getActiveExecutorSettingsService } from './clawrocket/talks/executor-settings.js';
 
 // Sentinel markers for robust output parsing (must match agent-runner)
 const OUTPUT_START_MARKER = '---NANOCLAW_OUTPUT_START---';
@@ -264,7 +263,7 @@ function buildVolumeMounts(
  * Secrets are never written to disk or mounted as files.
  */
 function readSecrets(): Record<string, string> {
-  return getActiveExecutorSettingsService().getExecutorSecrets();
+  return {};
 }
 
 function buildContainerArgs(

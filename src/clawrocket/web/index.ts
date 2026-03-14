@@ -6,12 +6,7 @@ import {
   WEB_PORT,
 } from '../config.js';
 import type { TalkExecutor } from '../talks/executor.js';
-import {
-  ExecutorSettingsService,
-  setActiveExecutorSettingsService,
-} from '../talks/executor-settings.js';
-import { ExecutorCredentialVerifier } from '../talks/executor-credentials-verifier.js';
-import { DirectTalkExecutor } from '../talks/direct-executor.js';
+import { CleanTalkExecutor } from '../talks/new-executor.js';
 import { TalkRunWorker } from '../talks/run-worker.js';
 
 import { createWebServer, WebServerHandle } from './server.js';
@@ -25,23 +20,12 @@ export interface StartWebServerOptions {
 export async function startWebServer(
   input?: StartWebServerOptions,
 ): Promise<WebServerHandle> {
-  const executorSettings = new ExecutorSettingsService();
-  executorSettings.runBootstrapMigration();
-  const effectiveConfig = executorSettings.resolveEffectiveConfig();
-  const executor: TalkExecutor = new DirectTalkExecutor();
-
-  executorSettings.captureRunningSnapshot(
-    effectiveConfig,
-    executorSettings.getConfigVersion(),
-  );
-  setActiveExecutorSettingsService(executorSettings);
-  const executorVerifier = new ExecutorCredentialVerifier({
-    executorSettings,
-  });
+  const executor: TalkExecutor = new CleanTalkExecutor();
 
   logger.info(
     {
       mode: 'direct_http',
+      executor: 'clean',
     },
     'Talk executor mode selected',
   );
@@ -59,8 +43,6 @@ export async function startWebServer(
     host: WEB_HOST,
     port: WEB_PORT,
     runWorker,
-    executorSettings,
-    executorVerifier,
     sendChannelTestMessage: input?.sendChannelTestMessage,
   });
 
