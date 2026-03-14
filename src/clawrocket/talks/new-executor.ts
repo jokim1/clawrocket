@@ -154,7 +154,8 @@ function mapExecutionEvent(
  * - Connector tools: delegate to connectors/tool-executors.ts
  * - All other tools: return error (main agent handles these via container)
  */
-function buildToolExecutor(
+/** @internal Exported for integration testing only. */
+export function buildToolExecutor(
   talkId: string,
   // contextPackage: ContextPackage,  // Could use for source lookups
 ) {

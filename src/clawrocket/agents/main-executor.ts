@@ -190,6 +190,8 @@ export async function executeMainChannel(
   const messageId = randomUUID();
   const now = new Date().toISOString();
 
+  // Note: createdBy is for the *user* who authored a message; assistant
+  // messages are system-generated, so createdBy must be null.
   createMessage({
     id: messageId,
     talkId: null, // Main channel
@@ -197,7 +199,7 @@ export async function executeMainChannel(
     role: 'assistant',
     content: result.content,
     agentId: agent.id,
-    createdBy: agent.id,
+    createdBy: null,
     metadataJson: JSON.stringify({
       runId: input.runId,
       providerId: agent.provider_id,
