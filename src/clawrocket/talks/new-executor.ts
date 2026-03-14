@@ -28,243 +28,13 @@ import {
   type AgentExecutionResult,
 } from '../agents/agent-router.js';
 import { resolvePrimaryAgent, getMainAgent } from '../agents/agent-registry.js';
+import { loadTalkContext, type ContextPackage } from './context-loader.js';
 import type {
   TalkExecutor,
   TalkExecutorInput,
   TalkExecutorOutput,
   TalkExecutionEvent,
 } from './executor.js';
-
-// ============================================================================
-// Types and Interfaces
-// ============================================================================
-
-/**
- * ContextPackage is returned from loadTalkContext.
- * It encapsulates all Talk-level context: system prompt, tools, and history.
- */
-interface ContextPackage {
-  systemPrompt: string;
-  connectorTools: any[]; // LlmToolDefinition[]
-  contextTools: any[]; // LlmToolDefinition[]
-  history: any[]; // LlmMessage[]
-  estimatedTokens: number;
-  metadata: {
-    talkId: string;
-    sourceCount: number;
-    connectorCount: number;
-    historyTurnCount: number;
-    hasSummary: boolean;
-  };
-}
-
-// ============================================================================
-// Context Loader
-// ============================================================================
-
-/**
- * Load Talk context: goal, rules, rolling summary, sources, connector tools, and message history.
- *
- * This function assembles a ContextPackage by:
- * 1. Fetching goal, rules, and rolling summary from talk_context_* tables
- * 2. Building source manifest from talk_context_sources
- * 3. Loading connector tools from talk_data_connectors
- * 4. Loading message history with simple token budgeting (backward fill to context window limit)
- * 5. Returning the complete package for agent execution
- *
- * Token budgeting: ~20 lines of simple logic.
- * - Estimate 1 char ≈ 0.25 tokens
- * - Fill backward from the context window, subtracting reserves for output and tools
- * - No complex priority system; simple ceiling
- */
-async function loadTalkContext(
-  talkId: string,
-  modelContextWindowTokens: number,
-): Promise<ContextPackage> {
-  const db = getDb();
-
-  // --- Load goal, rules, and rolling summary ---
-  const goalRow = db.prepare('SELECT goal FROM talk_context_goal WHERE talk_id = ?').get(talkId) as
-    | { goal: string }
-    | undefined;
-  const goal = goalRow?.goal || '';
-
-  const rulesRows = db
-    .prepare('SELECT rules FROM talk_context_rules WHERE talk_id = ? AND is_active = 1')
-    .all(talkId) as Array<{ rules: string }>;
-  const rules = rulesRows.map((r) => r.rules).join('\n');
-
-  const summaryRow = db
-    .prepare('SELECT summary FROM talk_context_summary WHERE talk_id = ?')
-    .get(talkId) as { summary: string } | undefined;
-  const hasSummary = !!summaryRow?.summary;
-  const summary = summaryRow?.summary || '';
-
-  // --- Build source manifest ---
-  const sourcesRows = db
-    .prepare(
-      `
-    SELECT id, title, source_type, uri, inline_content, extracted_size_bytes
-    FROM talk_context_sources
-    WHERE talk_id = ?
-    ORDER BY created_at ASC
-  `,
-    )
-    .all(talkId) as Array<{
-    id: string;
-    title: string;
-    source_type: string;
-    uri: string;
-    inline_content: string | null;
-    extracted_size_bytes: number;
-  }>;
-
-  const sourceCount = sourcesRows.length;
-  let sourceManifest = '';
-  if (sourceCount > 0) {
-    sourceManifest = 'Sources:\n';
-    for (const src of sourcesRows) {
-      sourceManifest += `- [${src.title}](${src.uri})\n`;
-      // Inline small sources (< 250 tokens ≈ 1000 chars)
-      if (src.inline_content && src.extracted_size_bytes < 1000) {
-        sourceManifest += `  ${src.inline_content}\n`;
-      } else if (src.extracted_size_bytes > 0) {
-        sourceManifest += `  (see read_context_source(ref="${src.id}"))\n`;
-      }
-    }
-    sourceManifest += '\n';
-  }
-
-  // --- Build connector tools ---
-  const connectorRows = db
-    .prepare(
-      `
-    SELECT dc.id, dc.name, dc.description, dc.tool_definition_json
-    FROM talk_data_connectors tdc
-    JOIN data_connectors dc ON dc.id = tdc.connector_id
-    WHERE tdc.talk_id = ?
-  `,
-    )
-    .all(talkId) as Array<{
-    id: string;
-    name: string;
-    description: string;
-    tool_definition_json: string;
-  }>;
-
-  const connectorTools: any[] = connectorRows.map((c) => {
-    try {
-      return JSON.parse(c.tool_definition_json);
-    } catch {
-      return null;
-    }
-  });
-  const connectorCount = connectorTools.filter((t) => t !== null).length;
-
-  // --- Context tools (always included for Talk execution) ---
-  const contextTools: any[] = [
-    {
-      name: 'read_context_source',
-      description: 'Read content from a Talk context source by reference ID',
-      input_schema: {
-        type: 'object',
-        properties: {
-          ref: { type: 'string', description: 'Source reference ID' },
-        },
-        required: ['ref'],
-      },
-    },
-    {
-      name: 'read_attachment',
-      description: 'Read content from an attachment in the current turn',
-      input_schema: {
-        type: 'object',
-        properties: {
-          attachmentId: { type: 'string', description: 'Attachment ID' },
-        },
-        required: ['attachmentId'],
-      },
-    },
-  ];
-
-  // --- Load message history with token budgeting ---
-  // Reserve tokens: 2000 for output, 1000 for tool schemas, system prompt
-  const outputReserve = 2000;
-  const toolReserve = 1000;
-  const systemPromptEstimate = Math.ceil(
-    (goal.length + rules.length + summary.length + sourceManifest.length) * 0.25,
-  );
-  const availableTokens = modelContextWindowTokens - outputReserve - toolReserve - systemPromptEstimate;
-
-  const messages = db
-    .prepare(
-      `
-    SELECT id, talk_id, role, content, created_by, created_at, run_id, metadata_json
-    FROM talk_messages
-    WHERE talk_id = ?
-    ORDER BY created_at DESC
-  `,
-    )
-    .all(talkId) as Array<{
-    id: string;
-    talk_id: string;
-    role: string;
-    content: string;
-    created_by: string | null;
-    created_at: string;
-    run_id: string | null;
-    metadata_json: string | null;
-  }>;
-
-  // Walk backward, accumulating tokens until we hit the budget
-  let estimatedTokens = 0;
-  const history: any[] = [];
-  for (const msg of messages) {
-    const msgTokens = Math.ceil(msg.content.length * 0.25);
-    if (estimatedTokens + msgTokens > availableTokens) {
-      break; // Hit budget ceiling
-    }
-    history.unshift({
-      role: msg.role,
-      text: msg.content,
-      talkMessageId: msg.id,
-    });
-    estimatedTokens += msgTokens;
-  }
-
-  const historyTurnCount = Math.floor(history.length / 2); // Rough: pairs of user/assistant
-
-  // --- Build system prompt ---
-  const systemPrompt =
-    `You are an assistant engaged in a conversation.
-
-## Goal
-${goal}
-
-## Rules
-${rules}
-
-${hasSummary ? `## Summary of Prior Discussion\n${summary}\n` : ''}
-
-${sourceManifest ? `${sourceManifest}` : ''}
-
-Remember to use the provided tools to access additional context as needed.`.trim();
-
-  return {
-    systemPrompt,
-    connectorTools,
-    contextTools,
-    history,
-    estimatedTokens,
-    metadata: {
-      talkId,
-      sourceCount,
-      connectorCount,
-      historyTurnCount,
-      hasSummary,
-    },
-  };
-}
 
 // ============================================================================
 // Event Mapping
@@ -403,21 +173,20 @@ function buildToolExecutor(
       const sourceRow = db
         .prepare(
           `
-        SELECT extracted_content, inline_content
+        SELECT extracted_text
         FROM talk_context_sources
-        WHERE talk_id = ? AND id = ?
+        WHERE talk_id = ? AND (id = ? OR source_ref = ?)
       `,
         )
-        .get(talkId, ref) as
-        | { extracted_content: string | null; inline_content: string | null }
+        .get(talkId, ref, ref) as
+        | { extracted_text: string | null }
         | undefined;
 
       if (!sourceRow) {
         return { result: `Source ${ref} not found`, isError: true };
       }
 
-      const content = sourceRow.extracted_content || sourceRow.inline_content || '';
-      return { result: content };
+      return { result: sourceRow.extracted_text || '' };
     }
 
     if (toolName === 'read_attachment') {
@@ -431,7 +200,7 @@ function buildToolExecutor(
         .prepare(
           `
         SELECT extracted_text
-        FROM talk_attachments
+        FROM talk_message_attachments
         WHERE id = ? AND talk_id = ?
       `,
         )
