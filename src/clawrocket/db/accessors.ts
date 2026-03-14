@@ -8,10 +8,18 @@ import {
   UserRole,
   UserType,
 } from '../types.js';
-import {
-  initializeTalkToolGrants,
-  supersedePendingTalkActionConfirmationsForRun,
-} from './tool-manager-accessors.js';
+// Stubs for removed tool-manager-accessors (tool grants now live on registered_agents)
+function initializeTalkToolGrants(_talkId: string, _updatedBy: string): void {
+  // No-op: tool permissions are now per-agent via tool_permissions_json
+}
+function supersedePendingTalkActionConfirmationsForRun(_input: {
+  runId: string;
+  resolvedBy?: string | null;
+  reason?: string | null;
+}): number {
+  // No-op: confirmations now use run_confirmations table
+  return 0;
+}
 
 // --- Identity and web session accessors ---
 

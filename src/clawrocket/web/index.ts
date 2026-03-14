@@ -6,12 +6,6 @@ import {
   WEB_PORT,
 } from '../config.js';
 import type { TalkExecutor } from '../talks/executor.js';
-import {
-  ExecutorSettingsService,
-  setActiveExecutorSettingsService,
-} from '../talks/executor-settings.js';
-import { ExecutorCredentialVerifier } from '../talks/executor-credentials-verifier.js';
-import { DirectTalkExecutor } from '../talks/direct-executor.js';
 import { CleanTalkExecutor } from '../talks/new-executor.js';
 import { TalkRunWorker } from '../talks/run-worker.js';
 
@@ -26,28 +20,12 @@ export interface StartWebServerOptions {
 export async function startWebServer(
   input?: StartWebServerOptions,
 ): Promise<WebServerHandle> {
-  const executorSettings = new ExecutorSettingsService();
-  executorSettings.runBootstrapMigration();
-  const effectiveConfig = executorSettings.resolveEffectiveConfig();
-  // Feature flag: set NANOCLAW_USE_CLEAN_EXECUTOR=1 to use the new architecture
-  const useCleanExecutor = process.env.NANOCLAW_USE_CLEAN_EXECUTOR === '1';
-  const executor: TalkExecutor = useCleanExecutor
-    ? new CleanTalkExecutor()
-    : new DirectTalkExecutor();
-
-  executorSettings.captureRunningSnapshot(
-    effectiveConfig,
-    executorSettings.getConfigVersion(),
-  );
-  setActiveExecutorSettingsService(executorSettings);
-  const executorVerifier = new ExecutorCredentialVerifier({
-    executorSettings,
-  });
+  const executor: TalkExecutor = new CleanTalkExecutor();
 
   logger.info(
     {
       mode: 'direct_http',
-      executor: useCleanExecutor ? 'clean' : 'legacy',
+      executor: 'clean',
     },
     'Talk executor mode selected',
   );
@@ -65,8 +43,6 @@ export async function startWebServer(
     host: WEB_HOST,
     port: WEB_PORT,
     runWorker,
-    executorSettings,
-    executorVerifier,
     sendChannelTestMessage: input?.sendChannelTestMessage,
   });
 

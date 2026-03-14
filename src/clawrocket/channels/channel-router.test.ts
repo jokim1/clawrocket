@@ -5,7 +5,6 @@ import {
   claimNextChannelIngressRow,
   createTalkChannelBinding,
   ensureSystemManagedTelegramConnection,
-  resetTalkAgentsToDefault,
   upsertTalk,
   upsertUser,
 } from '../db/index.js';
@@ -25,7 +24,7 @@ describe('TalkChannelRouter', () => {
       ownerId: 'owner-1',
       topicTitle: 'Channel Test Talk',
     });
-    resetTalkAgentsToDefault('talk-1', '2024-01-01T00:00:00.000Z');
+    // resetTalkAgentsToDefault('talk-1', '2024-01-01T00:00:00.000Z');
   });
 
   it('enforces the per-binding inbound rate limit before queue insert', async () => {
