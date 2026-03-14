@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import {
   _initTestDatabase,
+  createMessage,
   upsertTalk,
   upsertUser,
 } from '../db/index.js';
@@ -47,6 +48,23 @@ function insertSource(opts: {
       now,
       now,
     );
+}
+
+function insertTalkMessage(opts: {
+  id: string;
+  role: 'user' | 'assistant' | 'system' | 'tool';
+  content: string;
+  createdAt: string;
+  createdBy?: string | null;
+}) {
+  createMessage({
+    id: opts.id,
+    talkId: TALK_ID,
+    role: opts.role,
+    content: opts.content,
+    createdBy: opts.createdBy ?? null,
+    createdAt: opts.createdAt,
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -140,7 +158,9 @@ describe('context-loader', () => {
       );
       expect(readSourceTool).toBeDefined();
       expect(readSourceTool!.inputSchema.required).toContain('sourceRef');
-      expect(readSourceTool!.inputSchema.properties).toHaveProperty('sourceRef');
+      expect(readSourceTool!.inputSchema.properties).toHaveProperty(
+        'sourceRef',
+      );
       // Should NOT have a 'ref' property — that was the old broken name
       expect(readSourceTool!.inputSchema.properties).not.toHaveProperty('ref');
     });
@@ -223,6 +243,71 @@ describe('context-loader', () => {
       expect(ctx.systemPrompt).toContain('[S1] Big Text');
       expect(ctx.systemPrompt).not.toContain(bigText);
     });
+
+    it('inlines multiple individually-small text sources', async () => {
+      const text200 = 'y'.repeat(800); // ~200 tokens each, below per-item threshold
+      insertSource({
+        id: 'src-a',
+        sourceRef: 'S1',
+        sourceType: 'text',
+        title: 'Text A',
+        extractedText: text200,
+        sortOrder: 0,
+      });
+      insertSource({
+        id: 'src-b',
+        sourceRef: 'S2',
+        sourceType: 'text',
+        title: 'Text B',
+        extractedText: text200,
+        sortOrder: 1,
+      });
+      insertSource({
+        id: 'src-c',
+        sourceRef: 'S3',
+        sourceType: 'text',
+        title: 'Text C',
+        extractedText: text200,
+        sortOrder: 2,
+      });
+
+      const ctx = await loadTalkContext(TALK_ID, 128000);
+
+      expect(ctx.systemPrompt).toContain('[S1] Content:');
+      expect(ctx.systemPrompt).toContain('[S2] Content:');
+      expect(ctx.systemPrompt).toContain('[S3] Content:');
+    });
+
+    it('does not inline URL or file sources even when extracted text is small', async () => {
+      insertSource({
+        id: 'src-url',
+        sourceRef: 'S1',
+        sourceType: 'url',
+        title: 'URL Source',
+        sourceUrl: 'https://example.com/url',
+        extractedText: 'Small URL text',
+        sortOrder: 0,
+      });
+      insertSource({
+        id: 'src-file',
+        sourceRef: 'S2',
+        sourceType: 'file',
+        title: 'File Source',
+        extractedText: 'Small file text',
+        sortOrder: 1,
+      });
+
+      const ctx = await loadTalkContext(TALK_ID, 128000);
+
+      expect(ctx.systemPrompt).toContain(
+        '[S1] URL Source - https://example.com/url',
+      );
+      expect(ctx.systemPrompt).toContain('[S2] File Source');
+      expect(ctx.systemPrompt).not.toContain('Small URL text');
+      expect(ctx.systemPrompt).not.toContain('Small file text');
+      expect(ctx.systemPrompt).not.toContain('[S1] Content:');
+      expect(ctx.systemPrompt).not.toContain('[S2] Content:');
+    });
   });
 
   // =========================================================================
@@ -242,6 +327,61 @@ describe('context-loader', () => {
       const ctx = await loadTalkContext(TALK_ID, 128000);
       expect(ctx.metadata.sourceCount).toBe(1);
       expect(ctx.metadata.talkId).toBe(TALK_ID);
+    });
+  });
+
+  // =========================================================================
+  // History budgeting
+  // =========================================================================
+
+  describe('history budgeting', () => {
+    it('keeps the newest messages within budget and preserves chronological order', async () => {
+      insertTalkMessage({
+        id: 'msg-1',
+        role: 'user',
+        content: 'A'.repeat(120),
+        createdAt: '2026-03-14T00:00:01.000Z',
+        createdBy: 'owner-1',
+      });
+      insertTalkMessage({
+        id: 'msg-2',
+        role: 'assistant',
+        content: 'B'.repeat(120),
+        createdAt: '2026-03-14T00:00:02.000Z',
+      });
+      insertTalkMessage({
+        id: 'msg-3',
+        role: 'user',
+        content: 'C'.repeat(120),
+        createdAt: '2026-03-14T00:00:03.000Z',
+        createdBy: 'owner-1',
+      });
+      insertTalkMessage({
+        id: 'msg-4',
+        role: 'assistant',
+        content: 'D'.repeat(120),
+        createdAt: '2026-03-14T00:00:04.000Z',
+      });
+
+      const ctx = await loadTalkContext(TALK_ID, 6156);
+
+      expect(ctx.history).toHaveLength(2);
+      expect(ctx.history[0].content).toBe('C'.repeat(120));
+      expect(ctx.history[1].content).toBe('D'.repeat(120));
+    });
+
+    it('returns no history when the available budget is exhausted', async () => {
+      insertTalkMessage({
+        id: 'msg-5',
+        role: 'user',
+        content: 'This message should be trimmed out by a tiny budget.',
+        createdAt: '2026-03-14T00:00:05.000Z',
+        createdBy: 'owner-1',
+      });
+
+      const ctx = await loadTalkContext(TALK_ID, 6000);
+
+      expect(ctx.history).toEqual([]);
     });
   });
 
@@ -278,7 +418,9 @@ describe('context-loader', () => {
 
       // The SQL uses (id = ? OR source_ref = ?), so passing the row ID works
       const executor = buildToolExecutor(TALK_ID);
-      const result = await executor('read_context_source', { sourceRef: 'src-uuid-2' });
+      const result = await executor('read_context_source', {
+        sourceRef: 'src-uuid-2',
+      });
 
       expect(result.isError).toBeFalsy();
       expect(result.result).toBe('Page content here.');
@@ -294,7 +436,9 @@ describe('context-loader', () => {
 
     it('returns error for non-existent source ref', async () => {
       const executor = buildToolExecutor(TALK_ID);
-      const result = await executor('read_context_source', { sourceRef: 'S99' });
+      const result = await executor('read_context_source', {
+        sourceRef: 'S99',
+      });
 
       expect(result.isError).toBe(true);
       expect(result.result).toContain('not found');
@@ -356,10 +500,21 @@ describe('context-loader', () => {
             id, talk_id, message_id, file_name, mime_type, storage_key, extracted_text, created_at
           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
         )
-        .run('att-1', TALK_ID, 'msg-1', 'report.pdf', 'application/pdf', 'store/att-1', 'PDF content here.', now);
+        .run(
+          'att-1',
+          TALK_ID,
+          'msg-1',
+          'report.pdf',
+          'application/pdf',
+          'store/att-1',
+          'PDF content here.',
+          now,
+        );
 
       const executor = buildToolExecutor(TALK_ID);
-      const result = await executor('read_attachment', { attachmentId: 'att-1' });
+      const result = await executor('read_attachment', {
+        attachmentId: 'att-1',
+      });
 
       expect(result.isError).toBeFalsy();
       expect(result.result).toBe('PDF content here.');
@@ -367,7 +522,9 @@ describe('context-loader', () => {
 
     it('returns error for non-existent attachment', async () => {
       const executor = buildToolExecutor(TALK_ID);
-      const result = await executor('read_attachment', { attachmentId: 'no-such' });
+      const result = await executor('read_attachment', {
+        attachmentId: 'no-such',
+      });
 
       expect(result.isError).toBe(true);
       expect(result.result).toContain('not found');

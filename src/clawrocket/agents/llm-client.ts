@@ -50,12 +50,28 @@ export interface LlmMessage {
 export type LlmContentBlock =
   | { type: 'text'; text: string }
   | { type: 'tool_use'; id: string; name: string; input: unknown }
-  | { type: 'tool_result'; toolUseId: string; content: string; isError?: boolean };
+  | {
+      type: 'tool_result';
+      toolUseId: string;
+      content: string;
+      isError?: boolean;
+    };
 
 export interface LlmStreamEvent {
-  type: 'text_delta' | 'tool_call_start' | 'tool_call_delta' | 'usage' | 'done' | 'error';
+  type:
+    | 'text_delta'
+    | 'tool_call_start'
+    | 'tool_call_delta'
+    | 'usage'
+    | 'done'
+    | 'error';
   text?: string;
-  toolCall?: { id: string; name: string; argumentsDelta?: string; arguments?: string };
+  toolCall?: {
+    id: string;
+    name: string;
+    argumentsDelta?: string;
+    arguments?: string;
+  };
   usage?: { inputTokens: number; outputTokens: number };
   stopReason?: string;
   error?: string;
@@ -63,7 +79,11 @@ export interface LlmStreamEvent {
 
 export interface LlmResponse {
   content: string;
-  toolCalls: Array<{ id: string; name: string; arguments: Record<string, unknown> }>;
+  toolCalls: Array<{
+    id: string;
+    name: string;
+    arguments: Record<string, unknown>;
+  }>;
   usage: { inputTokens: number; outputTokens: number };
   stopReason: string;
 }
@@ -105,8 +125,18 @@ interface AnthropicMessage {
 
 type AnthropicContent =
   | { type: 'text'; text: string }
-  | { type: 'tool_use'; id: string; name: string; input: Record<string, unknown> }
-  | { type: 'tool_result'; tool_use_id: string; content: string; is_error?: boolean };
+  | {
+      type: 'tool_use';
+      id: string;
+      name: string;
+      input: Record<string, unknown>;
+    }
+  | {
+      type: 'tool_result';
+      tool_use_id: string;
+      content: string;
+      is_error?: boolean;
+    };
 
 interface AnthropicToolDefinition {
   name: string;
@@ -237,9 +267,12 @@ async function readSseResponse(
   let buffer = '';
   let sawFirstChunk = false;
 
-  let responseStartTimer: ReturnType<typeof setTimeout> | null = setTimeout(() => {
-    controller.abort('response_start_timeout');
-  }, timeouts.responseStartTimeoutMs);
+  let responseStartTimer: ReturnType<typeof setTimeout> | null = setTimeout(
+    () => {
+      controller.abort('response_start_timeout');
+    },
+    timeouts.responseStartTimeoutMs,
+  );
 
   let idleTimer: ReturnType<typeof setTimeout> | null = null;
   const absoluteTimer = setTimeout(() => {
@@ -536,7 +569,8 @@ async function* parseAnthropicStream(
         currentBlockIndex = blocks.length - 1;
       } else if (block?.type === 'tool_use') {
         const blockId = typeof block.id === 'string' ? block.id : randomUUID();
-        const blockName = typeof block.name === 'string' ? block.name : 'unknown_tool';
+        const blockName =
+          typeof block.name === 'string' ? block.name : 'unknown_tool';
         blocks.push({
           type: 'tool_use',
           id: blockId,
@@ -563,8 +597,12 @@ async function* parseAnthropicStream(
         queueEvent({ type: 'text_delta', text: delta.text });
         return;
       }
-      if (currentBlock.type === 'tool_use' && typeof delta?.partial_json === 'string') {
-        currentBlock.inputJson = (currentBlock.inputJson || '') + delta.partial_json;
+      if (
+        currentBlock.type === 'tool_use' &&
+        typeof delta?.partial_json === 'string'
+      ) {
+        currentBlock.inputJson =
+          (currentBlock.inputJson || '') + delta.partial_json;
         queueEvent({
           type: 'tool_call_delta',
           toolCall: {
@@ -698,7 +736,9 @@ async function* parseOpenAiStream(
     }
 
     for (const toolDelta of choice?.delta?.tool_calls || []) {
-      const index = Number.isFinite(toolDelta.index) ? Number(toolDelta.index) : 0;
+      const index = Number.isFinite(toolDelta.index)
+        ? Number(toolDelta.index)
+        : 0;
       const current = toolCallsByIndex.get(index) || {
         id: toolDelta.id || randomUUID(),
         name: '',
@@ -888,12 +928,21 @@ export async function callLlm(
   },
 ): Promise<LlmResponse> {
   let content = '';
-  const toolCallsMap = new Map<string, { name: string; argumentsJson: string }>();
+  const toolCallsMap = new Map<
+    string,
+    { name: string; argumentsJson: string }
+  >();
   let inputTokens = 0;
   let outputTokens = 0;
   let stopReason = '';
 
-  for await (const event of streamLlmResponse(provider, secret, modelId, messages, options)) {
+  for await (const event of streamLlmResponse(
+    provider,
+    secret,
+    modelId,
+    messages,
+    options,
+  )) {
     switch (event.type) {
       case 'text_delta':
         if (event.text) {
@@ -929,7 +978,10 @@ export async function callLlm(
         stopReason = event.stopReason || 'end_turn';
         break;
       case 'error':
-        throw new LlmClientError(event.error || 'Unknown error', 'upstream_5xx');
+        throw new LlmClientError(
+          event.error || 'Unknown error',
+          'upstream_5xx',
+        );
     }
   }
 

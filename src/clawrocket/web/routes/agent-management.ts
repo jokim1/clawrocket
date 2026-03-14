@@ -63,7 +63,10 @@ export function listAgentsRoute(auth: AuthContext): {
 // Get Single Agent Route
 // ---------------------------------------------------------------------------
 
-export function getAgentRoute(auth: AuthContext, agentId: string): {
+export function getAgentRoute(
+  auth: AuthContext,
+  agentId: string,
+): {
   statusCode: number;
   body: ApiEnvelope<RegisteredAgentSnapshot>;
 } {
@@ -116,7 +119,10 @@ interface CreateAgentBody {
   systemPrompt?: unknown;
 }
 
-export function createAgentRoute(auth: AuthContext, body: CreateAgentBody): {
+export function createAgentRoute(
+  auth: AuthContext,
+  body: CreateAgentBody,
+): {
   statusCode: number;
   body: ApiEnvelope<RegisteredAgentSnapshot>;
 } {
@@ -209,9 +215,13 @@ export function createAgentRoute(auth: AuthContext, body: CreateAgentBody): {
 
   // Validate optional string fields
   const personaRole =
-    typeof body.personaRole === 'string' ? body.personaRole.trim() || undefined : undefined;
+    typeof body.personaRole === 'string'
+      ? body.personaRole.trim() || undefined
+      : undefined;
   const systemPrompt =
-    typeof body.systemPrompt === 'string' ? body.systemPrompt.trim() || undefined : undefined;
+    typeof body.systemPrompt === 'string'
+      ? body.systemPrompt.trim() || undefined
+      : undefined;
 
   try {
     const created = createRegisteredAgent({
@@ -381,12 +391,16 @@ export function updateAgentRoute(
 
   if (body.personaRole !== undefined) {
     updates.personaRole =
-      typeof body.personaRole === 'string' ? body.personaRole.trim() || null : null;
+      typeof body.personaRole === 'string'
+        ? body.personaRole.trim() || null
+        : null;
   }
 
   if (body.systemPrompt !== undefined) {
     updates.systemPrompt =
-      typeof body.systemPrompt === 'string' ? body.systemPrompt.trim() || null : null;
+      typeof body.systemPrompt === 'string'
+        ? body.systemPrompt.trim() || null
+        : null;
   }
 
   if (body.enabled !== undefined) {
@@ -435,7 +449,10 @@ export function updateAgentRoute(
 // Delete Agent Route
 // ---------------------------------------------------------------------------
 
-export function deleteAgentRoute(auth: AuthContext, agentId: string): {
+export function deleteAgentRoute(
+  auth: AuthContext,
+  agentId: string,
+): {
   statusCode: number;
   body: ApiEnvelope<{ deleted: true }>;
 } {
@@ -512,7 +529,10 @@ export function deleteAgentRoute(auth: AuthContext, agentId: string): {
 // Get Agent Fallback Steps Route
 // ---------------------------------------------------------------------------
 
-export function getAgentFallbackRoute(auth: AuthContext, agentId: string): {
+export function getAgentFallbackRoute(
+  auth: AuthContext,
+  agentId: string,
+): {
   statusCode: number;
   body: ApiEnvelope<AgentFallbackStep[]>;
 } {

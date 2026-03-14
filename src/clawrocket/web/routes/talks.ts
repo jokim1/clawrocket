@@ -1482,14 +1482,19 @@ export function enqueueTalkChat(input: {
   }
 
   const requestedTargetIds = Array.isArray(input.targetAgentIds)
-    ? [...new Set(input.targetAgentIds.map((id: any) => id.trim()).filter(Boolean))]
+    ? [
+        ...new Set(
+          input.targetAgentIds.map((id: any) => id.trim()).filter(Boolean),
+        ),
+      ]
     : [];
   const talkAgents = listTalkAgents(input.talkId);
-  const selectedAgents: Array<{ id: string; name: string }> = requestedTargetIds.length > 0
-    ? talkAgents
-        .filter((a) => requestedTargetIds.includes(a.agentId))
-        .map((a) => ({ id: a.agentId, name: a.agentName }))
-    : talkAgents.map((a) => ({ id: a.agentId, name: a.agentName }));
+  const selectedAgents: Array<{ id: string; name: string }> =
+    requestedTargetIds.length > 0
+      ? talkAgents
+          .filter((a) => requestedTargetIds.includes(a.agentId))
+          .map((a) => ({ id: a.agentId, name: a.agentName }))
+      : talkAgents.map((a) => ({ id: a.agentId, name: a.agentName }));
 
   if (selectedAgents.length === 0) {
     return {

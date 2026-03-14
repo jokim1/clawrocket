@@ -35,10 +35,14 @@ describe('TalkChannelRouter', () => {
       ownerId: 'owner-1',
       topicTitle: 'Channel Test Talk',
     });
-    getDb().prepare(`
+    getDb()
+      .prepare(
+        `
       INSERT INTO talk_agents (id, talk_id, registered_agent_id, is_primary, sort_order, created_at, updated_at)
       VALUES (?, ?, ?, 1, 0, datetime('now'), datetime('now'))
-    `).run('ta-talk-1', 'talk-1', agent.id);
+    `,
+      )
+      .run('ta-talk-1', 'talk-1', agent.id);
     // resetTalkAgentsToDefault('talk-1', '2024-01-01T00:00:00.000Z');
   });
 

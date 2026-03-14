@@ -128,20 +128,16 @@ export async function loadTalkContext(
 // Step 1: Fetch Goal, Rules, and Summary
 // ---------------------------------------------------------------------------
 
-function fetchGoal(
-  db: any,
-  talkId: string,
-): string | null {
+function fetchGoal(db: any, talkId: string): string | null {
   const row = db
-    .prepare(`SELECT goal_text FROM talk_context_goal WHERE talk_id = ? LIMIT 1`)
+    .prepare(
+      `SELECT goal_text FROM talk_context_goal WHERE talk_id = ? LIMIT 1`,
+    )
     .get(talkId) as { goal_text: string } | undefined;
   return row?.goal_text ?? null;
 }
 
-function fetchRules(
-  db: any,
-  talkId: string,
-): string[] {
+function fetchRules(db: any, talkId: string): string[] {
   const rows = db
     .prepare(
       `
@@ -155,10 +151,7 @@ function fetchRules(
   return rows.map((r) => r.rule_text);
 }
 
-function fetchSummary(
-  db: any,
-  talkId: string,
-): string | null {
+function fetchSummary(db: any, talkId: string): string | null {
   const row = db
     .prepare(
       `
@@ -186,10 +179,7 @@ interface SourceRow {
   status: string;
 }
 
-function fetchSources(
-  db: any,
-  talkId: string,
-): SourceRow[] {
+function fetchSources(db: any, talkId: string): SourceRow[] {
   const rows = db
     .prepare(
       `
@@ -249,10 +239,7 @@ function buildSourceManifest(sources: SourceRow[]): Array<{
 // Step 3: Build Connector Tools
 // ---------------------------------------------------------------------------
 
-function buildConnectorTools(
-  db: any,
-  talkId: string,
-): LlmToolDefinition[] {
+function buildConnectorTools(db: any, talkId: string): LlmToolDefinition[] {
   // TODO: Fetch talk_data_connectors JOIN data_connectors
   // Parse config_json to extract tool definitions
   // For now, return empty array
@@ -267,7 +254,11 @@ function assembleSystemPrompt(
   goal: string | null,
   summary: string | null,
   rules: string[],
-  sourceLines: Array<{ ref: string; line: string; inlineContent: string | null }>,
+  sourceLines: Array<{
+    ref: string;
+    line: string;
+    inlineContent: string | null;
+  }>,
 ): string {
   const parts: string[] = [];
 
@@ -287,10 +278,7 @@ function assembleSystemPrompt(
     // Append inline content
     const inlineBlocks = sourceLines
       .filter((s) => s.inlineContent)
-      .map(
-        (s) =>
-          `\n[${s.ref}] Content:\n${s.inlineContent}`,
-      );
+      .map((s) => `\n[${s.ref}] Content:\n${s.inlineContent}`);
     if (inlineBlocks.length > 0) {
       parts.push(inlineBlocks.join('\n'));
     }

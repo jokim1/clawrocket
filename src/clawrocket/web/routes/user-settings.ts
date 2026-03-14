@@ -123,7 +123,12 @@ export function updateUserToolPermissionRoute(
 
     // Store permission for each runtime tool in this family
     for (const tool of runtimeTools) {
-      upsertUserToolPermission(auth.userId, tool, body.allowed, body.requiresApproval);
+      upsertUserToolPermission(
+        auth.userId,
+        tool,
+        body.allowed,
+        body.requiresApproval,
+      );
     }
 
     // Return a permission object representing the family
@@ -158,7 +163,10 @@ export function updateUserToolPermissionRoute(
 // Get Effective Tools for Agent Route
 // ---------------------------------------------------------------------------
 
-export function getEffectiveToolsRoute(auth: AuthContext, agentId: string): {
+export function getEffectiveToolsRoute(
+  auth: AuthContext,
+  agentId: string,
+): {
   statusCode: number;
   body: ApiEnvelope<EffectiveToolAccess[]>;
 } {
