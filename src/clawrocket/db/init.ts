@@ -255,6 +255,59 @@ function migrateTalkRunsForAwaitingConfirmation(
   `);
 }
 
+function migrateLlmProviderVerificationsForVerifying(
+  database: Database.Database,
+): void {
+  const row = database
+    .prepare(
+      `
+      SELECT sql
+      FROM sqlite_master
+      WHERE type = 'table' AND name = 'llm_provider_verifications'
+    `,
+    )
+    .get() as { sql?: string | null } | undefined;
+
+  const sql = row?.sql || '';
+  if (!sql || sql.includes("'verifying'")) {
+    return;
+  }
+
+  database.exec(`
+    PRAGMA foreign_keys = OFF;
+
+    CREATE TABLE llm_provider_verifications_new (
+      provider_id TEXT PRIMARY KEY REFERENCES llm_providers(id) ON DELETE CASCADE,
+      status TEXT NOT NULL
+        CHECK(status IN ('missing', 'not_verified', 'verifying', 'verified', 'invalid', 'unavailable')),
+      last_verified_at TEXT,
+      last_error TEXT,
+      updated_at TEXT NOT NULL
+    );
+
+    INSERT INTO llm_provider_verifications_new (
+      provider_id,
+      status,
+      last_verified_at,
+      last_error,
+      updated_at
+    )
+    SELECT
+      provider_id,
+      status,
+      last_verified_at,
+      last_error,
+      updated_at
+    FROM llm_provider_verifications;
+
+    DROP TABLE llm_provider_verifications;
+    ALTER TABLE llm_provider_verifications_new
+      RENAME TO llm_provider_verifications;
+
+    PRAGMA foreign_keys = ON;
+  `);
+}
+
 function migrateTalkActionConfirmationsForPendingExecution(
   database: Database.Database,
 ): void {
@@ -445,6 +498,7 @@ function resetTalkDomainForFolderTree(database: Database.Database): void {
 function createClawrocketSchema(database: Database.Database): void {
   resetTalkDomainForFolderTree(database);
   migrateLlmProvidersForNvidia(database);
+  migrateLlmProviderVerificationsForVerifying(database);
   migrateTalkRunsForAwaitingConfirmation(database);
   migrateTalkActionConfirmationsForPendingExecution(database);
 
@@ -698,7 +752,7 @@ function createClawrocketSchema(database: Database.Database): void {
     CREATE TABLE IF NOT EXISTS llm_provider_verifications (
       provider_id TEXT PRIMARY KEY REFERENCES llm_providers(id) ON DELETE CASCADE,
       status TEXT NOT NULL
-        CHECK(status IN ('missing', 'not_verified', 'verified', 'invalid', 'unavailable')),
+        CHECK(status IN ('missing', 'not_verified', 'verifying', 'verified', 'invalid', 'unavailable')),
       last_verified_at TEXT,
       last_error TEXT,
       updated_at TEXT NOT NULL

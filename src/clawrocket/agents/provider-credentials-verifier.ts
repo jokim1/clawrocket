@@ -3,6 +3,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { decryptProviderSecret } from '../llm/provider-secret-store.js';
 import {
   getLlmProviderById,
+  getProviderVerificationByProviderId,
   getProviderSecretByProviderId,
   listKnownProviderCredentialCards,
   upsertProviderVerification,
@@ -87,12 +88,31 @@ function buildVerificationRequest(
 
 export class ProviderCredentialsVerifier {
   private readonly fetchImpl: typeof fetch;
+  private readonly inFlight = new Map<
+    string,
+    Promise<AgentProviderCardSnapshot>
+  >();
 
   constructor(input?: { fetchImpl?: typeof fetch }) {
     this.fetchImpl = input?.fetchImpl || fetch;
   }
 
-  async verify(providerId: string): Promise<AgentProviderCardSnapshot> {
+  verify(providerId: string): Promise<AgentProviderCardSnapshot> {
+    const existing = this.inFlight.get(providerId);
+    if (existing) {
+      return existing;
+    }
+
+    const task = this.verifyInternal(providerId).finally(() => {
+      this.inFlight.delete(providerId);
+    });
+    this.inFlight.set(providerId, task);
+    return task;
+  }
+
+  private async verifyInternal(
+    providerId: string,
+  ): Promise<AgentProviderCardSnapshot> {
     const provider = getLlmProviderById(providerId);
     if (!provider) {
       throw new Error(`provider not found: ${providerId}`);
@@ -118,6 +138,14 @@ export class ProviderCredentialsVerifier {
       });
       return this.getCard(providerId);
     }
+
+    const currentVerification = getProviderVerificationByProviderId(providerId);
+    upsertProviderVerification({
+      providerId,
+      status: 'verifying',
+      lastVerifiedAt: currentVerification?.last_verified_at ?? null,
+      lastError: null,
+    });
 
     const secret = decryptProviderSecret(secretRecord.ciphertext);
     const request = buildVerificationRequest(provider);

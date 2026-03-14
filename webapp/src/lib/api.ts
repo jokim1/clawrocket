@@ -448,6 +448,7 @@ export type AgentProviderCard = {
   verificationStatus:
     | 'missing'
     | 'not_verified'
+    | 'verifying'
     | 'verified'
     | 'invalid'
     | 'unavailable';
