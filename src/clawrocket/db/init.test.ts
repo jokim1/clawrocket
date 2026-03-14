@@ -59,9 +59,9 @@ describe('clawrocket schema init', () => {
     _initTestDatabase();
     const db = getDb();
 
-    const columns = db
-      .prepare(`PRAGMA table_info('talks')`)
-      .all() as Array<{ name: string }>;
+    const columns = db.prepare(`PRAGMA table_info('talks')`).all() as Array<{
+      name: string;
+    }>;
     const colNames = columns.map((c) => c.name);
 
     expect(colNames).toContain('version');

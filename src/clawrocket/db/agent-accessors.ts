@@ -52,15 +52,23 @@ export const AUTO_IMPLIED_DEPENDENCIES: Array<[string, string]> = [
  * - Applies auto-implied dependencies
  * - Rejects unknown keys
  */
-export function validateToolPermissionsJson(
-  json: string,
-): { valid: boolean; error?: string } {
+export function validateToolPermissionsJson(json: string): {
+  valid: boolean;
+  error?: string;
+} {
   try {
     const parsed = JSON.parse(json);
 
     // Check that parsed is an object
-    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
-      return { valid: false, error: 'tool_permissions_json must be a JSON object' };
+    if (
+      typeof parsed !== 'object' ||
+      parsed === null ||
+      Array.isArray(parsed)
+    ) {
+      return {
+        valid: false,
+        error: 'tool_permissions_json must be a JSON object',
+      };
     }
 
     const knownFamilies = Object.keys(TOOL_FAMILY_MAP);
@@ -190,7 +198,9 @@ export interface UserToolPermission {
 // Conversions
 // ---------------------------------------------------------------------------
 
-export function toAgentSnapshot(record: RegisteredAgentRecord): RegisteredAgentSnapshot {
+export function toAgentSnapshot(
+  record: RegisteredAgentRecord,
+): RegisteredAgentSnapshot {
   let toolPermissions: Record<string, boolean> = {};
   try {
     toolPermissions = JSON.parse(record.tool_permissions_json);
@@ -230,7 +240,9 @@ function toUserToolPermission(
 /**
  * Get a single registered agent by ID.
  */
-export function getRegisteredAgent(agentId: string): RegisteredAgentRecord | undefined {
+export function getRegisteredAgent(
+  agentId: string,
+): RegisteredAgentRecord | undefined {
   return getDb()
     .prepare('SELECT * FROM registered_agents WHERE id = ?')
     .get(agentId) as RegisteredAgentRecord | undefined;
@@ -239,7 +251,9 @@ export function getRegisteredAgent(agentId: string): RegisteredAgentRecord | und
 /**
  * Get a registered agent as a snapshot (API-facing format).
  */
-export function getRegisteredAgentSnapshot(agentId: string): RegisteredAgentSnapshot | undefined {
+export function getRegisteredAgentSnapshot(
+  agentId: string,
+): RegisteredAgentSnapshot | undefined {
   const record = getRegisteredAgent(agentId);
   return record ? toAgentSnapshot(record) : undefined;
 }
@@ -258,7 +272,9 @@ export function listRegisteredAgents(): RegisteredAgentRecord[] {
  */
 export function listEnabledAgents(): RegisteredAgentRecord[] {
   return getDb()
-    .prepare('SELECT * FROM registered_agents WHERE enabled = 1 ORDER BY created_at ASC')
+    .prepare(
+      'SELECT * FROM registered_agents WHERE enabled = 1 ORDER BY created_at ASC',
+    )
     .all() as RegisteredAgentRecord[];
 }
 
@@ -417,7 +433,9 @@ export function updateRegisteredAgent(
  * Returns true if the agent existed and was deleted.
  */
 export function deleteRegisteredAgent(agentId: string): boolean {
-  const result = getDb().prepare('DELETE FROM registered_agents WHERE id = ?').run(agentId);
+  const result = getDb()
+    .prepare('DELETE FROM registered_agents WHERE id = ?')
+    .run(agentId);
   return (result.changes ?? 0) > 0;
 }
 
@@ -458,7 +476,9 @@ export function setFallbackSteps(
   const db = getDb();
 
   // Delete existing steps
-  db.prepare('DELETE FROM agent_fallback_steps WHERE agent_id = ?').run(agentId);
+  db.prepare('DELETE FROM agent_fallback_steps WHERE agent_id = ?').run(
+    agentId,
+  );
 
   // Insert new steps with sequential positions
   if (steps.length > 0) {
@@ -589,9 +609,7 @@ export function getEffectiveToolsForAgent(
   }
 
   const userPermissions = listUserToolPermissions(userId);
-  const userPermissionMap = new Map(
-    userPermissions.map((p) => [p.toolId, p]),
-  );
+  const userPermissionMap = new Map(userPermissions.map((p) => [p.toolId, p]));
 
   const result: EffectiveToolAccess[] = [];
 

@@ -340,6 +340,7 @@ describe('TalkRunWorker', () => {
     createTalkRun({
       id: 'run-5',
       talk_id: 'talk-1',
+      thread_id: null,
       requested_by: 'owner-1',
       status: 'running',
       trigger_message_id: 'msg-5',
@@ -354,6 +355,7 @@ describe('TalkRunWorker', () => {
     createTalkRun({
       id: 'run-6',
       talk_id: 'talk-1',
+      thread_id: null,
       requested_by: 'owner-1',
       status: 'queued',
       trigger_message_id: 'msg-6',

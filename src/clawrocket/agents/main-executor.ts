@@ -1,30 +1,25 @@
 /**
- * MainExecutor — shared execution substrate for the Main Agent Channel.
+ * MainExecutor — pure execution function for the Main Agent Channel.
  *
- * Uses the SAME pipeline as Talk execution (talk_runs → agentRouter.execute() →
- * llm_attempts), but with:
- * - talk_id = NULL (Main channel, not a Talk)
- * - thread_id for message grouping
+ * Uses the SAME pipeline as Talk execution (agentRouter.execute()), but with:
  * - No context loading (context-free in v1)
- * - All agent tools enabled (Main is the power surface)
+ * - No persistence (worker owns all DB writes via atomic transactions)
+ * - No terminal event emits (worker owns completed/failed events)
  *
- * This is deliberately thin: ~150 lines. Context loading deferred to v2.
+ * The executor resolves an agent, loads thread history, calls executeWithAgent,
+ * emits streaming events (started, deltas, usage), and returns output.
+ * On failure it throws — the worker catches and emits the authoritative failure.
  */
 
-import { randomUUID } from 'crypto';
 import { getDb } from '../../db.js';
 import {
-  createMessage,
-  createLlmAttempt,
   getRegisteredAgent,
-  type LlmAttemptStatus,
   type RegisteredAgentRecord,
 } from '../db/agent-accessors.js';
 import {
   executeWithAgent,
   type ExecutionContext,
   type ExecutionEvent,
-  type AgentExecutionResult,
 } from './agent-router.js';
 import { getMainAgent } from './agent-registry.js';
 
@@ -48,6 +43,7 @@ export interface MainExecutorOutput {
   providerId: string;
   modelId: string;
   threadId: string;
+  latencyMs: number;
   usage?: {
     inputTokens: number;
     outputTokens: number;
@@ -55,6 +51,7 @@ export interface MainExecutorOutput {
   };
 }
 
+/** Streaming-only events emitted during execution. Terminal events are worker-owned. */
 export type MainExecutionEvent =
   | {
       type: 'main_response_started';
@@ -73,24 +70,15 @@ export type MainExecutionEvent =
       type: 'main_response_usage';
       runId: string;
       threadId: string;
-      usage: { inputTokens: number; outputTokens: number; estimatedCostUsd?: number };
-    }
-  | {
-      type: 'main_response_completed';
-      runId: string;
-      threadId: string;
-      agentId: string;
-    }
-  | {
-      type: 'main_response_failed';
-      runId: string;
-      threadId: string;
-      errorCode: string;
-      errorMessage: string;
+      usage: {
+        inputTokens: number;
+        outputTokens: number;
+        estimatedCostUsd?: number;
+      };
     };
 
 // ============================================================================
-// Main Executor
+// Main Executor (pure — no DB writes, no terminal events)
 // ============================================================================
 
 export async function executeMainChannel(
@@ -111,10 +99,7 @@ export async function executeMainChannel(
   }
 
   if (!agent) {
-    const errorCode = 'NO_AGENT_AVAILABLE';
-    const errorMessage = 'No agent available for Main channel';
-    emitEvent({ type: 'main_response_failed', runId: input.runId, threadId: input.threadId, errorCode, errorMessage });
-    throw new Error(errorMessage);
+    throw new Error('No agent available for Main channel');
   }
 
   emitEvent({
@@ -151,15 +136,22 @@ export async function executeMainChannel(
     history,
   };
 
-  let result: AgentExecutionResult;
-  try {
-    result = await executeWithAgent(agent.id, context, input.triggerContent, {
+  const result = await executeWithAgent(
+    agent.id,
+    context,
+    input.triggerContent,
+    {
       runId: input.runId,
       userId: input.requestedBy,
       signal,
       emit: (event: ExecutionEvent) => {
         if (event.type === 'text_delta') {
-          emitEvent({ type: 'main_response_delta', runId: input.runId, threadId: input.threadId, text: event.text });
+          emitEvent({
+            type: 'main_response_delta',
+            runId: input.runId,
+            threadId: input.threadId,
+            text: event.text,
+          });
         } else if (event.type === 'usage') {
           emitEvent({
             type: 'main_response_usage',
@@ -173,64 +165,10 @@ export async function executeMainChannel(
           });
         }
       },
-    });
-  } catch (err) {
-    const errorMessage = err instanceof Error ? err.message : String(err);
-    emitEvent({
-      type: 'main_response_failed',
-      runId: input.runId,
-      threadId: input.threadId,
-      errorCode: 'EXECUTION_ERROR',
-      errorMessage,
-    });
-    throw err;
-  }
+    },
+  );
 
-  // --- Step 4: Store assistant message ---
-  const messageId = randomUUID();
-  const now = new Date().toISOString();
-
-  // Note: createdBy is for the *user* who authored a message; assistant
-  // messages are system-generated, so createdBy must be null.
-  createMessage({
-    id: messageId,
-    talkId: null, // Main channel
-    threadId: input.threadId,
-    role: 'assistant',
-    content: result.content,
-    agentId: agent.id,
-    createdBy: null,
-    metadataJson: JSON.stringify({
-      runId: input.runId,
-      providerId: agent.provider_id,
-      modelId: agent.model_id,
-    }),
-  });
-
-  // --- Step 5: Record LLM attempt ---
-  const latencyMs = Date.now() - startTime;
-  createLlmAttempt({
-    runId: input.runId,
-    talkId: null, // Main channel
-    agentId: agent.id,
-    providerId: agent.provider_id,
-    modelId: agent.model_id,
-    status: 'success' as LlmAttemptStatus,
-    latencyMs,
-    inputTokens: result.usage?.inputTokens,
-    outputTokens: result.usage?.outputTokens,
-    estimatedCostUsd: result.usage?.estimatedCostUsd,
-    createdAt: now,
-  });
-
-  // --- Step 6: Emit completion ---
-  emitEvent({
-    type: 'main_response_completed',
-    runId: input.runId,
-    threadId: input.threadId,
-    agentId: agent.id,
-  });
-
+  // --- Step 4: Return output (no persistence — worker handles that) ---
   return {
     content: result.content,
     agentId: agent.id,
@@ -238,6 +176,7 @@ export async function executeMainChannel(
     providerId: agent.provider_id,
     modelId: agent.model_id,
     threadId: input.threadId,
+    latencyMs: Date.now() - startTime,
     usage: result.usage,
   };
 }

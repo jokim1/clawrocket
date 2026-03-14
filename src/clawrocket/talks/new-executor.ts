@@ -179,9 +179,7 @@ export function buildToolExecutor(
         WHERE talk_id = ? AND (id = ? OR source_ref = ?)
       `,
         )
-        .get(talkId, ref, ref) as
-        | { extracted_text: string | null }
-        | undefined;
+        .get(talkId, ref, ref) as { extracted_text: string | null } | undefined;
 
       if (!sourceRow) {
         return { result: `Source ${ref} not found`, isError: true };
@@ -193,7 +191,10 @@ export function buildToolExecutor(
     if (toolName === 'read_attachment') {
       const attachmentId = args.attachmentId as string | undefined;
       if (!attachmentId) {
-        return { result: 'Error: attachmentId parameter required', isError: true };
+        return {
+          result: 'Error: attachmentId parameter required',
+          isError: true,
+        };
       }
 
       const db = getDb();
@@ -205,10 +206,15 @@ export function buildToolExecutor(
         WHERE id = ? AND talk_id = ?
       `,
         )
-        .get(attachmentId, talkId) as { extracted_text: string | null } | undefined;
+        .get(attachmentId, talkId) as
+        | { extracted_text: string | null }
+        | undefined;
 
       if (!attachmentRow) {
-        return { result: `Attachment ${attachmentId} not found`, isError: true };
+        return {
+          result: `Attachment ${attachmentId} not found`,
+          isError: true,
+        };
       }
 
       return { result: attachmentRow.extracted_text || '' };
@@ -283,12 +289,17 @@ export class CleanTalkExecutor implements TalkExecutor {
         WHERE provider_id = ? AND model_id = ?
       `,
         )
-        .get(agent.provider_id, agent.model_id) as { context_window_tokens: number } | undefined;
+        .get(agent.provider_id, agent.model_id) as
+        | { context_window_tokens: number }
+        | undefined;
 
       const modelContextWindow = modelRow?.context_window_tokens || 128000;
 
       // Reload context with correct context window
-      const contextPackageWithCorrectWindow = await loadTalkContext(input.talkId, modelContextWindow);
+      const contextPackageWithCorrectWindow = await loadTalkContext(
+        input.talkId,
+        modelContextWindow,
+      );
 
       // --- Step 4: Build ExecutionContext ---
       const context: ExecutionContext = {
@@ -307,29 +318,36 @@ export class CleanTalkExecutor implements TalkExecutor {
       const toolExecutor = buildToolExecutor(input.talkId);
 
       try {
-        lastExecutionResult = await executeWithAgent(agent.id, context, input.triggerContent, {
-          runId: input.runId,
-          userId: input.requestedBy,
-          signal,
-          emit: (event: ExecutionEvent) => {
-            // Map agent-router events to Talk events
-            const talkEvent = mapExecutionEvent(
-              event,
-              input,
-              agent!,
-              agent!.provider_id,
-              agent!.model_id,
-            );
-            if (talkEvent) {
-              emitEvent(talkEvent);
-            }
+        lastExecutionResult = await executeWithAgent(
+          agent.id,
+          context,
+          input.triggerContent,
+          {
+            runId: input.runId,
+            userId: input.requestedBy,
+            signal,
+            emit: (event: ExecutionEvent) => {
+              // Map agent-router events to Talk events
+              const talkEvent = mapExecutionEvent(
+                event,
+                input,
+                agent!,
+                agent!.provider_id,
+                agent!.model_id,
+              );
+              if (talkEvent) {
+                emitEvent(talkEvent);
+              }
+            },
+            executeToolCall: toolExecutor,
           },
-          executeToolCall: toolExecutor,
-        });
+        );
       } catch (err) {
         executionFailed = true;
-        executionErrorCode = err instanceof Error ? 'EXECUTION_ERROR' : 'UNKNOWN_ERROR';
-        executionErrorMessage = err instanceof Error ? err.message : String(err);
+        executionErrorCode =
+          err instanceof Error ? 'EXECUTION_ERROR' : 'UNKNOWN_ERROR';
+        executionErrorMessage =
+          err instanceof Error ? err.message : String(err);
       }
 
       if (executionFailed || !lastExecutionResult) {
@@ -393,11 +411,13 @@ export class CleanTalkExecutor implements TalkExecutor {
         agentNickname: agent.name,
         providerId: agent.provider_id,
         modelId: agent.model_id,
-        usage: lastExecutionResult.usage ? {
-          inputTokens: lastExecutionResult.usage.inputTokens,
-          outputTokens: lastExecutionResult.usage.outputTokens,
-          estimatedCostUsd: lastExecutionResult.usage.estimatedCostUsd,
-        } : undefined,
+        usage: lastExecutionResult.usage
+          ? {
+              inputTokens: lastExecutionResult.usage.inputTokens,
+              outputTokens: lastExecutionResult.usage.outputTokens,
+              estimatedCostUsd: lastExecutionResult.usage.estimatedCostUsd,
+            }
+          : undefined,
       });
 
       // --- Step 8: Return result ---
@@ -407,11 +427,13 @@ export class CleanTalkExecutor implements TalkExecutor {
         agentNickname: agent.name,
         providerId: agent.provider_id,
         modelId: agent.model_id,
-        usage: lastExecutionResult.usage ? {
-          inputTokens: lastExecutionResult.usage.inputTokens,
-          outputTokens: lastExecutionResult.usage.outputTokens,
-          estimatedCostUsd: lastExecutionResult.usage.estimatedCostUsd,
-        } : undefined,
+        usage: lastExecutionResult.usage
+          ? {
+              inputTokens: lastExecutionResult.usage.inputTokens,
+              outputTokens: lastExecutionResult.usage.outputTokens,
+              estimatedCostUsd: lastExecutionResult.usage.estimatedCostUsd,
+            }
+          : undefined,
         responseSequenceInRun: 1,
         metadataJson: JSON.stringify({
           agentId: agent.id,
@@ -422,7 +444,8 @@ export class CleanTalkExecutor implements TalkExecutor {
       };
     } catch (err) {
       // Final catch: emit failure if not already emitted
-      const errorCode = err instanceof Error ? 'EXECUTOR_ERROR' : 'UNKNOWN_ERROR';
+      const errorCode =
+        err instanceof Error ? 'EXECUTOR_ERROR' : 'UNKNOWN_ERROR';
       const errorMessage = err instanceof Error ? err.message : String(err);
 
       emitEvent({

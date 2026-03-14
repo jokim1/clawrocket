@@ -190,7 +190,9 @@ export async function executeWithAgent(
   // Fetch and decrypt provider secret
   let secret: LlmSecret | undefined;
   const secretRecord: any = db
-    .prepare('SELECT ciphertext FROM llm_provider_secrets WHERE provider_id = ?')
+    .prepare(
+      'SELECT ciphertext FROM llm_provider_secrets WHERE provider_id = ?',
+    )
     .get(agent.provider_id);
 
   if (secretRecord) {
@@ -283,7 +285,11 @@ export async function executeWithAgent(
   });
 
   let finalContent = '';
-  let accumulatedTokens = { inputTokens: 0, outputTokens: 0, estimatedCostUsd: 0 };
+  let accumulatedTokens = {
+    inputTokens: 0,
+    outputTokens: 0,
+    estimatedCostUsd: 0,
+  };
 
   try {
     const stream = streamLlmResponse(
@@ -313,7 +319,9 @@ export async function executeWithAgent(
         emit({ type: 'text_delta', text: event.text || '' });
       } else if (event.type === 'tool_call_start') {
         const toolName = event.toolCall?.name || '';
-        const toolArguments = event.toolCall?.arguments ? JSON.parse(event.toolCall.arguments) : {};
+        const toolArguments = event.toolCall?.arguments
+          ? JSON.parse(event.toolCall.arguments)
+          : {};
         emit({
           type: 'tool_call',
           toolName,

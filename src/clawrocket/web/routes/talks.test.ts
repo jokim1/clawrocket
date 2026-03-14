@@ -67,30 +67,42 @@ describe('talk routes', () => {
       ownerId: 'owner-1',
       topicTitle: 'Owner Talk',
     });
-    getDb().prepare(`
+    getDb()
+      .prepare(
+        `
       INSERT INTO talk_agents (id, talk_id, registered_agent_id, is_primary, sort_order, created_at, updated_at)
       VALUES (?, ?, ?, 1, 0, datetime('now'), datetime('now'))
-    `).run('ta-talk-owner', 'talk-owner', agent.id);
+    `,
+      )
+      .run('ta-talk-owner', 'talk-owner', agent.id);
 
     upsertTalk({
       id: 'talk-member',
       ownerId: 'member-1',
       topicTitle: 'Member Talk',
     });
-    getDb().prepare(`
+    getDb()
+      .prepare(
+        `
       INSERT INTO talk_agents (id, talk_id, registered_agent_id, is_primary, sort_order, created_at, updated_at)
       VALUES (?, ?, ?, 1, 0, datetime('now'), datetime('now'))
-    `).run('ta-talk-member', 'talk-member', agent.id);
+    `,
+      )
+      .run('ta-talk-member', 'talk-member', agent.id);
 
     upsertTalk({
       id: 'talk-private',
       ownerId: 'owner-1',
       topicTitle: 'Private Talk',
     });
-    getDb().prepare(`
+    getDb()
+      .prepare(
+        `
       INSERT INTO talk_agents (id, talk_id, registered_agent_id, is_primary, sort_order, created_at, updated_at)
       VALUES (?, ?, ?, 1, 0, datetime('now'), datetime('now'))
-    `).run('ta-talk-private', 'talk-private', agent.id);
+    `,
+      )
+      .run('ta-talk-private', 'talk-private', agent.id);
     upsertTalkLlmPolicy({
       talkId: 'talk-owner',
       llmPolicy: '{"agents":["Gemini","Opus4.6"]}',
@@ -607,6 +619,7 @@ describe('talk routes', () => {
     createTalkRun({
       id: 'run-history-failed',
       talk_id: 'talk-owner',
+      thread_id: null,
       requested_by: 'owner-1',
       status: 'failed',
       trigger_message_id: 'msg-run-history',
@@ -640,6 +653,7 @@ describe('talk routes', () => {
     createTalkRun({
       id: 'run-runtime-meta',
       talk_id: 'talk-owner',
+      thread_id: null,
       requested_by: 'owner-1',
       status: 'completed',
       trigger_message_id: null,
@@ -776,6 +790,7 @@ describe('talk routes', () => {
     createTalkRun({
       id: 'run-edit-active',
       talk_id: 'talk-owner',
+      thread_id: null,
       requested_by: 'owner-1',
       status: 'queued',
       trigger_message_id: 'msg-edit-active',

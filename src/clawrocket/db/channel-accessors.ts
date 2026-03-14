@@ -1254,6 +1254,7 @@ export function enqueueChannelTurnAtomic(input: {
     createTalkRun({
       id: input.runId,
       talk_id: input.talkId,
+      thread_id: null,
       requested_by: 'system:channel-ingress',
       status: 'queued',
       trigger_message_id: input.messageId,

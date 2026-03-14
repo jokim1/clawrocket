@@ -1,47 +1,61 @@
+/**
+ * MainRunWorker — polling worker that claims and executes Main channel runs.
+ *
+ * Mirrors the TalkRunWorker pattern but simplified:
+ * - No promotion (Main has no run queue per-thread beyond one-active guard)
+ * - No channel delivery
+ * - Events publish to `user:${requestedBy}` (not `talk:${talkId}`)
+ * - Response content sanitized via TalkResponseStreamSanitizer + stripInternalTalkResponseText
+ */
+
 import { randomUUID } from 'crypto';
 
 import { TALK_RUN_MAX_CONCURRENCY, TALK_RUN_POLL_MS } from '../config.js';
 import {
-  claimQueuedTalkRuns,
   appendOutboxEvent,
-  completeRunAndPromoteNextAtomic,
-  failInterruptedRunsOnStartup,
-  failRunAndPromoteNextAtomic,
+  claimQueuedMainRuns,
+  completeMainRunAtomic,
+  failInterruptedMainRunsOnStartup,
+  failMainRunAtomic,
   getTalkMessageById,
   getTalkRunById,
   type TalkRunRecord,
 } from '../db/index.js';
 import { logger } from '../../logger.js';
-
-import {
-  TalkExecutorError,
-  type TalkExecutionEvent,
-  type TalkExecutor,
-} from './executor.js';
 import {
   createTalkResponseStreamSanitizer,
   stripInternalTalkResponseText,
-  type TalkResponseStreamSanitizer,
-} from './internal-tags.js';
-import { MockTalkExecutor } from './mock-executor.js';
+} from '../talks/internal-tags.js';
+import {
+  executeMainChannel,
+  type MainExecutionEvent,
+} from './main-executor.js';
 
-export interface TalkRunWorkerOptions {
-  executor?: TalkExecutor;
+// ============================================================================
+// Types
+// ============================================================================
+
+export type MainExecutorFn = typeof executeMainChannel;
+
+export interface MainRunWorkerOptions {
   pollMs?: number;
   maxConcurrency?: number;
-  onTalkTerminal?: (talkId: string) => void;
-  onChannelDeliveryQueued?: () => void;
+  /** Override executor for testing. Defaults to executeMainChannel. */
+  executor?: MainExecutorFn;
 }
 
-export interface TalkRunWorkerControl {
+export interface MainRunWorkerControl {
   wake(): void;
-  abortTalk(talkId: string): void;
 }
+
+// ============================================================================
+// Worker
+// ============================================================================
 
 function errorMessage(error: unknown): string {
   if (error instanceof Error && error.message) return error.message;
   if (typeof error === 'string' && error) return error;
-  return 'Unknown talk execution failure';
+  return 'Unknown main execution failure';
 }
 
 function isAbortError(error: unknown): boolean {
@@ -53,12 +67,10 @@ interface ActiveRun {
   controller: AbortController;
 }
 
-export class TalkRunWorker implements TalkRunWorkerControl {
-  private readonly executor: TalkExecutor;
+export class MainRunWorker implements MainRunWorkerControl {
   private readonly pollMs: number;
   private readonly maxConcurrency: number;
-  private readonly onTalkTerminal?: (talkId: string) => void;
-  private readonly onChannelDeliveryQueued?: () => void;
+  private readonly executor: MainExecutorFn;
 
   private running = false;
   private loopPromise: Promise<void> | null = null;
@@ -68,45 +80,29 @@ export class TalkRunWorker implements TalkRunWorkerControl {
 
   private readonly activeRunsById = new Map<string, ActiveRun>();
   private readonly activeRunTasks = new Map<string, Promise<void>>();
-  private readonly responseSanitizersByRunId = new Map<
-    string,
-    TalkResponseStreamSanitizer
-  >();
 
-  constructor(options: TalkRunWorkerOptions = {}) {
-    this.executor = options.executor || new MockTalkExecutor();
+  constructor(options: MainRunWorkerOptions = {}) {
     this.pollMs = Math.max(10, Math.floor(options.pollMs ?? TALK_RUN_POLL_MS));
     this.maxConcurrency = Math.max(
       1,
       Math.floor(options.maxConcurrency ?? TALK_RUN_MAX_CONCURRENCY),
     );
-    this.onTalkTerminal = options.onTalkTerminal;
-    this.onChannelDeliveryQueued = options.onChannelDeliveryQueued;
+    this.executor = options.executor ?? executeMainChannel;
   }
 
   async start(): Promise<void> {
     if (this.running) return;
 
-    const recovery = failInterruptedRunsOnStartup();
-    if (
-      recovery.failedRunIds.length > 0 ||
-      recovery.promotedRunIds.length > 0
-    ) {
+    const recovery = failInterruptedMainRunsOnStartup();
+    if (recovery.failedRunIds.length > 0) {
       logger.warn(
-        {
-          failedRuns: recovery.failedRunIds.length,
-          promotedRuns: recovery.promotedRunIds.length,
-        },
-        'Recovered interrupted talk runs on startup',
+        { failedRuns: recovery.failedRunIds.length },
+        'Recovered interrupted main runs on startup',
       );
     }
 
     this.running = true;
     this.loopPromise = this.runLoop();
-
-    if (recovery.promotedRunIds.length > 0) {
-      this.wake();
-    }
   }
 
   async stop(): Promise<void> {
@@ -139,19 +135,16 @@ export class TalkRunWorker implements TalkRunWorkerControl {
     resolver();
   }
 
-  abortTalk(talkId: string): void {
-    for (const active of this.activeRunsById.values()) {
-      if (active.run.talk_id !== talkId) continue;
-      active.controller.abort(`talk_cancelled:${talkId}`);
-    }
-  }
+  // --------------------------------------------------------------------------
+  // Loop
+  // --------------------------------------------------------------------------
 
   private async runLoop(): Promise<void> {
     while (this.running) {
       try {
         this.processCycle();
       } catch (error) {
-        logger.error({ err: error }, 'Talk run worker cycle failed');
+        logger.error({ err: error }, 'Main run worker cycle failed');
       }
 
       await this.waitForNextTick();
@@ -164,7 +157,7 @@ export class TalkRunWorker implements TalkRunWorkerControl {
     const availableSlots = this.maxConcurrency - this.activeRunsById.size;
     if (availableSlots <= 0) return;
 
-    const claimedRuns = claimQueuedTalkRuns(availableSlots);
+    const claimedRuns = claimQueuedMainRuns(availableSlots);
     for (const run of claimedRuns) {
       if (this.activeRunsById.size >= this.maxConcurrency) break;
       this.startRun(run);
@@ -178,12 +171,8 @@ export class TalkRunWorker implements TalkRunWorkerControl {
     const task = this.executeRun(run, controller.signal)
       .catch((error) => {
         logger.error(
-          {
-            err: error,
-            talkId: run.talk_id,
-            runId: run.id,
-          },
-          'Talk run execution crashed',
+          { err: error, runId: run.id, threadId: run.thread_id },
+          'Main run execution crashed',
         );
       })
       .finally(() => {
@@ -193,6 +182,10 @@ export class TalkRunWorker implements TalkRunWorkerControl {
       });
     this.activeRunTasks.set(run.id, task);
   }
+
+  // --------------------------------------------------------------------------
+  // Execution
+  // --------------------------------------------------------------------------
 
   private async executeRun(
     run: TalkRunRecord,
@@ -217,39 +210,56 @@ export class TalkRunWorker implements TalkRunWorkerControl {
       return;
     }
 
+    const sanitizer = createTalkResponseStreamSanitizer();
+
     try {
-      const output = await this.executor.execute(
+      const output = await this.executor(
         {
           runId: run.id,
-          talkId: run.talk_id!,
+          threadId: run.thread_id!,
           requestedBy: run.requested_by,
           triggerMessageId: triggerMessage.id,
           triggerContent: triggerMessage.content,
           targetAgentId: run.target_agent_id,
         },
         signal,
-        (event) => this.emitExecutionEvent(event),
+        (event: MainExecutionEvent) => {
+          // Sanitize streaming deltas before publishing
+          if (event.type === 'main_response_delta') {
+            const cleaned = sanitizer.push(event.text);
+            if (!cleaned) return;
+            event = { ...event, text: cleaned };
+          }
+          appendOutboxEvent({
+            topic: `user:${run.requested_by}`,
+            eventType: event.type,
+            payload: JSON.stringify(event),
+          });
+        },
       );
 
-      const completed = completeRunAndPromoteNextAtomic({
+      // Sanitize stored content (strip internal tags)
+      const sanitizedContent = stripInternalTalkResponseText(output.content);
+
+      // Atomic: run status + assistant message + llm_attempt + terminal event
+      const completed = completeMainRunAtomic({
         runId: run.id,
+        threadId: run.thread_id!,
+        requestedBy: run.requested_by,
         responseMessageId: `msg_${randomUUID()}`,
-        responseContent: stripInternalTalkResponseText(output.content),
-        responseMetadataJson: output.metadataJson,
+        responseContent: sanitizedContent,
         agentId: output.agentId,
-        agentNickname: output.agentNickname,
-        responseSequenceInRun: output.responseSequenceInRun,
+        providerId: output.providerId,
+        modelId: output.modelId,
+        latencyMs: output.latencyMs,
+        usage: output.usage,
       });
+
       if (!completed.applied) {
         logger.debug(
-          { runId: run.id, talkId: run.talk_id },
-          'Run completion skipped due to non-running status',
+          { runId: run.id, threadId: run.thread_id },
+          'Main run completion skipped due to non-running status',
         );
-      } else {
-        if (completed.deliveryQueued) {
-          this.onChannelDeliveryQueued?.();
-        }
-        this.onTalkTerminal?.(run.talk_id!);
       }
     } catch (error) {
       if (isAbortError(error)) {
@@ -259,48 +269,8 @@ export class TalkRunWorker implements TalkRunWorkerControl {
         return;
       }
 
-      this.failRun(
-        run,
-        error instanceof TalkExecutorError ? error.code : 'execution_failed',
-        errorMessage(error),
-      );
+      this.failRun(run, 'execution_failed', errorMessage(error));
     }
-  }
-
-  private emitExecutionEvent(event: TalkExecutionEvent): void {
-    if (event.type === 'talk_response_started') {
-      this.responseSanitizersByRunId.set(
-        event.runId,
-        createTalkResponseStreamSanitizer(),
-      );
-    } else if (event.type === 'talk_response_delta') {
-      const sanitizer =
-        this.responseSanitizersByRunId.get(event.runId) ||
-        createTalkResponseStreamSanitizer();
-      this.responseSanitizersByRunId.set(event.runId, sanitizer);
-
-      const deltaText = sanitizer.push(event.deltaText);
-      if (!deltaText) {
-        return;
-      }
-
-      event = {
-        ...event,
-        deltaText,
-      };
-    } else if (
-      event.type === 'talk_response_completed' ||
-      event.type === 'talk_response_failed' ||
-      event.type === 'talk_response_cancelled'
-    ) {
-      this.responseSanitizersByRunId.delete(event.runId);
-    }
-
-    appendOutboxEvent({
-      topic: `talk:${event.talkId}`,
-      eventType: event.type,
-      payload: JSON.stringify(event),
-    });
   }
 
   private failRun(
@@ -308,24 +278,28 @@ export class TalkRunWorker implements TalkRunWorkerControl {
     errorCode: string,
     errorMessageText: string,
   ): void {
-    const result = failRunAndPromoteNextAtomic({
+    const result = failMainRunAtomic({
       runId: run.id,
+      threadId: run.thread_id!,
+      requestedBy: run.requested_by,
       errorCode,
       errorMessage: errorMessageText,
     });
     if (!result.applied) {
       logger.debug(
-        { runId: run.id, talkId: run.talk_id },
-        'Run failure skipped due to non-running status',
+        { runId: run.id, threadId: run.thread_id },
+        'Main run failure skipped due to non-running status',
       );
-      return;
     }
-    this.onTalkTerminal?.(run.talk_id!);
   }
 
   private isCancelled(runId: string): boolean {
     return getTalkRunById(runId)?.status === 'cancelled';
   }
+
+  // --------------------------------------------------------------------------
+  // Sleep / Wake
+  // --------------------------------------------------------------------------
 
   private waitForNextTick(): Promise<void> {
     if (!this.running) return Promise.resolve();

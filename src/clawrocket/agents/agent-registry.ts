@@ -38,7 +38,9 @@ export function getMainAgentId(): string {
     .get(MAIN_AGENT_SETTING_KEY) as { value: string } | undefined;
 
   if (!row?.value) {
-    throw new Error('Main agent not configured. Check settings_kv for system.mainAgentId.');
+    throw new Error(
+      'Main agent not configured. Check settings_kv for system.mainAgentId.',
+    );
   }
   return row.value;
 }
@@ -122,7 +124,9 @@ export function listTalkAgents(talkId: string): TalkAgentAssignment[] {
  * Resolve the primary agent for a Talk.
  * Returns the agent marked as primary, or the first assigned agent.
  */
-export function resolvePrimaryAgent(talkId: string): RegisteredAgentRecord | undefined {
+export function resolvePrimaryAgent(
+  talkId: string,
+): RegisteredAgentRecord | undefined {
   const row = getDb()
     .prepare(
       `

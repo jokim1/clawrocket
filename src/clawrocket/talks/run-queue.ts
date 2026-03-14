@@ -25,6 +25,7 @@ export class TalkRunQueue {
     const record: TalkRunRecord = {
       id: input.runId,
       talk_id: input.talkId,
+      thread_id: null,
       requested_by: input.requestedBy,
       status,
       trigger_message_id: null,
@@ -62,17 +63,17 @@ export class TalkRunQueue {
     markTalkRunStatus(runId, 'completed', now, null);
 
     appendOutboxEvent({
-      topic: `talk:${run.talk_id}`,
+      topic: `talk:${run.talk_id!}`,
       eventType: 'talk_run_completed',
       payload: JSON.stringify({
-        talkId: run.talk_id,
+        talkId: run.talk_id!,
         runId,
         executorAlias: run.executor_alias,
         executorModel: run.executor_model,
       }),
     });
 
-    const nextQueued = getQueuedTalkRuns(run.talk_id, 1)[0];
+    const nextQueued = getQueuedTalkRuns(run.talk_id!, 1)[0];
     if (!nextQueued) return;
 
     markTalkRunStatus(nextQueued.id, 'running', null, null, now);

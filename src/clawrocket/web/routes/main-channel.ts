@@ -1,7 +1,11 @@
 import { randomUUID } from 'crypto';
+import {
+  canUserAccessMainThread,
+  enqueueMainTurnAtomic,
+  listMainThreadsForUser,
+  MainThreadBusyError,
+} from '../../db/index.js';
 import { getDb } from '../../../db.js';
-import { createMessage } from '../../db/agent-accessors.js';
-import { getMainAgent } from '../../agents/agent-registry.js';
 import type { AuthContext, ApiEnvelope } from '../types.js';
 
 // ---------------------------------------------------------------------------
@@ -19,20 +23,7 @@ export function listMainThreadsRoute(auth: AuthContext): {
   body: ApiEnvelope<ThreadSummary[]>;
 } {
   try {
-    const rows = getDb()
-      .prepare(
-        `
-      SELECT
-        thread_id,
-        MAX(created_at) AS last_message_at,
-        COUNT(*) AS message_count
-      FROM talk_messages
-      WHERE talk_id IS NULL AND thread_id IS NOT NULL
-      GROUP BY thread_id
-      ORDER BY MAX(created_at) DESC
-    `,
-      )
-      .all() as Array<{ thread_id: string; last_message_at: string; message_count: number }>;
+    const rows = listMainThreadsForUser(auth.userId);
 
     const threads: ThreadSummary[] = rows.map((row) => ({
       threadId: row.thread_id,
@@ -75,11 +66,28 @@ interface ThreadMessage {
   createdAt: string;
 }
 
-export function getMainThreadRoute(auth: AuthContext, threadId: string): {
+export function getMainThreadRoute(
+  auth: AuthContext,
+  threadId: string,
+): {
   statusCode: number;
   body: ApiEnvelope<ThreadMessage[]>;
 } {
   try {
+    // Ownership check
+    if (!canUserAccessMainThread(threadId, auth.userId)) {
+      return {
+        statusCode: 404,
+        body: {
+          ok: false,
+          error: {
+            code: 'not_found',
+            message: `Thread '${threadId}' not found`,
+          },
+        },
+      };
+    }
+
     const rows = getDb()
       .prepare(
         `
@@ -97,17 +105,16 @@ export function getMainThreadRoute(auth: AuthContext, threadId: string): {
     `,
       )
       .all(threadId) as Array<{
-        id: string;
-        thread_id: string;
-        role: string;
-        content: string;
-        agent_id: string | null;
-        created_by: string | null;
-        created_at: string;
-      }>;
+      id: string;
+      thread_id: string;
+      role: string;
+      content: string;
+      agent_id: string | null;
+      created_by: string | null;
+      created_at: string;
+    }>;
 
     if (rows.length === 0) {
-      // Thread does not exist or is empty
       return {
         statusCode: 404,
         body: {
@@ -163,6 +170,7 @@ interface PostMainMessageBody {
 interface PostMainMessageResponse {
   messageId: string;
   threadId: string;
+  runId: string;
 }
 
 export function postMainMessageRoute(
@@ -204,37 +212,61 @@ export function postMainMessageRoute(
       };
     }
     threadId = body.threadId.trim();
+
+    // Ownership check for existing threads
+    if (!canUserAccessMainThread(threadId, auth.userId)) {
+      return {
+        statusCode: 404,
+        body: {
+          ok: false,
+          error: {
+            code: 'not_found',
+            message: `Thread '${threadId}' not found`,
+          },
+        },
+      };
+    }
   } else {
-    // Create a new thread
     threadId = randomUUID();
   }
 
   try {
-    const messageId = randomUUID();
-    const now = new Date().toISOString();
+    const messageId = `msg_${randomUUID()}`;
+    const runId = `run_${randomUUID()}`;
 
-    createMessage({
-      id: messageId,
-      talkId: null,
+    const result = enqueueMainTurnAtomic({
       threadId,
-      role: 'user',
+      userId: auth.userId,
       content,
-      agentId: null,
-      createdBy: auth.userId,
-      createdAt: now,
+      messageId,
+      runId,
     });
 
     return {
-      statusCode: 201,
+      statusCode: 202,
       body: {
         ok: true,
         data: {
-          messageId,
+          messageId: result.message.id,
           threadId,
+          runId: result.run.id,
         },
       },
     };
   } catch (err) {
+    if (err instanceof MainThreadBusyError) {
+      return {
+        statusCode: 409,
+        body: {
+          ok: false,
+          error: {
+            code: 'thread_busy',
+            message: 'Thread already has an active run',
+          },
+        },
+      };
+    }
+
     return {
       statusCode: 500,
       body: {
