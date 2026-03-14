@@ -84,7 +84,7 @@ export interface TalkAgentAssignment {
  * List agents assigned to a Talk, ordered by sort_order.
  */
 export function listTalkAgents(talkId: string): TalkAgentAssignment[] {
-  return getDb()
+  const rows = getDb()
     .prepare(
       `
     SELECT
@@ -107,7 +107,15 @@ export function listTalkAgents(talkId: string): TalkAgentAssignment[] {
     persona_role: string | null;
     is_primary: number;
     sort_order: number;
-  }> as unknown as TalkAgentAssignment[];
+  }>;
+  return rows.map((row) => ({
+    assignmentId: row.assignment_id,
+    agentId: row.agent_id,
+    agentName: row.agent_name,
+    personaRole: row.persona_role,
+    isPrimary: !!row.is_primary,
+    sortOrder: row.sort_order,
+  }));
 }
 
 /**

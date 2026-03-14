@@ -2369,9 +2369,9 @@ export function listTalkRunsForTalk(
   return getDb()
     .prepare(
       `
-      SELECT r.*, a.name AS target_agent_nickname
+      SELECT r.*, ra.name AS target_agent_nickname
       FROM talk_runs r
-      LEFT JOIN talk_agents a ON a.id = r.target_agent_id
+      LEFT JOIN registered_agents ra ON ra.id = r.target_agent_id
       WHERE r.talk_id = ?
       ORDER BY r.created_at DESC
       LIMIT ?

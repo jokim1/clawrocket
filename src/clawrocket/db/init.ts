@@ -278,7 +278,7 @@ function createClawrocketSchema(database: Database.Database): void {
     CREATE TABLE IF NOT EXISTS registered_agents (
       id TEXT PRIMARY KEY,
       name TEXT NOT NULL,
-      provider_id TEXT NOT NULL REFERENCES llm_providers(id),
+      provider_id TEXT NOT NULL,
       model_id TEXT NOT NULL,
       tool_permissions_json TEXT NOT NULL,
       persona_role TEXT,
@@ -396,6 +396,7 @@ function createClawrocketSchema(database: Database.Database): void {
       status TEXT NOT NULL DEFAULT 'active'
         CHECK(status IN ('active', 'paused', 'archived')),
       sort_order REAL NOT NULL DEFAULT 0,
+      version INTEGER NOT NULL DEFAULT 1,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
@@ -411,26 +412,28 @@ function createClawrocketSchema(database: Database.Database): void {
     );
     CREATE INDEX IF NOT EXISTS idx_talk_members_user_id ON talk_members(user_id);
 
-    CREATE TABLE IF NOT EXISTS messages (
+    CREATE TABLE IF NOT EXISTS talk_messages (
       id TEXT PRIMARY KEY,
       talk_id TEXT REFERENCES talks(id) ON DELETE CASCADE,
       thread_id TEXT,
       role TEXT NOT NULL CHECK(role IN ('user', 'assistant', 'system', 'tool')),
       content TEXT NOT NULL,
       agent_id TEXT REFERENCES registered_agents(id) ON DELETE SET NULL,
+      run_id TEXT,
+      sequence_in_run INTEGER,
       created_by TEXT REFERENCES users(id) ON DELETE SET NULL,
       created_at TEXT NOT NULL,
       metadata_json TEXT
     );
-    CREATE INDEX IF NOT EXISTS idx_messages_talk_created_at
-      ON messages(talk_id, created_at);
-    CREATE INDEX IF NOT EXISTS idx_messages_thread_id
-      ON messages(thread_id);
+    CREATE INDEX IF NOT EXISTS idx_talk_messages_talk_created_at
+      ON talk_messages(talk_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_talk_messages_thread_id
+      ON talk_messages(thread_id);
 
-    CREATE TABLE IF NOT EXISTS message_attachments (
+    CREATE TABLE IF NOT EXISTS talk_message_attachments (
       id TEXT PRIMARY KEY,
       talk_id TEXT REFERENCES talks(id) ON DELETE CASCADE,
-      message_id TEXT REFERENCES messages(id) ON DELETE CASCADE,
+      message_id TEXT REFERENCES talk_messages(id) ON DELETE CASCADE,
       file_name TEXT NOT NULL,
       file_size INTEGER,
       mime_type TEXT,
@@ -442,15 +445,15 @@ function createClawrocketSchema(database: Database.Database): void {
       created_at TEXT NOT NULL,
       created_by TEXT REFERENCES users(id) ON DELETE SET NULL
     );
-    CREATE INDEX IF NOT EXISTS idx_message_attachments_message_id
-      ON message_attachments(message_id);
-    CREATE INDEX IF NOT EXISTS idx_message_attachments_talk_created
-      ON message_attachments(talk_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_talk_message_attachments_message_id
+      ON talk_message_attachments(message_id);
+    CREATE INDEX IF NOT EXISTS idx_talk_message_attachments_talk_created
+      ON talk_message_attachments(talk_id, created_at);
 
     CREATE TABLE IF NOT EXISTS talk_context_summary (
       talk_id TEXT PRIMARY KEY REFERENCES talks(id) ON DELETE CASCADE,
       summary_text TEXT NOT NULL,
-      covers_through_message_id TEXT REFERENCES messages(id),
+      covers_through_message_id TEXT REFERENCES talk_messages(id),
       updated_at TEXT NOT NULL
     );
 
@@ -535,6 +538,21 @@ function createClawrocketSchema(database: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_talk_data_connectors_connector
       ON talk_data_connectors(connector_id);
 
+    CREATE TABLE IF NOT EXISTS talk_llm_policies (
+      talk_id TEXT PRIMARY KEY REFERENCES talks(id) ON DELETE CASCADE,
+      llm_policy TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS talk_executor_sessions (
+      talk_id TEXT PRIMARY KEY REFERENCES talks(id) ON DELETE CASCADE,
+      session_id TEXT NOT NULL,
+      executor_alias TEXT NOT NULL,
+      executor_model TEXT NOT NULL,
+      session_compat_key TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
     CREATE TABLE IF NOT EXISTS talk_channel_bindings (
       id TEXT PRIMARY KEY,
       talk_id TEXT NOT NULL REFERENCES talks(id) ON DELETE CASCADE,
@@ -547,14 +565,36 @@ function createClawrocketSchema(database: Database.Database): void {
       responder_agent_id TEXT REFERENCES registered_agents(id) ON DELETE SET NULL,
       allowed_senders_json TEXT,
       rate_limit_json TEXT,
-      is_active INTEGER NOT NULL DEFAULT 1,
+      active INTEGER NOT NULL DEFAULT 1,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       created_by TEXT REFERENCES users(id),
       updated_by TEXT REFERENCES users(id)
     );
     CREATE INDEX IF NOT EXISTS idx_talk_channel_bindings_talk
-      ON talk_channel_bindings(talk_id, is_active, created_at);
+      ON talk_channel_bindings(talk_id, active, created_at);
+
+    CREATE TABLE IF NOT EXISTS talk_channel_policies (
+      binding_id TEXT PRIMARY KEY REFERENCES talk_channel_bindings(id) ON DELETE CASCADE,
+      response_mode TEXT NOT NULL DEFAULT 'mentions'
+        CHECK(response_mode IN ('off', 'mentions', 'all')),
+      responder_mode TEXT NOT NULL DEFAULT 'primary'
+        CHECK(responder_mode IN ('primary', 'agent')),
+      responder_agent_id TEXT REFERENCES registered_agents(id) ON DELETE SET NULL,
+      delivery_mode TEXT NOT NULL DEFAULT 'reply'
+        CHECK(delivery_mode IN ('reply', 'channel')),
+      thread_mode TEXT NOT NULL DEFAULT 'conversation'
+        CHECK(thread_mode IN ('conversation')),
+      channel_context_note TEXT,
+      allowed_senders_json TEXT,
+      inbound_rate_limit_per_minute INTEGER,
+      max_pending_events INTEGER DEFAULT 20,
+      overflow_policy TEXT NOT NULL DEFAULT 'drop_oldest'
+        CHECK(overflow_policy IN ('drop_oldest', 'drop_newest')),
+      max_deferred_age_minutes INTEGER DEFAULT 60,
+      updated_at TEXT NOT NULL,
+      updated_by TEXT REFERENCES users(id)
+    );
 
     CREATE TABLE IF NOT EXISTS talk_runs (
       id TEXT PRIMARY KEY,
@@ -562,8 +602,11 @@ function createClawrocketSchema(database: Database.Database): void {
       requested_by TEXT NOT NULL REFERENCES users(id),
       status TEXT NOT NULL
         CHECK(status IN ('queued', 'running', 'awaiting_confirmation', 'cancelled', 'completed', 'failed')),
-      trigger_message_id TEXT REFERENCES messages(id),
+      trigger_message_id TEXT REFERENCES talk_messages(id),
+      target_agent_id TEXT,
       agent_id TEXT REFERENCES registered_agents(id) ON DELETE SET NULL,
+      executor_alias TEXT,
+      executor_model TEXT,
       thread_id TEXT,
       idempotency_key TEXT,
       source_binding_id TEXT,
@@ -628,7 +671,7 @@ function createClawrocketSchema(database: Database.Database): void {
       sender_name TEXT,
       payload_json TEXT NOT NULL,
       status TEXT NOT NULL DEFAULT 'pending'
-        CHECK(status IN ('pending', 'claimed', 'processed', 'dead')),
+        CHECK(status IN ('pending', 'deferred', 'processing', 'completed', 'dropped', 'dead_letter')),
       reason_code TEXT,
       reason_detail TEXT,
       dedupe_key TEXT NOT NULL UNIQUE,
@@ -663,6 +706,28 @@ function createClawrocketSchema(database: Database.Database): void {
       ON channel_outbound_queue(status, next_retry_at, created_at);
     CREATE INDEX IF NOT EXISTS idx_channel_outbound_queue_binding_status
       ON channel_outbound_queue(binding_id, status, created_at);
+
+    CREATE TABLE IF NOT EXISTS channel_delivery_outbox (
+      id TEXT PRIMARY KEY,
+      binding_id TEXT NOT NULL,
+      talk_id TEXT NOT NULL REFERENCES talks(id) ON DELETE CASCADE,
+      run_id TEXT,
+      talk_message_id TEXT,
+      target_kind TEXT NOT NULL,
+      target_id TEXT NOT NULL,
+      payload_json TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending'
+        CHECK(status IN ('pending', 'sending', 'sent', 'failed', 'dead_letter', 'dropped')),
+      reason_code TEXT,
+      reason_detail TEXT,
+      dedupe_key TEXT,
+      available_at TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      attempt_count INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE INDEX IF NOT EXISTS idx_channel_delivery_outbox_status
+      ON channel_delivery_outbox(status, available_at);
 
     CREATE TABLE IF NOT EXISTS settings_kv (
       key TEXT PRIMARY KEY,

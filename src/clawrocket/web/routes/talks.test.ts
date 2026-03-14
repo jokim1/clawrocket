@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 
+import { getDb } from '../../../db.js';
 import {
   _initTestDatabase,
   createTalkMessage,
@@ -14,6 +15,7 @@ import {
   upsertUser,
   upsertWebSession,
 } from '../../db/index.js';
+import { createRegisteredAgent } from '../../db/agent-accessors.js';
 import { hashSessionToken } from '../../identity/session.js';
 import { _resetRateLimitStateForTests } from '../middleware/rate-limit.js';
 import { createWebServer, WebServerHandle } from '../server.js';
@@ -52,21 +54,43 @@ describe('talk routes', () => {
       role: 'member',
     });
 
+    // Create a default registered agent
+    const agent = createRegisteredAgent({
+      name: 'Claude Opus 4.6',
+      providerId: 'provider.anthropic',
+      modelId: 'claude-opus-4-6',
+      toolPermissionsJson: '{}',
+    });
+
     upsertTalk({
       id: 'talk-owner',
       ownerId: 'owner-1',
       topicTitle: 'Owner Talk',
     });
+    getDb().prepare(`
+      INSERT INTO talk_agents (id, talk_id, registered_agent_id, is_primary, sort_order, created_at, updated_at)
+      VALUES (?, ?, ?, 1, 0, datetime('now'), datetime('now'))
+    `).run('ta-talk-owner', 'talk-owner', agent.id);
+
     upsertTalk({
       id: 'talk-member',
       ownerId: 'member-1',
       topicTitle: 'Member Talk',
     });
+    getDb().prepare(`
+      INSERT INTO talk_agents (id, talk_id, registered_agent_id, is_primary, sort_order, created_at, updated_at)
+      VALUES (?, ?, ?, 1, 0, datetime('now'), datetime('now'))
+    `).run('ta-talk-member', 'talk-member', agent.id);
+
     upsertTalk({
       id: 'talk-private',
       ownerId: 'owner-1',
       topicTitle: 'Private Talk',
     });
+    getDb().prepare(`
+      INSERT INTO talk_agents (id, talk_id, registered_agent_id, is_primary, sort_order, created_at, updated_at)
+      VALUES (?, ?, ?, 1, 0, datetime('now'), datetime('now'))
+    `).run('ta-talk-private', 'talk-private', agent.id);
     upsertTalkLlmPolicy({
       talkId: 'talk-owner',
       llmPolicy: '{"agents":["Gemini","Opus4.6"]}',
@@ -144,7 +168,7 @@ describe('talk routes', () => {
     const ownTalk = memberBody.data.talks.find(
       (talk: any) => talk.id === 'talk-member',
     );
-    expect(ownTalk.agents).toEqual(['Claude']);
+    expect(ownTalk.agents).toEqual(['Claude Opus 4.6']);
     const sharedTalk = memberBody.data.talks.find(
       (talk: any) => talk.id === 'talk-owner',
     );

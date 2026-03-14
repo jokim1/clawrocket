@@ -26,7 +26,7 @@ export function listMainThreadsRoute(auth: AuthContext): {
         thread_id,
         MAX(created_at) AS last_message_at,
         COUNT(*) AS message_count
-      FROM messages
+      FROM talk_messages
       WHERE talk_id IS NULL AND thread_id IS NOT NULL
       GROUP BY thread_id
       ORDER BY MAX(created_at) DESC
@@ -91,7 +91,7 @@ export function getMainThreadRoute(auth: AuthContext, threadId: string): {
         agent_id,
         created_by,
         created_at
-      FROM messages
+      FROM talk_messages
       WHERE talk_id IS NULL AND thread_id = ?
       ORDER BY created_at ASC
     `,

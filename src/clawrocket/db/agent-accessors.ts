@@ -656,7 +656,7 @@ export function createMessage(input: {
   getDb()
     .prepare(
       `
-    INSERT INTO messages (
+    INSERT INTO talk_messages (
       id, talk_id, thread_id, role, content, agent_id, created_by, created_at, metadata_json
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
   `,

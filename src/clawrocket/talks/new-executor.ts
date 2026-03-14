@@ -200,7 +200,7 @@ async function loadTalkContext(
     .prepare(
       `
     SELECT id, talk_id, role, content, created_by, created_at, run_id, metadata_json
-    FROM messages
+    FROM talk_messages
     WHERE talk_id = ?
     ORDER BY created_at DESC
   `,
