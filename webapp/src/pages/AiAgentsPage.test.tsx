@@ -138,7 +138,7 @@ describe('AiAgentsPage', () => {
         'NVIDIA Kimi2.5 credential saved. Verification is running in the background.',
       ),
     ).toBeTruthy();
-    expect(within(nvidiaCard).getByText('Needs verification')).toBeTruthy();
+    expect(within(nvidiaCard).getByText('Verifying…')).toBeTruthy();
 
     expect(
       await screen.findByText(
@@ -211,7 +211,7 @@ function installAiAgentsFetch() {
   let snapshot = buildAiAgentsData();
   let settings = buildExecutorSettings();
   let status = buildExecutorStatus();
-  let nvidiaVerificationPending = false;
+  let nvidiaVerificationStage: 'idle' | 'verifying' | 'complete' = 'idle';
   let executorVerificationPending = false;
   let executorVerifyCalls = 0;
 
@@ -229,7 +229,7 @@ function installAiAgentsFetch() {
       const method = init?.method || 'GET';
 
       if (url.endsWith('/api/v1/agents') && method === 'GET') {
-        if (nvidiaVerificationPending) {
+        if (nvidiaVerificationStage === 'complete') {
           snapshot = {
             ...snapshot,
             additionalProviders: snapshot.additionalProviders.map((provider) =>
@@ -245,7 +245,9 @@ function installAiAgentsFetch() {
                 : provider,
             ),
           };
-          nvidiaVerificationPending = false;
+          nvidiaVerificationStage = 'idle';
+        } else if (nvidiaVerificationStage === 'verifying') {
+          nvidiaVerificationStage = 'complete';
         }
         return jsonResponse(200, { ok: true, data: snapshot });
       }
@@ -374,7 +376,7 @@ function installAiAgentsFetch() {
         url.endsWith('/api/v1/agents/providers/provider.nvidia') &&
         method === 'PUT'
       ) {
-        nvidiaVerificationPending = true;
+        nvidiaVerificationStage = 'verifying';
         snapshot = {
           ...snapshot,
           additionalProviders: snapshot.additionalProviders.map((provider) =>
@@ -383,7 +385,7 @@ function installAiAgentsFetch() {
                   ...provider,
                   hasCredential: true,
                   credentialHint: '••••X6za',
-                  verificationStatus: 'not_verified',
+                  verificationStatus: 'verifying',
                   lastVerificationError: null,
                 }
               : provider,

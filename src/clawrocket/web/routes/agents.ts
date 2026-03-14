@@ -3,6 +3,7 @@ import {
   listAdditionalProviderCredentialCards,
   listClaudeModelSuggestions,
   setDefaultClaudeModelId,
+  upsertProviderVerification,
   upsertKnownProviderCredential,
 } from '../../db/index.js';
 import { ProviderCredentialsVerifier } from '../../agents/provider-credentials-verifier.js';
@@ -32,6 +33,16 @@ function buildAgentsSnapshot(): AiAgentsPageRecord {
     claudeModelSuggestions: listClaudeModelSuggestions(),
     additionalProviders: listAdditionalProviderCredentialCards(),
   };
+}
+
+function getProviderCard(providerId: string): AgentProviderCardSnapshot {
+  const provider = listAdditionalProviderCredentialCards().find(
+    (entry) => entry.id === providerId,
+  );
+  if (!provider) {
+    throw new Error(`provider card not found: ${providerId}`);
+  }
+  return provider;
 }
 
 export function getAiAgentsRoute(input: { auth: AuthContext }): {
@@ -136,10 +147,19 @@ export function saveAiProviderCredentialRoute(input: {
       updatedBy: input.auth.userId,
     });
 
+    let responseProvider = provider;
     if (credential) {
+      upsertProviderVerification({
+        providerId: provider.id,
+        status: 'verifying',
+        lastVerifiedAt: provider.lastVerifiedAt,
+        lastError: null,
+      });
+
       // Persist first, then verify in the background so a slow provider probe
       // does not make the save itself look broken in the UI.
       void input.verifier.verify(provider.id).catch(() => undefined);
+      responseProvider = getProviderCard(provider.id);
     }
 
     return {
@@ -147,7 +167,7 @@ export function saveAiProviderCredentialRoute(input: {
       body: {
         ok: true,
         data: {
-          provider,
+          provider: responseProvider,
         },
       },
     };

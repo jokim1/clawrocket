@@ -43,7 +43,7 @@ describe('agents routes', () => {
     }
     expect(result.body.data.provider.id).toBe('provider.nvidia');
     expect(result.body.data.provider.hasCredential).toBe(true);
-    expect(result.body.data.provider.verificationStatus).toBe('not_verified');
+    expect(result.body.data.provider.verificationStatus).toBe('verifying');
 
     expect(verify).toHaveBeenCalledWith('provider.nvidia');
 
@@ -51,6 +51,6 @@ describe('agents routes', () => {
       (provider) => provider.id === 'provider.nvidia',
     );
     expect(stored?.hasCredential).toBe(true);
-    expect(stored?.verificationStatus).toBe('not_verified');
+    expect(stored?.verificationStatus).toBe('verifying');
   });
 });

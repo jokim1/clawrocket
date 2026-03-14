@@ -51,6 +51,7 @@ export interface LlmProviderSecretRecord {
 export type LlmProviderVerificationStatus =
   | 'missing'
   | 'not_verified'
+  | 'verifying'
   | 'verified'
   | 'invalid'
   | 'unavailable';

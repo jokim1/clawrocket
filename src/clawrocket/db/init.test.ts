@@ -2,7 +2,10 @@ import { describe, expect, it } from 'vitest';
 
 import { _initTestDatabase as _initCoreTestDatabase, getDb } from '../../db.js';
 import { _initClawrocketTestSchema } from './index.js';
-import { upsertKnownProviderCredential } from './llm-accessors.js';
+import {
+  upsertKnownProviderCredential,
+  upsertProviderVerification,
+} from './llm-accessors.js';
 
 describe('clawrocket schema init', () => {
   it('adds registered_agent_id to legacy talk_agents tables before creating its index', () => {
@@ -101,6 +104,12 @@ describe('clawrocket schema init', () => {
       upsertKnownProviderCredential({
         providerId: 'provider.nvidia',
         credential: { apiKey: 'nvapi-test-key' },
+      }),
+    ).not.toThrow();
+    expect(() =>
+      upsertProviderVerification({
+        providerId: 'provider.nvidia',
+        status: 'verifying',
       }),
     ).not.toThrow();
   });

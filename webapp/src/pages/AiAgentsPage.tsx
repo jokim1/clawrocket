@@ -50,6 +50,18 @@ const PROVIDER_KEY_PLACEHOLDER: Record<string, string> = {
   'provider.nvidia': 'nvapi-...',
 };
 
+const PROVIDER_SAVE_POLL_DELAYS_MS = [
+  1_500,
+  1_500,
+  2_500,
+  3_500,
+  5_000,
+  5_000,
+  5_000,
+  5_000,
+  5_000,
+];
+
 function canManageAgents(userRole: string): boolean {
   return userRole === 'owner' || userRole === 'admin';
 }
@@ -151,6 +163,8 @@ function formatProviderVerificationSummary(
   provider: AgentProviderCard,
 ): string {
   switch (provider.verificationStatus) {
+    case 'verifying':
+      return 'Verifying…';
     case 'verified':
       return 'Verified';
     case 'invalid':
@@ -167,10 +181,11 @@ function formatProviderVerificationSummary(
 
 function formatProviderSaveNotice(provider: AgentProviderCard): string {
   switch (provider.verificationStatus) {
-    case 'verified':
-      return `${provider.name} credential saved and verified.`;
+    case 'verifying':
     case 'not_verified':
       return `${provider.name} credential saved. Verification is running in the background.`;
+    case 'verified':
+      return `${provider.name} credential saved and verified.`;
     case 'invalid':
     case 'unavailable':
       return `${provider.name} credential saved. Verification status: ${provider.verificationStatus}.`;
@@ -372,9 +387,7 @@ export function AiAgentsPage({ onUnauthorized, userRole }: Props): JSX.Element {
   };
 
   const pollProviderAfterSave = async (providerId: string): Promise<void> => {
-    const delays = [1_500, 1_500, 2_500, 3_500, 5_000];
-
-    for (const delayMs of delays) {
+    for (const delayMs of PROVIDER_SAVE_POLL_DELAYS_MS) {
       await delay(delayMs);
       try {
         const nextData = await getAiAgents();
@@ -384,16 +397,22 @@ export function AiAgentsPage({ onUnauthorized, userRole }: Props): JSX.Element {
         if (!nextProvider) return;
 
         refreshProvider(nextProvider);
-        if (nextProvider.verificationStatus !== 'not_verified') {
-          if (nextProvider.verificationStatus === 'verified') {
-            setNotice(`${nextProvider.name} credential verified.`);
-          } else {
-            setNotice(
-              `${nextProvider.name} verification status: ${formatVerificationStatus(nextProvider.verificationStatus)}.`,
-            );
-          }
+        if (
+          nextProvider.verificationStatus === 'not_verified' ||
+          nextProvider.verificationStatus === 'verifying'
+        ) {
+          continue;
+        }
+
+        if (nextProvider.verificationStatus === 'verified') {
+          setNotice(`${nextProvider.name} credential verified.`);
+        } else if (nextProvider.verificationStatus !== 'missing') {
+          setNotice(
+            `${nextProvider.name} verification status: ${formatVerificationStatus(nextProvider.verificationStatus)}.`,
+          );
           return;
         }
+        return;
       } catch (err) {
         if (err instanceof UnauthorizedError) {
           onUnauthorized();
@@ -519,7 +538,8 @@ export function AiAgentsPage({ onUnauthorized, userRole }: Props): JSX.Element {
       setNotice(formatProviderSaveNotice(provider));
       if (
         provider.hasCredential &&
-        provider.verificationStatus === 'not_verified'
+        (provider.verificationStatus === 'not_verified' ||
+          provider.verificationStatus === 'verifying')
       ) {
         void pollProviderAfterSave(provider.id);
       }
