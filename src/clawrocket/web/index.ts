@@ -12,6 +12,7 @@ import {
 } from '../talks/executor-settings.js';
 import { ExecutorCredentialVerifier } from '../talks/executor-credentials-verifier.js';
 import { DirectTalkExecutor } from '../talks/direct-executor.js';
+import { CleanTalkExecutor } from '../talks/new-executor.js';
 import { TalkRunWorker } from '../talks/run-worker.js';
 
 import { createWebServer, WebServerHandle } from './server.js';
@@ -28,7 +29,11 @@ export async function startWebServer(
   const executorSettings = new ExecutorSettingsService();
   executorSettings.runBootstrapMigration();
   const effectiveConfig = executorSettings.resolveEffectiveConfig();
-  const executor: TalkExecutor = new DirectTalkExecutor();
+  // Feature flag: set NANOCLAW_USE_CLEAN_EXECUTOR=1 to use the new architecture
+  const useCleanExecutor = process.env.NANOCLAW_USE_CLEAN_EXECUTOR === '1';
+  const executor: TalkExecutor = useCleanExecutor
+    ? new CleanTalkExecutor()
+    : new DirectTalkExecutor();
 
   executorSettings.captureRunningSnapshot(
     effectiveConfig,
@@ -42,6 +47,7 @@ export async function startWebServer(
   logger.info(
     {
       mode: 'direct_http',
+      executor: useCleanExecutor ? 'clean' : 'legacy',
     },
     'Talk executor mode selected',
   );
