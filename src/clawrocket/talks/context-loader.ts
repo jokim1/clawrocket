@@ -215,9 +215,12 @@ function buildSourceManifest(sources: SourceRow[]): Array<{
   line: string;
   inlineContent: string | null;
 }> {
-  return sources.map((source, index) => {
-    // Build the source reference line (e.g., "[src-1] Title - URL")
-    let refLine = `[src-${index + 1}] ${source.title}`;
+  return sources.map((source) => {
+    // Use the stable source_ref from the DB (e.g., "S1", "S4")
+    const ref = source.source_ref;
+
+    // Build the source reference line (e.g., "[S1] Title - URL")
+    let refLine = `[${ref}] ${source.title}`;
     if (source.source_type === 'url' && source.source_url) {
       refLine += ` - ${source.source_url}`;
     } else if (source.source_type === 'file' && source.file_name) {
@@ -235,7 +238,7 @@ function buildSourceManifest(sources: SourceRow[]): Array<{
     }
 
     return {
-      ref: `src-${index + 1}`,
+      ref,
       line: refLine,
       inlineContent,
     };
@@ -311,13 +314,13 @@ function buildContextTools(): LlmToolDefinition[] {
     {
       name: 'read_context_source',
       description:
-        'Read the content of a context source by its ref ID (e.g., src-1)',
+        'Read the content of a context source by its stable ref (e.g., S1, S2)',
       inputSchema: {
         type: 'object',
         properties: {
           sourceRef: {
             type: 'string',
-            description: 'Source ref like src-1',
+            description: 'Stable source ref like S1, S2, etc.',
           },
         },
         required: ['sourceRef'],
