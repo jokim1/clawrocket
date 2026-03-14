@@ -164,9 +164,9 @@ function buildToolExecutor(
   ): Promise<{ result: string; isError?: boolean }> => {
     // --- Context tools: query DB directly ---
     if (toolName === 'read_context_source') {
-      const ref = args.ref as string | undefined;
+      const ref = args.sourceRef as string | undefined;
       if (!ref) {
-        return { result: 'Error: ref parameter required', isError: true };
+        return { result: 'Error: sourceRef parameter required', isError: true };
       }
 
       const db = getDb();
@@ -350,13 +350,15 @@ export class CleanTalkExecutor implements TalkExecutor {
       const now = new Date().toISOString();
 
       // Store the assistant's response message in unified messages table
+      // Note: createdBy is for the *user* who created a message; assistant
+      // messages are system-generated, so createdBy must be null.
       createMessage({
         id: messageId,
         talkId: input.talkId,
         role: 'assistant',
         content: lastExecutionResult.content,
         agentId: agent.id,
-        createdBy: agent.id,
+        createdBy: null,
         metadataJson: JSON.stringify({
           runId: input.runId,
           providerId: agent.provider_id,

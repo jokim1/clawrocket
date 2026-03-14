@@ -1,0 +1,246 @@
+import { beforeEach, describe, expect, it } from 'vitest';
+import {
+  _initTestDatabase,
+  upsertTalk,
+  upsertUser,
+} from '../db/index.js';
+import { loadTalkContext } from './context-loader.js';
+import { getDb } from '../../db.js';
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+const TALK_ID = 'talk-ctx-loader';
+
+function insertSource(opts: {
+  id: string;
+  sourceRef: string;
+  sourceType: string;
+  title: string;
+  extractedText?: string | null;
+  sourceUrl?: string | null;
+  status?: string;
+  sortOrder?: number;
+}) {
+  const now = new Date().toISOString();
+  getDb()
+    .prepare(
+      `
+      INSERT INTO talk_context_sources (
+        id, talk_id, source_ref, source_type, title, source_url,
+        extracted_text, status, sort_order, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `,
+    )
+    .run(
+      opts.id,
+      TALK_ID,
+      opts.sourceRef,
+      opts.sourceType,
+      opts.title,
+      opts.sourceUrl ?? null,
+      opts.extractedText ?? null,
+      opts.status ?? 'ready',
+      opts.sortOrder ?? 0,
+      now,
+      now,
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Setup
+// ---------------------------------------------------------------------------
+
+describe('context-loader', () => {
+  beforeEach(() => {
+    _initTestDatabase();
+    upsertUser({
+      id: 'owner-1',
+      email: 'owner@example.com',
+      displayName: 'Owner',
+      role: 'owner',
+    });
+    upsertTalk({
+      id: TALK_ID,
+      ownerId: 'owner-1',
+      topicTitle: 'Context Loader Test Talk',
+    });
+  });
+
+  // =========================================================================
+  // Source manifest: stable refs from DB
+  // =========================================================================
+
+  describe('source manifest uses stable source_ref from DB', () => {
+    it('uses S1, S2 refs in the system prompt, not src-1, src-2', async () => {
+      insertSource({
+        id: 'src-id-1',
+        sourceRef: 'S1',
+        sourceType: 'text',
+        title: 'Meeting Notes',
+        extractedText: 'Some notes content here.',
+      });
+      insertSource({
+        id: 'src-id-2',
+        sourceRef: 'S2',
+        sourceType: 'url',
+        title: 'Docs page',
+        sourceUrl: 'https://example.com/docs',
+        extractedText: 'Page content',
+      });
+
+      const ctx = await loadTalkContext(TALK_ID, 128000);
+
+      // System prompt should reference stable refs
+      expect(ctx.systemPrompt).toContain('[S1]');
+      expect(ctx.systemPrompt).toContain('[S2]');
+      expect(ctx.systemPrompt).not.toContain('[src-1]');
+      expect(ctx.systemPrompt).not.toContain('[src-2]');
+    });
+
+    it('preserves non-contiguous refs after deletion (e.g., S1, S4)', async () => {
+      insertSource({
+        id: 'src-id-1',
+        sourceRef: 'S1',
+        sourceType: 'text',
+        title: 'First Source',
+        extractedText: 'Content 1',
+        sortOrder: 0,
+      });
+      insertSource({
+        id: 'src-id-4',
+        sourceRef: 'S4',
+        sourceType: 'text',
+        title: 'Fourth Source',
+        extractedText: 'Content 4',
+        sortOrder: 1,
+      });
+
+      const ctx = await loadTalkContext(TALK_ID, 128000);
+
+      expect(ctx.systemPrompt).toContain('[S1]');
+      expect(ctx.systemPrompt).toContain('[S4]');
+      expect(ctx.systemPrompt).not.toContain('[S2]');
+      expect(ctx.systemPrompt).not.toContain('[S3]');
+    });
+  });
+
+  // =========================================================================
+  // Context tools: schema declares sourceRef
+  // =========================================================================
+
+  describe('context tools schema', () => {
+    it('read_context_source tool requires sourceRef parameter', async () => {
+      const ctx = await loadTalkContext(TALK_ID, 128000);
+
+      const readSourceTool = ctx.contextTools.find(
+        (t) => t.name === 'read_context_source',
+      );
+      expect(readSourceTool).toBeDefined();
+      expect(readSourceTool!.inputSchema.required).toContain('sourceRef');
+      expect(readSourceTool!.inputSchema.properties).toHaveProperty('sourceRef');
+      // Should NOT have a 'ref' property — that was the old broken name
+      expect(readSourceTool!.inputSchema.properties).not.toHaveProperty('ref');
+    });
+
+    it('tool description references stable S# format', async () => {
+      const ctx = await loadTalkContext(TALK_ID, 128000);
+      const readSourceTool = ctx.contextTools.find(
+        (t) => t.name === 'read_context_source',
+      );
+      expect(readSourceTool!.description).toMatch(/S\d/);
+      expect(readSourceTool!.description).not.toContain('src-1');
+    });
+  });
+
+  // =========================================================================
+  // System prompt assembly
+  // =========================================================================
+
+  describe('system prompt assembly', () => {
+    it('includes goal, rules, and sources', async () => {
+      // Set goal
+      getDb()
+        .prepare(
+          `INSERT INTO talk_context_goal (talk_id, goal_text, updated_at) VALUES (?, ?, ?)`,
+        )
+        .run(TALK_ID, 'Help with onboarding', new Date().toISOString());
+
+      // Add rule
+      const now = new Date().toISOString();
+      getDb()
+        .prepare(
+          `INSERT INTO talk_context_rules (id, talk_id, rule_text, is_active, sort_order, created_at, updated_at) VALUES (?, ?, ?, 1, 0, ?, ?)`,
+        )
+        .run('rule-1', TALK_ID, 'Use simple language', now, now);
+
+      // Add source
+      insertSource({
+        id: 'src-1',
+        sourceRef: 'S1',
+        sourceType: 'text',
+        title: 'Notes',
+        extractedText: 'Short note.',
+      });
+
+      const ctx = await loadTalkContext(TALK_ID, 128000);
+
+      expect(ctx.systemPrompt).toContain('Help with onboarding');
+      expect(ctx.systemPrompt).toContain('Use simple language');
+      expect(ctx.systemPrompt).toContain('[S1] Notes');
+    });
+
+    it('inlines small text sources', async () => {
+      insertSource({
+        id: 'src-1',
+        sourceRef: 'S1',
+        sourceType: 'text',
+        title: 'Tiny Note',
+        extractedText: 'This is tiny.',
+      });
+
+      const ctx = await loadTalkContext(TALK_ID, 128000);
+
+      // Small text should be inlined in the system prompt
+      expect(ctx.systemPrompt).toContain('This is tiny.');
+    });
+
+    it('does not inline large text sources', async () => {
+      const bigText = 'x'.repeat(1100); // ~275 tokens, exceeds 250 threshold
+      insertSource({
+        id: 'src-1',
+        sourceRef: 'S1',
+        sourceType: 'text',
+        title: 'Big Text',
+        extractedText: bigText,
+      });
+
+      const ctx = await loadTalkContext(TALK_ID, 128000);
+
+      // Should be in manifest but not inlined
+      expect(ctx.systemPrompt).toContain('[S1] Big Text');
+      expect(ctx.systemPrompt).not.toContain(bigText);
+    });
+  });
+
+  // =========================================================================
+  // Metadata
+  // =========================================================================
+
+  describe('metadata', () => {
+    it('reports correct source and history counts', async () => {
+      insertSource({
+        id: 'src-1',
+        sourceRef: 'S1',
+        sourceType: 'text',
+        title: 'Note',
+        extractedText: 'Content.',
+      });
+
+      const ctx = await loadTalkContext(TALK_ID, 128000);
+      expect(ctx.metadata.sourceCount).toBe(1);
+      expect(ctx.metadata.talkId).toBe(TALK_ID);
+    });
+  });
+});
