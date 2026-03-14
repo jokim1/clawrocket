@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 
+import { getDb } from './db.js';
 import {
   _initTestDatabase,
   createTask,
@@ -64,6 +65,7 @@ import {
   upsertUser,
   upsertWebSession,
 } from './clawrocket/db/index.js';
+import { createRegisteredAgent } from './clawrocket/db/agent-accessors.js';
 
 function enqueueTalkTurnAtomic(input: {
   talkId: string;
@@ -516,11 +518,25 @@ describe('phase 0 schema and reliability tables', () => {
       displayName: 'Member',
       role: 'member',
     });
+
+    // Create a default registered agent
+    const agent = createRegisteredAgent({
+      name: 'Claude Opus 4.6',
+      providerId: 'provider.anthropic',
+      modelId: 'claude-opus-4-6',
+      toolPermissionsJson: '{}',
+    });
+
     upsertTalk({
       id: 'talk-1',
       ownerId: 'owner-1',
       topicTitle: 'Test Talk',
     });
+    getDb().prepare(`
+      INSERT INTO talk_agents (id, talk_id, registered_agent_id, is_primary, sort_order, created_at, updated_at)
+      VALUES (?, ?, ?, 1, 0, datetime('now'), datetime('now'))
+    `).run('ta-talk-1', 'talk-1', agent.id);
+
     upsertTalkMember({
       talkId: 'talk-1',
       userId: 'member-1',

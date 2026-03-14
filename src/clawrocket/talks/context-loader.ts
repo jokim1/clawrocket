@@ -362,7 +362,7 @@ function loadMessageHistory(
     .prepare(
       `
       SELECT id, role, content, agent_id, created_at, metadata_json
-      FROM messages
+      FROM talk_messages
       WHERE talk_id = ?
       ORDER BY created_at DESC
     `,

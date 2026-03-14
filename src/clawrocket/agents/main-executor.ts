@@ -131,7 +131,7 @@ export async function executeMainChannel(
     .prepare(
       `
     SELECT role, content
-    FROM messages
+    FROM talk_messages
     WHERE thread_id = ? AND talk_id IS NULL
     ORDER BY created_at ASC
   `,

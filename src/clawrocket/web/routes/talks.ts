@@ -31,6 +31,7 @@ import {
   parsePolicyAgentsForExecution,
   parsePolicyAgentsForUiBadges,
 } from '../../talks/policy.js';
+import { listTalkAgents } from '../../agents/agent-registry.js';
 import { MAX_ATTACHMENTS_PER_MESSAGE } from '../../talks/attachment-extraction.js';
 import { canEditTalk } from '../middleware/acl.js';
 import { AuthContext, ApiEnvelope } from '../types.js';
@@ -149,13 +150,18 @@ function parseFallbackPolicyAgents(llmPolicy: string | null): string[] {
 }
 
 function toTalkApiRecord(talk: TalkWithAccessRecord): TalkApiRecord {
+  const policyBadges = parseFallbackAgentBadges(talk.llm_policy);
+  const agents =
+    policyBadges.length > 0 && talk.llm_policy
+      ? policyBadges
+      : listEffectiveTalkAgents(talk.id).map((a) => a.nickname);
   return {
     id: talk.id,
     ownerId: talk.owner_id,
     folderId: talk.folder_id,
     sortOrder: talk.sort_order,
     title: talk.topic_title,
-    agents: parseFallbackAgentBadges(talk.llm_policy),
+    agents: agents.length > 0 ? agents : DEFAULT_TALK_AGENTS,
     status: talk.status,
     version: talk.version,
     createdAt: talk.created_at,
@@ -433,7 +439,20 @@ function validateAgentInputs(input: unknown): {
 }
 
 function listEffectiveTalkAgents(talkId: string): TalkAgentApiRecord[] {
-  return [];
+  const assignments = listTalkAgents(talkId);
+  return assignments.map((a) => ({
+    id: a.agentId,
+    nickname: a.agentName,
+    nicknameMode: 'auto' as const,
+    sourceKind: 'provider' as const,
+    role: (a.personaRole || 'assistant') as TalkPersonaRole,
+    isPrimary: !!a.isPrimary,
+    displayOrder: a.sortOrder,
+    health: 'ready' as const,
+    providerId: null,
+    modelId: null,
+    modelDisplayName: null,
+  }));
 }
 
 export function listTalksRoute(input: {
@@ -958,7 +977,7 @@ export function listTalkAgentsRoute(input: {
       ok: true,
       data: {
         talkId: input.talkId,
-        agents: [],
+        agents: listEffectiveTalkAgents(input.talkId),
       },
     },
   };
@@ -1131,13 +1150,14 @@ export function updateTalkPolicyRoute(input: {
 
   if (normalizedNames.length === 0) {
     deleteTalkLlmPolicy(input.talkId);
+    const effectiveAgents = listEffectiveTalkAgents(input.talkId);
     return {
       statusCode: 200,
       body: {
         ok: true,
         data: {
           talkId: input.talkId,
-          agents: [],
+          agents: effectiveAgents.map((a) => a.nickname),
           limits: {
             maxAgents: MAX_TALK_AGENTS,
             maxAgentChars: MAX_TALK_AGENT_NAME_CHARS,
@@ -1464,7 +1484,12 @@ export function enqueueTalkChat(input: {
   const requestedTargetIds = Array.isArray(input.targetAgentIds)
     ? [...new Set(input.targetAgentIds.map((id: any) => id.trim()).filter(Boolean))]
     : [];
-  const selectedAgents: any[] = [];
+  const talkAgents = listTalkAgents(input.talkId);
+  const selectedAgents: Array<{ id: string; name: string }> = requestedTargetIds.length > 0
+    ? talkAgents
+        .filter((a) => requestedTargetIds.includes(a.agentId))
+        .map((a) => ({ id: a.agentId, name: a.agentName }))
+    : talkAgents.map((a) => ({ id: a.agentId, name: a.agentName }));
 
   if (selectedAgents.length === 0) {
     return {

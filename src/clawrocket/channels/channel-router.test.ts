@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { getDb } from '../../db.js';
 import {
   _initTestDatabase,
   claimNextChannelIngressRow,
@@ -8,6 +9,7 @@ import {
   upsertTalk,
   upsertUser,
 } from '../db/index.js';
+import { createRegisteredAgent } from '../db/agent-accessors.js';
 import { TalkChannelRouter } from './channel-router.js';
 
 describe('TalkChannelRouter', () => {
@@ -19,11 +21,24 @@ describe('TalkChannelRouter', () => {
       displayName: 'Owner',
       role: 'owner',
     });
+
+    // Create a default registered agent
+    const agent = createRegisteredAgent({
+      name: 'Claude Opus 4.6',
+      providerId: 'provider.anthropic',
+      modelId: 'claude-opus-4-6',
+      toolPermissionsJson: '{}',
+    });
+
     upsertTalk({
       id: 'talk-1',
       ownerId: 'owner-1',
       topicTitle: 'Channel Test Talk',
     });
+    getDb().prepare(`
+      INSERT INTO talk_agents (id, talk_id, registered_agent_id, is_primary, sort_order, created_at, updated_at)
+      VALUES (?, ?, ?, 1, 0, datetime('now'), datetime('now'))
+    `).run('ta-talk-1', 'talk-1', agent.id);
     // resetTalkAgentsToDefault('talk-1', '2024-01-01T00:00:00.000Z');
   });
 

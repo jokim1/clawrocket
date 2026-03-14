@@ -1226,9 +1226,10 @@ export function enqueueChannelTurnAtomic(input: {
     const agent = getDb()
       .prepare(
         `
-        SELECT id
-        FROM talk_agents
-        WHERE talk_id = ? AND id = ?
+        SELECT ra.id
+        FROM talk_agents ta
+        JOIN registered_agents ra ON ra.id = ta.registered_agent_id
+        WHERE ta.talk_id = ? AND ra.id = ?
         LIMIT 1
       `,
       )
