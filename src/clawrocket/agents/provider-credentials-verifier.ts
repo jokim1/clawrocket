@@ -88,7 +88,10 @@ function buildVerificationRequest(
 
 export class ProviderCredentialsVerifier {
   private readonly fetchImpl: typeof fetch;
-  private readonly inFlight = new Map<string, Promise<AgentProviderCardSnapshot>>();
+  private readonly inFlight = new Map<
+    string,
+    Promise<AgentProviderCardSnapshot>
+  >();
 
   constructor(input?: { fetchImpl?: typeof fetch }) {
     this.fetchImpl = input?.fetchImpl || fetch;
