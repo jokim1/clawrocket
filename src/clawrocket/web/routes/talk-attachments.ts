@@ -86,16 +86,52 @@ export async function uploadTalkAttachmentRoute(input: {
   // Browsers sometimes send empty or generic MIME types (e.g. application/octet-stream).
   // Fall back to extension-based inference so valid files aren't rejected.
   const EXTENSION_MIME_MAP: Record<string, string> = {
+    // Text-based (existing + new)
     '.txt': 'text/plain',
     '.md': 'text/markdown',
     '.csv': 'text/csv',
     '.html': 'text/html',
     '.htm': 'text/html',
+    '.rtf': 'text/rtf',
+    // Code / structured data
+    '.json': 'application/json',
+    '.xml': 'application/xml',
+    '.yaml': 'text/yaml',
+    '.yml': 'text/yaml',
+    '.py': 'text/x-python',
+    '.js': 'text/javascript',
+    '.ts': 'text/typescript',
+    '.jsx': 'text/javascript',
+    '.tsx': 'text/typescript',
+    '.java': 'text/x-java',
+    '.c': 'text/x-c',
+    '.h': 'text/x-c',
+    '.cpp': 'text/x-c++',
+    '.hpp': 'text/x-c++',
+    '.go': 'text/x-go',
+    '.rs': 'text/x-rust',
+    '.sh': 'text/x-shellscript',
+    '.bash': 'text/x-shellscript',
+    '.sql': 'text/x-sql',
+    '.rb': 'text/plain',
+    '.php': 'text/plain',
+    '.swift': 'text/plain',
+    '.kt': 'text/plain',
+    '.lua': 'text/plain',
+    '.r': 'text/plain',
+    '.toml': 'text/plain',
+    '.ini': 'text/plain',
+    '.cfg': 'text/plain',
+    '.env': 'text/plain',
+    '.log': 'text/plain',
+    // Documents (existing + PPTX)
     '.pdf': 'application/pdf',
     '.docx':
       'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
     '.xlsx':
       'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    '.pptx':
+      'application/vnd.openxmlformats-officedocument.presentationml.presentation',
   };
 
   let mimeType = file.type;
