@@ -3070,20 +3070,27 @@ export function markTalkRunStatus(
 // ============================================================================
 
 /**
+ * @internal Builds the scalar SQL query for resolving the first-author owner of
+ * a Main thread. `threadIdExpr` must be a trusted SQL expression such as `?`
+ * or `t.thread_id`, never raw user input.
+ */
+function buildMainThreadOwnerSubquery(threadIdExpr: string): string {
+  return `
+    SELECT created_by
+    FROM talk_messages
+    WHERE thread_id = ${threadIdExpr} AND talk_id IS NULL AND role = 'user'
+    ORDER BY created_at ASC
+    LIMIT 1
+  `;
+}
+
+/**
  * Derive Main thread ownership from the first user message.
  * No separate table — ownership is a query.
  */
 export function getMainThreadOwner(threadId: string): string | null {
   const row = getDb()
-    .prepare(
-      `
-      SELECT created_by
-      FROM talk_messages
-      WHERE thread_id = ? AND talk_id IS NULL AND role = 'user'
-      ORDER BY created_at ASC
-      LIMIT 1
-    `,
-    )
+    .prepare(buildMainThreadOwnerSubquery('?'))
     .get(threadId) as { created_by: string | null } | undefined;
   return row?.created_by ?? null;
 }
@@ -3119,14 +3126,7 @@ export function listMainThreadsForUser(userId: string): Array<{
         WHERE talk_id IS NULL AND thread_id IS NOT NULL
         GROUP BY thread_id
       ) t
-      WHERE (
-        SELECT m.created_by FROM talk_messages m
-        WHERE m.thread_id = t.thread_id
-          AND m.talk_id IS NULL
-          AND m.role = 'user'
-        ORDER BY m.created_at ASC
-        LIMIT 1
-      ) = ?
+      WHERE (${buildMainThreadOwnerSubquery('t.thread_id')}) = ?
       ORDER BY t.last_message_at DESC
     `,
     )
