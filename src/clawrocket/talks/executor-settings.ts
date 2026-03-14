@@ -1,3 +1,10 @@
+/**
+ * @deprecated — SCHEDULED FOR DELETION
+ * Replaced by: agent-level config on registered_agents
+ * This file is kept temporarily while server.ts is being rewired.
+ * Do not add new code here.
+ */
+
 import { randomUUID } from 'crypto';
 
 import { getDb } from '../../db.js';

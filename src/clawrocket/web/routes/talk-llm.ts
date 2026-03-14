@@ -1,3 +1,10 @@
+/**
+ * @deprecated — SCHEDULED FOR DELETION
+ * Replaced by: web/routes/agent-management.ts
+ * This file is kept temporarily while server.ts is being rewired.
+ * Do not add new code here.
+ */
+
 import {
   listTalkLlmSettingsSnapshot,
   replaceTalkLlmSettingsSnapshot,

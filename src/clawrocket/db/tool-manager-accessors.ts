@@ -1,3 +1,10 @@
+/**
+ * @deprecated — SCHEDULED FOR DELETION
+ * Replaced by: TOOL_FAMILY_MAP in db/agent-accessors.ts
+ * This file is kept temporarily while server.ts is being rewired.
+ * Do not add new code here.
+ */
+
 import { randomUUID } from 'crypto';
 
 import Database from 'better-sqlite3';

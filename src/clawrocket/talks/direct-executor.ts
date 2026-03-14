@@ -1,3 +1,10 @@
+/**
+ * @deprecated — SCHEDULED FOR DELETION
+ * Replaced by: talks/new-executor.ts
+ * This file is kept temporarily while server.ts is being rewired.
+ * Do not add new code here.
+ */
+
 import { ChildProcess } from 'child_process';
 import { randomUUID } from 'crypto';
 import { setTimeout as sleep } from 'timers/promises';

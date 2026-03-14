@@ -1,3 +1,10 @@
+/**
+ * @deprecated — SCHEDULED FOR DELETION
+ * Replaced by: talks/context-loader.ts
+ * This file is kept temporarily while server.ts is being rewired.
+ * Do not add new code here.
+ */
+
 import { listTalkReplayRows, type TalkMessageRecord } from '../db/index.js';
 import type { TalkPersonaRole } from '../llm/types.js';
 
