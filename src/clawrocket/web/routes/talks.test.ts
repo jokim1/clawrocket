@@ -607,6 +607,7 @@ describe('talk routes', () => {
     createTalkRun({
       id: 'run-history-failed',
       talk_id: 'talk-owner',
+      thread_id: null,
       requested_by: 'owner-1',
       status: 'failed',
       trigger_message_id: 'msg-run-history',
@@ -640,6 +641,7 @@ describe('talk routes', () => {
     createTalkRun({
       id: 'run-runtime-meta',
       talk_id: 'talk-owner',
+      thread_id: null,
       requested_by: 'owner-1',
       status: 'completed',
       trigger_message_id: null,
@@ -776,6 +778,7 @@ describe('talk routes', () => {
     createTalkRun({
       id: 'run-edit-active',
       talk_id: 'talk-owner',
+      thread_id: null,
       requested_by: 'owner-1',
       status: 'queued',
       trigger_message_id: 'msg-edit-active',

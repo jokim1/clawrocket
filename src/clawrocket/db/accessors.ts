@@ -1458,7 +1458,7 @@ export function getTalkIdsAccessibleByUser(userId: string): string[] {
 
 export interface TalkMessageRecord {
   id: string;
-  talk_id: string;
+  talk_id: string | null;
   role: TalkMessageRole;
   content: string;
   created_by: string | null;
@@ -1816,6 +1816,7 @@ export function enqueueTalkTurnAtomic(input: {
       const runs: TalkRunRecord[] = txInput.runIds.map((runId, index) => ({
         id: runId,
         talk_id: txInput.talkId,
+        thread_id: null,
         requested_by: txInput.userId,
         status: 'queued',
         trigger_message_id: txInput.messageId,
@@ -1834,7 +1835,7 @@ export function enqueueTalkTurnAtomic(input: {
 
       createTalkMessage({
         id: message.id,
-        talkId: message.talk_id,
+        talkId: message.talk_id!,
         role: message.role,
         content: message.content,
         createdBy: message.created_by,
@@ -2175,7 +2176,8 @@ export function scanDeadLetterQueue(limit = 50): DeadLetterRecord[] {
 
 export interface TalkRunRecord {
   id: string;
-  talk_id: string;
+  talk_id: string | null;
+  thread_id: string | null;
   requested_by: string;
   status: TalkRunStatus;
   trigger_message_id: string | null;
@@ -2197,16 +2199,17 @@ export function createTalkRun(input: TalkRunRecord): void {
     .prepare(
       `
     INSERT INTO talk_runs (
-      id, talk_id, requested_by, status, trigger_message_id, target_agent_id, idempotency_key,
+      id, talk_id, thread_id, requested_by, status, trigger_message_id, target_agent_id, idempotency_key,
       executor_alias, executor_model, source_binding_id, source_external_message_id, source_thread_key,
       created_at, started_at, ended_at, cancel_reason
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `,
     )
     .run(
       input.id,
       input.talk_id,
+      input.thread_id ?? null,
       input.requested_by,
       input.status,
       input.trigger_message_id,
@@ -2416,7 +2419,7 @@ export function appendAssistantMessageWithOutbox(input: {
 
     createTalkMessage({
       id: message.id,
-      talkId: message.talk_id,
+      talkId: message.talk_id!,
       role: message.role,
       content: message.content,
       createdBy: null,
@@ -2486,7 +2489,7 @@ export function appendRuntimeTalkMessage(input: {
 
     createTalkMessage({
       id: message.id,
-      talkId: message.talk_id,
+      talkId: message.talk_id!,
       role: message.role,
       content: message.content,
       createdBy: null,
@@ -2541,7 +2544,7 @@ export function claimQueuedTalkRuns(
           `
           SELECT *
           FROM talk_runs
-          WHERE status = 'queued'
+          WHERE status = 'queued' AND talk_id IS NOT NULL
           ORDER BY created_at ASC
           LIMIT ?
         `,
@@ -2983,7 +2986,7 @@ export function failInterruptedRunsOnStartup(now?: string): {
           `
           SELECT id, talk_id, trigger_message_id, executor_alias, executor_model
           FROM talk_runs
-          WHERE status = 'running'
+          WHERE status = 'running' AND talk_id IS NOT NULL
           ORDER BY created_at ASC
         `,
         )
@@ -3060,4 +3063,512 @@ export function markTalkRunStatus(
   `,
     )
     .run(status, endedAt, cancelReason, startedAt || null, runId);
+}
+
+// ============================================================================
+// Main Channel Accessors
+// ============================================================================
+
+/**
+ * Derive Main thread ownership from the first user message.
+ * No separate table — ownership is a query.
+ */
+export function getMainThreadOwner(threadId: string): string | null {
+  const row = getDb()
+    .prepare(
+      `
+      SELECT created_by
+      FROM talk_messages
+      WHERE thread_id = ? AND talk_id IS NULL AND role = 'user'
+      ORDER BY created_at ASC
+      LIMIT 1
+    `,
+    )
+    .get(threadId) as { created_by: string | null } | undefined;
+  return row?.created_by ?? null;
+}
+
+export function canUserAccessMainThread(
+  threadId: string,
+  userId: string,
+): boolean {
+  const owner = getMainThreadOwner(threadId);
+  // New threads (no messages yet) have no owner — allow the creator
+  if (owner === null) return true;
+  return owner === userId;
+}
+
+export function listMainThreadsForUser(
+  userId: string,
+): Array<{
+  thread_id: string;
+  last_message_at: string;
+  message_count: number;
+}> {
+  return getDb()
+    .prepare(
+      `
+      SELECT
+        t.thread_id,
+        t.last_message_at,
+        t.message_count
+      FROM (
+        SELECT
+          thread_id,
+          MAX(created_at) AS last_message_at,
+          COUNT(*) AS message_count
+        FROM talk_messages
+        WHERE talk_id IS NULL AND thread_id IS NOT NULL
+        GROUP BY thread_id
+      ) t
+      WHERE (
+        SELECT m.created_by FROM talk_messages m
+        WHERE m.thread_id = t.thread_id
+          AND m.talk_id IS NULL
+          AND m.role = 'user'
+        ORDER BY m.created_at ASC
+        LIMIT 1
+      ) = ?
+      ORDER BY t.last_message_at DESC
+    `,
+    )
+    .all(userId) as Array<{
+    thread_id: string;
+    last_message_at: string;
+    message_count: number;
+  }>;
+}
+
+/**
+ * Atomically create a user message and a queued run for the Main channel.
+ * Guards: one active run per thread.
+ */
+export function enqueueMainTurnAtomic(input: {
+  threadId: string;
+  userId: string;
+  content: string;
+  messageId: string;
+  runId: string;
+}): { message: TalkMessageRecord; run: TalkRunRecord } {
+  const tx = getDb().transaction(
+    (
+      txInput: typeof input,
+    ): { message: TalkMessageRecord; run: TalkRunRecord } => {
+      const now = new Date().toISOString();
+
+      // Active-run guard: one active run per thread
+      const active = getDb()
+        .prepare(
+          `
+          SELECT COUNT(*) AS count
+          FROM talk_runs
+          WHERE thread_id = ? AND talk_id IS NULL
+            AND status IN ('queued', 'running')
+        `,
+        )
+        .get(txInput.threadId) as { count: number };
+      if ((active?.count || 0) > 0) {
+        throw new MainThreadBusyError(txInput.threadId);
+      }
+
+      // Insert user message
+      getDb()
+        .prepare(
+          `
+          INSERT INTO talk_messages (
+            id, talk_id, thread_id, role, content, created_by, created_at
+          ) VALUES (?, NULL, ?, 'user', ?, ?, ?)
+        `,
+        )
+        .run(
+          txInput.messageId,
+          txInput.threadId,
+          txInput.content,
+          txInput.userId,
+          now,
+        );
+
+      // Insert queued run
+      getDb()
+        .prepare(
+          `
+          INSERT INTO talk_runs (
+            id, talk_id, thread_id, requested_by, status,
+            trigger_message_id, created_at
+          ) VALUES (?, NULL, ?, ?, 'queued', ?, ?)
+        `,
+        )
+        .run(
+          txInput.runId,
+          txInput.threadId,
+          txInput.userId,
+          txInput.messageId,
+          now,
+        );
+
+      // Append user message outbox event (so other tabs see it)
+      getDb()
+        .prepare(
+          `
+          INSERT INTO event_outbox (topic, event_type, payload, created_at)
+          VALUES (?, ?, ?, ?)
+        `,
+        )
+        .run(
+          `user:${txInput.userId}`,
+          'message_appended',
+          JSON.stringify({
+            threadId: txInput.threadId,
+            messageId: txInput.messageId,
+            role: 'user',
+            createdBy: txInput.userId,
+            content: txInput.content,
+            createdAt: now,
+          }),
+          now,
+        );
+
+      const message: TalkMessageRecord = {
+        id: txInput.messageId,
+        talk_id: null,
+        role: 'user',
+        content: txInput.content,
+        created_by: txInput.userId,
+        created_at: now,
+        run_id: null,
+        metadata_json: null,
+        sequence_in_run: null,
+      };
+
+      const run: TalkRunRecord = {
+        id: txInput.runId,
+        talk_id: null,
+        thread_id: txInput.threadId,
+        requested_by: txInput.userId,
+        status: 'queued',
+        trigger_message_id: txInput.messageId,
+        idempotency_key: null,
+        executor_alias: null,
+        executor_model: null,
+        created_at: now,
+        started_at: null,
+        ended_at: null,
+        cancel_reason: null,
+      };
+
+      return { message, run };
+    },
+  );
+
+  return tx(input);
+}
+
+export class MainThreadBusyError extends Error {
+  readonly threadId: string;
+  constructor(threadId: string) {
+    super(`Thread ${threadId} already has an active run`);
+    this.name = 'MainThreadBusyError';
+    this.threadId = threadId;
+  }
+}
+
+/**
+ * Claim queued Main channel runs (talk_id IS NULL, thread_id IS NOT NULL).
+ */
+export function claimQueuedMainRuns(
+  limit: number,
+  now?: string,
+): TalkRunRecord[] {
+  const normalizedLimit = Math.max(1, Math.floor(limit));
+  const tx = getDb().transaction(
+    (txLimit: number, txNow?: string): TalkRunRecord[] => {
+      const startedAt = txNow || new Date().toISOString();
+      const queued = getDb()
+        .prepare(
+          `
+          SELECT *
+          FROM talk_runs
+          WHERE status = 'queued' AND talk_id IS NULL AND thread_id IS NOT NULL
+          ORDER BY created_at ASC
+          LIMIT ?
+        `,
+        )
+        .all(txLimit) as TalkRunRecord[];
+      if (queued.length === 0) return [];
+
+      const updateStmt = getDb().prepare(
+        `
+        UPDATE talk_runs
+        SET status = 'running',
+            started_at = ?,
+            ended_at = NULL,
+            cancel_reason = NULL
+        WHERE id = ? AND status = 'queued'
+      `,
+      );
+
+      const claimed: TalkRunRecord[] = [];
+      for (const run of queued) {
+        const result = updateStmt.run(startedAt, run.id);
+        if (result.changes === 1) {
+          claimed.push({
+            ...run,
+            status: 'running' as TalkRunStatus,
+            started_at: startedAt,
+          });
+        }
+      }
+      return claimed;
+    },
+  );
+  return tx(normalizedLimit, now);
+}
+
+/**
+ * Atomically complete a Main run: update run status, persist assistant message,
+ * record LLM attempt, and emit outbox events (message_appended + terminal).
+ */
+export function completeMainRunAtomic(input: {
+  runId: string;
+  threadId: string;
+  requestedBy: string;
+  responseMessageId: string;
+  responseContent: string;
+  agentId: string;
+  providerId: string;
+  modelId: string;
+  latencyMs?: number;
+  usage?: {
+    inputTokens: number;
+    outputTokens: number;
+    estimatedCostUsd?: number;
+  };
+}): { applied: boolean } {
+  const tx = getDb().transaction(
+    (txInput: typeof input): { applied: boolean } => {
+      const now = new Date().toISOString();
+
+      // 1. Complete the run
+      const updated = getDb()
+        .prepare(
+          `
+          UPDATE talk_runs
+          SET status = 'completed', ended_at = ?
+          WHERE id = ? AND status = 'running'
+        `,
+        )
+        .run(now, txInput.runId);
+      if (updated.changes !== 1) {
+        return { applied: false };
+      }
+
+      // 2. Insert assistant message
+      getDb()
+        .prepare(
+          `
+          INSERT INTO talk_messages (
+            id, talk_id, thread_id, role, content, agent_id,
+            created_by, created_at, run_id, metadata_json
+          ) VALUES (?, NULL, ?, 'assistant', ?, ?, NULL, ?, ?, ?)
+        `,
+        )
+        .run(
+          txInput.responseMessageId,
+          txInput.threadId,
+          txInput.responseContent,
+          txInput.agentId,
+          now,
+          txInput.runId,
+          JSON.stringify({
+            runId: txInput.runId,
+            providerId: txInput.providerId,
+            modelId: txInput.modelId,
+          }),
+        );
+
+      // 3. Insert LLM attempt
+      getDb()
+        .prepare(
+          `
+          INSERT INTO llm_attempts (
+            run_id, talk_id, agent_id, provider_id, model_id,
+            status, latency_ms, input_tokens, output_tokens,
+            estimated_cost_usd, created_at
+          ) VALUES (?, NULL, ?, ?, ?, 'success', ?, ?, ?, ?, ?)
+        `,
+        )
+        .run(
+          txInput.runId,
+          txInput.agentId,
+          txInput.providerId,
+          txInput.modelId,
+          txInput.latencyMs ?? null,
+          txInput.usage?.inputTokens ?? null,
+          txInput.usage?.outputTokens ?? null,
+          txInput.usage?.estimatedCostUsd ?? null,
+          now,
+        );
+
+      // 4. Emit message_appended outbox event (so other tabs get the content)
+      const outboxStmt = getDb().prepare(
+        `
+        INSERT INTO event_outbox (topic, event_type, payload, created_at)
+        VALUES (?, ?, ?, ?)
+      `,
+      );
+
+      outboxStmt.run(
+        `user:${txInput.requestedBy}`,
+        'message_appended',
+        JSON.stringify({
+          threadId: txInput.threadId,
+          messageId: txInput.responseMessageId,
+          runId: txInput.runId,
+          role: 'assistant',
+          agentId: txInput.agentId,
+          content: txInput.responseContent,
+          createdAt: now,
+        }),
+        now,
+      );
+
+      // 5. Emit terminal main_response_completed event
+      outboxStmt.run(
+        `user:${txInput.requestedBy}`,
+        'main_response_completed',
+        JSON.stringify({
+          type: 'main_response_completed',
+          runId: txInput.runId,
+          threadId: txInput.threadId,
+          agentId: txInput.agentId,
+          responseMessageId: txInput.responseMessageId,
+        }),
+        now,
+      );
+
+      return { applied: true };
+    },
+  );
+  return tx(input);
+}
+
+/**
+ * Atomically fail a Main run and emit terminal failure event.
+ */
+export function failMainRunAtomic(input: {
+  runId: string;
+  threadId: string;
+  requestedBy: string;
+  errorCode: string;
+  errorMessage: string;
+}): { applied: boolean } {
+  const tx = getDb().transaction(
+    (txInput: typeof input): { applied: boolean } => {
+      const now = new Date().toISOString();
+
+      const updated = getDb()
+        .prepare(
+          `
+          UPDATE talk_runs
+          SET status = 'failed', ended_at = ?, cancel_reason = ?
+          WHERE id = ? AND status = 'running'
+        `,
+        )
+        .run(now, `${txInput.errorCode}: ${txInput.errorMessage}`, txInput.runId);
+      if (updated.changes !== 1) {
+        return { applied: false };
+      }
+
+      getDb()
+        .prepare(
+          `
+          INSERT INTO event_outbox (topic, event_type, payload, created_at)
+          VALUES (?, ?, ?, ?)
+        `,
+        )
+        .run(
+          `user:${txInput.requestedBy}`,
+          'main_response_failed',
+          JSON.stringify({
+            type: 'main_response_failed',
+            runId: txInput.runId,
+            threadId: txInput.threadId,
+            errorCode: txInput.errorCode,
+            errorMessage: txInput.errorMessage,
+          }),
+          now,
+        );
+
+      return { applied: true };
+    },
+  );
+  return tx(input);
+}
+
+/**
+ * Fail interrupted Main runs on startup.
+ * Separate from Talk recovery — only touches talk_id IS NULL rows.
+ */
+export function failInterruptedMainRunsOnStartup(
+  now?: string,
+): { failedRunIds: string[] } {
+  const tx = getDb().transaction(
+    (inputNow?: string): { failedRunIds: string[] } => {
+      const currentNow = inputNow || new Date().toISOString();
+      const runningRuns = getDb()
+        .prepare(
+          `
+          SELECT id, thread_id, requested_by
+          FROM talk_runs
+          WHERE status = 'running' AND talk_id IS NULL AND thread_id IS NOT NULL
+          ORDER BY created_at ASC
+        `,
+        )
+        .all() as Array<{
+        id: string;
+        thread_id: string;
+        requested_by: string;
+      }>;
+
+      const failedRunIds: string[] = [];
+      for (const run of runningRuns) {
+        const updated = getDb()
+          .prepare(
+            `
+            UPDATE talk_runs
+            SET status = 'failed',
+                ended_at = ?,
+                cancel_reason = ?
+            WHERE id = ? AND status = 'running'
+          `,
+          )
+          .run(currentNow, 'interrupted_by_restart', run.id);
+        if (updated.changes !== 1) continue;
+
+        failedRunIds.push(run.id);
+        getDb()
+          .prepare(
+            `
+            INSERT INTO event_outbox (topic, event_type, payload, created_at)
+            VALUES (?, ?, ?, ?)
+          `,
+          )
+          .run(
+            `user:${run.requested_by}`,
+            'main_response_failed',
+            JSON.stringify({
+              type: 'main_response_failed',
+              runId: run.id,
+              threadId: run.thread_id,
+              errorCode: 'interrupted_by_restart',
+              errorMessage: 'Execution interrupted by server restart',
+            }),
+            currentNow,
+          );
+      }
+
+      return { failedRunIds };
+    },
+  );
+  return tx(now);
 }

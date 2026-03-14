@@ -782,6 +782,7 @@ describe('phase 0 schema and reliability tables', () => {
     createTalkRun({
       id: 'run-seq-1',
       talk_id: 'talk-1',
+      thread_id: null,
       requested_by: 'owner-1',
       status: 'running',
       trigger_message_id: null,
@@ -1248,6 +1249,7 @@ describe('phase 0 schema and reliability tables', () => {
     createTalkRun({
       id: 'run-atomic-5a',
       talk_id: 'talk-1',
+      thread_id: null,
       requested_by: 'owner-1',
       status: 'running',
       trigger_message_id: null,
@@ -1262,6 +1264,7 @@ describe('phase 0 schema and reliability tables', () => {
     createTalkRun({
       id: 'run-atomic-5b',
       talk_id: 'talk-1',
+      thread_id: null,
       requested_by: 'owner-1',
       status: 'queued',
       trigger_message_id: null,
@@ -1331,6 +1334,7 @@ describe('phase 0 schema and reliability tables', () => {
     createTalkRun({
       id: 'run-1',
       talk_id: 'talk-1',
+      thread_id: null,
       requested_by: 'owner-1',
       status: 'running',
       trigger_message_id: null,
@@ -1345,6 +1349,7 @@ describe('phase 0 schema and reliability tables', () => {
     createTalkRun({
       id: 'run-2',
       talk_id: 'talk-1',
+      thread_id: null,
       requested_by: 'owner-1',
       status: 'queued',
       trigger_message_id: null,

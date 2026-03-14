@@ -5,6 +5,7 @@ import {
   WEB_HOST,
   WEB_PORT,
 } from '../config.js';
+import { MainRunWorker } from '../agents/main-run-worker.js';
 import type { TalkExecutor } from '../talks/executor.js';
 import { CleanTalkExecutor } from '../talks/new-executor.js';
 import { TalkRunWorker } from '../talks/run-worker.js';
@@ -39,10 +40,17 @@ export async function startWebServer(
   });
   await runWorker.start();
 
+  const mainRunWorker = new MainRunWorker({
+    pollMs: TALK_RUN_POLL_MS,
+    maxConcurrency: TALK_RUN_MAX_CONCURRENCY,
+  });
+  await mainRunWorker.start();
+
   const server = createWebServer({
     host: WEB_HOST,
     port: WEB_PORT,
     runWorker,
+    mainRunWorker,
     sendChannelTestMessage: input?.sendChannelTestMessage,
   });
 
@@ -50,6 +58,7 @@ export async function startWebServer(
   try {
     bound = await server.start();
   } catch (error) {
+    await mainRunWorker.stop();
     await runWorker.stop();
     throw error;
   }
@@ -57,6 +66,7 @@ export async function startWebServer(
 
   const originalStop = server.stop.bind(server);
   server.stop = async () => {
+    await mainRunWorker.stop();
     await runWorker.stop();
     await originalStop();
   };
