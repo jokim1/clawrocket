@@ -12,13 +12,37 @@ const TRUNCATION_MARKER = '\n\n[…truncated — content exceeds extraction limi
 // ---------------------------------------------------------------------------
 
 export const ALLOWED_ATTACHMENT_MIME_TYPES = new Set([
+  // Text-based (existing)
   'text/plain',
   'text/markdown',
   'text/csv',
   'text/html',
+  // NEW: RTF
+  'text/rtf',
+  'application/rtf',
+  // NEW: Code / structured data (treated as plain text)
+  'text/xml',
+  'application/json',
+  'application/xml',
+  'text/yaml',
+  'text/x-yaml',
+  'application/x-yaml',
+  'text/x-python',
+  'text/x-java',
+  'text/javascript',
+  'application/javascript',
+  'text/typescript',
+  'text/x-c',
+  'text/x-c++',
+  'text/x-go',
+  'text/x-rust',
+  'text/x-shellscript',
+  'text/x-sql',
+  // Documents (existing + PPTX)
   'application/pdf',
   'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
   'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation',
 ]);
 
 export const MAX_ATTACHMENT_SIZE = 10 * 1024 * 1024; // 10 MB
@@ -173,6 +197,145 @@ async function extractExcel(buffer: Buffer, fileName: string): Promise<string> {
 }
 
 // ---------------------------------------------------------------------------
+// PPTX extraction (lazy-loaded)
+// ---------------------------------------------------------------------------
+
+const MAX_PPTX_SLIDES = 100;
+
+async function extractPptx(buffer: Buffer, fileName: string): Promise<string> {
+  try {
+    const JSZip = await import('jszip');
+    const zip = await JSZip.default.loadAsync(buffer);
+
+    // Collect slide entries sorted numerically (slide1.xml, slide2.xml, …)
+    const slideEntries: Array<{ num: number; path: string }> = [];
+    zip.forEach((relativePath) => {
+      const match = relativePath.match(/^ppt\/slides\/slide(\d+)\.xml$/);
+      if (match) {
+        slideEntries.push({ num: parseInt(match[1], 10), path: relativePath });
+      }
+    });
+    slideEntries.sort((a, b) => a.num - b.num);
+
+    if (slideEntries.length === 0) {
+      return `[Empty PPTX presentation: "${fileName}"]`;
+    }
+
+    const parts: string[] = [];
+
+    for (const entry of slideEntries.slice(0, MAX_PPTX_SLIDES)) {
+      const xml = await zip.file(entry.path)!.async('string');
+      // Extract text runs (<a:t> elements) from the slide XML
+      const textRuns = [...xml.matchAll(/<a:t[^>]*>([\s\S]*?)<\/a:t>/g)].map(
+        (m) => m[1],
+      );
+      if (textRuns.length > 0) {
+        parts.push(`\n--- Slide ${entry.num} ---\n`);
+        parts.push(textRuns.join(' '));
+      }
+    }
+
+    if (slideEntries.length > MAX_PPTX_SLIDES) {
+      parts.push(
+        `\n[…${slideEntries.length - MAX_PPTX_SLIDES} additional slide(s) omitted]`,
+      );
+    }
+
+    // Also attempt to extract speaker notes
+    const noteEntries: Array<{ num: number; path: string }> = [];
+    zip.forEach((relativePath) => {
+      const match = relativePath.match(
+        /^ppt\/notesSlides\/notesSlide(\d+)\.xml$/,
+      );
+      if (match) {
+        noteEntries.push({ num: parseInt(match[1], 10), path: relativePath });
+      }
+    });
+    noteEntries.sort((a, b) => a.num - b.num);
+
+    if (noteEntries.length > 0) {
+      parts.push('\n\n--- Speaker Notes ---\n');
+      for (const entry of noteEntries.slice(0, MAX_PPTX_SLIDES)) {
+        const xml = await zip.file(entry.path)!.async('string');
+        const textRuns = [...xml.matchAll(/<a:t[^>]*>([\s\S]*?)<\/a:t>/g)].map(
+          (m) => m[1],
+        );
+        if (textRuns.length > 0) {
+          parts.push(`Note (slide ${entry.num}): ${textRuns.join(' ')}`);
+        }
+      }
+    }
+
+    const text = parts.join('\n').trim();
+    if (!text) {
+      return `[Empty PPTX presentation: "${fileName}"]`;
+    }
+    return truncate(text);
+  } catch (err) {
+    throw new AttachmentExtractionError(
+      'pptx_extraction_failed',
+      `Failed to extract text from PPTX "${fileName}": ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// RTF extraction
+// ---------------------------------------------------------------------------
+
+function extractRtf(buffer: Buffer): string {
+  const raw = buffer.toString('utf-8');
+
+  let text = raw
+    .replace(/\\'([0-9a-fA-F]{2})/g, (_m, hex) =>
+      String.fromCharCode(parseInt(hex, 16)),
+    )
+    .replace(/\\u(\d+)\??/g, (_m, code) =>
+      String.fromCodePoint(parseInt(code, 10)),
+    )
+    .replace(/\\par\b/g, '\n')
+    .replace(/\\line\b/g, '\n')
+    .replace(/\\tab\b/g, '\t')
+    .replace(
+      /\{\\(?:fonttbl|colortbl|stylesheet|info|pict|object)\b[^{}]*(?:\{[^{}]*\}[^{}]*)*\}/g,
+      '',
+    )
+    .replace(/\\[a-z]+\d*\s?/gi, '')
+    .replace(/[{}]/g, '')
+    .replace(/\r\n/g, '\n')
+    .replace(/[ \t]+/g, ' ')
+    .replace(/\n{3,}/g, '\n\n');
+
+  text = text.trim();
+  if (!text) return '[Empty RTF document]';
+  return truncate(text);
+}
+
+// ---------------------------------------------------------------------------
+// Code MIME types set
+// ---------------------------------------------------------------------------
+
+const CODE_MIME_TYPES = new Set([
+  'text/xml',
+  'application/json',
+  'application/xml',
+  'text/yaml',
+  'text/x-yaml',
+  'application/x-yaml',
+  'text/x-python',
+  'text/x-java',
+  'text/javascript',
+  'application/javascript',
+  'text/typescript',
+  'text/x-c',
+  'text/x-c++',
+  'text/x-go',
+  'text/x-rust',
+  'text/x-shellscript',
+  'text/x-sql',
+]);
+
+// ---------------------------------------------------------------------------
 // Router: dispatch to the appropriate extractor
 // ---------------------------------------------------------------------------
 
@@ -190,6 +353,10 @@ export async function extractAttachmentText(
     case 'text/html':
       return extractHtml(buffer);
 
+    case 'text/rtf':
+    case 'application/rtf':
+      return extractRtf(buffer);
+
     case 'application/pdf':
       return extractPdf(buffer, fileName);
 
@@ -199,7 +366,13 @@ export async function extractAttachmentText(
     case 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet':
       return extractExcel(buffer, fileName);
 
+    case 'application/vnd.openxmlformats-officedocument.presentationml.presentation':
+      return extractPptx(buffer, fileName);
+
     default:
+      if (CODE_MIME_TYPES.has(mimeType)) {
+        return extractTextDirect(buffer);
+      }
       // Best-effort: treat as UTF-8 text
       return truncate(buffer.toString('utf-8'));
   }

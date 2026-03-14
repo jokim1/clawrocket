@@ -2580,15 +2580,42 @@ export function TalkDetailPage({
     }
   };
 
-  const ALLOWED_ATTACHMENT_EXTENSIONS = '.txt,.md,.csv,.html,.pdf,.docx,.xlsx';
+  const ALLOWED_ATTACHMENT_EXTENSIONS =
+    '.txt,.md,.csv,.html,.rtf,' +
+    '.json,.xml,.yaml,.yml,.py,.js,.ts,.jsx,.tsx,.java,.c,.h,.cpp,.hpp,.go,.rs,.sh,.bash,.sql,.rb,.php,.swift,.kt,.lua,.r,.toml,.ini,.cfg,.env,.log,' +
+    '.pdf,.docx,.xlsx,.pptx';
   const ALLOWED_ATTACHMENT_MIMES = new Set([
+    // Text-based (existing)
     'text/plain',
     'text/markdown',
     'text/csv',
     'text/html',
+    // NEW: RTF
+    'text/rtf',
+    'application/rtf',
+    // NEW: Code / structured data (treated as plain text)
+    'text/xml',
+    'application/json',
+    'application/xml',
+    'text/yaml',
+    'text/x-yaml',
+    'application/x-yaml',
+    'text/x-python',
+    'text/x-java',
+    'text/javascript',
+    'application/javascript',
+    'text/typescript',
+    'text/x-c',
+    'text/x-c++',
+    'text/x-go',
+    'text/x-rust',
+    'text/x-shellscript',
+    'text/x-sql',
+    // Documents (existing + PPTX)
     'application/pdf',
     'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
     'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    'application/vnd.openxmlformats-officedocument.presentationml.presentation',
   ]);
   const MAX_ATTACHMENT_SIZE = 10 * 1024 * 1024;
   const MAX_ATTACHMENTS_PER_MESSAGE = 5;
@@ -2610,7 +2637,7 @@ export function TalkDetailPage({
       if (!ALLOWED_ATTACHMENT_MIMES.has(file.type) && file.type !== '') {
         dispatch({
           type: 'SEND_FAILED',
-          message: `File type "${file.type}" is not supported. Supported: text, markdown, CSV, HTML, PDF, DOCX, XLSX.`,
+          message: `File type "${file.type}" is not supported. Supported: text, markdown, CSV, HTML, RTF, PDF, DOCX, XLSX, PPTX, and common code/config files.`,
           lastDraft: draft,
         });
         continue;
