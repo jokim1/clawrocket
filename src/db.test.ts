@@ -532,10 +532,14 @@ describe('phase 0 schema and reliability tables', () => {
       ownerId: 'owner-1',
       topicTitle: 'Test Talk',
     });
-    getDb().prepare(`
+    getDb()
+      .prepare(
+        `
       INSERT INTO talk_agents (id, talk_id, registered_agent_id, is_primary, sort_order, created_at, updated_at)
       VALUES (?, ?, ?, 1, 0, datetime('now'), datetime('now'))
-    `).run('ta-talk-1', 'talk-1', agent.id);
+    `,
+      )
+      .run('ta-talk-1', 'talk-1', agent.id);
 
     upsertTalkMember({
       talkId: 'talk-1',
@@ -631,9 +635,7 @@ describe('phase 0 schema and reliability tables', () => {
     expect(session?.session_id).toBe('session-2');
     expect(session?.executor_alias).toBe('Opus4.6');
     expect(session?.executor_model).toBe('default');
-    expect(session?.session_compat_key).toBe(
-      'Opus4.6:default',
-    );
+    expect(session?.session_compat_key).toBe('Opus4.6:default');
     expect(session?.updated_at).toBe('2024-01-01T00:00:01.000Z');
 
     deleteTalkExecutorSession('talk-1');

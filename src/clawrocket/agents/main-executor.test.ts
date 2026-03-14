@@ -5,11 +5,7 @@ vi.mock('./agent-router.js', () => ({
 }));
 
 import { getDb } from '../../db.js';
-import {
-  _initTestDatabase,
-  createMessage,
-  upsertUser,
-} from '../db/index.js';
+import { _initTestDatabase, createMessage, upsertUser } from '../db/index.js';
 import {
   executeMainChannel,
   type MainExecutionEvent,

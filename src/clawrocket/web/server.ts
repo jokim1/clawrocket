@@ -569,11 +569,6 @@ function buildApp(opts: WebServerOptions): Hono {
     return c.json({ ok: true, data: { user: normalizeUser(user) } }, 200);
   });
 
-
-
-
-
-
   app.post('/api/v1/settings/users/invite', async (c) => {
     const auth = requireAuth(c);
     if (!auth) return unauthorized(c);
@@ -697,7 +692,6 @@ function buildApp(opts: WebServerOptions): Hono {
     });
   });
 
-
   // =========================================================================
   // New Architecture: Registered Agents CRUD
   // =========================================================================
@@ -705,7 +699,10 @@ function buildApp(opts: WebServerOptions): Hono {
   app.get('/api/v1/registered-agents', async (c) => {
     const auth = requireAuth(c);
     if (!auth) return unauthorized(c);
-    const rateResult = checkRateLimit({ principalId: auth.userId, bucket: 'read' });
+    const rateResult = checkRateLimit({
+      principalId: auth.userId,
+      bucket: 'read',
+    });
     if (!rateResult.allowed) return rateLimitedResponse(c, rateResult);
     const result = listRegisteredAgentsRoute(auth);
     return new Response(JSON.stringify(result.body), {
@@ -717,7 +714,10 @@ function buildApp(opts: WebServerOptions): Hono {
   app.get('/api/v1/registered-agents/main', async (c) => {
     const auth = requireAuth(c);
     if (!auth) return unauthorized(c);
-    const rateResult = checkRateLimit({ principalId: auth.userId, bucket: 'read' });
+    const rateResult = checkRateLimit({
+      principalId: auth.userId,
+      bucket: 'read',
+    });
     if (!rateResult.allowed) return rateLimitedResponse(c, rateResult);
     const result = getMainAgentRoute(auth);
     return new Response(JSON.stringify(result.body), {
@@ -729,7 +729,10 @@ function buildApp(opts: WebServerOptions): Hono {
   app.get('/api/v1/registered-agents/:agentId', async (c) => {
     const auth = requireAuth(c);
     if (!auth) return unauthorized(c);
-    const rateResult = checkRateLimit({ principalId: auth.userId, bucket: 'read' });
+    const rateResult = checkRateLimit({
+      principalId: auth.userId,
+      bucket: 'read',
+    });
     if (!rateResult.allowed) return rateLimitedResponse(c, rateResult);
     const result = getAgentRoute(auth, c.req.param('agentId'));
     return new Response(JSON.stringify(result.body), {
@@ -741,16 +744,29 @@ function buildApp(opts: WebServerOptions): Hono {
   app.post('/api/v1/registered-agents', async (c) => {
     const auth = requireAuth(c);
     if (!auth) return unauthorized(c);
-    const rateResult = checkRateLimit({ principalId: auth.userId, bucket: 'write' });
+    const rateResult = checkRateLimit({
+      principalId: auth.userId,
+      bucket: 'write',
+    });
     if (!rateResult.allowed) return rateLimitedResponse(c, rateResult);
     const csrf = validateCsrfToken({
-      method: c.req.method, authType: auth.authType,
-      cookieHeader: c.req.header('cookie'), csrfHeader: c.req.header('x-csrf-token'),
+      method: c.req.method,
+      authType: auth.authType,
+      cookieHeader: c.req.header('cookie'),
+      csrfHeader: c.req.header('x-csrf-token'),
     });
-    if (!csrf.ok) return c.json({ ok: false, error: { code: 'csrf_failed', message: csrf.reason } }, 403);
+    if (!csrf.ok)
+      return c.json(
+        { ok: false, error: { code: 'csrf_failed', message: csrf.reason } },
+        403,
+      );
     const bodyText = await c.req.text();
     const payload = parseJsonPayload<Record<string, unknown>>(bodyText);
-    if (!payload.ok) return c.json({ ok: false, error: { code: 'invalid_json', message: payload.error } }, 400);
+    if (!payload.ok)
+      return c.json(
+        { ok: false, error: { code: 'invalid_json', message: payload.error } },
+        400,
+      );
     const result = createAgentRoute(auth, payload.data as any);
     return new Response(JSON.stringify(result.body), {
       status: result.statusCode,
@@ -761,17 +777,34 @@ function buildApp(opts: WebServerOptions): Hono {
   app.put('/api/v1/registered-agents/:agentId', async (c) => {
     const auth = requireAuth(c);
     if (!auth) return unauthorized(c);
-    const rateResult = checkRateLimit({ principalId: auth.userId, bucket: 'write' });
+    const rateResult = checkRateLimit({
+      principalId: auth.userId,
+      bucket: 'write',
+    });
     if (!rateResult.allowed) return rateLimitedResponse(c, rateResult);
     const csrf = validateCsrfToken({
-      method: c.req.method, authType: auth.authType,
-      cookieHeader: c.req.header('cookie'), csrfHeader: c.req.header('x-csrf-token'),
+      method: c.req.method,
+      authType: auth.authType,
+      cookieHeader: c.req.header('cookie'),
+      csrfHeader: c.req.header('x-csrf-token'),
     });
-    if (!csrf.ok) return c.json({ ok: false, error: { code: 'csrf_failed', message: csrf.reason } }, 403);
+    if (!csrf.ok)
+      return c.json(
+        { ok: false, error: { code: 'csrf_failed', message: csrf.reason } },
+        403,
+      );
     const bodyText = await c.req.text();
     const payload = parseJsonPayload<Record<string, unknown>>(bodyText);
-    if (!payload.ok) return c.json({ ok: false, error: { code: 'invalid_json', message: payload.error } }, 400);
-    const result = updateAgentRoute(auth, c.req.param('agentId'), payload.data as any);
+    if (!payload.ok)
+      return c.json(
+        { ok: false, error: { code: 'invalid_json', message: payload.error } },
+        400,
+      );
+    const result = updateAgentRoute(
+      auth,
+      c.req.param('agentId'),
+      payload.data as any,
+    );
     return new Response(JSON.stringify(result.body), {
       status: result.statusCode,
       headers: { 'content-type': 'application/json; charset=utf-8' },
@@ -781,13 +814,22 @@ function buildApp(opts: WebServerOptions): Hono {
   app.delete('/api/v1/registered-agents/:agentId', async (c) => {
     const auth = requireAuth(c);
     if (!auth) return unauthorized(c);
-    const rateResult = checkRateLimit({ principalId: auth.userId, bucket: 'write' });
+    const rateResult = checkRateLimit({
+      principalId: auth.userId,
+      bucket: 'write',
+    });
     if (!rateResult.allowed) return rateLimitedResponse(c, rateResult);
     const csrf = validateCsrfToken({
-      method: c.req.method, authType: auth.authType,
-      cookieHeader: c.req.header('cookie'), csrfHeader: c.req.header('x-csrf-token'),
+      method: c.req.method,
+      authType: auth.authType,
+      cookieHeader: c.req.header('cookie'),
+      csrfHeader: c.req.header('x-csrf-token'),
     });
-    if (!csrf.ok) return c.json({ ok: false, error: { code: 'csrf_failed', message: csrf.reason } }, 403);
+    if (!csrf.ok)
+      return c.json(
+        { ok: false, error: { code: 'csrf_failed', message: csrf.reason } },
+        403,
+      );
     const result = deleteAgentRoute(auth, c.req.param('agentId'));
     return new Response(JSON.stringify(result.body), {
       status: result.statusCode,
@@ -798,7 +840,10 @@ function buildApp(opts: WebServerOptions): Hono {
   app.get('/api/v1/registered-agents/:agentId/fallback', async (c) => {
     const auth = requireAuth(c);
     if (!auth) return unauthorized(c);
-    const rateResult = checkRateLimit({ principalId: auth.userId, bucket: 'read' });
+    const rateResult = checkRateLimit({
+      principalId: auth.userId,
+      bucket: 'read',
+    });
     if (!rateResult.allowed) return rateLimitedResponse(c, rateResult);
     const result = getAgentFallbackRoute(auth, c.req.param('agentId'));
     return new Response(JSON.stringify(result.body), {
@@ -810,17 +855,34 @@ function buildApp(opts: WebServerOptions): Hono {
   app.put('/api/v1/registered-agents/:agentId/fallback', async (c) => {
     const auth = requireAuth(c);
     if (!auth) return unauthorized(c);
-    const rateResult = checkRateLimit({ principalId: auth.userId, bucket: 'write' });
+    const rateResult = checkRateLimit({
+      principalId: auth.userId,
+      bucket: 'write',
+    });
     if (!rateResult.allowed) return rateLimitedResponse(c, rateResult);
     const csrf = validateCsrfToken({
-      method: c.req.method, authType: auth.authType,
-      cookieHeader: c.req.header('cookie'), csrfHeader: c.req.header('x-csrf-token'),
+      method: c.req.method,
+      authType: auth.authType,
+      cookieHeader: c.req.header('cookie'),
+      csrfHeader: c.req.header('x-csrf-token'),
     });
-    if (!csrf.ok) return c.json({ ok: false, error: { code: 'csrf_failed', message: csrf.reason } }, 403);
+    if (!csrf.ok)
+      return c.json(
+        { ok: false, error: { code: 'csrf_failed', message: csrf.reason } },
+        403,
+      );
     const bodyText = await c.req.text();
     const payload = parseJsonPayload<Record<string, unknown>>(bodyText);
-    if (!payload.ok) return c.json({ ok: false, error: { code: 'invalid_json', message: payload.error } }, 400);
-    const result = setAgentFallbackRoute(auth, c.req.param('agentId'), payload.data as any);
+    if (!payload.ok)
+      return c.json(
+        { ok: false, error: { code: 'invalid_json', message: payload.error } },
+        400,
+      );
+    const result = setAgentFallbackRoute(
+      auth,
+      c.req.param('agentId'),
+      payload.data as any,
+    );
     return new Response(JSON.stringify(result.body), {
       status: result.statusCode,
       headers: { 'content-type': 'application/json; charset=utf-8' },
@@ -830,7 +892,10 @@ function buildApp(opts: WebServerOptions): Hono {
   app.get('/api/v1/registered-agents/:agentId/effective-tools', async (c) => {
     const auth = requireAuth(c);
     if (!auth) return unauthorized(c);
-    const rateResult = checkRateLimit({ principalId: auth.userId, bucket: 'read' });
+    const rateResult = checkRateLimit({
+      principalId: auth.userId,
+      bucket: 'read',
+    });
     if (!rateResult.allowed) return rateLimitedResponse(c, rateResult);
     const result = getEffectiveToolsRoute(auth, c.req.param('agentId'));
     return new Response(JSON.stringify(result.body), {
@@ -846,7 +911,10 @@ function buildApp(opts: WebServerOptions): Hono {
   app.get('/api/v1/user/tool-permissions', async (c) => {
     const auth = requireAuth(c);
     if (!auth) return unauthorized(c);
-    const rateResult = checkRateLimit({ principalId: auth.userId, bucket: 'read' });
+    const rateResult = checkRateLimit({
+      principalId: auth.userId,
+      bucket: 'read',
+    });
     if (!rateResult.allowed) return rateLimitedResponse(c, rateResult);
     const result = listUserToolPermissionsRoute(auth);
     return new Response(JSON.stringify(result.body), {
@@ -858,16 +926,29 @@ function buildApp(opts: WebServerOptions): Hono {
   app.put('/api/v1/user/tool-permissions', async (c) => {
     const auth = requireAuth(c);
     if (!auth) return unauthorized(c);
-    const rateResult = checkRateLimit({ principalId: auth.userId, bucket: 'write' });
+    const rateResult = checkRateLimit({
+      principalId: auth.userId,
+      bucket: 'write',
+    });
     if (!rateResult.allowed) return rateLimitedResponse(c, rateResult);
     const csrf = validateCsrfToken({
-      method: c.req.method, authType: auth.authType,
-      cookieHeader: c.req.header('cookie'), csrfHeader: c.req.header('x-csrf-token'),
+      method: c.req.method,
+      authType: auth.authType,
+      cookieHeader: c.req.header('cookie'),
+      csrfHeader: c.req.header('x-csrf-token'),
     });
-    if (!csrf.ok) return c.json({ ok: false, error: { code: 'csrf_failed', message: csrf.reason } }, 403);
+    if (!csrf.ok)
+      return c.json(
+        { ok: false, error: { code: 'csrf_failed', message: csrf.reason } },
+        403,
+      );
     const bodyText = await c.req.text();
     const payload = parseJsonPayload<Record<string, unknown>>(bodyText);
-    if (!payload.ok) return c.json({ ok: false, error: { code: 'invalid_json', message: payload.error } }, 400);
+    if (!payload.ok)
+      return c.json(
+        { ok: false, error: { code: 'invalid_json', message: payload.error } },
+        400,
+      );
     const result = updateUserToolPermissionRoute(auth, payload.data as any);
     return new Response(JSON.stringify(result.body), {
       status: result.statusCode,
@@ -882,7 +963,10 @@ function buildApp(opts: WebServerOptions): Hono {
   app.get('/api/v1/main/threads', async (c) => {
     const auth = requireAuth(c);
     if (!auth) return unauthorized(c);
-    const rateResult = checkRateLimit({ principalId: auth.userId, bucket: 'read' });
+    const rateResult = checkRateLimit({
+      principalId: auth.userId,
+      bucket: 'read',
+    });
     if (!rateResult.allowed) return rateLimitedResponse(c, rateResult);
     const result = listMainThreadsRoute(auth);
     return new Response(JSON.stringify(result.body), {
@@ -894,7 +978,10 @@ function buildApp(opts: WebServerOptions): Hono {
   app.get('/api/v1/main/threads/:threadId', async (c) => {
     const auth = requireAuth(c);
     if (!auth) return unauthorized(c);
-    const rateResult = checkRateLimit({ principalId: auth.userId, bucket: 'read' });
+    const rateResult = checkRateLimit({
+      principalId: auth.userId,
+      bucket: 'read',
+    });
     if (!rateResult.allowed) return rateLimitedResponse(c, rateResult);
     const result = getMainThreadRoute(auth, c.req.param('threadId'));
     return new Response(JSON.stringify(result.body), {
@@ -906,13 +993,22 @@ function buildApp(opts: WebServerOptions): Hono {
   app.post('/api/v1/main/messages', async (c) => {
     const auth = requireAuth(c);
     if (!auth) return unauthorized(c);
-    const rateResult = checkRateLimit({ principalId: auth.userId, bucket: 'write' });
+    const rateResult = checkRateLimit({
+      principalId: auth.userId,
+      bucket: 'write',
+    });
     if (!rateResult.allowed) return rateLimitedResponse(c, rateResult);
     const csrf = validateCsrfToken({
-      method: c.req.method, authType: auth.authType,
-      cookieHeader: c.req.header('cookie'), csrfHeader: c.req.header('x-csrf-token'),
+      method: c.req.method,
+      authType: auth.authType,
+      cookieHeader: c.req.header('cookie'),
+      csrfHeader: c.req.header('x-csrf-token'),
     });
-    if (!csrf.ok) return c.json({ ok: false, error: { code: 'csrf_failed', message: csrf.reason } }, 403);
+    if (!csrf.ok)
+      return c.json(
+        { ok: false, error: { code: 'csrf_failed', message: csrf.reason } },
+        403,
+      );
 
     const bodyText = await c.req.text();
     const idempotencyKey = c.req.header('idempotency-key') || null;
@@ -925,7 +1021,10 @@ function buildApp(opts: WebServerOptions): Hono {
     });
     if (precheck.error) {
       return c.json(
-        { ok: false, error: { code: 'idempotency_error', message: precheck.error } },
+        {
+          ok: false,
+          error: { code: 'idempotency_error', message: precheck.error },
+        },
         400,
       );
     }
@@ -940,7 +1039,11 @@ function buildApp(opts: WebServerOptions): Hono {
     }
 
     const payload = parseJsonPayload<Record<string, unknown>>(bodyText);
-    if (!payload.ok) return c.json({ ok: false, error: { code: 'invalid_json', message: payload.error } }, 400);
+    if (!payload.ok)
+      return c.json(
+        { ok: false, error: { code: 'invalid_json', message: payload.error } },
+        400,
+      );
 
     const result = postMainMessageRoute(auth, payload.data as any);
     if (result.statusCode === 202 && result.body.ok) {
@@ -2412,7 +2515,6 @@ function buildApp(opts: WebServerOptions): Hono {
       });
     },
   );
-
 
   // ---------------------------------------------------------------------------
   // Context tab routes

@@ -70,7 +70,11 @@ export type MainExecutionEvent =
       type: 'main_response_usage';
       runId: string;
       threadId: string;
-      usage: { inputTokens: number; outputTokens: number; estimatedCostUsd?: number };
+      usage: {
+        inputTokens: number;
+        outputTokens: number;
+        estimatedCostUsd?: number;
+      };
     };
 
 // ============================================================================
@@ -132,27 +136,37 @@ export async function executeMainChannel(
     history,
   };
 
-  const result = await executeWithAgent(agent.id, context, input.triggerContent, {
-    runId: input.runId,
-    userId: input.requestedBy,
-    signal,
-    emit: (event: ExecutionEvent) => {
-      if (event.type === 'text_delta') {
-        emitEvent({ type: 'main_response_delta', runId: input.runId, threadId: input.threadId, text: event.text });
-      } else if (event.type === 'usage') {
-        emitEvent({
-          type: 'main_response_usage',
-          runId: input.runId,
-          threadId: input.threadId,
-          usage: {
-            inputTokens: event.inputTokens,
-            outputTokens: event.outputTokens,
-            estimatedCostUsd: event.estimatedCostUsd,
-          },
-        });
-      }
+  const result = await executeWithAgent(
+    agent.id,
+    context,
+    input.triggerContent,
+    {
+      runId: input.runId,
+      userId: input.requestedBy,
+      signal,
+      emit: (event: ExecutionEvent) => {
+        if (event.type === 'text_delta') {
+          emitEvent({
+            type: 'main_response_delta',
+            runId: input.runId,
+            threadId: input.threadId,
+            text: event.text,
+          });
+        } else if (event.type === 'usage') {
+          emitEvent({
+            type: 'main_response_usage',
+            runId: input.runId,
+            threadId: input.threadId,
+            usage: {
+              inputTokens: event.inputTokens,
+              outputTokens: event.outputTokens,
+              estimatedCostUsd: event.estimatedCostUsd,
+            },
+          });
+        }
+      },
     },
-  });
+  );
 
   // --- Step 4: Return output (no persistence — worker handles that) ---
   return {

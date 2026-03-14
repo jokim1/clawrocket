@@ -192,7 +192,11 @@ export class MainRunWorker implements MainRunWorkerControl {
     signal: AbortSignal,
   ): Promise<void> {
     if (!run.trigger_message_id) {
-      this.failRun(run, 'trigger_message_missing', 'Run missing trigger message reference');
+      this.failRun(
+        run,
+        'trigger_message_missing',
+        'Run missing trigger message reference',
+      );
       return;
     }
 

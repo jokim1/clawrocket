@@ -3098,9 +3098,7 @@ export function canUserAccessMainThread(
   return owner === userId;
 }
 
-export function listMainThreadsForUser(
-  userId: string,
-): Array<{
+export function listMainThreadsForUser(userId: string): Array<{
   thread_id: string;
   last_message_at: string;
   message_count: number;
@@ -3474,7 +3472,11 @@ export function failMainRunAtomic(input: {
           WHERE id = ? AND status = 'running'
         `,
         )
-        .run(now, `${txInput.errorCode}: ${txInput.errorMessage}`, txInput.runId);
+        .run(
+          now,
+          `${txInput.errorCode}: ${txInput.errorMessage}`,
+          txInput.runId,
+        );
       if (updated.changes !== 1) {
         return { applied: false };
       }
@@ -3509,9 +3511,9 @@ export function failMainRunAtomic(input: {
  * Fail interrupted Main runs on startup.
  * Separate from Talk recovery — only touches talk_id IS NULL rows.
  */
-export function failInterruptedMainRunsOnStartup(
-  now?: string,
-): { failedRunIds: string[] } {
+export function failInterruptedMainRunsOnStartup(now?: string): {
+  failedRunIds: string[];
+} {
   const tx = getDb().transaction(
     (inputNow?: string): { failedRunIds: string[] } => {
       const currentNow = inputNow || new Date().toISOString();

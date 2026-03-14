@@ -174,7 +174,13 @@ describe('Main channel DB accessors', () => {
           `INSERT INTO talk_messages (id, talk_id, thread_id, role, content, created_by, created_at)
            VALUES (?, NULL, ?, 'user', ?, ?, ?)`,
         )
-        .run(`msg_${randomUUID()}`, threadId, 'message from B', USER_B, new Date().toISOString());
+        .run(
+          `msg_${randomUUID()}`,
+          threadId,
+          'message from B',
+          USER_B,
+          new Date().toISOString(),
+        );
 
       // USER_B should NOT see this thread — they're not the first author
       const listB = listMainThreadsForUser(USER_B);
@@ -471,7 +477,13 @@ describe('Main channel DB accessors', () => {
           `INSERT INTO talk_runs (id, talk_id, thread_id, requested_by, status, started_at, created_at)
            VALUES (?, ?, NULL, ?, 'running', ?, ?)`,
         )
-        .run('talk-run-x', 'talk-x', USER_A, new Date().toISOString(), new Date().toISOString());
+        .run(
+          'talk-run-x',
+          'talk-x',
+          USER_A,
+          new Date().toISOString(),
+          new Date().toISOString(),
+        );
 
       const result = failInterruptedMainRunsOnStartup();
       expect(result.failedRunIds).toContain(runId);

@@ -111,7 +111,9 @@ async function waitForRunTerminal(
     if (run && (run.status === 'completed' || run.status === 'failed')) return;
     await new Promise((r) => setTimeout(r, 20));
   }
-  throw new Error(`Run ${runId} did not reach terminal status within ${timeoutMs}ms`);
+  throw new Error(
+    `Run ${runId} did not reach terminal status within ${timeoutMs}ms`,
+  );
 }
 
 describe('MainRunWorker integration', () => {
@@ -215,9 +217,7 @@ describe('MainRunWorker integration', () => {
 
     // Terminal failure event should exist
     const events = getOutboxEventsForTopics([`user:${USER_A}`], 0);
-    const failure = events.find(
-      (e) => e.event_type === 'main_response_failed',
-    );
+    const failure = events.find((e) => e.event_type === 'main_response_failed');
     expect(failure).toBeTruthy();
     const payload = JSON.parse(failure!.payload);
     expect(payload.errorCode).toBe('execution_failed');

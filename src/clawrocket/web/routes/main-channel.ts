@@ -66,7 +66,10 @@ interface ThreadMessage {
   createdAt: string;
 }
 
-export function getMainThreadRoute(auth: AuthContext, threadId: string): {
+export function getMainThreadRoute(
+  auth: AuthContext,
+  threadId: string,
+): {
   statusCode: number;
   body: ApiEnvelope<ThreadMessage[]>;
 } {
@@ -102,14 +105,14 @@ export function getMainThreadRoute(auth: AuthContext, threadId: string): {
     `,
       )
       .all(threadId) as Array<{
-        id: string;
-        thread_id: string;
-        role: string;
-        content: string;
-        agent_id: string | null;
-        created_by: string | null;
-        created_at: string;
-      }>;
+      id: string;
+      thread_id: string;
+      role: string;
+      content: string;
+      agent_id: string | null;
+      created_by: string | null;
+      created_at: string;
+    }>;
 
     if (rows.length === 0) {
       return {
