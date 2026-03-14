@@ -22,7 +22,7 @@ export interface UserPermissionCheck {
  * Check if a user is allowed to use a specific tool family.
  *
  * Query: SELECT allowed, requires_approval FROM user_tool_permissions
- *        WHERE user_id = ? AND tool_family = ?
+ *        WHERE user_id = ? AND tool_id = ?
  *
  * Default behavior (no record found):
  * - allowed: true (permissive default for single-user startup)
@@ -43,7 +43,7 @@ export function checkUserToolPermission(
       `
     SELECT allowed, requires_approval
     FROM user_tool_permissions
-    WHERE user_id = ? AND tool_family = ?
+    WHERE user_id = ? AND tool_id = ?
   `,
     )
     .get(userId, toolFamily);
@@ -141,7 +141,7 @@ export function getApprovalRequiredTools(
 /**
  * Upsert a user permission for a tool family.
  *
- * Creates or updates the permission record for a user/tool_family pair.
+ * Creates or updates the permission record for a user/tool_id pair.
  *
  * @param userId - User ID
  * @param toolFamily - Tool family name
@@ -158,9 +158,9 @@ export function setUserPermission(
 
   db.prepare(
     `
-    INSERT INTO user_tool_permissions (user_id, tool_family, allowed, requires_approval, updated_at)
+    INSERT INTO user_tool_permissions (user_id, tool_id, allowed, requires_approval, updated_at)
     VALUES (?, ?, ?, ?, datetime('now'))
-    ON CONFLICT(user_id, tool_family) DO UPDATE SET
+    ON CONFLICT(user_id, tool_id) DO UPDATE SET
       allowed = excluded.allowed,
       requires_approval = excluded.requires_approval,
       updated_at = excluded.updated_at
@@ -171,7 +171,7 @@ export function setUserPermission(
 /**
  * Get all permissions for a user, keyed by tool family.
  *
- * Returns a map of tool_family -> UserPermissionCheck for all
+ * Returns a map of tool_id -> UserPermissionCheck for all
  * explicit permission records owned by the user.
  *
  * Does NOT include default permissions (allowed: true, requiresApproval: false)
@@ -188,17 +188,17 @@ export function getUserPermissions(
   const records: any[] = db
     .prepare(
       `
-    SELECT tool_family, allowed, requires_approval
+    SELECT tool_id, allowed, requires_approval
     FROM user_tool_permissions
     WHERE user_id = ?
-    ORDER BY tool_family ASC
+    ORDER BY tool_id ASC
   `,
     )
     .all(userId);
 
   const result = new Map<string, UserPermissionCheck>();
   for (const record of records) {
-    result.set(record.tool_family, {
+    result.set(record.tool_id, {
       allowed: record.allowed === 1,
       requiresApproval: record.requires_approval === 1,
     });
