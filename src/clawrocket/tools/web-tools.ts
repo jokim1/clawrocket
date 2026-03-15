@@ -135,13 +135,9 @@ async function readBodyBounded(
 ): Promise<BoundedReadResult> {
   const reader = response.body?.getReader();
   if (!reader) {
-    // No streaming body — cannot enforce byte cap via stream.
-    // Read into an ArrayBuffer so we can at least check size post-read.
-    // This path is effectively unreachable in Node ≥ 18 but kept defensive.
-    const buf = await response.arrayBuffer();
-    const truncated = buf.byteLength > maxBytes;
-    const usable = truncated ? buf.slice(0, maxBytes) : buf;
-    return { text: new TextDecoder().decode(usable), truncatedAtBytes: truncated };
+    // No streaming body — cannot enforce byte cap without a stream.
+    // Fail closed: refuse to read an unbounded body into memory.
+    throw new Error('Response has no readable body stream; cannot enforce byte limit');
   }
 
   const decoder = new TextDecoder();
