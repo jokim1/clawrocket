@@ -5371,9 +5371,8 @@ export function TalkDetailPage({
                 ) : null}
               </div>
               <p className="policy-muted">
-                Attach org-level data sources to this talk. Connector query tools
-                are coming soon — attached connectors will be preconfigured and
-                ready when tool support ships.
+                Attach org-level data sources to this talk. Attached connectors
+                are available as query tools during talk execution.
               </p>
 
               {canManageTalkConnectors ? (
@@ -5382,7 +5381,7 @@ export function TalkDetailPage({
                     <div>
                       <h3>Attach Connector</h3>
                       <p className="talk-llm-meta">
-                        Only enabled org-level connectors can be attached here.
+                        Only verified org-level connectors can be attached.
                       </p>
                     </div>
                   </div>

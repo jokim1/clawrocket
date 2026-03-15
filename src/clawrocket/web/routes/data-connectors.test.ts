@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import {
   _initTestDatabase,
   getDataConnectorById,
+  upsertDataConnectorVerification,
   upsertTalk,
   upsertUser,
   upsertWebSession,
@@ -111,6 +112,32 @@ describe('data connector routes', () => {
       'not_verified',
     );
 
+    // Attaching an unverified connector should fail with 400
+    const unverifiedAttachRes = await server.request(
+      '/api/v1/talks/talk-owner/data-connectors',
+      {
+        method: 'POST',
+        headers: {
+          Authorization: 'Bearer owner-token',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          connectorId,
+        }),
+      },
+    );
+    expect(unverifiedAttachRes.status).toBe(400);
+    const unverifiedBody = (await unverifiedAttachRes.json()) as any;
+    expect(unverifiedBody.error.code).toBe('connector_not_verified');
+
+    // Simulate successful verification
+    upsertDataConnectorVerification({
+      connectorId,
+      status: 'verified',
+      lastVerifiedAt: new Date().toISOString(),
+    });
+
+    // Now attach should succeed
     const attachRes = await server.request(
       '/api/v1/talks/talk-owner/data-connectors',
       {

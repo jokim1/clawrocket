@@ -83,7 +83,10 @@ export async function executeWebFetch(
     }
 
     // Stream-read the body with a byte cap to bound memory usage
-    const text = await readBodyBounded(response, MAX_WEB_FETCH_BYTES);
+    const { text, truncatedAtBytes } = await readBodyBounded(
+      response,
+      MAX_WEB_FETCH_BYTES,
+    );
 
     let extracted: string;
     if (
@@ -95,12 +98,17 @@ export async function executeWebFetch(
       extracted = text;
     }
 
+    // Surface truncation from either the byte-level stream cap or the char-level output cap
+    let truncationNotice = '';
     if (extracted.length > MAX_WEB_FETCH_CHARS) {
       const overflow = extracted.length - MAX_WEB_FETCH_CHARS;
-      extracted = `${extracted.slice(0, MAX_WEB_FETCH_CHARS)}\n…truncated ${overflow} characters`;
+      extracted = extracted.slice(0, MAX_WEB_FETCH_CHARS);
+      truncationNotice = `\n…truncated ${overflow} characters (output limit)`;
+    } else if (truncatedAtBytes) {
+      truncationNotice = `\n…truncated: response exceeded ${MAX_WEB_FETCH_BYTES} byte limit`;
     }
 
-    return { result: extracted };
+    return { result: extracted + truncationNotice };
   } catch (err) {
     if (signal.aborted) throw err;
     const message = err instanceof Error ? err.message : 'Web fetch failed';
@@ -111,22 +119,29 @@ export async function executeWebFetch(
   }
 }
 
+interface BoundedReadResult {
+  text: string;
+  truncatedAtBytes: boolean;
+}
+
 /**
  * Read response body with a hard byte cap.
  * Uses the ReadableStream API to avoid buffering the entire response.
+ * Returns a flag indicating whether the body was truncated.
  */
 async function readBodyBounded(
   response: Response,
   maxBytes: number,
-): Promise<string> {
+): Promise<BoundedReadResult> {
   const reader = response.body?.getReader();
   if (!reader) {
-    return response.text(); // Fallback if no body stream
+    return { text: await response.text(), truncatedAtBytes: false };
   }
 
   const decoder = new TextDecoder();
   const chunks: string[] = [];
   let totalBytes = 0;
+  let truncated = false;
 
   while (true) {
     const { done, value } = await reader.read();
@@ -134,20 +149,20 @@ async function readBodyBounded(
 
     totalBytes += value.byteLength;
     if (totalBytes > maxBytes) {
-      // Decode the portion that fits within the limit
       const excess = totalBytes - maxBytes;
       const usable = value.byteLength - excess;
       if (usable > 0) {
         chunks.push(decoder.decode(value.slice(0, usable), { stream: false }));
       }
       reader.cancel();
+      truncated = true;
       break;
     }
 
     chunks.push(decoder.decode(value, { stream: true }));
   }
 
-  return chunks.join('');
+  return { text: chunks.join(''), truncatedAtBytes: truncated };
 }
 
 /**
