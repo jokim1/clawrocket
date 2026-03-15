@@ -285,8 +285,6 @@ describe('connector http helpers', () => {
         apiKey: 'phc_test_key',
       },
       query: 'SELECT 1',
-      dateFrom: '2024-01-01',
-      dateTo: '2024-01-07',
       limit: 10,
       fetchImpl: (async () =>
         new Response(

@@ -479,18 +479,32 @@ export async function fetchPostHogEventDefinitions(input: {
   };
 }
 
+/**
+ * Append a LIMIT clause to a HogQL query if one isn't already present.
+ * Handles trailing semicolons and whitespace gracefully.
+ */
+function injectLimitIfMissing(query: string, limit: number): string {
+  // Strip trailing whitespace and semicolons for analysis
+  const trimmed = query.replace(/[\s;]+$/, '');
+  // Check whether the query already contains a LIMIT clause (case-insensitive)
+  if (/\bLIMIT\s+\d+/i.test(trimmed)) {
+    return query;
+  }
+  return `${trimmed} LIMIT ${limit}`;
+}
+
 export async function runPostHogQuery(input: {
   hostUrl: string;
   projectId: string;
   secret: Extract<ConnectorSecretPayload, { kind: 'posthog' }>;
   query: string;
-  dateFrom: string;
-  dateTo: string;
   limit: number;
   fetchImpl?: typeof fetch;
   signal: AbortSignal;
   maxBytes?: number;
 }): Promise<JsonMap> {
+  const finalQuery = injectLimitIfMissing(input.query, input.limit);
+
   const response = await (input.fetchImpl || fetch)(
     joinUrl(
       input.hostUrl,
@@ -502,12 +516,7 @@ export async function runPostHogQuery(input: {
       body: JSON.stringify({
         query: {
           kind: 'HogQLQuery',
-          query: input.query,
-        },
-        limit: input.limit,
-        dateRange: {
-          date_from: input.dateFrom,
-          date_to: input.dateTo,
+          query: finalQuery,
         },
       }),
       signal: input.signal,
@@ -515,9 +524,10 @@ export async function runPostHogQuery(input: {
   );
 
   if (!response.ok) {
+    const errorBody = await response.text().catch(() => '');
     throw new ConnectorHttpError(
       'posthog_request_failed',
-      `PostHog query failed with HTTP ${response.status}.`,
+      `PostHog query failed with HTTP ${response.status}${errorBody ? `: ${errorBody.slice(0, 200)}` : ''}.`,
       response.status,
     );
   }
