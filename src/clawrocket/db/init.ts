@@ -202,10 +202,9 @@ function seedDefaultSettings(database: Database.Database): void {
 }
 
 function createClawrocketSchema(database: Database.Database): void {
-  // Run column migrations BEFORE the schema exec block, because the exec
-  // block contains CREATE INDEX statements that reference columns added by
-  // these migrations.  For fresh databases the tables don't exist yet, so
-  // the migrations are no-ops (the PRAGMA table_info returns nothing).
+  // Run thread_id migration BEFORE the schema exec block, because the exec
+  // block contains CREATE INDEX statements that reference the column.
+  // For fresh databases the tables don't exist yet, so this is a no-op.
   migrateAddThreadIdColumns(database);
 
   database.exec(`
@@ -868,22 +867,19 @@ function createClawrocketSchema(database: Database.Database): void {
       ON idempotency_cache(expires_at);
   `);
 
+  // ---------------------------------------------------------------------------
+  // Migrations for existing databases — MUST run before seeds, because seeds
+  // reference columns that may not exist yet in older databases.
+  // ---------------------------------------------------------------------------
+  migrateTalkAgentsTable(database);
+  migrateAddTtftSupport(database);
+  migrateAddThreadIdColumns(database);
+
   seedBuiltinLlmProvider(database);
   seedAnthropicProvider(database);
   seedMainAgent(database);
   seedSystemUsers(database);
   seedDefaultSettings(database);
-
-  // ---------------------------------------------------------------------------
-  // Migrations for existing databases
-  // ---------------------------------------------------------------------------
-  // SQLite cannot ALTER a column to drop NOT NULL, so we rebuild the table.
-  // The migration is idempotent: we detect the old schema by checking whether
-  // the `source_kind` column exists. If it does, the migration already ran
-  // (or this is a fresh DB with the new CREATE TABLE).
-  migrateTalkAgentsTable(database);
-  migrateAddTtftSupport(database);
-  migrateAddThreadIdColumns(database);
 }
 
 /**
