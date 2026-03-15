@@ -23,6 +23,7 @@ import {
   getUserById,
   updateUserDisplayName,
 } from '../db/index.js';
+import { getDb } from '../../db.js';
 import {
   completeDeviceAuthFlow,
   completeGoogleOAuthCallback,
@@ -691,6 +692,151 @@ function buildApp(opts: WebServerOptions): Hono {
       status: result.statusCode,
       headers: { 'content-type': 'application/json; charset=utf-8' },
     });
+  });
+
+  // =========================================================================
+  // AI Agents page composite endpoint + Executor settings/status
+  // =========================================================================
+
+  app.get('/api/v1/agents', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+
+    // Build claude model suggestions from llm_provider_models
+    const claudeModels = getDb()
+      .prepare(
+        `SELECT model_id, display_name, context_window_tokens,
+                default_max_output_tokens
+         FROM llm_provider_models
+         WHERE provider_id = 'provider.anthropic' AND enabled = 1
+         ORDER BY display_name ASC`,
+      )
+      .all() as Array<{
+      model_id: string;
+      display_name: string;
+      context_window_tokens: number;
+      default_max_output_tokens: number;
+    }>;
+
+    const suggestions = claudeModels.map((m) => ({
+      modelId: m.model_id,
+      displayName: m.display_name,
+      contextWindowTokens: m.context_window_tokens,
+      defaultMaxOutputTokens: m.default_max_output_tokens,
+      supportsTools: true,
+    }));
+
+    return c.json(
+      {
+        ok: true,
+        data: {
+          defaultClaudeModelId:
+            suggestions[0]?.modelId || 'claude-sonnet-4-6',
+          claudeModelSuggestions: suggestions,
+          additionalProviders: [],
+        },
+      },
+      200,
+    );
+  });
+
+  app.get('/api/v1/settings/executor', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+
+    // Check if an API key secret exists for the Anthropic provider
+    const secretRow = getDb()
+      .prepare(
+        `SELECT 1 FROM llm_provider_secrets
+         WHERE provider_id = 'provider.anthropic' LIMIT 1`,
+      )
+      .get() as { 1: number } | undefined;
+    const hasApiKey = !!secretRow;
+
+    return c.json(
+      {
+        ok: true,
+        data: {
+          configuredAliasMap: {},
+          effectiveAliasMap: {},
+          defaultAlias: 'claude-sonnet-4-6',
+          executorAuthMode: hasApiKey ? 'api_key' : 'none',
+          hasApiKey,
+          hasOauthToken: false,
+          hasAuthToken: false,
+          apiKeyHint: null,
+          oauthTokenHint: null,
+          authTokenHint: null,
+          activeCredentialConfigured: hasApiKey,
+          verificationStatus: hasApiKey ? 'not_verified' : 'missing',
+          lastVerifiedAt: null,
+          lastVerificationError: null,
+          anthropicBaseUrl: 'https://api.anthropic.com',
+          isConfigured: hasApiKey,
+          configVersion: 1,
+          lastUpdatedAt: null,
+          lastUpdatedBy: null,
+          configErrors: [],
+        },
+      },
+      200,
+    );
+  });
+
+  app.get('/api/v1/settings/executor-status', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+
+    const secretRow = getDb()
+      .prepare(
+        `SELECT 1 FROM llm_provider_secrets
+         WHERE provider_id = 'provider.anthropic' LIMIT 1`,
+      )
+      .get() as { 1: number } | undefined;
+    const hasApiKey = !!secretRow;
+
+    return c.json(
+      {
+        ok: true,
+        data: {
+          mode: 'real',
+          restartSupported: false,
+          pendingRestartReasons: [],
+          activeRunCount: 0,
+          executorAuthMode: hasApiKey ? 'api_key' : 'none',
+          activeCredentialConfigured: hasApiKey,
+          verificationStatus: hasApiKey ? 'not_verified' : 'missing',
+          lastVerifiedAt: null,
+        },
+      },
+      200,
+    );
+  });
+
+  app.get('/api/v1/settings/executor/subscription-host-status', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+
+    return c.json(
+      {
+        ok: true,
+        data: {
+          serviceUser: null,
+          serviceUid: null,
+          serviceHomePath: '/home/nanoclaw',
+          runtimeContext: 'systemd' as const,
+          claudeCliInstalled: false,
+          hostLoginDetected: false,
+          serviceEnvOauthPresent: false,
+          importAvailable: false,
+          hostCredentialFingerprint: null,
+          message:
+            'Subscription host detection is not yet implemented.',
+          recommendedCommands: [],
+        },
+      },
+      200,
+    );
   });
 
   // =========================================================================
