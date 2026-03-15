@@ -874,6 +874,7 @@ function createClawrocketSchema(database: Database.Database): void {
   migrateTalkAgentsTable(database);
   migrateAddTtftSupport(database);
   migrateAddThreadIdColumns(database);
+  migrateAddMissingColumns(database);
 
   seedBuiltinLlmProvider(database);
   seedAnthropicProvider(database);
@@ -1021,6 +1022,43 @@ function migrateAddThreadIdColumns(database: Database.Database): void {
     // Column already present — nothing to do
     if (cols.some((c) => c.name === 'thread_id')) continue;
     database.exec(`ALTER TABLE ${table} ADD COLUMN thread_id TEXT;`);
+  }
+}
+
+/**
+ * Generic catch-all migration for columns added to CREATE TABLE statements
+ * after the user's database was first created.  `CREATE TABLE IF NOT EXISTS`
+ * does NOT add new columns to existing tables, so we must ALTER them in.
+ *
+ * Each entry is { table, column, definition }.  Idempotent: skips if the
+ * table doesn't exist yet (fresh DB) or the column already exists.
+ *
+ * Add new entries here whenever a column is added to an existing table's
+ * CREATE TABLE statement.
+ */
+function migrateAddMissingColumns(database: Database.Database): void {
+  const additions: Array<{
+    table: string;
+    column: string;
+    definition: string;
+  }> = [
+    // registered_agents — tool_permissions_json was added after initial schema
+    {
+      table: 'registered_agents',
+      column: 'tool_permissions_json',
+      definition: "TEXT NOT NULL DEFAULT '{}'",
+    },
+  ];
+
+  for (const { table, column, definition } of additions) {
+    const cols = database
+      .prepare(`PRAGMA table_info(${table})`)
+      .all() as Array<{ name: string }>;
+    if (cols.length === 0) continue; // table doesn't exist yet
+    if (cols.some((c) => c.name === column)) continue; // already present
+    database.exec(
+      `ALTER TABLE ${table} ADD COLUMN ${column} ${definition};`,
+    );
   }
 }
 
