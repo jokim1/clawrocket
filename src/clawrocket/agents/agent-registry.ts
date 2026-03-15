@@ -331,7 +331,9 @@ export function setMainAgentId(agentId: string): void {
     throw new Error(`Agent '${agentId}' not found in registered_agents.`);
   }
   if (agent.enabled !== 1) {
-    throw new Error(`Agent '${agentId}' is disabled — cannot set as main agent.`);
+    throw new Error(
+      `Agent '${agentId}' is disabled — cannot set as main agent.`,
+    );
   }
   getDb()
     .prepare(

@@ -137,7 +137,9 @@ async function readBodyBounded(
   if (!reader) {
     // No streaming body — cannot enforce byte cap without a stream.
     // Fail closed: refuse to read an unbounded body into memory.
-    throw new Error('Response has no readable body stream; cannot enforce byte limit');
+    throw new Error(
+      'Response has no readable body stream; cannot enforce byte limit',
+    );
   }
 
   const decoder = new TextDecoder();

@@ -310,11 +310,7 @@ export async function executeWithAgent(
   const MAX_TOOL_ITERATIONS = 10;
 
   try {
-    for (
-      let iteration = 0;
-      iteration < MAX_TOOL_ITERATIONS;
-      iteration++
-    ) {
+    for (let iteration = 0; iteration < MAX_TOOL_ITERATIONS; iteration++) {
       const stream = streamLlmResponse(
         providerConfig,
         secret,
@@ -369,11 +365,9 @@ export async function executeWithAgent(
         } else if (event.type === 'usage') {
           accumulatedTokens = {
             inputTokens:
-              accumulatedTokens.inputTokens +
-              (event.usage?.inputTokens || 0),
+              accumulatedTokens.inputTokens + (event.usage?.inputTokens || 0),
             outputTokens:
-              accumulatedTokens.outputTokens +
-              (event.usage?.outputTokens || 0),
+              accumulatedTokens.outputTokens + (event.usage?.outputTokens || 0),
             estimatedCostUsd: 0,
           };
           emit({
@@ -432,9 +426,7 @@ export async function executeWithAgent(
       for (const [id, call] of Array.from(pendingToolCalls.entries())) {
         let parsedArgs: Record<string, unknown> = {};
         try {
-          parsedArgs = call.argumentsJson
-            ? JSON.parse(call.argumentsJson)
-            : {};
+          parsedArgs = call.argumentsJson ? JSON.parse(call.argumentsJson) : {};
         } catch {
           parsedArgs = {};
         }
@@ -497,14 +489,12 @@ export async function executeWithAgent(
         }
       } else {
         // Anthropic: structured tool_result blocks
-        const toolResultBlocks: LlmContentBlock[] = toolResults.map(
-          (tr) => ({
-            type: 'tool_result' as const,
-            toolUseId: tr.id,
-            content: tr.result,
-            isError: tr.isError,
-          }),
-        );
+        const toolResultBlocks: LlmContentBlock[] = toolResults.map((tr) => ({
+          type: 'tool_result' as const,
+          toolUseId: tr.id,
+          content: tr.result,
+          isError: tr.isError,
+        }));
         messages.push({ role: 'tool', content: toolResultBlocks });
       }
 

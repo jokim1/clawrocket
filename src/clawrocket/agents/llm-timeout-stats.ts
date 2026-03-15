@@ -130,7 +130,10 @@ export function recordTtftObservation(
     ).run(n, p50, p95, p99, max, now, providerId, modelId);
   } catch (err) {
     // Recording failures must never break the streaming pipeline
-    logger.warn({ err, providerId, modelId, ttftMs }, 'Failed to record TTFT observation');
+    logger.warn(
+      { err, providerId, modelId, ttftMs },
+      'Failed to record TTFT observation',
+    );
   }
 }
 
@@ -183,7 +186,9 @@ export function computeAdaptiveResponseStartTimeout(
          FROM llm_ttft_stats
          WHERE provider_id = ? AND model_id = ?`,
       )
-      .get(providerId, modelId) as { sample_count: number; p99_ms: number } | undefined;
+      .get(providerId, modelId) as
+      | { sample_count: number; p99_ms: number }
+      | undefined;
 
     if (stats && stats.sample_count >= MIN_SAMPLES) {
       const adaptive = Math.ceil(stats.p99_ms * P99_MULTIPLIER);
@@ -197,7 +202,9 @@ export function computeAdaptiveResponseStartTimeout(
          FROM llm_provider_models
          WHERE provider_id = ? AND model_id = ?`,
       )
-      .get(providerId, modelId) as { default_ttft_timeout_ms: number | null } | undefined;
+      .get(providerId, modelId) as
+      | { default_ttft_timeout_ms: number | null }
+      | undefined;
 
     if (modelRow?.default_ttft_timeout_ms) {
       return Math.max(modelRow.default_ttft_timeout_ms, ABSOLUTE_FLOOR_MS);
@@ -213,7 +220,10 @@ export function computeAdaptiveResponseStartTimeout(
     return ULTIMATE_FALLBACK_MS;
   } catch (err) {
     // Adaptive lookup failures must never break the streaming pipeline
-    logger.warn({ err, providerId, modelId }, 'Failed to compute adaptive timeout, using fallback');
+    logger.warn(
+      { err, providerId, modelId },
+      'Failed to compute adaptive timeout, using fallback',
+    );
     return ULTIMATE_FALLBACK_MS;
   }
 }

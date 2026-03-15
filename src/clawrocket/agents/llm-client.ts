@@ -212,7 +212,10 @@ export function buildAuthHeaders(
  *
  * Steps 2-4 are handled by computeAdaptiveResponseStartTimeout().
  */
-function buildTimeoutConfig(provider: LlmProviderConfig, modelId?: string): TimeoutConfig {
+function buildTimeoutConfig(
+  provider: LlmProviderConfig,
+  modelId?: string,
+): TimeoutConfig {
   let responseStartTimeoutMs: number;
 
   if (provider.responseStartTimeoutMs != null) {
@@ -220,7 +223,10 @@ function buildTimeoutConfig(provider: LlmProviderConfig, modelId?: string): Time
     responseStartTimeoutMs = provider.responseStartTimeoutMs;
   } else if (provider.providerId && modelId) {
     // Adaptive computation from TTFT stats / model defaults / heuristics
-    responseStartTimeoutMs = computeAdaptiveResponseStartTimeout(provider.providerId, modelId);
+    responseStartTimeoutMs = computeAdaptiveResponseStartTimeout(
+      provider.providerId,
+      modelId,
+    );
   } else {
     // No provider ID or model ID available — conservative fallback
     responseStartTimeoutMs = 120_000;
@@ -327,7 +333,11 @@ async function readSseResponse(
           responseStartTimer = null;
         }
         if (onFirstChunk) {
-          try { onFirstChunk(Date.now() - streamStartTime); } catch { /* never break stream */ }
+          try {
+            onFirstChunk(Date.now() - streamStartTime);
+          } catch {
+            /* never break stream */
+          }
         }
       }
 
@@ -587,111 +597,121 @@ async function* parseAnthropicStream(
     eventQueue.push(event);
   };
 
-  await readSseResponse(response, controller, signal, timeouts, (event) => {
-    if (event.data === '[DONE]' || event.event === 'ping') return;
+  await readSseResponse(
+    response,
+    controller,
+    signal,
+    timeouts,
+    (event) => {
+      if (event.data === '[DONE]' || event.event === 'ping') return;
 
-    const payload = JSON.parse(event.data) as Record<string, unknown>;
+      const payload = JSON.parse(event.data) as Record<string, unknown>;
 
-    if (payload.type === 'content_block_start') {
-      const block =
-        typeof payload.content_block === 'object' && payload.content_block
-          ? (payload.content_block as Record<string, unknown>)
-          : null;
-      if (block?.type === 'text') {
-        blocks.push({ type: 'text', text: '' });
-        currentBlockIndex = blocks.length - 1;
-      } else if (block?.type === 'tool_use') {
-        const blockId = typeof block.id === 'string' ? block.id : randomUUID();
-        const blockName =
-          typeof block.name === 'string' ? block.name : 'unknown_tool';
-        blocks.push({
-          type: 'tool_use',
-          id: blockId,
-          name: blockName,
-          inputJson: '',
-        });
-        currentBlockIndex = blocks.length - 1;
-        queueEvent({
-          type: 'tool_call_start',
-          toolCall: { id: blockId, name: blockName },
-        });
-      }
-      return;
-    }
-
-    if (payload.type === 'content_block_delta' && currentBlockIndex >= 0) {
-      const currentBlock = blocks[currentBlockIndex];
-      const delta =
-        typeof payload.delta === 'object' && payload.delta
-          ? (payload.delta as Record<string, unknown>)
-          : null;
-      if (currentBlock.type === 'text' && typeof delta?.text === 'string') {
-        currentBlock.text = (currentBlock.text || '') + delta.text;
-        queueEvent({ type: 'text_delta', text: delta.text });
-        return;
-      }
-      if (
-        currentBlock.type === 'tool_use' &&
-        typeof delta?.partial_json === 'string'
-      ) {
-        currentBlock.inputJson =
-          (currentBlock.inputJson || '') + delta.partial_json;
-        queueEvent({
-          type: 'tool_call_delta',
-          toolCall: {
-            id: currentBlock.id!,
-            name: currentBlock.name!,
-            argumentsDelta: delta.partial_json,
-          },
-        });
-        return;
-      }
-    }
-
-    if (
-      (payload.type === 'message_start' || payload.type === 'message_delta') &&
-      typeof payload.message === 'object' &&
-      payload.message &&
-      'usage' in payload.message
-    ) {
-      const rawUsage = (
-        payload.message as {
-          usage?: { input_tokens?: number; output_tokens?: number };
+      if (payload.type === 'content_block_start') {
+        const block =
+          typeof payload.content_block === 'object' && payload.content_block
+            ? (payload.content_block as Record<string, unknown>)
+            : null;
+        if (block?.type === 'text') {
+          blocks.push({ type: 'text', text: '' });
+          currentBlockIndex = blocks.length - 1;
+        } else if (block?.type === 'tool_use') {
+          const blockId =
+            typeof block.id === 'string' ? block.id : randomUUID();
+          const blockName =
+            typeof block.name === 'string' ? block.name : 'unknown_tool';
+          blocks.push({
+            type: 'tool_use',
+            id: blockId,
+            name: blockName,
+            inputJson: '',
+          });
+          currentBlockIndex = blocks.length - 1;
+          queueEvent({
+            type: 'tool_call_start',
+            toolCall: { id: blockId, name: blockName },
+          });
         }
-      ).usage;
-      if (rawUsage) {
-        queueEvent({
-          type: 'usage',
-          usage: {
-            inputTokens: rawUsage.input_tokens ?? 0,
-            outputTokens: rawUsage.output_tokens ?? 0,
-          },
-        });
+        return;
       }
-    }
 
-    if (
-      payload.type === 'message_delta' &&
-      typeof payload.delta === 'object' &&
-      payload.delta &&
-      'stop_reason' in payload.delta
-    ) {
-      stopReason = String(
-        (payload.delta as { stop_reason?: unknown }).stop_reason || 'end_turn',
-      );
-    }
+      if (payload.type === 'content_block_delta' && currentBlockIndex >= 0) {
+        const currentBlock = blocks[currentBlockIndex];
+        const delta =
+          typeof payload.delta === 'object' && payload.delta
+            ? (payload.delta as Record<string, unknown>)
+            : null;
+        if (currentBlock.type === 'text' && typeof delta?.text === 'string') {
+          currentBlock.text = (currentBlock.text || '') + delta.text;
+          queueEvent({ type: 'text_delta', text: delta.text });
+          return;
+        }
+        if (
+          currentBlock.type === 'tool_use' &&
+          typeof delta?.partial_json === 'string'
+        ) {
+          currentBlock.inputJson =
+            (currentBlock.inputJson || '') + delta.partial_json;
+          queueEvent({
+            type: 'tool_call_delta',
+            toolCall: {
+              id: currentBlock.id!,
+              name: currentBlock.name!,
+              argumentsDelta: delta.partial_json,
+            },
+          });
+          return;
+        }
+      }
 
-    if (payload.type === 'error') {
-      const message =
-        typeof payload.error === 'object' &&
-        payload.error &&
-        'message' in payload.error &&
-        typeof (payload.error as { message?: unknown }).message === 'string'
-          ? String((payload.error as { message: string }).message)
-          : 'Anthropic streaming request failed.';
-      queueEvent({ type: 'error', error: message });
-    }
-  }, onFirstChunk);
+      if (
+        (payload.type === 'message_start' ||
+          payload.type === 'message_delta') &&
+        typeof payload.message === 'object' &&
+        payload.message &&
+        'usage' in payload.message
+      ) {
+        const rawUsage = (
+          payload.message as {
+            usage?: { input_tokens?: number; output_tokens?: number };
+          }
+        ).usage;
+        if (rawUsage) {
+          queueEvent({
+            type: 'usage',
+            usage: {
+              inputTokens: rawUsage.input_tokens ?? 0,
+              outputTokens: rawUsage.output_tokens ?? 0,
+            },
+          });
+        }
+      }
+
+      if (
+        payload.type === 'message_delta' &&
+        typeof payload.delta === 'object' &&
+        payload.delta &&
+        'stop_reason' in payload.delta
+      ) {
+        stopReason = String(
+          (payload.delta as { stop_reason?: unknown }).stop_reason ||
+            'end_turn',
+        );
+      }
+
+      if (payload.type === 'error') {
+        const message =
+          typeof payload.error === 'object' &&
+          payload.error &&
+          'message' in payload.error &&
+          typeof (payload.error as { message?: unknown }).message === 'string'
+            ? String((payload.error as { message: string }).message)
+            : 'Anthropic streaming request failed.';
+        queueEvent({ type: 'error', error: message });
+      }
+    },
+    onFirstChunk,
+  );
 
   // Emit final tool calls with complete arguments
   for (const block of blocks) {
@@ -736,86 +756,93 @@ async function* parseOpenAiStream(
     eventQueue.push(event);
   };
 
-  await readSseResponse(response, controller, signal, timeouts, (event) => {
-    if (!event.data || event.data === '[DONE]') return;
+  await readSseResponse(
+    response,
+    controller,
+    signal,
+    timeouts,
+    (event) => {
+      if (!event.data || event.data === '[DONE]') return;
 
-    const payload = JSON.parse(event.data) as {
-      choices?: Array<{
-        delta?: {
-          content?: string;
-          tool_calls?: Array<{
-            index?: number;
-            id?: string;
-            function?: { name?: string; arguments?: string };
-          }>;
+      const payload = JSON.parse(event.data) as {
+        choices?: Array<{
+          delta?: {
+            content?: string;
+            tool_calls?: Array<{
+              index?: number;
+              id?: string;
+              function?: { name?: string; arguments?: string };
+            }>;
+          };
+          finish_reason?: string | null;
+        }>;
+        usage?: {
+          prompt_tokens?: number;
+          completion_tokens?: number;
         };
-        finish_reason?: string | null;
-      }>;
-      usage?: {
-        prompt_tokens?: number;
-        completion_tokens?: number;
+        error?: { message?: string };
       };
-      error?: { message?: string };
-    };
 
-    if (payload.error?.message) {
-      queueEvent({ type: 'error', error: payload.error.message });
-      return;
-    }
-
-    const choice = payload.choices?.[0];
-    const deltaText = choice?.delta?.content || '';
-    if (deltaText) {
-      queueEvent({ type: 'text_delta', text: deltaText });
-    }
-
-    for (const toolDelta of choice?.delta?.tool_calls || []) {
-      const index = Number.isFinite(toolDelta.index)
-        ? Number(toolDelta.index)
-        : 0;
-      const current = toolCallsByIndex.get(index) || {
-        id: toolDelta.id || randomUUID(),
-        name: '',
-        argumentsJson: '',
-      };
-      if (toolDelta.id) {
-        current.id = toolDelta.id;
+      if (payload.error?.message) {
+        queueEvent({ type: 'error', error: payload.error.message });
+        return;
       }
-      if (toolDelta.function?.name) {
-        current.name = toolDelta.function.name;
-        queueEvent({
-          type: 'tool_call_start',
-          toolCall: { id: current.id, name: current.name },
-        });
+
+      const choice = payload.choices?.[0];
+      const deltaText = choice?.delta?.content || '';
+      if (deltaText) {
+        queueEvent({ type: 'text_delta', text: deltaText });
       }
-      if (toolDelta.function?.arguments) {
-        current.argumentsJson += toolDelta.function.arguments;
+
+      for (const toolDelta of choice?.delta?.tool_calls || []) {
+        const index = Number.isFinite(toolDelta.index)
+          ? Number(toolDelta.index)
+          : 0;
+        const current = toolCallsByIndex.get(index) || {
+          id: toolDelta.id || randomUUID(),
+          name: '',
+          argumentsJson: '',
+        };
+        if (toolDelta.id) {
+          current.id = toolDelta.id;
+        }
+        if (toolDelta.function?.name) {
+          current.name = toolDelta.function.name;
+          queueEvent({
+            type: 'tool_call_start',
+            toolCall: { id: current.id, name: current.name },
+          });
+        }
+        if (toolDelta.function?.arguments) {
+          current.argumentsJson += toolDelta.function.arguments;
+          queueEvent({
+            type: 'tool_call_delta',
+            toolCall: {
+              id: current.id,
+              name: current.name,
+              argumentsDelta: toolDelta.function.arguments,
+            },
+          });
+        }
+        toolCallsByIndex.set(index, current);
+      }
+
+      if (choice?.finish_reason) {
+        stopReason = choice.finish_reason;
+      }
+
+      if (payload.usage) {
         queueEvent({
-          type: 'tool_call_delta',
-          toolCall: {
-            id: current.id,
-            name: current.name,
-            argumentsDelta: toolDelta.function.arguments,
+          type: 'usage',
+          usage: {
+            inputTokens: payload.usage.prompt_tokens ?? 0,
+            outputTokens: payload.usage.completion_tokens ?? 0,
           },
         });
       }
-      toolCallsByIndex.set(index, current);
-    }
-
-    if (choice?.finish_reason) {
-      stopReason = choice.finish_reason;
-    }
-
-    if (payload.usage) {
-      queueEvent({
-        type: 'usage',
-        usage: {
-          inputTokens: payload.usage.prompt_tokens ?? 0,
-          outputTokens: payload.usage.completion_tokens ?? 0,
-        },
-      });
-    }
-  }, onFirstChunk);
+    },
+    onFirstChunk,
+  );
 
   queueEvent({ type: 'done', stopReason });
 
@@ -901,7 +928,13 @@ export async function* streamLlmResponse(
         );
       }
 
-      yield* parseAnthropicStream(response, controller, parentSignal, timeouts, onFirstChunk);
+      yield* parseAnthropicStream(
+        response,
+        controller,
+        parentSignal,
+        timeouts,
+        onFirstChunk,
+      );
     } else if (provider.apiFormat === 'openai_chat_completions') {
       const requestBody = buildOpenAiRequest(
         modelId,
@@ -930,7 +963,13 @@ export async function* streamLlmResponse(
         );
       }
 
-      yield* parseOpenAiStream(response, controller, parentSignal, timeouts, onFirstChunk);
+      yield* parseOpenAiStream(
+        response,
+        controller,
+        parentSignal,
+        timeouts,
+        onFirstChunk,
+      );
     } else {
       throw new LlmClientError(
         `Unsupported API format: ${provider.apiFormat}`,

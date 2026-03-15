@@ -200,9 +200,7 @@ export async function executeMainChannel(
  * Build the executeToolCall callback for the Main channel.
  * Main has web tools only — no context sources, no connectors.
  */
-function buildMainToolExecutor(
-  signal: AbortSignal,
-) {
+function buildMainToolExecutor(signal: AbortSignal) {
   return async (
     toolName: string,
     args: Record<string, unknown>,
