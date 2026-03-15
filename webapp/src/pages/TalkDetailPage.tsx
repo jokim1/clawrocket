@@ -70,6 +70,8 @@ import {
   testTalkChannelBinding,
   updateTalkTools,
   updateTalkAgents,
+  listRegisteredAgents,
+  type RegisteredAgent,
   UnauthorizedError,
 } from '../lib/api';
 import { TalkHistoryEditor } from '../components/TalkHistoryEditor';
@@ -1033,13 +1035,15 @@ function applySourceModelSelection(
 }
 
 function buildNewAgentDraft(
-  aiAgents: AiAgentsPageData | null,
+  _aiAgents: AiAgentsPageData | null,
 ): AgentCreationDraft {
-  const claudeModel = aiAgents?.claudeModelSuggestions[0];
+  // modelId is overloaded to store the selected registered agent ID.
+  // Start empty so the dropdown shows the "Choose a registered agent…" placeholder
+  // and the Add button is disabled until the user selects one.
   return {
-    sourceKind: 'claude_default',
+    sourceKind: 'provider',
     providerId: null,
-    modelId: claudeModel?.modelId || '',
+    modelId: '',
     role: 'assistant',
   };
 }
@@ -1126,6 +1130,9 @@ export function TalkDetailPage({
   const [aiAgentsData, setAiAgentsData] = useState<AiAgentsPageData | null>(
     null,
   );
+  const [registeredAgentsCatalog, setRegisteredAgentsCatalog] = useState<
+    RegisteredAgent[]
+  >([]);
   const [agentsCatalogError, setAgentsCatalogError] = useState<string | null>(
     null,
   );
@@ -1395,9 +1402,13 @@ export function TalkDetailPage({
     let cancelled = false;
     const loadAiAgents = async () => {
       try {
-        const next = await getAiAgents();
+        const [next, regAgents] = await Promise.all([
+          getAiAgents(),
+          listRegisteredAgents(),
+        ]);
         if (cancelled) return;
         setAiAgentsData(next);
+        setRegisteredAgentsCatalog(regAgents);
         setAgentsCatalogError(null);
         setNewAgentDraft((current) =>
           current.modelId ? current : buildNewAgentDraft(next),
@@ -1409,6 +1420,7 @@ export function TalkDetailPage({
         }
         if (!cancelled) {
           setAiAgentsData(null);
+          setRegisteredAgentsCatalog([]);
           setAgentsCatalogError(
             err instanceof Error ? err.message : 'Failed to load AI agents.',
           );
@@ -3260,13 +3272,20 @@ export function TalkDetailPage({
     setAgentDrafts((current) =>
       current.map((agent) => {
         if (agent.id !== agentId) return agent;
-        const base = buildAutoNicknameBase({
-          sourceKind: agent.sourceKind,
-          providerId: agent.providerId,
-          modelId: agent.modelId,
-          modelDisplayName: agent.modelDisplayName,
-          aiAgents: aiAgentsData,
-        });
+        // Use registered agent name if available, otherwise fall back to
+        // the old source-based nickname builder.
+        const regAgent = registeredAgentsCatalog.find(
+          (ra) => ra.id === agent.id,
+        );
+        const base = regAgent
+          ? regAgent.name
+          : buildAutoNicknameBase({
+              sourceKind: agent.sourceKind,
+              providerId: agent.providerId,
+              modelId: agent.modelId,
+              modelDisplayName: agent.modelDisplayName,
+              aiAgents: aiAgentsData,
+            });
         return {
           ...agent,
           nickname: buildUniqueNickname(base, current, agent.id),
@@ -3316,40 +3335,31 @@ export function TalkDetailPage({
   };
 
   const handleAddAgent = () => {
-    const base = buildAutoNicknameBase({
-      sourceKind: newAgentDraft.sourceKind,
-      providerId: newAgentDraft.providerId,
-      modelId: newAgentDraft.modelId,
-      aiAgents: aiAgentsData,
+    // newAgentDraft.modelId is overloaded to store the registered agent ID
+    // (set by the "Agent" dropdown in the add-agent footer).
+    const regAgent = registeredAgentsCatalog.find(
+      (ra) => ra.id === newAgentDraft.modelId,
+    );
+    if (!regAgent) return;
+    setAgentDrafts((current) => {
+      const nickname = buildUniqueNickname(regAgent.name, current);
+      return [
+        ...current,
+        {
+          id: regAgent.id,
+          nickname,
+          nicknameMode: 'auto',
+          sourceKind: 'provider',
+          role: newAgentDraft.role,
+          isPrimary: false,
+          displayOrder: current.length,
+          health: 'ready',
+          providerId: regAgent.providerId,
+          modelId: regAgent.modelId,
+          modelDisplayName: null,
+        },
+      ];
     });
-    const suggestions = getModelSuggestionsForSource({
-      sourceKind: newAgentDraft.sourceKind,
-      providerId: newAgentDraft.providerId,
-      aiAgents: aiAgentsData,
-    });
-    const selectedModel =
-      suggestions.find((entry) => entry.modelId === newAgentDraft.modelId) ||
-      suggestions[0];
-    if (!selectedModel) return;
-    setAgentDrafts((current) => [
-      ...current,
-      {
-        id: globalThis.crypto?.randomUUID?.() || `agent-${Date.now()}`,
-        nickname: buildUniqueNickname(base, current),
-        nicknameMode: 'auto',
-        sourceKind: newAgentDraft.sourceKind,
-        role: newAgentDraft.role,
-        isPrimary: false,
-        displayOrder: current.length,
-        health: 'unknown',
-        providerId:
-          newAgentDraft.sourceKind === 'provider'
-            ? newAgentDraft.providerId
-            : null,
-        modelId: selectedModel.modelId,
-        modelDisplayName: selectedModel.displayName,
-      },
-    ]);
     setAgentState({ status: 'idle' });
   };
 
@@ -3570,61 +3580,52 @@ export function TalkDetailPage({
                 Nicknames are local to this talk. The primary agent responds to
                 normal user messages by default.
               </p>
-              {agentDrafts.map((agent) => {
-                const modelOptions = getModelSuggestionsForSource({
-                  sourceKind: agent.sourceKind,
-                  providerId:
-                    agent.sourceKind === 'provider' ? agent.providerId : null,
-                  aiAgents: aiAgentsData,
-                });
-                return (
+              {agentDrafts.map((agent) => (
                   <div key={agent.id} className="agent-editor-card">
                     <label>
-                      <span>Agent source</span>
+                      <span>Registered Agent</span>
                       <select
-                        value={
-                          agent.sourceKind === 'claude_default'
-                            ? 'claude_default'
-                            : agent.providerId || ''
-                        }
+                        value={agent.id}
                         onChange={(event) => {
-                          const selected = sourceOptions.find(
-                            (option) => option.id === event.target.value,
+                          const regAgent = registeredAgentsCatalog.find(
+                            (ra) => ra.id === event.target.value,
                           );
-                          if (!selected) return;
-                          handleAgentSourceChange(
-                            agent.id,
-                            selected.sourceKind,
-                            selected.providerId,
+                          if (!regAgent) return;
+                          setAgentDrafts((current) =>
+                            current.map((a) =>
+                              a.id === agent.id
+                                ? {
+                                    ...a,
+                                    id: regAgent.id,
+                                    sourceKind: 'provider',
+                                    providerId: regAgent.providerId,
+                                    modelId: regAgent.modelId,
+                                    modelDisplayName: null,
+                                    nickname:
+                                      a.nicknameMode === 'auto'
+                                        ? regAgent.name
+                                        : a.nickname,
+                                    health: 'ready',
+                                  }
+                                : a,
+                            ),
                           );
+                          setAgentState({ status: 'idle' });
                         }}
                         disabled={
                           !canEditAgents || agentState.status === 'saving'
                         }
                       >
-                        {sourceOptions.map((option) => (
-                          <option key={option.id} value={option.id}>
-                            {option.label}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                    <label>
-                      <span>Model</span>
-                      <select
-                        value={agent.modelId || ''}
-                        onChange={(event) =>
-                          handleAgentModelChange(agent.id, event.target.value)
-                        }
-                        disabled={
-                          !canEditAgents || agentState.status === 'saving'
-                        }
-                      >
-                        {modelOptions.map((model) => (
-                          <option key={model.modelId} value={model.modelId}>
-                            {model.displayName}
-                          </option>
-                        ))}
+                        <option value={agent.id} disabled={!registeredAgentsCatalog.some((ra) => ra.id === agent.id)}>
+                          {registeredAgentsCatalog.find((ra) => ra.id === agent.id)?.name || agent.nickname || 'Unknown agent'}
+                        </option>
+                        {registeredAgentsCatalog
+                          .filter((ra) => ra.enabled && ra.id !== agent.id)
+                          .map((ra) => (
+                            <option key={ra.id} value={ra.id}>
+                              {ra.name} ({ra.modelId})
+                            </option>
+                          ))}
                       </select>
                     </label>
                     <label>
@@ -3701,61 +3702,37 @@ export function TalkDetailPage({
                       </button>
                     </div>
                   </div>
-                );
-              })}
+              ))}
 
               <div className="agent-editor-footer">
                 <label>
-                  <span>Source</span>
+                  <span>Agent</span>
                   <select
-                    value={
-                      newAgentDraft.sourceKind === 'claude_default'
-                        ? 'claude_default'
-                        : newAgentDraft.providerId || ''
-                    }
+                    value={newAgentDraft.modelId}
                     onChange={(event) => {
-                      const selected = sourceOptions.find(
-                        (option) => option.id === event.target.value,
+                      const ra = registeredAgentsCatalog.find(
+                        (a) => a.id === event.target.value,
                       );
-                      if (!selected) return;
-                      const suggestions = getModelSuggestionsForSource({
-                        sourceKind: selected.sourceKind,
-                        providerId: selected.providerId,
-                        aiAgents: aiAgentsData,
-                      });
+                      if (!ra) return;
                       setNewAgentDraft({
-                        sourceKind: selected.sourceKind,
-                        providerId: selected.providerId,
-                        modelId: suggestions[0]?.modelId || '',
-                        role: 'assistant',
+                        sourceKind: 'provider',
+                        providerId: ra.providerId,
+                        modelId: ra.id,
+                        role: (ra.personaRole as TalkAgent['role']) || 'assistant',
                       });
                     }}
                     disabled={!canEditAgents || agentState.status === 'saving'}
                   >
-                    {sourceOptions.map((option) => (
-                      <option key={option.id} value={option.id}>
-                        {option.label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label>
-                  <span>Model</span>
-                  <select
-                    value={newAgentDraft.modelId}
-                    onChange={(event) =>
-                      setNewAgentDraft((current) => ({
-                        ...current,
-                        modelId: event.target.value,
-                      }))
-                    }
-                    disabled={!canEditAgents || agentState.status === 'saving'}
-                  >
-                    {newAgentModelOptions.map((model) => (
-                      <option key={model.modelId} value={model.modelId}>
-                        {model.displayName}
-                      </option>
-                    ))}
+                    <option value="" disabled>
+                      Choose a registered agent…
+                    </option>
+                    {registeredAgentsCatalog
+                      .filter((ra) => ra.enabled)
+                      .map((ra) => (
+                        <option key={ra.id} value={ra.id}>
+                          {ra.name} ({ra.modelId})
+                        </option>
+                      ))}
                   </select>
                 </label>
                 <label>
@@ -5390,8 +5367,9 @@ export function TalkDetailPage({
                 ) : null}
               </div>
               <p className="policy-muted">
-                Attach org-level data sources to this talk. Tool-capable agents
-                on this talk can use attached verified connectors during runs.
+                Attach org-level data sources to this talk. Connector query tools
+                are coming soon — attached connectors will be preconfigured and
+                ready when tool support ships.
               </p>
 
               {canManageTalkConnectors ? (
@@ -5770,7 +5748,7 @@ export function TalkDetailPage({
               })}
             </div>
             <p className="composer-target-help">
-              Selected agents will respond.
+              Selected agents will each respond independently.
             </p>
 
             <textarea

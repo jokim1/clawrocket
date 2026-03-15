@@ -56,6 +56,66 @@ function seedBuiltinLlmProvider(database: Database.Database): void {
     .run(now);
 }
 
+function seedAnthropicProvider(database: Database.Database): void {
+  const now = new Date().toISOString();
+
+  // Ensure a provider.anthropic row exists in llm_providers so that
+  // registered agents created through the UI can reference it.  The actual
+  // API-key is stored separately in llm_provider_secrets (written when the
+  // user configures Claude credentials).
+  database
+    .prepare(
+      `
+      INSERT INTO llm_providers (
+        id, name, provider_kind, api_format, base_url, auth_scheme, enabled,
+        core_compatibility, response_start_timeout_ms, stream_idle_timeout_ms,
+        absolute_timeout_ms, updated_at, updated_by
+      )
+      VALUES (
+        'provider.anthropic',
+        'Claude (Anthropic)',
+        'anthropic',
+        'anthropic_messages',
+        'https://api.anthropic.com',
+        'x_api_key',
+        1,
+        'claude_sdk_proxy',
+        60000,
+        30000,
+        600000,
+        ?,
+        NULL
+      )
+      ON CONFLICT(id) DO NOTHING
+    `,
+    )
+    .run(now);
+
+  // Seed a default Claude model so the provider has at least one selectable
+  // option before the user overrides model suggestions via settings.
+  database
+    .prepare(
+      `
+      INSERT INTO llm_provider_models (
+        provider_id, model_id, display_name, context_window_tokens,
+        default_max_output_tokens, enabled, updated_at, updated_by
+      )
+      VALUES (
+        'provider.anthropic',
+        'claude-sonnet-4-6',
+        'Claude Sonnet 4.6',
+        200000,
+        8192,
+        1,
+        ?,
+        NULL
+      )
+      ON CONFLICT(provider_id, model_id) DO NOTHING
+    `,
+    )
+    .run(now);
+}
+
 function seedMainAgent(database: Database.Database): void {
   const now = new Date().toISOString();
   const toolPermissions = JSON.stringify({
@@ -516,7 +576,14 @@ function createClawrocketSchema(database: Database.Database): void {
     CREATE TABLE IF NOT EXISTS talk_agents (
       id TEXT PRIMARY KEY,
       talk_id TEXT NOT NULL REFERENCES talks(id) ON DELETE CASCADE,
-      registered_agent_id TEXT NOT NULL REFERENCES registered_agents(id) ON DELETE CASCADE,
+      registered_agent_id TEXT REFERENCES registered_agents(id) ON DELETE SET NULL,
+      source_kind TEXT NOT NULL DEFAULT 'provider'
+        CHECK(source_kind IN ('claude_default', 'provider')),
+      provider_id TEXT,
+      model_id TEXT,
+      nickname TEXT,
+      nickname_mode TEXT NOT NULL DEFAULT 'auto'
+        CHECK(nickname_mode IN ('auto', 'custom')),
       persona_role TEXT,
       is_primary INTEGER NOT NULL DEFAULT 0,
       sort_order REAL NOT NULL DEFAULT 0,
@@ -778,9 +845,95 @@ function createClawrocketSchema(database: Database.Database): void {
   `);
 
   seedBuiltinLlmProvider(database);
+  seedAnthropicProvider(database);
   seedMainAgent(database);
   seedSystemUsers(database);
   seedDefaultSettings(database);
+
+  // ---------------------------------------------------------------------------
+  // Migrations for existing databases
+  // ---------------------------------------------------------------------------
+  // SQLite cannot ALTER a column to drop NOT NULL, so we rebuild the table.
+  // The migration is idempotent: we detect the old schema by checking whether
+  // the `source_kind` column exists. If it does, the migration already ran
+  // (or this is a fresh DB with the new CREATE TABLE).
+  migrateTalkAgentsTable(database);
+}
+
+/**
+ * Rebuild talk_agents to:
+ *  - relax registered_agent_id from NOT NULL to nullable
+ *  - add source_kind, provider_id, model_id, nickname, nickname_mode
+ *
+ * Idempotent: skips if the new columns already exist.
+ */
+function migrateTalkAgentsTable(database: Database.Database): void {
+  // Check if migration is needed by looking for the source_kind column.
+  const columns = database
+    .prepare(`PRAGMA table_info(talk_agents)`)
+    .all() as Array<{ name: string }>;
+  const hasSourceKind = columns.some((c) => c.name === 'source_kind');
+  if (hasSourceKind) return; // already migrated or fresh DB
+
+  database.exec(`
+    -- 1. Copy existing rows into a temp table
+    CREATE TABLE talk_agents_migration_backup AS SELECT * FROM talk_agents;
+
+    -- 2. Drop old table + indexes
+    DROP TABLE talk_agents;
+
+    -- 3. Recreate with new schema (matches the CREATE TABLE in createClawrocketSchema)
+    CREATE TABLE talk_agents (
+      id TEXT PRIMARY KEY,
+      talk_id TEXT NOT NULL REFERENCES talks(id) ON DELETE CASCADE,
+      registered_agent_id TEXT REFERENCES registered_agents(id) ON DELETE SET NULL,
+      source_kind TEXT NOT NULL DEFAULT 'provider'
+        CHECK(source_kind IN ('claude_default', 'provider')),
+      provider_id TEXT,
+      model_id TEXT,
+      nickname TEXT,
+      nickname_mode TEXT NOT NULL DEFAULT 'auto'
+        CHECK(nickname_mode IN ('auto', 'custom')),
+      persona_role TEXT,
+      is_primary INTEGER NOT NULL DEFAULT 0,
+      sort_order REAL NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE INDEX idx_talk_agents_talk_sort
+      ON talk_agents(talk_id, sort_order, created_at);
+    CREATE INDEX idx_talk_agents_registered_agent_id
+      ON talk_agents(registered_agent_id);
+
+    -- 4. Copy old rows back, JOIN registered_agents to backfill
+    --    provider_id, model_id, and nickname from the registered agent.
+    INSERT INTO talk_agents (
+      id, talk_id, registered_agent_id,
+      source_kind, provider_id, model_id,
+      nickname, nickname_mode,
+      persona_role, is_primary, sort_order,
+      created_at, updated_at
+    )
+    SELECT
+      bak.id,
+      bak.talk_id,
+      bak.registered_agent_id,
+      'provider',
+      ra.provider_id,
+      ra.model_id,
+      ra.name,
+      'auto',
+      bak.persona_role,
+      bak.is_primary,
+      bak.sort_order,
+      bak.created_at,
+      bak.updated_at
+    FROM talk_agents_migration_backup bak
+    LEFT JOIN registered_agents ra ON ra.id = bak.registered_agent_id;
+
+    -- 5. Clean up
+    DROP TABLE talk_agents_migration_backup;
+  `);
 }
 
 export function initClawrocketSchema(): void {

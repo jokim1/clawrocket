@@ -12,14 +12,19 @@ import {
   getExecutorSettings,
   getExecutorStatus,
   getExecutorSubscriptionHostStatus,
+  getMainRegisteredAgent,
   importExecutorSubscriptionFromHost,
+  listRegisteredAgents,
+  type RegisteredAgent,
   saveAiProviderCredential,
   UnauthorizedError,
   updateDefaultClaudeModel,
   updateExecutorSettings,
+  updateMainRegisteredAgent,
   verifyAiProviderCredential,
   verifyExecutorCredentials,
 } from '../lib/api';
+import { RegisteredAgentsPanel } from '../components/RegisteredAgentsPanel';
 
 type Props = {
   onUnauthorized: () => void;
@@ -226,9 +231,56 @@ export function AiAgentsPage({ onUnauthorized, userRole }: Props): JSX.Element {
     'checking' | 'importing' | null
   >(null);
   const verificationPollAttemptsRef = useRef(0);
+  const [registeredAgents, setRegisteredAgents] = useState<RegisteredAgent[]>(
+    [],
+  );
+  const [mainAgentId, setMainAgentId] = useState<string | null>(null);
+  const [mainAgentDraft, setMainAgentDraft] = useState<string>('');
 
   const returnTo = validateReturnTo(searchParams.get('returnTo'));
   const canManage = canManageAgents(userRole);
+
+  // Build a complete providers list for the registered-agents panel,
+  // including Claude (which AiAgentsPageData treats separately).
+  //
+  // v1 scope: Registered agents using provider.anthropic can ONLY execute
+  // via direct HTTP with an Anthropic API key (x-api-key auth).
+  // Subscription/OAuth credentials are NOT compatible with this path —
+  // they require container execution, which is a separate flow.
+  //
+  // The synthetic card must honestly show Claude as "ready" only when
+  // an API key is configured.  In subscription/OAuth mode, the card is
+  // still shown (agents may exist that reference it) but marked as not
+  // having a usable credential for direct execution.
+  const allProvidersForPanel = useMemo((): AgentProviderCard[] => {
+    if (!data || !settings) return [];
+    const isApiKeyMode = settings.executorAuthMode === 'api_key';
+    // Only API key mode is compatible with direct HTTP execution.
+    // Subscription/OAuth users see Claude as "no credential" for agent
+    // creation — their Claude access works through container execution,
+    // not through the registered-agents direct path.
+    const claudeDirectHttpReady = isApiKeyMode && settings.hasApiKey;
+    const claudeCard: AgentProviderCard = {
+      id: 'provider.anthropic',
+      name: 'Claude (Anthropic)',
+      providerKind: 'anthropic',
+      apiFormat: 'anthropic_messages',
+      baseUrl: settings.anthropicBaseUrl || 'https://api.anthropic.com',
+      authScheme: 'x_api_key',
+      enabled: true,
+      hasCredential: claudeDirectHttpReady,
+      credentialHint: claudeDirectHttpReady ? settings.apiKeyHint : null,
+      verificationStatus: claudeDirectHttpReady
+        ? settings.verificationStatus
+        : 'missing',
+      lastVerifiedAt: claudeDirectHttpReady ? settings.lastVerifiedAt : null,
+      lastVerificationError: claudeDirectHttpReady
+        ? settings.lastVerificationError
+        : null,
+      modelSuggestions: data.claudeModelSuggestions,
+    };
+    return [claudeCard, ...data.additionalProviders];
+  }, [data, settings]);
 
   const syncDrafts = (
     nextData: AiAgentsPageData,
@@ -259,13 +311,21 @@ export function AiAgentsPage({ onUnauthorized, userRole }: Props): JSX.Element {
 
   const load = async (): Promise<void> => {
     try {
-      const [nextData, nextSettings, nextStatus] = await Promise.all([
-        getAiAgents(),
-        getExecutorSettings(),
-        getExecutorStatus(),
-      ]);
+      const [nextData, nextSettings, nextStatus, agents, mainAgent] =
+        await Promise.all([
+          getAiAgents(),
+          getExecutorSettings(),
+          getExecutorStatus(),
+          listRegisteredAgents(),
+          getMainRegisteredAgent().catch(() => null),
+        ]);
       syncDrafts(nextData, nextSettings);
       setStatus(nextStatus);
+      setRegisteredAgents(agents);
+      if (mainAgent) {
+        setMainAgentId(mainAgent.id);
+        setMainAgentDraft(mainAgent.id);
+      }
       setError(null);
     } catch (err) {
       if (err instanceof UnauthorizedError) {
@@ -420,6 +480,29 @@ export function AiAgentsPage({ onUnauthorized, userRole }: Props): JSX.Element {
         }
         return;
       }
+    }
+  };
+
+  const handleSaveMainAgent = async (): Promise<void> => {
+    if (!mainAgentDraft || mainAgentDraft === mainAgentId) return;
+    setBusyKey('main-agent-save');
+    setNotice(null);
+    setError(null);
+    try {
+      const updated = await updateMainRegisteredAgent(mainAgentDraft);
+      setMainAgentId(updated.id);
+      setMainAgentDraft(updated.id);
+      setNotice('Main agent updated.');
+    } catch (err) {
+      if (err instanceof UnauthorizedError) {
+        onUnauthorized();
+        return;
+      }
+      setError(
+        err instanceof ApiError ? err.message : 'Failed to update main agent.',
+      );
+    } finally {
+      setBusyKey(null);
     }
   };
 
@@ -1084,6 +1167,67 @@ export function AiAgentsPage({ onUnauthorized, userRole }: Props): JSX.Element {
           })}
         </div>
       </section>
+
+      <RegisteredAgentsPanel
+        providers={allProvidersForPanel}
+        onUnauthorized={onUnauthorized}
+        canManage={canManage}
+        onAgentsChanged={setRegisteredAgents}
+      />
+
+      {registeredAgents.length > 0 ? (
+        <section className="talk-llm-section">
+          <div className="talk-llm-section-header">
+            <div>
+              <h3>Main Agent</h3>
+              <p className="talk-llm-meta">
+                The main agent is used for the home channel and as the default
+                when no Talk-specific agent is assigned.
+              </p>
+            </div>
+          </div>
+          <article className="talk-llm-card">
+            <div className="talk-llm-grid">
+              <label className="talk-llm-field-span">
+                <span>Select main agent</span>
+                <select
+                  value={mainAgentDraft}
+                  onChange={(event) => setMainAgentDraft(event.target.value)}
+                  disabled={!canManage || busyKey === 'main-agent-save'}
+                >
+                  <option value="" disabled>
+                    Choose an agent…
+                  </option>
+                  {registeredAgents
+                    .filter((a) => a.enabled)
+                    .map((agent) => (
+                      <option key={agent.id} value={agent.id}>
+                        {agent.name} ({agent.modelId})
+                      </option>
+                    ))}
+                </select>
+              </label>
+              <div className="talk-llm-inline-actions">
+                <button
+                  type="button"
+                  className="primary-btn"
+                  onClick={() => void handleSaveMainAgent()}
+                  disabled={
+                    !canManage ||
+                    busyKey === 'main-agent-save' ||
+                    !mainAgentDraft ||
+                    mainAgentDraft === mainAgentId
+                  }
+                >
+                  {busyKey === 'main-agent-save'
+                    ? 'Saving…'
+                    : 'Set as Main Agent'}
+                </button>
+              </div>
+            </div>
+          </article>
+        </section>
+      ) : null}
 
       {returnTo ? (
         <section className="talk-llm-section">

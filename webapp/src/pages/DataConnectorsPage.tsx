@@ -330,8 +330,9 @@ export function DataConnectorsPage({
       <article className="settings-card">
         <h1>Data Connectors</h1>
         <p className="settings-copy">
-          Define org-level data sources, store credentials, and attach them to
-          Talks so tool-capable agents can query those sources during runs.
+          Define org-level data sources and store credentials. Connector query
+          tools are coming soon — attached connectors will be preconfigured and
+          ready when tool support ships.
         </p>
         {error ? (
           <div className="settings-banner settings-banner-error" role="alert">
@@ -643,8 +644,8 @@ export function DataConnectorsPage({
                     </div>
                   ) : (
                     <div className="inline-banner inline-banner-warning" role="status">
-                      Google Sheets OAuth is planned next. You can create and attach the
-                      connector now, but auth is not wired on this branch yet.
+                      Google Sheets OAuth is coming soon. You can create and attach the
+                      connector now — it will be ready when OAuth support ships.
                     </div>
                   )}
 

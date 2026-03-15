@@ -2,7 +2,6 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   _initTestDatabase,
-  getTalkContextForPrompt,
   type ContextSourceSnapshot,
   updateSourceExtraction,
   upsertTalk,
@@ -675,273 +674,65 @@ describe('talk context routes', () => {
         .source as Record<string, unknown>;
       expect(patched.extractedTextLength).toBe(10); // 'V2 content'.length
     });
+
+    it('truncates oversized text source content on create', async () => {
+      const longText = 'x'.repeat(60_000);
+      const res = await server.request(
+        `/api/v1/talks/${TALK_ID}/context/sources`,
+        {
+          method: 'POST',
+          headers: ownerAuth(),
+          body: JSON.stringify({
+            sourceType: 'text',
+            title: 'Huge Source',
+            extractedText: longText,
+          }),
+        },
+      );
+
+      expect(res.status).toBe(201);
+      const source = ((await json(res)).data as Record<string, unknown>)
+        .source as Record<string, unknown>;
+      expect(source.isTruncated).toBe(true);
+      expect(source.extractedTextLength).toBe(50_000);
+      expect(source.status).toBe('ready');
+    });
+
+    it('truncates oversized text source content on patch', async () => {
+      const createRes = await server.request(
+        `/api/v1/talks/${TALK_ID}/context/sources`,
+        {
+          method: 'POST',
+          headers: ownerAuth(),
+          body: JSON.stringify({
+            sourceType: 'text',
+            title: 'Patch Me',
+            extractedText: 'Short text',
+          }),
+        },
+      );
+      const source = ((await json(createRes)).data as Record<string, unknown>)
+        .source as Record<string, unknown>;
+      const sourceId = source.id as string;
+
+      const patchRes = await server.request(
+        `/api/v1/talks/${TALK_ID}/context/sources/${sourceId}`,
+        {
+          method: 'PATCH',
+          headers: ownerAuth(),
+          body: JSON.stringify({
+            extractedText: 'y'.repeat(55_000),
+          }),
+        },
+      );
+
+      expect(patchRes.status).toBe(200);
+      const patched = ((await json(patchRes)).data as Record<string, unknown>)
+        .source as Record<string, unknown>;
+      expect(patched.isTruncated).toBe(true);
+      expect(patched.extractedTextLength).toBe(50_000);
+    });
   });
-
-  // // =========================================================================
-  // // Prompt assembly — context directives
-  // // =========================================================================
-  //
-  // describe('context directives', () => {
-  //   it('returns null directives for empty context', () => {
-  //     const result = buildTalkContextDirectives(TALK_ID);
-  //     expect(result.directivesText).toBeNull();
-  //     expect(result.hasSources).toBe(false);
-  //     expect(result.readySourceCount).toBe(0);
-  //   });
-  //
-  //   it('includes goal and rules in directives text', async () => {
-  //     // Set goal
-  //     await server.request(`/api/v1/talks/${TALK_ID}/context/goal`, {
-  //       method: 'PUT',
-  //       headers: ownerAuth(),
-  //       body: JSON.stringify({ goalText: 'Help with onboarding' }),
-  //     });
-  //
-  //     // Create rule
-  //     await server.request(`/api/v1/talks/${TALK_ID}/context/rules`, {
-  //       method: 'POST',
-  //       headers: ownerAuth(),
-  //       body: JSON.stringify({ ruleText: 'Use simple language' }),
-  //     });
-  //
-  //     const result = buildTalkContextDirectives(TALK_ID);
-  //     expect(result.directivesText).not.toBeNull();
-  //     expect(result.directivesText).toContain('## Goal');
-  //     expect(result.directivesText).toContain('Help with onboarding');
-  //     expect(result.directivesText).toContain('## Rules');
-  //     expect(result.directivesText).toContain('1. Use simple language');
-  //   });
-  //
-  //   it('includes source manifest and tiny text inlines', async () => {
-  //     // Create a small text source (should be inlined)
-  //     await server.request(`/api/v1/talks/${TALK_ID}/context/sources`, {
-  //       method: 'POST',
-  //       headers: ownerAuth(),
-  //       body: JSON.stringify({
-  //         sourceType: 'text',
-  //         title: 'Small Note',
-  //         extractedText: 'This is a tiny note.',
-  //       }),
-  //     });
-  //
-  //     // Create a URL source (should only be in manifest)
-  //     await server.request(`/api/v1/talks/${TALK_ID}/context/sources`, {
-  //       method: 'POST',
-  //       headers: ownerAuth(),
-  //       body: JSON.stringify({
-  //         sourceType: 'url',
-  //         title: 'Big Article',
-  //         sourceUrl: 'https://example.com/article',
-  //       }),
-  //     });
-  //
-  //     const result = buildTalkContextDirectives(TALK_ID);
-  //     expect(result.hasSources).toBe(true);
-  //     expect(result.readySourceCount).toBe(1); // only text source is ready
-  //
-  //     const text = result.directivesText!;
-  //     // Manifest should list both
-  //     expect(text).toContain('## Saved Sources');
-  //     expect(text).toContain('S1 [text]');
-  //     expect(text).toContain('S2 [url]');
-  //     expect(text).toContain('[pending]'); // URL source is pending
-  //
-  //     // Inline should contain the tiny text
-  //     expect(text).toContain('## Inline Source Content');
-  //     expect(text).toContain('This is a tiny note.');
-  //   });
-  //
-  //   it('respects per-item inline token budget', () => {
-  //     // Source with >250 estimated tokens (~1000 chars) should NOT be inlined
-  //     const bigText = 'x'.repeat(1100); // ~275 tokens
-  //     const result = buildTalkContextDirectivesFromData({
-  //       goalText: null,
-  //       activeRules: [],
-  //       sources: [
-  //         {
-  //           sourceRef: 'S1',
-  //           sourceType: 'text',
-  //           title: 'Big Text',
-  //           note: null,
-  //           status: 'ready',
-  //           extractedText: bigText,
-  //           sortOrder: 0,
-  //         },
-  //       ],
-  //     });
-  //
-  //     expect(result.directivesText).toContain('## Saved Sources');
-  //     expect(result.directivesText).not.toContain('## Inline Source Content');
-  //   });
-  //
-  //   it('respects aggregate inline token budget', () => {
-  //     // 3 sources each ~200 tokens = 600 tokens total
-  //     // First two should be inlined (400 tokens), third should not (would exceed 600)
-  //     const text200 = 'y'.repeat(800); // ~200 tokens
-  //     const result = buildTalkContextDirectivesFromData({
-  //       goalText: null,
-  //       activeRules: [],
-  //       sources: [
-  //         {
-  //           sourceRef: 'S1',
-  //           sourceType: 'text',
-  //           title: 'Text A',
-  //           note: null,
-  //           status: 'ready',
-  //           extractedText: text200,
-  //           sortOrder: 0,
-  //         },
-  //         {
-  //           sourceRef: 'S2',
-  //           sourceType: 'text',
-  //           title: 'Text B',
-  //           note: null,
-  //           status: 'ready',
-  //           extractedText: text200,
-  //           sortOrder: 1,
-  //         },
-  //         {
-  //           sourceRef: 'S3',
-  //           sourceType: 'text',
-  //           title: 'Text C',
-  //           note: null,
-  //           status: 'ready',
-  //           extractedText: text200,
-  //           sortOrder: 2,
-  //         },
-  //       ],
-  //     });
-  //
-  //     const text = result.directivesText!;
-  //     // All 3 in manifest
-  //     expect(text).toContain('S1 [text]');
-  //     expect(text).toContain('S2 [text]');
-  //     expect(text).toContain('S3 [text]');
-  //
-  //     // Only first two inlined (aggregate 400 tokens; third would push to 600+)
-  //     expect(text).toContain('### S1');
-  //     expect(text).toContain('### S2');
-  //     // S3 fits exactly at 600 tokens (200+200+200=600, and budget is <=600)
-  //     // so all three should actually be inlined
-  //     expect(text).toContain('### S3');
-  //   });
-  //
-  //   it('does not inline URL or file sources', () => {
-  //     const result = buildTalkContextDirectivesFromData({
-  //       goalText: null,
-  //       activeRules: [],
-  //       sources: [
-  //         {
-  //           sourceRef: 'S1',
-  //           sourceType: 'url',
-  //           title: 'URL Source',
-  //           note: null,
-  //           status: 'ready',
-  //           extractedText: 'Small URL text',
-  //           sortOrder: 0,
-  //         },
-  //         {
-  //           sourceRef: 'S2',
-  //           sourceType: 'file',
-  //           title: 'File Source',
-  //           note: null,
-  //           status: 'ready',
-  //           extractedText: 'Small file text',
-  //           sortOrder: 1,
-  //         },
-  //       ],
-  //     });
-  //
-  //     const text = result.directivesText!;
-  //     expect(text).toContain('## Saved Sources');
-  //     expect(text).not.toContain('## Inline Source Content');
-  //   });
-  //
-  //   it('truncates long titles and notes in manifest', () => {
-  //     const longTitle = 'T'.repeat(100); // exceeds 80 char limit
-  //     const longNote = 'N'.repeat(150); // exceeds 120 char limit
-  //     const result = buildTalkContextDirectivesFromData({
-  //       goalText: null,
-  //       activeRules: [],
-  //       sources: [
-  //         {
-  //           sourceRef: 'S1',
-  //           sourceType: 'text',
-  //           title: longTitle,
-  //           note: longNote,
-  //           status: 'ready',
-  //           extractedText: 'content',
-  //           sortOrder: 0,
-  //         },
-  //       ],
-  //     });
-  //
-  //     const text = result.directivesText!;
-  //     // Title should be truncated to 80 chars (79 chars + …)
-  //     expect(text).toContain('T'.repeat(79) + '…');
-  //     // Note should be truncated to 120 chars (119 chars + …)
-  //     expect(text).toContain('N'.repeat(119) + '…');
-  //   });
-  // });
-
-  // // =========================================================================
-  // // read_context_source tool execution
-  // // =========================================================================
-  //
-  // describe('executeReadContextSource', () => {
-  //   it('returns source content by ref', async () => {
-  //     await server.request(`/api/v1/talks/${TALK_ID}/context/sources`, {
-  //       method: 'POST',
-  //       headers: ownerAuth(),
-  //       body: JSON.stringify({
-  //         sourceType: 'text',
-  //         title: 'My Notes',
-  //         extractedText: 'Hello world content.',
-  //         note: 'Important meeting notes',
-  //       }),
-  //     });
-  //
-  //     const result = executeReadContextSource(TALK_ID, 'S1');
-  //     expect('error' in result).toBe(false);
-  //     if (!('error' in result)) {
-  //       expect(result.sourceRef).toBe('S1');
-  //       expect(result.type).toBe('text');
-  //       expect(result.title).toBe('My Notes');
-  //       expect(result.note).toBe('Important meeting notes');
-  //       expect(result.content).toBe('Hello world content.');
-  //       expect(result.truncated).toBe(false);
-  //       expect(result.totalChars).toBe(20);
-  //       expect(result.returnedChars).toBe(20);
-  //     }
-  //   });
-  //
-  //   it('returns error for non-existent ref', () => {
-  //     const result = executeReadContextSource(TALK_ID, 'S99');
-  //     expect('error' in result).toBe(true);
-  //   });
-  //
-  //   it('truncates content beyond 12,000 characters', async () => {
-  //     const bigContent = 'a'.repeat(15_000);
-  //     await server.request(`/api/v1/talks/${TALK_ID}/context/sources`, {
-  //       method: 'POST',
-  //       headers: ownerAuth(),
-  //       body: JSON.stringify({
-  //         sourceType: 'text',
-  //         title: 'Big source',
-  //         extractedText: bigContent,
-  //       }),
-  //     });
-  //
-  //     const result = executeReadContextSource(TALK_ID, 'S1');
-  //     expect('error' in result).toBe(false);
-  //     if (!('error' in result)) {
-  //       expect(result.totalChars).toBe(15_000);
-  //       expect(result.returnedChars).toBe(12_000);
-  //       expect(result.truncated).toBe(true);
-  //       expect(result.content!.length).toBe(12_000);
-  //     }
-  //   });
-  // });
 
   // =========================================================================
   // Full integration: context snapshot reflects all operations

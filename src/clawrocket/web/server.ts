@@ -89,6 +89,7 @@ import {
   getAgentFallbackRoute,
   setAgentFallbackRoute,
   getMainAgentRoute,
+  updateMainAgentRoute,
 } from './routes/agent-management.js';
 import {
   listUserToolPermissionsRoute,
@@ -720,6 +721,22 @@ function buildApp(opts: WebServerOptions): Hono {
     });
     if (!rateResult.allowed) return rateLimitedResponse(c, rateResult);
     const result = getMainAgentRoute(auth);
+    return new Response(JSON.stringify(result.body), {
+      status: result.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
+  });
+
+  app.put('/api/v1/registered-agents/main', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+    const rateResult = checkRateLimit({
+      principalId: auth.userId,
+      bucket: 'write',
+    });
+    if (!rateResult.allowed) return rateLimitedResponse(c, rateResult);
+    const body = await c.req.json().catch(() => null);
+    const result = updateMainAgentRoute(auth, body);
     return new Response(JSON.stringify(result.body), {
       status: result.statusCode,
       headers: { 'content-type': 'application/json; charset=utf-8' },
