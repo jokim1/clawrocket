@@ -1715,6 +1715,7 @@ export function TalkDetailPage({
       orgConnectors.filter(
         (connector) =>
           connector.enabled &&
+          connector.verificationStatus === 'verified' &&
           !talkConnectors.some((attached) => attached.id === connector.id),
       ),
     [orgConnectors, talkConnectors],
@@ -5387,8 +5388,8 @@ export function TalkDetailPage({
                   </div>
                   {availableConnectors.length === 0 ? (
                     <p className="page-state">
-                      No enabled org-level connectors are available to attach
-                      yet.
+                      No verified connectors are available to attach. Connectors
+                      must be enabled and have verified credentials.
                     </p>
                   ) : (
                     <div className="connector-attach-row">

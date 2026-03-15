@@ -9,6 +9,8 @@
  * The executor resolves an agent, loads thread history, calls executeWithAgent,
  * emits streaming events (started, deltas, usage), and returns output.
  * On failure it throws — the worker catches and emits the authoritative failure.
+ *
+ * Phase 2: Main executor now has web_fetch and web_search tools.
  */
 
 import { getDb } from '../../db.js';
@@ -22,6 +24,11 @@ import {
   type ExecutionEvent,
 } from './agent-router.js';
 import { getMainAgent } from './agent-registry.js';
+import {
+  executeWebFetch,
+  executeWebSearch,
+  WEB_TOOL_DEFINITIONS,
+} from '../tools/web-tools.js';
 
 // ============================================================================
 // Types
@@ -128,10 +135,11 @@ export async function executeMainChannel(
     content: m.content,
   }));
 
-  // --- Step 3: Execute via agent router (context-free: no system prompt, no context tools) ---
+  // --- Step 3: Execute via agent router ---
+  // Main channel has web tools but no context-source or connector tools.
   const context: ExecutionContext = {
     systemPrompt: agent.system_prompt || '',
-    contextTools: [], // No context tools for Main channel
+    contextTools: WEB_TOOL_DEFINITIONS,
     connectorTools: [], // No connectors for Main channel v1
     history,
   };
@@ -165,6 +173,7 @@ export async function executeMainChannel(
           });
         }
       },
+      executeToolCall: buildMainToolExecutor(signal),
     },
   );
 
@@ -178,5 +187,34 @@ export async function executeMainChannel(
     threadId: input.threadId,
     latencyMs: Date.now() - startTime,
     usage: result.usage,
+  };
+}
+
+// ============================================================================
+// Main Tool Executor
+// ============================================================================
+
+/**
+ * Build the executeToolCall callback for the Main channel.
+ * Main has web tools only — no context sources, no connectors.
+ */
+function buildMainToolExecutor(
+  signal: AbortSignal,
+) {
+  return async (
+    toolName: string,
+    args: Record<string, unknown>,
+  ): Promise<{ result: string; isError?: boolean }> => {
+    if (toolName === 'web_fetch') {
+      return executeWebFetch(args, signal);
+    }
+    if (toolName === 'web_search') {
+      return executeWebSearch(args, signal);
+    }
+
+    return {
+      result: `Tool '${toolName}' is not available in Main channel execution`,
+      isError: true,
+    };
   };
 }

@@ -22,12 +22,25 @@ import {
   type RegisteredAgentRecord,
 } from '../db/agent-accessors.js';
 import {
+  listConnectorsForTalkRun,
+  type TalkRunConnectorRecord,
+} from '../db/connector-accessors.js';
+import {
+  executeConnectorTool,
+  type ToolExecutionContext,
+} from '../connectors/tool-executors.js';
+import { parseConnectorToolName } from '../connectors/runtime.js';
+import {
   executeWithAgent,
   type ExecutionContext,
   type ExecutionEvent,
   type AgentExecutionResult,
 } from '../agents/agent-router.js';
 import { resolvePrimaryAgent, getMainAgent } from '../agents/agent-registry.js';
+import {
+  executeWebFetch,
+  executeWebSearch,
+} from '../tools/web-tools.js';
 import { loadTalkContext, type ContextPackage } from './context-loader.js';
 import type {
   TalkExecutor,
@@ -157,8 +170,19 @@ function mapExecutionEvent(
 /** @internal Exported for integration testing only. */
 export function buildToolExecutor(
   talkId: string,
-  // contextPackage: ContextPackage,  // Could use for source lookups
+  signal: AbortSignal,
 ) {
+  // Cache connectors for the duration of this execution run.
+  // They're loaded lazily on first connector tool call.
+  let connectorCache: Map<string, TalkRunConnectorRecord> | null = null;
+
+  function loadConnectors(): Map<string, TalkRunConnectorRecord> {
+    if (connectorCache) return connectorCache;
+    const connectors = listConnectorsForTalkRun(talkId);
+    connectorCache = new Map(connectors.map((c) => [c.id, c]));
+    return connectorCache;
+  }
+
   return async (
     toolName: string,
     args: Record<string, unknown>,
@@ -220,13 +244,50 @@ export function buildToolExecutor(
       return { result: attachmentRow.extracted_text || '' };
     }
 
-    // --- Connector tools: delegate to tool-executors (todo: import when available) ---
-    // For now, return an error; in production, import and call the connector executor
+    // --- Connector tools: delegate to tool-executors with execution-time re-verification ---
     if (toolName.startsWith('connector_')) {
-      return {
-        result: `Connector tool '${toolName}' execution not yet implemented`,
-        isError: true,
+      const parsed = parseConnectorToolName(toolName);
+      if (!parsed) {
+        return {
+          result: `Unknown connector tool format: ${toolName}`,
+          isError: true,
+        };
+      }
+
+      const connectors = loadConnectors();
+      const connector = connectors.get(parsed.connectorId);
+      if (!connector) {
+        return {
+          result: `Connector '${parsed.connectorId}' is not available for this Talk.`,
+          isError: true,
+        };
+      }
+
+      // Execution-time verification guard: re-check that the connector is
+      // still verified. A connector can go stale between tool definition
+      // (context load) and tool call (credential revoked, service down).
+      if (connector.verificationStatus !== 'verified') {
+        return {
+          result: `Connector '${connector.name}' is no longer verified (status: ${connector.verificationStatus}). Please re-verify the connector credentials.`,
+          isError: true,
+        };
+      }
+
+      const context: ToolExecutionContext = {
+        connector,
+        signal,
       };
+
+      const result = await executeConnectorTool(toolName, args, context);
+      return { result: result.content, isError: result.isError };
+    }
+
+    // --- Web tools: handled below (2.2 / 2.3) ---
+    if (toolName === 'web_fetch') {
+      return executeWebFetch(args, signal);
+    }
+    if (toolName === 'web_search') {
+      return executeWebSearch(args, signal);
     }
 
     // --- All other tools: not available in Talk context ---
@@ -315,7 +376,7 @@ export class CleanTalkExecutor implements TalkExecutor {
       let executionErrorCode = '';
       let executionErrorMessage = '';
 
-      const toolExecutor = buildToolExecutor(input.talkId);
+      const toolExecutor = buildToolExecutor(input.talkId, signal);
 
       try {
         lastExecutionResult = await executeWithAgent(

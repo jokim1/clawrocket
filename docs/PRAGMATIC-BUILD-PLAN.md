@@ -96,46 +96,41 @@ What doesn't work:
 
 **Goal:** Direct executor agents have real tool capabilities — connectors, web fetch, web search.
 
-### 2.1 Wire connector tools for Talks (with runtime verification)
-- Context loader queries `talk_data_connectors JOIN data_connectors` for `TalkRunConnectorRecord[]`
-- **Runtime verification guard:** `buildConnectorToolDefinitions()` must filter to only verified connectors before producing tool definitions. An attached connector that later becomes `invalid` or `unavailable` must NOT produce tools — fail closed. Currently `runtime.ts` builds definitions from all attached connectors without checking verification state.
-- **Execution-time guard:** `executeConnectorTool()` must re-check connector readiness before executing. A connector can go stale between tool definition and tool call (credential revoked, service down). If stale, return a clear tool error to the LLM rather than attempting execution with bad credentials.
-- Talk executor's `executeToolCall` callback: detect connector tool names, call `executeConnectorTool()` (handles JIT decryption)
-- **Effort:** 4-6 hours (includes verification guards)
-- **Depends on:** 1.2 (tool loop works)
+### 2.1 Wire connector tools for Talks (with runtime verification) ✅ DONE
+- **Context loader:** `buildConnectorTools()` in `context-loader.ts` now queries `listConnectorsForTalkRun()` and filters to `verificationStatus === 'verified'` before producing tool definitions. Uses `buildConnectorToolDefinitions()` from `runtime.ts`.
+- **Runtime verification guard:** Only verified connectors produce tool definitions — fail closed.
+- **Execution-time guard:** `buildToolExecutor()` in `new-executor.ts` re-checks `connector.verificationStatus` before executing. Stale connectors return a clear tool error to the LLM.
+- **Talk executor callback:** Detects `connector_` prefixed tool names, resolves connector by ID, delegates to `executeConnectorTool()` with JIT decryption.
 
-### 2.2 Web fetch tool
-- HTTP fetch + HTML-to-text extraction
-- Same `tool-executors.ts` pattern as connectors
-- **Effort:** 2-3 hours
+### 2.2 Web fetch tool ✅ DONE
+- `executeWebFetch()` in shared `tools/web-tools.ts` — HTTP fetch with HTML-to-text extraction (strips script/style, decodes entities, collapses whitespace). 15s timeout, 32K char limit.
+- Tool definition included in both Talk context tools and Main executor tools.
 
-### 2.3 Web search tool
-- Requires search API key (Google Custom Search or Brave)
-- Follows connector tool pattern
-- **Effort:** 3-4 hours
+### 2.3 Web search tool ✅ DONE
+- `executeWebSearch()` in shared `tools/web-tools.ts` — Brave Search API integration. 10s timeout, top 5 results.
+- Returns clear error if `BRAVE_SEARCH_API_KEY` not configured.
+- Tool definition included in both Talk context tools and Main executor tools.
 
-### 2.4 Main executor tools + callback
-- Wire `executeToolCall` callback for Main
-- Reuse tool definitions from 2.1/2.2/2.3
-- **Effort:** 2-3 hours
-- **Depends on:** 1.2
+### 2.4 Main executor tools + callback ✅ DONE
+- `buildMainToolExecutor()` in `main-executor.ts` — handles `web_fetch` and `web_search` tool calls.
+- Uses shared `WEB_TOOL_DEFINITIONS` from `tools/web-tools.ts` for tool definitions.
+- `executeWithAgent` now receives `executeToolCall` callback for Main channel.
 
 ### 2.5 Wire Google Sheets OAuth end-to-end
 - Users can currently walk into a dead end
 - **Effort:** Medium
+- **Deferred:** Requires OAuth flow work that is independent of execution wiring.
 
-### 2.6 Gate connector attach in UI by verification status
-- Filter attach list to `verificationStatus === 'verified'`
-- Show unverified connectors greyed out
-- This is the UI-side complement to the runtime guard in 2.1 — prevents attaching bad connectors, while 2.1 prevents executing them even if already attached
-- **Effort:** 1 hour
-- **Depends on:** 2.1
+### 2.6 Gate connector attach in UI by verification status ✅ DONE
+- `availableConnectors` in `TalkDetailPage.tsx` now filters `verificationStatus === 'verified'` in addition to `enabled`.
+- Empty-state message updated to explain that connectors must be verified.
 
 ### Phase 2 exit criteria
-- Talk agents can query PostHog, read Google Sheets, fetch web pages, run web searches — all via direct HTTP
-- Main agent has the same tool access
-- Connector attachment requires verified credentials
-- Tier 1-3 tools fully operational for any provider
+- ✅ Talk agents can query PostHog, read Google Sheets, fetch web pages, run web searches — all via direct HTTP
+- ✅ Main agent has web_fetch and web_search tool access
+- ✅ Connector attachment requires verified credentials
+- ✅ Tier 1-3 tools operational for any provider
+- ⚠️ Google Sheets OAuth end-to-end (2.5) deferred — existing OAuth dead end remains
 
 ---
 

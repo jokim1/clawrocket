@@ -13,10 +13,16 @@
  */
 
 import { getDb } from '../../db.js';
+import { listConnectorsForTalkRun } from '../db/connector-accessors.js';
+import {
+  buildConnectorToolDefinitions,
+  type ConnectorToolDefinition,
+} from '../connectors/runtime.js';
 import {
   type LlmToolDefinition,
   type LlmMessage,
 } from '../agents/llm-client.js';
+import { WEB_TOOL_DEFINITIONS } from '../tools/web-tools.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -239,11 +245,29 @@ function buildSourceManifest(sources: SourceRow[]): Array<{
 // Step 3: Build Connector Tools
 // ---------------------------------------------------------------------------
 
-function buildConnectorTools(db: any, talkId: string): LlmToolDefinition[] {
-  // TODO: Fetch talk_data_connectors JOIN data_connectors
-  // Parse config_json to extract tool definitions
-  // For now, return empty array
-  return [];
+/**
+ * Load connector tool definitions for a Talk.
+ *
+ * Runtime verification guard: only connectors that are enabled, have a
+ * credential, AND have verificationStatus === 'verified' produce tool
+ * definitions. An attached connector that later becomes invalid or
+ * unavailable is silently excluded — fail closed.
+ */
+function buildConnectorTools(_db: any, talkId: string): LlmToolDefinition[] {
+  // listConnectorsForTalkRun already filters: enabled=1, has ciphertext.
+  const connectors = listConnectorsForTalkRun(talkId);
+
+  // Additional runtime guard: only verified connectors produce tools.
+  const verified = connectors.filter(
+    (c) => c.verificationStatus === 'verified',
+  );
+
+  const defs = buildConnectorToolDefinitions(verified);
+  return defs.map((def) => ({
+    name: def.toolName,
+    description: def.description,
+    inputSchema: def.inputSchema,
+  }));
 }
 
 // ---------------------------------------------------------------------------
@@ -328,6 +352,7 @@ function buildContextTools(): LlmToolDefinition[] {
         required: ['attachmentId'],
       },
     },
+    ...WEB_TOOL_DEFINITIONS,
   ];
 }
 
