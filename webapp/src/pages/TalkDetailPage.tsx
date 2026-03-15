@@ -3360,6 +3360,9 @@ export function TalkDetailPage({
         },
       ];
     });
+    // Reset the draft so the dropdown goes back to placeholder
+    // (the just-added agent is now filtered out of the options).
+    setNewAgentDraft((current) => ({ ...current, modelId: '' }));
     setAgentState({ status: 'idle' });
   };
 
@@ -3620,7 +3623,7 @@ export function TalkDetailPage({
                           {registeredAgentsCatalog.find((ra) => ra.id === agent.id)?.name || agent.nickname || 'Unknown agent'}
                         </option>
                         {registeredAgentsCatalog
-                          .filter((ra) => ra.enabled && ra.id !== agent.id)
+                          .filter((ra) => ra.enabled && ra.id !== agent.id && !agentDrafts.some((d) => d.id === ra.id))
                           .map((ra) => (
                             <option key={ra.id} value={ra.id}>
                               {ra.name} ({ra.modelId})
@@ -3727,7 +3730,7 @@ export function TalkDetailPage({
                       Choose a registered agent…
                     </option>
                     {registeredAgentsCatalog
-                      .filter((ra) => ra.enabled)
+                      .filter((ra) => ra.enabled && !agentDrafts.some((d) => d.id === ra.id))
                       .map((ra) => (
                         <option key={ra.id} value={ra.id}>
                           {ra.name} ({ra.modelId})

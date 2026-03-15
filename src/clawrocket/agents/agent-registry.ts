@@ -48,6 +48,7 @@ export function getMainAgentId(): string {
 
 /**
  * Returns the main agent record.
+ * Throws if the agent has been disabled since it was set as main.
  */
 export function getMainAgent(): RegisteredAgentRecord {
   const id = getMainAgentId();
@@ -55,17 +56,30 @@ export function getMainAgent(): RegisteredAgentRecord {
   if (!agent) {
     throw new Error(`Main agent '${id}' not found in registered_agents.`);
   }
+  if (agent.enabled !== 1) {
+    throw new Error(
+      `Main agent '${id}' (${agent.name}) is disabled. ` +
+        'Please select a new main agent in AI Agents settings.',
+    );
+  }
   return agent;
 }
 
 /**
  * Returns the main agent as a snapshot (API-friendly format).
+ * Throws if the agent has been disabled since it was set as main.
  */
 export function getMainAgentSnapshot(): RegisteredAgentSnapshot {
   const id = getMainAgentId();
   const snapshot = getRegisteredAgentSnapshot(id);
   if (!snapshot) {
     throw new Error(`Main agent '${id}' not found in registered_agents.`);
+  }
+  if (!snapshot.enabled) {
+    throw new Error(
+      `Main agent '${id}' (${snapshot.name}) is disabled. ` +
+        'Please select a new main agent in AI Agents settings.',
+    );
   }
   return snapshot;
 }
@@ -85,6 +99,7 @@ export interface TalkAgentAssignment {
 
 /**
  * List agents assigned to a Talk, ordered by sort_order.
+ * Only returns enabled agents — disabled agents are silently excluded.
  */
 export function listTalkAgents(talkId: string): TalkAgentAssignment[] {
   const rows = getDb()
@@ -100,6 +115,7 @@ export function listTalkAgents(talkId: string): TalkAgentAssignment[] {
     FROM talk_agents ta
     JOIN registered_agents ra ON ra.id = ta.registered_agent_id
     WHERE ta.talk_id = ?
+      AND ra.enabled = 1
     ORDER BY ta.sort_order ASC
   `,
     )
@@ -124,6 +140,7 @@ export function listTalkAgents(talkId: string): TalkAgentAssignment[] {
 /**
  * Resolve the primary agent for a Talk.
  * Returns the agent marked as primary, or the first assigned agent.
+ * Only considers enabled agents — disabled agents are skipped.
  */
 export function resolvePrimaryAgent(
   talkId: string,
@@ -135,6 +152,7 @@ export function resolvePrimaryAgent(
     FROM talk_agents ta
     JOIN registered_agents ra ON ra.id = ta.registered_agent_id
     WHERE ta.talk_id = ?
+      AND ra.enabled = 1
     ORDER BY ta.is_primary DESC, ta.sort_order ASC
     LIMIT 1
   `,
@@ -147,6 +165,7 @@ export function resolvePrimaryAgent(
 /**
  * Resolve a specific agent for a Talk by @mention name.
  * Used for explicit @agent routing.
+ * Only considers enabled agents — disabled agents are not routable.
  */
 export function resolveAgentByName(
   talkId: string,
@@ -160,6 +179,7 @@ export function resolveAgentByName(
     JOIN registered_agents ra ON ra.id = ta.registered_agent_id
     WHERE ta.talk_id = ?
       AND LOWER(ra.name) = LOWER(?)
+      AND ra.enabled = 1
     LIMIT 1
   `,
     )
