@@ -42,6 +42,10 @@ import {
   executeWebSearch,
 } from '../tools/web-tools.js';
 import { loadTalkContext, type ContextPackage } from './context-loader.js';
+import {
+  stripInternalTalkResponseText,
+  createTalkResponseStreamSanitizer,
+} from './internal-tags.js';
 import type {
   TalkExecutor,
   TalkExecutorInput,
@@ -377,6 +381,7 @@ export class CleanTalkExecutor implements TalkExecutor {
       let executionErrorMessage = '';
 
       const toolExecutor = buildToolExecutor(input.talkId, signal);
+      const streamSanitizer = createTalkResponseStreamSanitizer();
 
       try {
         lastExecutionResult = await executeWithAgent(
@@ -389,16 +394,23 @@ export class CleanTalkExecutor implements TalkExecutor {
             signal,
             emit: (event: ExecutionEvent) => {
               // Map agent-router events to Talk events
-              const talkEvent = mapExecutionEvent(
+              let talkEvent = mapExecutionEvent(
                 event,
                 input,
                 agent!,
                 agent!.provider_id,
                 agent!.model_id,
               );
-              if (talkEvent) {
-                emitEvent(talkEvent);
+              if (!talkEvent) return;
+
+              // Strip <internal> tags from streamed text deltas
+              if (talkEvent.type === 'talk_response_delta') {
+                const sanitized = streamSanitizer.push(talkEvent.deltaText);
+                if (!sanitized) return; // Entire chunk was inside <internal> tags
+                talkEvent = { ...talkEvent, deltaText: sanitized };
               }
+
+              emitEvent(talkEvent);
             },
             executeToolCall: toolExecutor,
           },
@@ -432,11 +444,15 @@ export class CleanTalkExecutor implements TalkExecutor {
       // Store the assistant's response message in unified messages table
       // Note: createdBy is for the *user* who created a message; assistant
       // messages are system-generated, so createdBy must be null.
+      // Strip internal reasoning tags before persisting.
+      const sanitizedContent = stripInternalTalkResponseText(
+        lastExecutionResult.content,
+      );
       createMessage({
         id: messageId,
         talkId: input.talkId,
         role: 'assistant',
-        content: lastExecutionResult.content,
+        content: sanitizedContent,
         agentId: agent.id,
         createdBy: null,
         metadataJson: JSON.stringify({
