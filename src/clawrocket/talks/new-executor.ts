@@ -37,10 +37,7 @@ import {
   type AgentExecutionResult,
 } from '../agents/agent-router.js';
 import { resolvePrimaryAgent, getMainAgent } from '../agents/agent-registry.js';
-import {
-  executeWebFetch,
-  executeWebSearch,
-} from '../tools/web-tools.js';
+import { executeWebFetch, executeWebSearch } from '../tools/web-tools.js';
 import { loadTalkContext, type ContextPackage } from './context-loader.js';
 import {
   stripInternalTalkResponseText,
@@ -172,10 +169,7 @@ function mapExecutionEvent(
  * - All other tools: return error (main agent handles these via container)
  */
 /** @internal Exported for integration testing only. */
-export function buildToolExecutor(
-  talkId: string,
-  signal: AbortSignal,
-) {
+export function buildToolExecutor(talkId: string, signal: AbortSignal) {
   // Cache connectors for the duration of this execution run.
   // They're loaded lazily on first connector tool call.
   let connectorCache: Map<string, TalkRunConnectorRecord> | null = null;
