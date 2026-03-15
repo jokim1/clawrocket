@@ -1287,6 +1287,32 @@ function migrateAddMissingColumns(database: Database.Database): void {
       column: 'source_thread_key',
       definition: 'TEXT',
     },
+    // talk_agents — columns that may be missing if table was partially migrated
+    {
+      table: 'talk_agents',
+      column: 'nickname',
+      definition: 'TEXT',
+    },
+    {
+      table: 'talk_agents',
+      column: 'nickname_mode',
+      definition: "TEXT NOT NULL DEFAULT 'auto'",
+    },
+    {
+      table: 'talk_agents',
+      column: 'source_kind',
+      definition: "TEXT NOT NULL DEFAULT 'provider'",
+    },
+    {
+      table: 'talk_agents',
+      column: 'provider_id',
+      definition: 'TEXT',
+    },
+    {
+      table: 'talk_agents',
+      column: 'model_id',
+      definition: 'TEXT',
+    },
     // talk_messages — columns added for agent/run tracking
     {
       table: 'talk_messages',
