@@ -417,6 +417,18 @@ export function attachTalkDataConnectorRoute(input: {
       },
     };
   }
+  if (connector.verificationStatus !== 'verified') {
+    return {
+      statusCode: 400,
+      body: {
+        ok: false,
+        error: {
+          code: 'connector_not_verified',
+          message: `Only verified connectors can be attached to talks (current status: ${connector.verificationStatus}).`,
+        },
+      },
+    };
+  }
 
   const attached = attachDataConnectorToTalk({
     talkId: input.talkId,

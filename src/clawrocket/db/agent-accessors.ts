@@ -19,9 +19,9 @@ import { getDb } from '../../db.js';
 export const TOOL_FAMILY_MAP: Record<string, string[]> = {
   shell: ['Bash'],
   filesystem: ['Read', 'Write', 'Edit', 'Glob'],
-  web: ['WebSearch', 'WebFetch'],
+  web: ['web_fetch', 'web_search'],
   browser: ['BrowserAction', 'BrowserScreenshot'],
-  connectors: [], // dynamically populated from bound connector tool definitions
+  connectors: [], // matched dynamically: any tool starting with 'connector_'
   google_read: ['GoogleDriveRead', 'GoogleDocsRead'],
   google_write: ['GoogleDriveWrite', 'GoogleDocsWrite'],
   gmail_read: ['GmailRead', 'GmailSearch'],

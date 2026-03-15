@@ -399,7 +399,7 @@ describe('context-loader', () => {
         extractedText: 'We discussed Q4 targets.',
       });
 
-      const executor = buildToolExecutor(TALK_ID);
+      const executor = buildToolExecutor(TALK_ID, AbortSignal.timeout(5000));
       const result = await executor('read_context_source', { sourceRef: 'S1' });
 
       expect(result.isError).toBeFalsy();
@@ -417,7 +417,7 @@ describe('context-loader', () => {
       });
 
       // The SQL uses (id = ? OR source_ref = ?), so passing the row ID works
-      const executor = buildToolExecutor(TALK_ID);
+      const executor = buildToolExecutor(TALK_ID, AbortSignal.timeout(5000));
       const result = await executor('read_context_source', {
         sourceRef: 'src-uuid-2',
       });
@@ -427,7 +427,7 @@ describe('context-loader', () => {
     });
 
     it('returns error when sourceRef is missing', async () => {
-      const executor = buildToolExecutor(TALK_ID);
+      const executor = buildToolExecutor(TALK_ID, AbortSignal.timeout(5000));
       const result = await executor('read_context_source', {});
 
       expect(result.isError).toBe(true);
@@ -435,7 +435,7 @@ describe('context-loader', () => {
     });
 
     it('returns error for non-existent source ref', async () => {
-      const executor = buildToolExecutor(TALK_ID);
+      const executor = buildToolExecutor(TALK_ID, AbortSignal.timeout(5000));
       const result = await executor('read_context_source', {
         sourceRef: 'S99',
       });
@@ -454,7 +454,7 @@ describe('context-loader', () => {
         extractedText: null,
       });
 
-      const executor = buildToolExecutor(TALK_ID);
+      const executor = buildToolExecutor(TALK_ID, AbortSignal.timeout(5000));
       const result = await executor('read_context_source', { sourceRef: 'S3' });
 
       expect(result.isError).toBeFalsy();
@@ -471,7 +471,7 @@ describe('context-loader', () => {
       });
 
       // Simulate what a model would send if it used the old parameter name
-      const executor = buildToolExecutor(TALK_ID);
+      const executor = buildToolExecutor(TALK_ID, AbortSignal.timeout(5000));
       const result = await executor('read_context_source', { ref: 'S4' });
 
       // Should fail because the executor reads args.sourceRef, not args.ref
@@ -511,7 +511,7 @@ describe('context-loader', () => {
           now,
         );
 
-      const executor = buildToolExecutor(TALK_ID);
+      const executor = buildToolExecutor(TALK_ID, AbortSignal.timeout(5000));
       const result = await executor('read_attachment', {
         attachmentId: 'att-1',
       });
@@ -521,7 +521,7 @@ describe('context-loader', () => {
     });
 
     it('returns error for non-existent attachment', async () => {
-      const executor = buildToolExecutor(TALK_ID);
+      const executor = buildToolExecutor(TALK_ID, AbortSignal.timeout(5000));
       const result = await executor('read_attachment', {
         attachmentId: 'no-such',
       });
@@ -537,7 +537,7 @@ describe('context-loader', () => {
 
   describe('buildToolExecutor (unknown tools)', () => {
     it('returns error for unknown tool names', async () => {
-      const executor = buildToolExecutor(TALK_ID);
+      const executor = buildToolExecutor(TALK_ID, AbortSignal.timeout(5000));
       const result = await executor('some_random_tool', {});
 
       expect(result.isError).toBe(true);

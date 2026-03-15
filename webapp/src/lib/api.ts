@@ -1025,6 +1025,99 @@ export async function getAiAgents(): Promise<AiAgentsPageData> {
   return apiRequest<AiAgentsPageData>('/api/v1/agents');
 }
 
+// ---------------------------------------------------------------------------
+// Registered Agents
+// ---------------------------------------------------------------------------
+
+export type RegisteredAgent = {
+  id: string;
+  name: string;
+  providerId: string;
+  modelId: string;
+  toolPermissions: Record<string, boolean>;
+  personaRole: string | null;
+  systemPrompt: string | null;
+  enabled: boolean;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export async function listRegisteredAgents(): Promise<RegisteredAgent[]> {
+  return apiRequest<RegisteredAgent[]>('/api/v1/registered-agents');
+}
+
+export async function getRegisteredAgent(
+  agentId: string,
+): Promise<RegisteredAgent> {
+  return apiRequest<RegisteredAgent>(
+    `/api/v1/registered-agents/${encodeURIComponent(agentId)}`,
+  );
+}
+
+export async function getMainRegisteredAgent(): Promise<RegisteredAgent> {
+  return apiRequest<RegisteredAgent>('/api/v1/registered-agents/main');
+}
+
+export async function updateMainRegisteredAgent(
+  agentId: string,
+): Promise<RegisteredAgent> {
+  return apiMutationRequest<RegisteredAgent>(
+    '/api/v1/registered-agents/main',
+    {
+      method: 'PUT',
+      includeJson: true,
+      body: JSON.stringify({ agentId }),
+    },
+  );
+}
+
+export async function createRegisteredAgent(input: {
+  name: string;
+  providerId: string;
+  modelId: string;
+  toolPermissionsJson?: string;
+  personaRole?: string;
+  systemPrompt?: string;
+}): Promise<RegisteredAgent> {
+  return apiMutationRequest<RegisteredAgent>('/api/v1/registered-agents', {
+    method: 'POST',
+    includeJson: true,
+    body: JSON.stringify(input),
+  });
+}
+
+export async function updateRegisteredAgent(input: {
+  agentId: string;
+  name?: string;
+  providerId?: string;
+  modelId?: string;
+  toolPermissionsJson?: string;
+  personaRole?: string | null;
+  systemPrompt?: string | null;
+  enabled?: boolean;
+}): Promise<RegisteredAgent> {
+  const { agentId, ...body } = input;
+  return apiMutationRequest<RegisteredAgent>(
+    `/api/v1/registered-agents/${encodeURIComponent(agentId)}`,
+    {
+      method: 'PUT',
+      includeJson: true,
+      body: JSON.stringify(body),
+    },
+  );
+}
+
+export async function deleteRegisteredAgent(
+  agentId: string,
+): Promise<void> {
+  await apiMutationRequest<{ deleted: true }>(
+    `/api/v1/registered-agents/${encodeURIComponent(agentId)}`,
+    {
+      method: 'DELETE',
+    },
+  );
+}
+
 export async function getDataConnectors(): Promise<DataConnector[]> {
   const envelope = await apiRequest<{ connectors: DataConnector[] }>(
     '/api/v1/data-connectors',

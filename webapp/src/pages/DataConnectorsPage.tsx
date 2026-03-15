@@ -130,6 +130,7 @@ export function DataConnectorsPage({
   const [createDraft, setCreateDraft] = useState<ConnectorDraft>(() =>
     createEmptyDraft('posthog'),
   );
+  const [createApiKey, setCreateApiKey] = useState('');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -224,15 +225,30 @@ export function DataConnectorsPage({
   const handleCreate = async () => {
     setBusyKey('create');
     try {
-      const created = await createDataConnector({
+      let created = await createDataConnector({
         name: createDraft.name,
         connectorKind: createKind,
         config: buildConnectorConfig(createKind, createDraft),
         enabled: createDraft.enabled,
       });
+
+      // If an API key was provided, save it immediately and trigger verification
+      const trimmedKey = createApiKey.trim();
+      if (trimmedKey && createKind === 'posthog') {
+        created = await setDataConnectorCredential({
+          connectorId: created.id,
+          apiKey: trimmedKey,
+        });
+      }
+
       upsertConnector(created);
       setCreateDraft(createEmptyDraft(createKind));
-      setNotice(`${created.name} connector created.`);
+      setCreateApiKey('');
+      setNotice(
+        trimmedKey
+          ? `${created.name} connector created and credential saved.`
+          : `${created.name} connector created.`,
+      );
       setError(null);
     } catch (err) {
       if (err instanceof UnauthorizedError) {
@@ -330,8 +346,9 @@ export function DataConnectorsPage({
       <article className="settings-card">
         <h1>Data Connectors</h1>
         <p className="settings-copy">
-          Define org-level data sources, store credentials, and attach them to
-          Talks so tool-capable agents can query those sources during runs.
+          Define org-level data sources and store credentials. Verified
+          connectors can be attached to talks and are available as query
+          tools during execution.
         </p>
         {error ? (
           <div className="settings-banner settings-banner-error" role="alert">
@@ -356,6 +373,7 @@ export function DataConnectorsPage({
                 const nextKind = event.target.value as DataConnector['connectorKind'];
                 setCreateKind(nextKind);
                 setCreateDraft(createEmptyDraft(nextKind));
+                setCreateApiKey('');
               }}
             >
               <option value="posthog">PostHog</option>
@@ -403,6 +421,16 @@ export function DataConnectorsPage({
                     }))
                   }
                   placeholder="12345"
+                />
+              </label>
+              <label>
+                <span className="settings-label">PostHog API Key</span>
+                <input
+                  type="password"
+                  value={createApiKey}
+                  onChange={(event) => setCreateApiKey(event.target.value)}
+                  placeholder="phx_..."
+                  autoComplete="off"
                 />
               </label>
             </>
@@ -643,8 +671,8 @@ export function DataConnectorsPage({
                     </div>
                   ) : (
                     <div className="inline-banner inline-banner-warning" role="status">
-                      Google Sheets OAuth is planned next. You can create and attach the
-                      connector now, but auth is not wired on this branch yet.
+                      Google Sheets OAuth is coming soon. You can create and attach the
+                      connector now — it will be ready when OAuth support ships.
                     </div>
                   )}
 

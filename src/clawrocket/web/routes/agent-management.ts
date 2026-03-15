@@ -15,6 +15,7 @@ import {
 import {
   getMainAgentId,
   getMainAgentSnapshot,
+  setMainAgentId,
 } from '../../agents/agent-registry.js';
 import type { AuthContext, ApiEnvelope } from '../types.js';
 
@@ -737,6 +738,76 @@ export function getMainAgentRoute(auth: AuthContext): {
         error: {
           code: 'internal_error',
           message: `Failed to get main agent: ${String(err)}`,
+        },
+      },
+    };
+  }
+}
+
+/**
+ * PUT /api/v1/registered-agents/main
+ *
+ * Set the system-wide main agent. Requires admin/owner role.
+ * Body: { agentId: string }
+ */
+export function updateMainAgentRoute(
+  auth: AuthContext,
+  body: unknown,
+): {
+  statusCode: number;
+  body: ApiEnvelope<RegisteredAgentSnapshot>;
+} {
+  if (!isAdminLike(auth.role)) {
+    return {
+      statusCode: 403,
+      body: {
+        ok: false,
+        error: {
+          code: 'forbidden',
+          message: 'Only admins can change the main agent.',
+        },
+      },
+    };
+  }
+
+  const parsed = body as Record<string, unknown> | null;
+  const agentId =
+    parsed && typeof parsed.agentId === 'string' ? parsed.agentId.trim() : '';
+
+  if (!agentId) {
+    return {
+      statusCode: 400,
+      body: {
+        ok: false,
+        error: {
+          code: 'invalid_input',
+          message: 'agentId is required.',
+        },
+      },
+    };
+  }
+
+  try {
+    setMainAgentId(agentId);
+    const snapshot = getMainAgentSnapshot();
+    return {
+      statusCode: 200,
+      body: {
+        ok: true,
+        data: snapshot,
+      },
+    };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    const isNotFound =
+      message.includes('not found') || message.includes('disabled');
+    return {
+      statusCode: isNotFound ? 404 : 500,
+      body: {
+        ok: false,
+        error: {
+          code: isNotFound ? 'agent_not_found' : 'internal_error',
+          message,
         },
       },
     };

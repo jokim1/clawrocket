@@ -1,15 +1,19 @@
-import { getDb } from '../../db.js';
 import {
   getRegisteredAgent,
   TOOL_FAMILY_MAP,
   type RegisteredAgentRecord,
 } from '../db/agent-accessors.js';
 import {
+  resolveExecution,
+  ExecutionResolverError,
+} from './execution-resolver.js';
+import {
   streamLlmResponse,
   type LlmProviderConfig,
   type LlmSecret,
   type LlmToolDefinition,
   type LlmMessage,
+  type LlmContentBlock,
   type LlmStreamEvent,
   LlmClientError,
 } from './llm-client.js';
@@ -145,7 +149,6 @@ export async function executeWithAgent(
     ) => Promise<{ result: string; isError?: boolean }>;
   },
 ): Promise<AgentExecutionResult> {
-  const db = getDb();
   const emit = options.emit || (() => {});
 
   // -----------
@@ -167,44 +170,30 @@ export async function executeWithAgent(
   }
 
   // -----------
-  // Step 2: Resolve provider config and secrets
+  // Step 2: Resolve execution binding (provider config + credentials)
+  //
+  // This is delegated to execution-resolver.ts — the single source of truth
+  // for merging agent config, provider config, and credential source.
+  // See execution-resolver.ts for the full execution mode model.
   // -----------
-  let providerRecord: any = db
-    .prepare('SELECT * FROM llm_providers WHERE id = ?')
-    .get(agent.provider_id);
+  let providerConfig: LlmProviderConfig;
+  let secret: LlmSecret;
 
-  if (!providerRecord) {
-    const errorCode = 'PROVIDER_NOT_FOUND';
-    const errorMessage = `Provider ${agent.provider_id} not found`;
-    emit({ type: 'failed', errorCode, errorMessage });
-    throw new Error(errorMessage);
-  }
-
-  // Resolve provider config
-  const providerConfig: LlmProviderConfig = {
-    baseUrl: providerRecord.base_url || undefined,
-    apiFormat: providerRecord.type,
-    authScheme: providerRecord.auth_scheme || 'x_api_key',
-  };
-
-  // Fetch and decrypt provider secret
-  let secret: LlmSecret | undefined;
-  const secretRecord: any = db
-    .prepare(
-      'SELECT ciphertext FROM llm_provider_secrets WHERE provider_id = ?',
-    )
-    .get(agent.provider_id);
-
-  if (secretRecord) {
-    try {
-      // For now, assume ciphertext is just JSON (no actual encryption)
-      secret = JSON.parse(secretRecord.ciphertext);
-    } catch {
-      const errorCode = 'SECRET_DECRYPTION_FAILED';
-      const errorMessage = `Failed to decrypt provider secret for ${agent.provider_id}`;
-      emit({ type: 'failed', errorCode, errorMessage });
-      throw new Error(errorMessage);
+  try {
+    const binding = resolveExecution(agent);
+    providerConfig = binding.providerConfig;
+    secret = binding.secret;
+  } catch (err) {
+    if (err instanceof ExecutionResolverError) {
+      emit({ type: 'failed', errorCode: err.code, errorMessage: err.message });
+    } else {
+      emit({
+        type: 'failed',
+        errorCode: 'EXECUTION_RESOLUTION_FAILED',
+        errorMessage: String(err),
+      });
     }
+    throw err;
   }
 
   // -----------
@@ -222,6 +211,7 @@ export async function executeWithAgent(
 
   // Resolve enabled tools from TOOL_FAMILY_MAP
   const enabledToolNames = new Set<string>();
+  const connectorsEnabled = agentPermissions['connectors'] === true;
   for (const [family, enabled] of Object.entries(agentPermissions)) {
     if (enabled === true) {
       const familyTools = TOOL_FAMILY_MAP[family] || [];
@@ -231,14 +221,36 @@ export async function executeWithAgent(
     }
   }
 
-  // Build tool array from agent's own tools (will be provided by caller via executeToolCall)
-  // Plus context tools and connector tools if in Talk context
+  /**
+   * Check whether a tool is permitted for this agent.
+   * - Context-internal tools (read_context_source, read_attachment) are always allowed.
+   * - Connector tools (connector_*) are allowed if the 'connectors' family is enabled.
+   * - All other tools are allowed only if they appear in enabledToolNames.
+   */
+  function isToolPermitted(toolName: string): boolean {
+    if (toolName === 'read_context_source' || toolName === 'read_attachment') {
+      return true; // Always allowed — Talk-internal context access
+    }
+    if (toolName.startsWith('connector_')) {
+      return connectorsEnabled;
+    }
+    return enabledToolNames.has(toolName);
+  }
+
+  // Build tool array, filtering by agent's tool permissions.
   const tools: LlmToolDefinition[] = [];
 
   if (context) {
-    // Talk execution: always include context tools and connector tools
-    tools.push(...context.contextTools);
-    tools.push(...context.connectorTools);
+    for (const tool of context.contextTools) {
+      if (isToolPermitted(tool.name)) {
+        tools.push(tool);
+      }
+    }
+    for (const tool of context.connectorTools) {
+      if (isToolPermitted(tool.name)) {
+        tools.push(tool);
+      }
+    }
   }
 
   // TODO: Add agent's own tools here once they're available in the execution context
@@ -248,6 +260,23 @@ export async function executeWithAgent(
   // Step 4: Build LLM messages
   // -----------
   const messages: LlmMessage[] = [];
+
+  // Build system prompt and push as first message
+  let systemPrompt = '';
+  if (context) {
+    // Talk context + agent system prompt
+    systemPrompt = context.systemPrompt;
+    if (agent.system_prompt) {
+      systemPrompt += '\n\n' + agent.system_prompt;
+    }
+  } else {
+    // Main channel: just agent's system prompt
+    systemPrompt = agent.system_prompt || '';
+  }
+
+  if (systemPrompt) {
+    messages.push({ role: 'system', content: systemPrompt });
+  }
 
   // Add Talk history if in Talk context
   if (context && context.history.length > 0) {
@@ -259,19 +288,6 @@ export async function executeWithAgent(
     role: 'user',
     content: userMessage,
   });
-
-  // Build system prompt
-  let systemPrompt = '';
-  if (context) {
-    // Prepend Talk context to system prompt
-    systemPrompt = context.systemPrompt;
-    if (agent.system_prompt) {
-      systemPrompt += '\n\n' + agent.system_prompt;
-    }
-  } else {
-    // Main channel: just agent's system prompt
-    systemPrompt = agent.system_prompt || '';
-  }
 
   // -----------
   // Step 5: Stream LLM response
@@ -291,91 +307,209 @@ export async function executeWithAgent(
     estimatedCostUsd: 0,
   };
 
+  const MAX_TOOL_ITERATIONS = 10;
+
   try {
-    const stream = streamLlmResponse(
-      providerConfig,
-      secret!,
-      agent.model_id,
-      messages,
-      {
-        tools,
-        signal: options.signal,
-      },
-    );
+    for (
+      let iteration = 0;
+      iteration < MAX_TOOL_ITERATIONS;
+      iteration++
+    ) {
+      const stream = streamLlmResponse(
+        providerConfig,
+        secret,
+        agent.model_id,
+        messages,
+        {
+          tools,
+          signal: options.signal,
+        },
+      );
 
-    for await (const event of stream) {
-      if (options.signal?.aborted) {
-        emit({ type: 'cancelled' });
-        return {
-          content: finalContent,
-          agentId,
-          providerId: agent.provider_id,
-          modelId: agent.model_id,
-        };
-      }
+      // Accumulate this turn's content and tool calls from the stream
+      let turnTextContent = '';
+      const pendingToolCalls = new Map<
+        string,
+        { name: string; argumentsJson: string }
+      >();
+      let stopReason = 'end_turn';
 
-      if (event.type === 'text_delta') {
-        finalContent += event.text;
-        emit({ type: 'text_delta', text: event.text || '' });
-      } else if (event.type === 'tool_call_start') {
-        const toolName = event.toolCall?.name || '';
-        const toolArguments = event.toolCall?.arguments
-          ? JSON.parse(event.toolCall.arguments)
-          : {};
-        emit({
-          type: 'tool_call',
-          toolName,
-          arguments: toolArguments,
-        });
+      for await (const event of stream) {
+        if (options.signal?.aborted) {
+          emit({ type: 'cancelled' });
+          const abortErr = new Error('Agent execution was cancelled');
+          abortErr.name = 'AbortError';
+          throw abortErr;
+        }
 
-        // Execute the tool
-        if (options.executeToolCall) {
-          try {
-            const { result, isError } = await options.executeToolCall(
-              toolName,
-              toolArguments,
-            );
-            emit({
-              type: 'tool_result',
-              toolName,
-              result,
-              isError,
-            });
-
-            // Append tool result to messages for next iteration
-            messages.push({
-              role: 'assistant',
-              content: finalContent,
-            });
-            messages.push({
-              role: 'user',
-              content: `Tool result for ${toolName}: ${result}`,
-            });
-
-            // TODO: Re-call LLM with appended result (implement tool loop)
-          } catch (err) {
-            const errorMsg = String(err);
-            emit({
-              type: 'tool_result',
-              toolName,
-              result: errorMsg,
-              isError: true,
+        if (event.type === 'text_delta') {
+          turnTextContent += event.text;
+          emit({ type: 'text_delta', text: event.text || '' });
+        } else if (event.type === 'tool_call_start') {
+          if (event.toolCall) {
+            pendingToolCalls.set(event.toolCall.id, {
+              name: event.toolCall.name,
+              argumentsJson: '',
             });
           }
+        } else if (event.type === 'tool_call_delta') {
+          if (event.toolCall) {
+            const current = pendingToolCalls.get(event.toolCall.id);
+            if (current) {
+              if (event.toolCall.argumentsDelta) {
+                current.argumentsJson += event.toolCall.argumentsDelta;
+              }
+              if (event.toolCall.arguments) {
+                current.argumentsJson = event.toolCall.arguments;
+              }
+            }
+          }
+        } else if (event.type === 'done') {
+          stopReason = event.stopReason || 'end_turn';
+        } else if (event.type === 'usage') {
+          accumulatedTokens = {
+            inputTokens:
+              accumulatedTokens.inputTokens +
+              (event.usage?.inputTokens || 0),
+            outputTokens:
+              accumulatedTokens.outputTokens +
+              (event.usage?.outputTokens || 0),
+            estimatedCostUsd: 0,
+          };
+          emit({
+            type: 'usage',
+            inputTokens: event.usage?.inputTokens || 0,
+            outputTokens: event.usage?.outputTokens || 0,
+            estimatedCostUsd: 0,
+          });
         }
-      } else if (event.type === 'usage') {
-        accumulatedTokens = {
-          inputTokens: event.usage?.inputTokens || 0,
-          outputTokens: event.usage?.outputTokens || 0,
-          estimatedCostUsd: 0,
-        };
-        emit({
-          type: 'usage',
-          inputTokens: event.usage?.inputTokens || 0,
-          outputTokens: event.usage?.outputTokens || 0,
-          estimatedCostUsd: 0,
+      }
+
+      finalContent += turnTextContent;
+
+      // If no tool calls or no executeToolCall callback, we're done.
+      // Anthropic stop reason: 'tool_use', OpenAI finish reason: 'tool_calls'
+      const isToolUseStop =
+        stopReason === 'tool_use' || stopReason === 'tool_calls';
+      if (
+        pendingToolCalls.size === 0 ||
+        !options.executeToolCall ||
+        !isToolUseStop
+      ) {
+        break;
+      }
+
+      // Build assistant message with text + tool_use content blocks
+      const assistantContent: LlmContentBlock[] = [];
+      if (turnTextContent) {
+        assistantContent.push({ type: 'text', text: turnTextContent });
+      }
+      for (const [id, call] of Array.from(pendingToolCalls.entries())) {
+        let parsedInput: unknown = {};
+        try {
+          parsedInput = call.argumentsJson
+            ? JSON.parse(call.argumentsJson)
+            : {};
+        } catch {
+          parsedInput = {};
+        }
+        assistantContent.push({
+          type: 'tool_use',
+          id,
+          name: call.name,
+          input: parsedInput,
         });
       }
+      messages.push({ role: 'assistant', content: assistantContent });
+
+      // Execute each tool call and collect results
+      const toolResults: Array<{
+        id: string;
+        name: string;
+        result: string;
+        isError: boolean;
+      }> = [];
+      for (const [id, call] of Array.from(pendingToolCalls.entries())) {
+        let parsedArgs: Record<string, unknown> = {};
+        try {
+          parsedArgs = call.argumentsJson
+            ? JSON.parse(call.argumentsJson)
+            : {};
+        } catch {
+          parsedArgs = {};
+        }
+
+        emit({
+          type: 'tool_call',
+          toolName: call.name,
+          arguments: parsedArgs,
+        });
+
+        try {
+          const { result, isError } = await options.executeToolCall(
+            call.name,
+            parsedArgs,
+          );
+          emit({
+            type: 'tool_result',
+            toolName: call.name,
+            result,
+            isError,
+          });
+          toolResults.push({
+            id,
+            name: call.name,
+            result,
+            isError: !!isError,
+          });
+        } catch (err) {
+          const errorMsg = String(err);
+          emit({
+            type: 'tool_result',
+            toolName: call.name,
+            result: errorMsg,
+            isError: true,
+          });
+          toolResults.push({
+            id,
+            name: call.name,
+            result: errorMsg,
+            isError: true,
+          });
+        }
+      }
+
+      // Append tool results as messages.
+      // For Anthropic: tool_result blocks inside a single role:'tool' message
+      //   (buildAnthropicRequest converts role:'tool' with LlmContentBlock[] to
+      //    a user message with tool_result blocks)
+      // For OpenAI: individual role:'tool' messages with toolCallId
+      //   (buildOpenAiRequest handles role:'tool' with string content + toolCallId)
+      // Use structured content blocks — both builders handle this format.
+      if (providerConfig.apiFormat === 'openai_chat_completions') {
+        // OpenAI expects separate tool messages per tool call
+        for (const tr of toolResults) {
+          messages.push({
+            role: 'tool',
+            content: tr.result,
+            toolCallId: tr.id,
+          });
+        }
+      } else {
+        // Anthropic: structured tool_result blocks
+        const toolResultBlocks: LlmContentBlock[] = toolResults.map(
+          (tr) => ({
+            type: 'tool_result' as const,
+            toolUseId: tr.id,
+            content: tr.result,
+            isError: tr.isError,
+          }),
+        );
+        messages.push({ role: 'tool', content: toolResultBlocks });
+      }
+
+      // Reset turn text for next iteration — the LLM will produce new content
+      // finalContent already accumulated, next turn appends more
     }
   } catch (err) {
     if (err instanceof LlmClientError) {

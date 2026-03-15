@@ -31,7 +31,12 @@ import {
   parsePolicyAgentsForExecution,
   parsePolicyAgentsForUiBadges,
 } from '../../talks/policy.js';
-import { listTalkAgents } from '../../agents/agent-registry.js';
+import {
+  listTalkAgents,
+  setTalkAgents,
+  getTalkAgentRows,
+  type TalkAgentInput,
+} from '../../agents/agent-registry.js';
 import { MAX_ATTACHMENTS_PER_MESSAGE } from '../../talks/attachment-extraction.js';
 import { canEditTalk } from '../middleware/acl.js';
 import { AuthContext, ApiEnvelope } from '../types.js';
@@ -439,19 +444,23 @@ function validateAgentInputs(input: unknown): {
 }
 
 function listEffectiveTalkAgents(talkId: string): TalkAgentApiRecord[] {
-  const assignments = listTalkAgents(talkId);
-  return assignments.map((a) => ({
-    id: a.agentId,
-    nickname: a.agentName,
-    nicknameMode: 'auto' as const,
-    sourceKind: 'provider' as const,
-    role: (a.personaRole || 'assistant') as TalkPersonaRole,
-    isPrimary: !!a.isPrimary,
-    displayOrder: a.sortOrder,
-    health: 'ready' as const,
-    providerId: null,
-    modelId: null,
-    modelDisplayName: null,
+  const rows = getTalkAgentRows(talkId);
+  return rows.map((row) => ({
+    // Use registeredAgentId as the canonical id when available.
+    // This keeps the id consistent with what execution paths (send route,
+    // resolvePrimaryAgent, listTalkAgents) expect — they all operate on
+    // registered_agent_id. Fall back to the row id for unresolved agents.
+    id: row.registeredAgentId || row.id,
+    nickname: row.nickname || 'Agent',
+    nicknameMode: row.nicknameMode,
+    sourceKind: row.sourceKind,
+    role: (row.personaRole || 'assistant') as TalkPersonaRole,
+    isPrimary: row.isPrimary,
+    displayOrder: row.sortOrder,
+    health: 'ready' as const, // TODO: resolve real health from provider verification
+    providerId: row.providerId,
+    modelId: row.modelId,
+    modelDisplayName: null, // resolved client-side from provider model list
   }));
 }
 
@@ -1035,13 +1044,41 @@ export function updateTalkAgentsRoute(input: {
     };
   }
 
+  // Persist: full replace of talk_agents for this Talk.
+  const agentInputs: TalkAgentInput[] = normalized.agents!.map((a: any) => ({
+    id: a.id,
+    sourceKind: a.sourceKind,
+    providerId: a.providerId,
+    modelId: a.modelId,
+    nickname: a.nickname || null,
+    nicknameMode: a.nicknameMode || 'auto',
+    personaRole: a.role,
+    isPrimary: a.isLead,
+    sortOrder: a.displayOrder,
+  }));
+
+  try {
+    setTalkAgents(input.talkId, agentInputs);
+  } catch (err) {
+    return {
+      statusCode: 500,
+      body: {
+        ok: false,
+        error: {
+          code: 'talk_agents_save_failed',
+          message: err instanceof Error ? err.message : 'Failed to save talk agents',
+        },
+      },
+    };
+  }
+
   return {
     statusCode: 200,
     body: {
       ok: true,
       data: {
         talkId: input.talkId,
-        agents: [],
+        agents: listEffectiveTalkAgents(input.talkId),
       },
     },
   };
