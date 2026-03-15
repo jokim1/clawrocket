@@ -330,9 +330,9 @@ export function DataConnectorsPage({
       <article className="settings-card">
         <h1>Data Connectors</h1>
         <p className="settings-copy">
-          Define org-level data sources and store credentials. Connector query
-          tools are coming soon — attached connectors will be preconfigured and
-          ready when tool support ships.
+          Define org-level data sources and store credentials. Verified
+          connectors can be attached to talks and are available as query
+          tools during execution.
         </p>
         {error ? (
           <div className="settings-banner settings-banner-error" role="alert">

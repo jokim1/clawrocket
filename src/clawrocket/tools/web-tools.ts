@@ -135,7 +135,13 @@ async function readBodyBounded(
 ): Promise<BoundedReadResult> {
   const reader = response.body?.getReader();
   if (!reader) {
-    return { text: await response.text(), truncatedAtBytes: false };
+    // No streaming body — cannot enforce byte cap via stream.
+    // Read into an ArrayBuffer so we can at least check size post-read.
+    // This path is effectively unreachable in Node ≥ 18 but kept defensive.
+    const buf = await response.arrayBuffer();
+    const truncated = buf.byteLength > maxBytes;
+    const usable = truncated ? buf.slice(0, maxBytes) : buf;
+    return { text: new TextDecoder().decode(usable), truncatedAtBytes: truncated };
   }
 
   const decoder = new TextDecoder();
