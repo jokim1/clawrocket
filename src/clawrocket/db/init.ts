@@ -1042,11 +1042,21 @@ function migrateAddMissingColumns(database: Database.Database): void {
     column: string;
     definition: string;
   }> = [
-    // registered_agents — tool_permissions_json was added after initial schema
+    // registered_agents — columns added after initial schema
     {
       table: 'registered_agents',
       column: 'tool_permissions_json',
       definition: "TEXT NOT NULL DEFAULT '{}'",
+    },
+    {
+      table: 'registered_agents',
+      column: 'persona_role',
+      definition: 'TEXT',
+    },
+    {
+      table: 'registered_agents',
+      column: 'system_prompt',
+      definition: 'TEXT',
     },
   ];
 
