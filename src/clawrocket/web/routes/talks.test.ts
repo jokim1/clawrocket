@@ -70,11 +70,11 @@ describe('talk routes', () => {
     getDb()
       .prepare(
         `
-      INSERT INTO talk_agents (id, talk_id, registered_agent_id, is_primary, sort_order, created_at, updated_at)
-      VALUES (?, ?, ?, 1, 0, datetime('now'), datetime('now'))
+      INSERT INTO talk_agents (id, talk_id, registered_agent_id, nickname, is_primary, sort_order, created_at, updated_at)
+      VALUES (?, ?, ?, ?, 1, 0, datetime('now'), datetime('now'))
     `,
       )
-      .run('ta-talk-owner', 'talk-owner', agent.id);
+      .run('ta-talk-owner', 'talk-owner', agent.id, agent.name);
 
     upsertTalk({
       id: 'talk-member',
@@ -84,11 +84,11 @@ describe('talk routes', () => {
     getDb()
       .prepare(
         `
-      INSERT INTO talk_agents (id, talk_id, registered_agent_id, is_primary, sort_order, created_at, updated_at)
-      VALUES (?, ?, ?, 1, 0, datetime('now'), datetime('now'))
+      INSERT INTO talk_agents (id, talk_id, registered_agent_id, nickname, is_primary, sort_order, created_at, updated_at)
+      VALUES (?, ?, ?, ?, 1, 0, datetime('now'), datetime('now'))
     `,
       )
-      .run('ta-talk-member', 'talk-member', agent.id);
+      .run('ta-talk-member', 'talk-member', agent.id, agent.name);
 
     upsertTalk({
       id: 'talk-private',
@@ -98,11 +98,11 @@ describe('talk routes', () => {
     getDb()
       .prepare(
         `
-      INSERT INTO talk_agents (id, talk_id, registered_agent_id, is_primary, sort_order, created_at, updated_at)
-      VALUES (?, ?, ?, 1, 0, datetime('now'), datetime('now'))
+      INSERT INTO talk_agents (id, talk_id, registered_agent_id, nickname, is_primary, sort_order, created_at, updated_at)
+      VALUES (?, ?, ?, ?, 1, 0, datetime('now'), datetime('now'))
     `,
       )
-      .run('ta-talk-private', 'talk-private', agent.id);
+      .run('ta-talk-private', 'talk-private', agent.id, agent.name);
     upsertTalkLlmPolicy({
       talkId: 'talk-owner',
       llmPolicy: '{"agents":["Gemini","Opus4.6"]}',

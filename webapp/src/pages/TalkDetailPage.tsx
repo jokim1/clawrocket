@@ -5601,7 +5601,18 @@ export function TalkDetailPage({
                 </button>
               </div>
               {talkTimeline.length === 0 ? (
-                <p className="page-state">No messages yet.</p>
+                <div className="talk-onboarding-banner">
+                  <p>
+                    This Talk is using the default agent with all tools enabled.{' '}
+                    <Link
+                      to={`/app/talks/${talkId}/agents`}
+                      className="talk-onboarding-link"
+                    >
+                      Customize →
+                    </Link>
+                  </p>
+                  <p className="page-state">No messages yet.</p>
+                </div>
               ) : (
                 talkTimeline.map((entry) => {
                   if (entry.kind === 'message') {

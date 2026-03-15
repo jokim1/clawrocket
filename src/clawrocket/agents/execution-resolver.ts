@@ -93,15 +93,18 @@ export function resolveExecution(
   // For provider.anthropic, honour the ANTHROPIC_BASE_URL env var override
   // so the host layer can point agents at a proxy without touching the DB.
   const baseUrl =
-    agent.provider_id === 'provider.anthropic' && TALK_EXECUTOR_ANTHROPIC_BASE_URL
+    agent.provider_id === 'provider.anthropic' &&
+    TALK_EXECUTOR_ANTHROPIC_BASE_URL
       ? TALK_EXECUTOR_ANTHROPIC_BASE_URL
       : providerRecord.base_url || undefined;
 
   const providerConfig: LlmProviderConfig = {
+    providerId: agent.provider_id,
     baseUrl,
     apiFormat: providerRecord.api_format,
     authScheme: providerRecord.auth_scheme || 'x_api_key',
-    responseStartTimeoutMs: providerRecord.response_start_timeout_ms ?? undefined,
+    responseStartTimeoutMs:
+      providerRecord.response_start_timeout_ms ?? undefined,
     streamIdleTimeoutMs: providerRecord.stream_idle_timeout_ms ?? undefined,
     absoluteTimeoutMs: providerRecord.absolute_timeout_ms ?? undefined,
   };
@@ -149,7 +152,9 @@ function resolveSecret(
 ): LlmSecret {
   // Try llm_provider_secrets first (all providers)
   const secretRecord: any = db
-    .prepare('SELECT ciphertext FROM llm_provider_secrets WHERE provider_id = ?')
+    .prepare(
+      'SELECT ciphertext FROM llm_provider_secrets WHERE provider_id = ?',
+    )
     .get(agent.provider_id);
 
   if (secretRecord) {
@@ -164,7 +169,10 @@ function resolveSecret(
   }
 
   // For provider.anthropic: fall back to the API key env var ONLY.
-  if (agent.provider_id === 'provider.anthropic' && TALK_EXECUTOR_ANTHROPIC_API_KEY) {
+  if (
+    agent.provider_id === 'provider.anthropic' &&
+    TALK_EXECUTOR_ANTHROPIC_API_KEY
+  ) {
     return { apiKey: TALK_EXECUTOR_ANTHROPIC_API_KEY };
   }
 

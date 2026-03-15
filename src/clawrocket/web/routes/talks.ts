@@ -1066,7 +1066,8 @@ export function updateTalkAgentsRoute(input: {
         ok: false,
         error: {
           code: 'talk_agents_save_failed',
-          message: err instanceof Error ? err.message : 'Failed to save talk agents',
+          message:
+            err instanceof Error ? err.message : 'Failed to save talk agents',
         },
       },
     };

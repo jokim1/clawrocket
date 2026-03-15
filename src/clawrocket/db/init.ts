@@ -38,7 +38,7 @@ function seedBuiltinLlmProvider(database: Database.Database): void {
       `
       INSERT INTO llm_provider_models (
         provider_id, model_id, display_name, context_window_tokens,
-        default_max_output_tokens, enabled, updated_at, updated_by
+        default_max_output_tokens, default_ttft_timeout_ms, enabled, updated_at, updated_by
       )
       VALUES (
         'builtin.mock',
@@ -46,6 +46,7 @@ function seedBuiltinLlmProvider(database: Database.Database): void {
         'Mock',
         64000,
         2048,
+        10000,
         1,
         ?,
         NULL
@@ -98,7 +99,7 @@ function seedAnthropicProvider(database: Database.Database): void {
       `
       INSERT INTO llm_provider_models (
         provider_id, model_id, display_name, context_window_tokens,
-        default_max_output_tokens, enabled, updated_at, updated_by
+        default_max_output_tokens, default_ttft_timeout_ms, enabled, updated_at, updated_by
       )
       VALUES (
         'provider.anthropic',
@@ -106,6 +107,7 @@ function seedAnthropicProvider(database: Database.Database): void {
         'Claude Sonnet 4.6',
         200000,
         8192,
+        90000,
         1,
         ?,
         NULL
@@ -313,10 +315,26 @@ function createClawrocketSchema(database: Database.Database): void {
       display_name TEXT NOT NULL,
       context_window_tokens INTEGER NOT NULL,
       default_max_output_tokens INTEGER NOT NULL,
+      default_ttft_timeout_ms INTEGER,
       enabled INTEGER NOT NULL DEFAULT 1,
       updated_at TEXT NOT NULL,
       updated_by TEXT REFERENCES users(id),
       PRIMARY KEY (provider_id, model_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS llm_ttft_stats (
+      provider_id TEXT NOT NULL,
+      model_id TEXT NOT NULL,
+      sample_count INTEGER NOT NULL DEFAULT 0,
+      p50_ms REAL NOT NULL DEFAULT 0,
+      p95_ms REAL NOT NULL DEFAULT 0,
+      p99_ms REAL NOT NULL DEFAULT 0,
+      max_ms REAL NOT NULL DEFAULT 0,
+      last_updated_at TEXT NOT NULL,
+      PRIMARY KEY (provider_id, model_id),
+      FOREIGN KEY (provider_id, model_id)
+        REFERENCES llm_provider_models(provider_id, model_id)
+        ON DELETE CASCADE
     );
 
     CREATE TABLE IF NOT EXISTS llm_provider_secrets (
@@ -858,6 +876,7 @@ function createClawrocketSchema(database: Database.Database): void {
   // the `source_kind` column exists. If it does, the migration already ran
   // (or this is a fresh DB with the new CREATE TABLE).
   migrateTalkAgentsTable(database);
+  migrateAddTtftSupport(database);
 }
 
 /**
@@ -933,6 +952,54 @@ function migrateTalkAgentsTable(database: Database.Database): void {
 
     -- 5. Clean up
     DROP TABLE talk_agents_migration_backup;
+  `);
+}
+
+/**
+ * Add adaptive TTFT timeout support:
+ *  - default_ttft_timeout_ms column on llm_provider_models
+ *  - llm_ttft_stats table for recording observed TTFT
+ *
+ * Idempotent: skips if the column already exists.
+ */
+function migrateAddTtftSupport(database: Database.Database): void {
+  const columns = database
+    .prepare(`PRAGMA table_info(llm_provider_models)`)
+    .all() as Array<{ name: string }>;
+  const hasTtft = columns.some((c) => c.name === 'default_ttft_timeout_ms');
+  if (hasTtft) return; // already migrated or fresh DB
+
+  database.exec(`
+    ALTER TABLE llm_provider_models ADD COLUMN default_ttft_timeout_ms INTEGER;
+  `);
+
+  // llm_ttft_stats is created in createClawrocketSchema via IF NOT EXISTS,
+  // but for existing DBs that ran schema creation before this table existed:
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS llm_ttft_stats (
+      provider_id TEXT NOT NULL,
+      model_id TEXT NOT NULL,
+      sample_count INTEGER NOT NULL DEFAULT 0,
+      p50_ms REAL NOT NULL DEFAULT 0,
+      p95_ms REAL NOT NULL DEFAULT 0,
+      p99_ms REAL NOT NULL DEFAULT 0,
+      max_ms REAL NOT NULL DEFAULT 0,
+      last_updated_at TEXT NOT NULL,
+      PRIMARY KEY (provider_id, model_id),
+      FOREIGN KEY (provider_id, model_id)
+        REFERENCES llm_provider_models(provider_id, model_id)
+        ON DELETE CASCADE
+    );
+  `);
+
+  // Seed sensible defaults for known Anthropic models
+  database.exec(`
+    UPDATE llm_provider_models SET default_ttft_timeout_ms = 90000
+      WHERE provider_id = 'provider.anthropic' AND model_id LIKE '%sonnet%';
+    UPDATE llm_provider_models SET default_ttft_timeout_ms = 180000
+      WHERE provider_id = 'provider.anthropic' AND model_id LIKE '%opus%';
+    UPDATE llm_provider_models SET default_ttft_timeout_ms = 30000
+      WHERE provider_id = 'provider.anthropic' AND model_id LIKE '%haiku%';
   `);
 }
 
