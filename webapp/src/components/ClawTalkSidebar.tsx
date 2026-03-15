@@ -679,14 +679,6 @@ export function ClawTalkSidebar({
 
       <nav className="clawtalk-sidebar-nav" aria-label="App sections">
         <NavLink
-          to="/app/main"
-          className={({ isActive }) =>
-            `clawtalk-sidebar-link clawtalk-sidebar-link-main${isActive ? ' active' : ''}`
-          }
-        >
-          Main (Nanoclaw)
-        </NavLink>
-        <NavLink
           to="/app/talks"
           end
           className={({ isActive }) =>
@@ -746,6 +738,15 @@ export function ClawTalkSidebar({
             ) : null}
           </div>
         </div>
+
+        <NavLink
+          to="/app/main"
+          className={({ isActive }) =>
+            `clawtalk-sidebar-link clawtalk-sidebar-link-main${isActive ? ' active' : ''}`
+          }
+        >
+          Main (Nanoclaw)
+        </NavLink>
 
         <div className="clawtalk-sidebar-talks" aria-label="Talk list">
           {loading ? (
