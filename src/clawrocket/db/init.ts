@@ -202,6 +202,12 @@ function seedDefaultSettings(database: Database.Database): void {
 }
 
 function createClawrocketSchema(database: Database.Database): void {
+  // Run column migrations BEFORE the schema exec block, because the exec
+  // block contains CREATE INDEX statements that reference columns added by
+  // these migrations.  For fresh databases the tables don't exist yet, so
+  // the migrations are no-ops (the PRAGMA table_info returns nothing).
+  migrateAddThreadIdColumns(database);
+
   database.exec(`
     CREATE TABLE IF NOT EXISTS users (
       id TEXT PRIMARY KEY,
@@ -877,6 +883,7 @@ function createClawrocketSchema(database: Database.Database): void {
   // (or this is a fresh DB with the new CREATE TABLE).
   migrateTalkAgentsTable(database);
   migrateAddTtftSupport(database);
+  migrateAddThreadIdColumns(database);
 }
 
 /**
@@ -1001,6 +1008,24 @@ function migrateAddTtftSupport(database: Database.Database): void {
     UPDATE llm_provider_models SET default_ttft_timeout_ms = 30000
       WHERE provider_id = 'provider.anthropic' AND model_id LIKE '%haiku%';
   `);
+}
+
+/**
+ * Add thread_id column to talk_messages and talk_runs for existing databases.
+ * Fresh databases already have the column from the CREATE TABLE statement.
+ * Idempotent: skips if the table doesn't exist yet OR the column already exists.
+ */
+function migrateAddThreadIdColumns(database: Database.Database): void {
+  for (const table of ['talk_messages', 'talk_runs']) {
+    const cols = database
+      .prepare(`PRAGMA table_info(${table})`)
+      .all() as Array<{ name: string }>;
+    // Table doesn't exist yet (fresh DB) — the CREATE TABLE will add it
+    if (cols.length === 0) continue;
+    // Column already present — nothing to do
+    if (cols.some((c) => c.name === 'thread_id')) continue;
+    database.exec(`ALTER TABLE ${table} ADD COLUMN thread_id TEXT;`);
+  }
 }
 
 export function initClawrocketSchema(): void {
