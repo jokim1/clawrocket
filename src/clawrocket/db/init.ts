@@ -872,6 +872,7 @@ function createClawrocketSchema(database: Database.Database): void {
   // reference columns that may not exist yet in older databases.
   // ---------------------------------------------------------------------------
   migrateTalkAgentsTable(database);
+  migrateRegisteredAgentsTable(database);
   migrateAddTtftSupport(database);
   migrateAddThreadIdColumns(database);
   migrateAddMissingColumns(database);
@@ -1023,6 +1024,65 @@ function migrateAddThreadIdColumns(database: Database.Database): void {
     if (cols.some((c) => c.name === 'thread_id')) continue;
     database.exec(`ALTER TABLE ${table} ADD COLUMN thread_id TEXT;`);
   }
+}
+
+/**
+ * Rebuild registered_agents if it contains legacy columns (e.g. route_id)
+ * that conflict with the current schema.  The old table may have NOT NULL
+ * columns the new code doesn't populate, causing INSERT failures.
+ *
+ * Idempotent: skips if the table already matches the new schema (no route_id).
+ */
+function migrateRegisteredAgentsTable(database: Database.Database): void {
+  const columns = database
+    .prepare(`PRAGMA table_info(registered_agents)`)
+    .all() as Array<{ name: string }>;
+  if (columns.length === 0) return; // table doesn't exist yet (fresh DB)
+  const hasRouteId = columns.some((c) => c.name === 'route_id');
+  if (!hasRouteId) return; // already on new schema
+
+  database.exec(`
+    -- 1. Backup existing rows
+    CREATE TABLE registered_agents_migration_backup AS
+      SELECT * FROM registered_agents;
+
+    -- 2. Drop old table + indexes
+    DROP TABLE registered_agents;
+
+    -- 3. Recreate with current schema
+    CREATE TABLE registered_agents (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      provider_id TEXT NOT NULL,
+      model_id TEXT NOT NULL,
+      tool_permissions_json TEXT NOT NULL DEFAULT '{}',
+      persona_role TEXT,
+      system_prompt TEXT,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE INDEX idx_registered_agents_enabled_name
+      ON registered_agents(enabled, name);
+
+    -- 4. Copy rows back, mapping old columns to new schema
+    INSERT INTO registered_agents (
+      id, name, provider_id, model_id,
+      tool_permissions_json, enabled,
+      created_at, updated_at
+    )
+    SELECT
+      id, name, provider_id, model_id,
+      COALESCE(
+        CASE WHEN typeof(tool_permissions_json) = 'text' THEN tool_permissions_json END,
+        '{}'
+      ),
+      enabled, created_at, updated_at
+    FROM registered_agents_migration_backup;
+
+    -- 5. Clean up
+    DROP TABLE registered_agents_migration_backup;
+  `);
 }
 
 /**
