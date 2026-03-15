@@ -191,32 +191,32 @@ export function buildConnectorToolDefinitions(
         connectorKind: connector.connectorKind,
         connectorName: connector.name,
         toolName: buildToolName(connector.id, 'posthog_query'),
-        description: `${buildPostHogHint(connector)} Run a bounded read-only HogQL query. Use dateFrom/dateTo/limit parameters instead of embedding date filters or LIMIT in the query.`,
+        description: `${buildPostHogHint(connector)} Run a read-only HogQL (ClickHouse-flavored SQL) query against PostHog. Include date filters in your WHERE clause and LIMIT in the query itself. A safety LIMIT is appended if you omit one. Date range in dateFrom/dateTo is validated to stay within 90 days.`,
         inputSchema: {
           type: 'object',
           properties: {
             query: {
               type: 'string',
               description:
-                'HogQL query string. Do not include LIMIT or date filters directly in the query.',
+                "HogQL query string with date filters in WHERE clause. Example: SELECT event, count() FROM events WHERE timestamp >= '2026-01-01' AND timestamp < '2026-02-01' GROUP BY event ORDER BY count() DESC LIMIT 50",
             },
             dateFrom: {
               type: 'string',
               description:
-                'Inclusive start date in YYYY-MM-DD format. Must be within 90 days of dateTo.',
+                'Optional inclusive start date (YYYY-MM-DD) for validation only. Must be within 90 days of dateTo.',
             },
             dateTo: {
               type: 'string',
               description:
-                'Inclusive end date in YYYY-MM-DD format. Must be within 90 days of dateFrom.',
+                'Optional inclusive end date (YYYY-MM-DD) for validation only. Must be within 90 days of dateFrom.',
             },
             limit: {
               type: 'number',
               description:
-                'Optional result row cap from 1 to 1000. Defaults to 100.',
+                'Safety row cap from 1 to 1000 (default 100). Appended as LIMIT if your query lacks one.',
             },
           },
-          required: ['query', 'dateFrom', 'dateTo'],
+          required: ['query'],
         },
       });
       continue;

@@ -90,34 +90,37 @@ function parseDateOnly(value: string): Date | null {
 
 function validatePostHogInput(value: unknown): {
   query: string;
-  dateFrom: string;
-  dateTo: string;
   limit: number;
 } {
   const input = parseObjectInput(value);
   const query = readString(input?.query);
+  if (!query) {
+    throw new Error('posthog_query requires a query string.');
+  }
+
+  // Optional date guardrails: if the agent passes dateFrom/dateTo, validate
+  // them to prevent unbounded queries. These are NOT sent to PostHog — the
+  // agent should include date filters in the SQL itself.
   const dateFrom = readString(input?.dateFrom);
   const dateTo = readString(input?.dateTo);
-  if (!query || !dateFrom || !dateTo) {
-    throw new Error('posthog_query requires query, dateFrom, and dateTo.');
-  }
+  if (dateFrom && dateTo) {
+    const fromDate = parseDateOnly(dateFrom);
+    const toDate = parseDateOnly(dateTo);
+    if (!fromDate || !toDate || toDate.valueOf() < fromDate.valueOf()) {
+      throw new Error(
+        'PostHog dateFrom/dateTo must be valid YYYY-MM-DD values.',
+      );
+    }
 
-  const fromDate = parseDateOnly(dateFrom);
-  const toDate = parseDateOnly(dateTo);
-  if (!fromDate || !toDate || toDate.valueOf() < fromDate.valueOf()) {
-    throw new Error('PostHog dateFrom/dateTo must be valid YYYY-MM-DD values.');
-  }
-
-  const diffDays =
-    Math.floor((toDate.valueOf() - fromDate.valueOf()) / 86_400_000) + 1;
-  if (diffDays > MAX_POSTHOG_RANGE_DAYS) {
-    throw new Error('PostHog date range cannot exceed 90 days.');
+    const diffDays =
+      Math.floor((toDate.valueOf() - fromDate.valueOf()) / 86_400_000) + 1;
+    if (diffDays > MAX_POSTHOG_RANGE_DAYS) {
+      throw new Error('PostHog date range cannot exceed 90 days.');
+    }
   }
 
   return {
     query,
-    dateFrom,
-    dateTo,
     limit: clampLimit(input?.limit),
   };
 }
@@ -185,8 +188,6 @@ async function executePostHogQuery(
       projectId: config.projectId,
       secret,
       query: input.query,
-      dateFrom: input.dateFrom,
-      dateTo: input.dateTo,
       limit: input.limit,
       fetchImpl: context.fetchImpl,
       signal: timed.signal,
