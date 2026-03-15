@@ -508,7 +508,7 @@ export async function runPostHogQuery(input: {
   const response = await (input.fetchImpl || fetch)(
     joinUrl(
       input.hostUrl,
-      `/api/projects/${encodeURIComponent(input.projectId)}/query`,
+      `/api/projects/${encodeURIComponent(input.projectId)}/query/`,
     ),
     {
       method: 'POST',
