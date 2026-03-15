@@ -304,4 +304,30 @@ describe('connector http helpers', () => {
       results: [{ total: 42 }],
     });
   });
+
+  it('sends PostHog query to URL with trailing slash to avoid Django 301 redirect', async () => {
+    const { http } = await importHttpModule();
+    let capturedUrl = '';
+
+    await http.runPostHogQuery({
+      hostUrl: 'https://us.posthog.com',
+      projectId: '99999',
+      secret: {
+        kind: 'posthog',
+        apiKey: 'phc_test_key',
+      },
+      query: "SELECT event FROM events LIMIT 5",
+      limit: 100,
+      fetchImpl: (async (url: string | URL | Request) => {
+        capturedUrl = String(url);
+        return new Response(
+          JSON.stringify({ results: [] }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }) as typeof fetch,
+      signal: new AbortController().signal,
+    });
+
+    expect(capturedUrl).toBe('https://us.posthog.com/api/projects/99999/query/');
+  });
 });
