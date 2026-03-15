@@ -137,8 +137,10 @@ export async function executeMainChannel(
 
   // --- Step 3: Execute via agent router ---
   // Main channel has web tools but no context-source or connector tools.
+  // systemPrompt is empty here — the router appends agent.system_prompt
+  // to context.systemPrompt, so passing it here would duplicate it.
   const context: ExecutionContext = {
-    systemPrompt: agent.system_prompt || '',
+    systemPrompt: '',
     contextTools: WEB_TOOL_DEFINITIONS,
     connectorTools: [], // No connectors for Main channel v1
     history,

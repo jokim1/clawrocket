@@ -10,6 +10,7 @@
 
 const WEB_FETCH_TIMEOUT_MS = 15_000;
 const MAX_WEB_FETCH_CHARS = 32_000;
+const MAX_WEB_FETCH_BYTES = 2 * 1024 * 1024; // 2 MB — hard cap on body reads
 
 export async function executeWebFetch(
   args: Record<string, unknown>,
@@ -58,7 +59,31 @@ export async function executeWebFetch(
     }
 
     const contentType = response.headers.get('content-type') || '';
-    const text = await response.text();
+
+    // Reject non-text content types to avoid pulling binaries into memory
+    const isText =
+      contentType.includes('text/') ||
+      contentType.includes('application/json') ||
+      contentType.includes('application/xml') ||
+      contentType.includes('application/xhtml');
+    if (!isText && contentType !== '') {
+      return {
+        result: `Unsupported content type: ${contentType}. Only text-based content is supported.`,
+        isError: true,
+      };
+    }
+
+    // Check Content-Length header if present to reject obviously huge responses
+    const contentLength = response.headers.get('content-length');
+    if (contentLength && parseInt(contentLength, 10) > MAX_WEB_FETCH_BYTES) {
+      return {
+        result: `Response too large (${contentLength} bytes, limit ${MAX_WEB_FETCH_BYTES}). Use a more specific URL.`,
+        isError: true,
+      };
+    }
+
+    // Stream-read the body with a byte cap to bound memory usage
+    const text = await readBodyBounded(response, MAX_WEB_FETCH_BYTES);
 
     let extracted: string;
     if (
@@ -84,6 +109,45 @@ export async function executeWebFetch(
     clearTimeout(timer);
     signal.removeEventListener('abort', onAbort);
   }
+}
+
+/**
+ * Read response body with a hard byte cap.
+ * Uses the ReadableStream API to avoid buffering the entire response.
+ */
+async function readBodyBounded(
+  response: Response,
+  maxBytes: number,
+): Promise<string> {
+  const reader = response.body?.getReader();
+  if (!reader) {
+    return response.text(); // Fallback if no body stream
+  }
+
+  const decoder = new TextDecoder();
+  const chunks: string[] = [];
+  let totalBytes = 0;
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    totalBytes += value.byteLength;
+    if (totalBytes > maxBytes) {
+      // Decode the portion that fits within the limit
+      const excess = totalBytes - maxBytes;
+      const usable = value.byteLength - excess;
+      if (usable > 0) {
+        chunks.push(decoder.decode(value.slice(0, usable), { stream: false }));
+      }
+      reader.cancel();
+      break;
+    }
+
+    chunks.push(decoder.decode(value, { stream: true }));
+  }
+
+  return chunks.join('');
 }
 
 /**

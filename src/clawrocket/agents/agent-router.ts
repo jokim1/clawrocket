@@ -211,6 +211,7 @@ export async function executeWithAgent(
 
   // Resolve enabled tools from TOOL_FAMILY_MAP
   const enabledToolNames = new Set<string>();
+  const connectorsEnabled = agentPermissions['connectors'] === true;
   for (const [family, enabled] of Object.entries(agentPermissions)) {
     if (enabled === true) {
       const familyTools = TOOL_FAMILY_MAP[family] || [];
@@ -220,14 +221,36 @@ export async function executeWithAgent(
     }
   }
 
-  // Build tool array from agent's own tools (will be provided by caller via executeToolCall)
-  // Plus context tools and connector tools if in Talk context
+  /**
+   * Check whether a tool is permitted for this agent.
+   * - Context-internal tools (read_context_source, read_attachment) are always allowed.
+   * - Connector tools (connector_*) are allowed if the 'connectors' family is enabled.
+   * - All other tools are allowed only if they appear in enabledToolNames.
+   */
+  function isToolPermitted(toolName: string): boolean {
+    if (toolName === 'read_context_source' || toolName === 'read_attachment') {
+      return true; // Always allowed — Talk-internal context access
+    }
+    if (toolName.startsWith('connector_')) {
+      return connectorsEnabled;
+    }
+    return enabledToolNames.has(toolName);
+  }
+
+  // Build tool array, filtering by agent's tool permissions.
   const tools: LlmToolDefinition[] = [];
 
   if (context) {
-    // Talk execution: always include context tools and connector tools
-    tools.push(...context.contextTools);
-    tools.push(...context.connectorTools);
+    for (const tool of context.contextTools) {
+      if (isToolPermitted(tool.name)) {
+        tools.push(tool);
+      }
+    }
+    for (const tool of context.connectorTools) {
+      if (isToolPermitted(tool.name)) {
+        tools.push(tool);
+      }
+    }
   }
 
   // TODO: Add agent's own tools here once they're available in the execution context
