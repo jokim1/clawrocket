@@ -14,6 +14,11 @@
 
 import { randomUUID } from 'crypto';
 
+import {
+  computeAdaptiveResponseStartTimeout,
+  recordTtftObservation,
+} from './llm-timeout-stats.js';
+
 // =============================================================================
 // TYPE DEFINITIONS
 // =============================================================================
@@ -22,6 +27,7 @@ export type LlmApiFormat = 'anthropic_messages' | 'openai_chat_completions';
 export type LlmAuthScheme = 'x_api_key' | 'bearer';
 
 export interface LlmProviderConfig {
+  providerId?: string;
   baseUrl: string;
   apiFormat: LlmApiFormat;
   authScheme: LlmAuthScheme;
@@ -196,11 +202,32 @@ export function buildAuthHeaders(
 }
 
 /**
- * Build timeout configuration from provider settings.
+ * Build timeout configuration.
+ *
+ * response-start timeout priority:
+ * 1. Explicit provider override (llm_providers.response_start_timeout_ms) — admin knob
+ * 2. Adaptive: computed from observed TTFT stats for this (provider, model)
+ * 3. Per-model cold-start default (llm_provider_models.default_ttft_timeout_ms)
+ * 4. Model-class heuristic / ultimate fallback
+ *
+ * Steps 2-4 are handled by computeAdaptiveResponseStartTimeout().
  */
-function buildTimeoutConfig(provider: LlmProviderConfig): TimeoutConfig {
+function buildTimeoutConfig(provider: LlmProviderConfig, modelId?: string): TimeoutConfig {
+  let responseStartTimeoutMs: number;
+
+  if (provider.responseStartTimeoutMs != null) {
+    // Explicit admin override — honour it as-is
+    responseStartTimeoutMs = provider.responseStartTimeoutMs;
+  } else if (provider.providerId && modelId) {
+    // Adaptive computation from TTFT stats / model defaults / heuristics
+    responseStartTimeoutMs = computeAdaptiveResponseStartTimeout(provider.providerId, modelId);
+  } else {
+    // No provider ID or model ID available — conservative fallback
+    responseStartTimeoutMs = 120_000;
+  }
+
   return {
-    responseStartTimeoutMs: provider.responseStartTimeoutMs ?? 60000,
+    responseStartTimeoutMs,
     streamIdleTimeoutMs: provider.streamIdleTimeoutMs ?? 20000,
     absoluteTimeoutMs: provider.absoluteTimeoutMs ?? 300000,
   };
@@ -254,6 +281,7 @@ async function readSseResponse(
   parentSignal: AbortSignal,
   timeouts: TimeoutConfig,
   onEvent: (event: SseEvent) => Promise<void> | void,
+  onFirstChunk?: (elapsedMs: number) => void,
 ): Promise<void> {
   if (!response.body) {
     throw new LlmClientError(
@@ -266,6 +294,7 @@ async function readSseResponse(
   const decoder = new TextDecoder();
   let buffer = '';
   let sawFirstChunk = false;
+  const streamStartTime = Date.now();
 
   let responseStartTimer: ReturnType<typeof setTimeout> | null = setTimeout(
     () => {
@@ -296,6 +325,9 @@ async function readSseResponse(
         if (responseStartTimer) {
           clearTimeout(responseStartTimer);
           responseStartTimer = null;
+        }
+        if (onFirstChunk) {
+          try { onFirstChunk(Date.now() - streamStartTime); } catch { /* never break stream */ }
         }
       }
 
@@ -538,6 +570,7 @@ async function* parseAnthropicStream(
   controller: AbortController,
   signal: AbortSignal,
   timeouts: TimeoutConfig,
+  onFirstChunk?: (elapsedMs: number) => void,
 ): AsyncGenerator<LlmStreamEvent> {
   const blocks: Array<{
     type: 'text' | 'tool_use';
@@ -658,7 +691,7 @@ async function* parseAnthropicStream(
           : 'Anthropic streaming request failed.';
       queueEvent({ type: 'error', error: message });
     }
-  });
+  }, onFirstChunk);
 
   // Emit final tool calls with complete arguments
   for (const block of blocks) {
@@ -690,6 +723,7 @@ async function* parseOpenAiStream(
   controller: AbortController,
   signal: AbortSignal,
   timeouts: TimeoutConfig,
+  onFirstChunk?: (elapsedMs: number) => void,
 ): AsyncGenerator<LlmStreamEvent> {
   const toolCallsByIndex = new Map<
     number,
@@ -781,7 +815,7 @@ async function* parseOpenAiStream(
         },
       });
     }
-  });
+  }, onFirstChunk);
 
   queueEvent({ type: 'done', stopReason });
 
@@ -828,8 +862,15 @@ export async function* streamLlmResponse(
   parentSignal.addEventListener('abort', onAbort, { once: true });
 
   try {
-    const timeouts = buildTimeoutConfig(provider);
+    const timeouts = buildTimeoutConfig(provider, modelId);
     const authHeaders = buildAuthHeaders(provider, secret);
+
+    // TTFT recording callback — fires once per streaming call on first chunk
+    const onFirstChunk = (elapsedMs: number) => {
+      if (provider.providerId) {
+        recordTtftObservation(provider.providerId, modelId, elapsedMs);
+      }
+    };
 
     if (provider.apiFormat === 'anthropic_messages') {
       const requestBody = buildAnthropicRequest(
@@ -860,7 +901,7 @@ export async function* streamLlmResponse(
         );
       }
 
-      yield* parseAnthropicStream(response, controller, parentSignal, timeouts);
+      yield* parseAnthropicStream(response, controller, parentSignal, timeouts, onFirstChunk);
     } else if (provider.apiFormat === 'openai_chat_completions') {
       const requestBody = buildOpenAiRequest(
         modelId,
@@ -889,7 +930,7 @@ export async function* streamLlmResponse(
         );
       }
 
-      yield* parseOpenAiStream(response, controller, parentSignal, timeouts);
+      yield* parseOpenAiStream(response, controller, parentSignal, timeouts, onFirstChunk);
     } else {
       throw new LlmClientError(
         `Unsupported API format: ${provider.apiFormat}`,

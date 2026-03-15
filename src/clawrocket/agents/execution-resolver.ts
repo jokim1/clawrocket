@@ -98,6 +98,7 @@ export function resolveExecution(
       : providerRecord.base_url || undefined;
 
   const providerConfig: LlmProviderConfig = {
+    providerId: agent.provider_id,
     baseUrl,
     apiFormat: providerRecord.api_format,
     authScheme: providerRecord.auth_scheme || 'x_api_key',
