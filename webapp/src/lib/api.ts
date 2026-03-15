@@ -1793,6 +1793,53 @@ export async function restartService(): Promise<{
   );
 }
 
+// ---------------------------------------------------------------------------
+// Main Channel (Nanoclaw)
+// ---------------------------------------------------------------------------
+
+export type MainThreadSummary = {
+  threadId: string;
+  lastMessageAt: string;
+  messageCount: number;
+};
+
+export type MainThreadMessage = {
+  id: string;
+  threadId: string;
+  role: string;
+  content: string;
+  agentId: string | null;
+  createdBy: string | null;
+  createdAt: string;
+};
+
+export async function listMainThreads(): Promise<MainThreadSummary[]> {
+  return apiRequest<MainThreadSummary[]>('/api/v1/main/threads');
+}
+
+export async function getMainThread(threadId: string): Promise<MainThreadMessage[]> {
+  return apiRequest<MainThreadMessage[]>(
+    `/api/v1/main/threads/${encodeURIComponent(threadId)}`,
+  );
+}
+
+export async function postMainMessage(input: {
+  content: string;
+  threadId?: string;
+}): Promise<{ messageId: string; threadId: string; runId: string }> {
+  return apiMutationRequest<{ messageId: string; threadId: string; runId: string }>(
+    '/api/v1/main/messages',
+    {
+      method: 'POST',
+      includeJson: true,
+      body: JSON.stringify({
+        content: input.content,
+        ...(input.threadId ? { threadId: input.threadId } : {}),
+      }),
+    },
+  );
+}
+
 export async function getHealthStatus(): Promise<boolean> {
   try {
     const response = await fetch('/api/v1/health', {

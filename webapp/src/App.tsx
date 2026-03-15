@@ -24,6 +24,7 @@ import {
 } from './lib/api';
 import { AiAgentsPage } from './pages/AiAgentsPage';
 import { DataConnectorsPage } from './pages/DataConnectorsPage';
+import { MainChannelPage } from './pages/MainChannelPage';
 import { TalkDetailPage } from './pages/TalkDetailPage';
 import { TalkListPage } from './pages/TalkListPage';
 import { ProfilePage } from './pages/ProfilePage';
@@ -388,6 +389,7 @@ export function App() {
   const isTalkRoute =
     location.pathname.startsWith('/app/talks/') &&
     location.pathname !== '/app/talks';
+  const isMainRoute = location.pathname.startsWith('/app/main');
 
   if (auth.status === 'loading') {
     return <main className="page-state">Checking session…</main>;
@@ -424,9 +426,21 @@ export function App() {
             signOutBusy={signOutBusy}
           />
         </header>
-        <div className={`app-main-content${isTalkRoute ? ' app-main-content-talk' : ''}`}>
+        <div className={`app-main-content${isTalkRoute || isMainRoute ? ' app-main-content-talk' : ''}`}>
           <Routes>
-            <Route path="/" element={<Navigate to="/app/talks" replace />} />
+            <Route path="/" element={<Navigate to="/app/main" replace />} />
+            <Route
+              path="/app/main"
+              element={
+                <MainChannelPage onUnauthorized={handleUnauthorized} />
+              }
+            />
+            <Route
+              path="/app/main/:threadId"
+              element={
+                <MainChannelPage onUnauthorized={handleUnauthorized} />
+              }
+            />
             <Route
               path="/app/talks"
               element={
@@ -497,7 +511,7 @@ export function App() {
                 />
               }
             />
-            <Route path="*" element={<Navigate to="/app/talks" replace />} />
+            <Route path="*" element={<Navigate to="/app/main" replace />} />
           </Routes>
         </div>
       </div>
