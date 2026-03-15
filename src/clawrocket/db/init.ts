@@ -873,6 +873,8 @@ function createClawrocketSchema(database: Database.Database): void {
   // ---------------------------------------------------------------------------
   migrateTalkAgentsTable(database);
   migrateRegisteredAgentsTable(database);
+  migrateTalkMessagesTable(database);
+  migrateTalkRunsTable(database);
   migrateAddTtftSupport(database);
   migrateAddThreadIdColumns(database);
   migrateAddMissingColumns(database);
@@ -1086,6 +1088,126 @@ function migrateRegisteredAgentsTable(database: Database.Database): void {
 }
 
 /**
+ * Rebuild talk_messages if talk_id has a NOT NULL constraint.
+ * The new schema allows NULL talk_id for thread-based (Main) messages.
+ *
+ * Idempotent: skips if talk_id is already nullable or table doesn't exist.
+ */
+function migrateTalkMessagesTable(database: Database.Database): void {
+  const columns = database
+    .prepare(`PRAGMA table_info(talk_messages)`)
+    .all() as Array<{ name: string; notnull: number }>;
+  if (columns.length === 0) return; // table doesn't exist yet
+  const talkIdCol = columns.find((c) => c.name === 'talk_id');
+  if (!talkIdCol || talkIdCol.notnull === 0) return; // already nullable
+
+  database.exec(`
+    -- 1. Backup
+    CREATE TABLE talk_messages_migration_backup AS
+      SELECT * FROM talk_messages;
+
+    -- 2. Drop old table + indexes
+    DROP TABLE talk_messages;
+
+    -- 3. Recreate with current schema (talk_id nullable)
+    CREATE TABLE talk_messages (
+      id TEXT PRIMARY KEY,
+      talk_id TEXT REFERENCES talks(id) ON DELETE CASCADE,
+      thread_id TEXT,
+      role TEXT NOT NULL CHECK(role IN ('user', 'assistant', 'system', 'tool')),
+      content TEXT NOT NULL,
+      agent_id TEXT REFERENCES registered_agents(id) ON DELETE SET NULL,
+      run_id TEXT,
+      sequence_in_run INTEGER,
+      created_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+      created_at TEXT NOT NULL,
+      metadata_json TEXT
+    );
+    CREATE INDEX idx_talk_messages_talk_created_at
+      ON talk_messages(talk_id, created_at);
+    CREATE INDEX idx_talk_messages_thread_id
+      ON talk_messages(thread_id);
+
+    -- 4. Copy rows back (old table may not have all columns)
+    INSERT INTO talk_messages (
+      id, talk_id, role, content, created_by, created_at
+    )
+    SELECT
+      id, talk_id, role, content, created_by, created_at
+    FROM talk_messages_migration_backup;
+
+    -- 5. Clean up
+    DROP TABLE talk_messages_migration_backup;
+  `);
+}
+
+/**
+ * Rebuild talk_runs if talk_id has a NOT NULL constraint.
+ * The new schema allows NULL talk_id for thread-based (Main) runs.
+ *
+ * Idempotent: skips if talk_id is already nullable or table doesn't exist.
+ */
+function migrateTalkRunsTable(database: Database.Database): void {
+  const columns = database
+    .prepare(`PRAGMA table_info(talk_runs)`)
+    .all() as Array<{ name: string; notnull: number }>;
+  if (columns.length === 0) return; // table doesn't exist yet
+  const talkIdCol = columns.find((c) => c.name === 'talk_id');
+  if (!talkIdCol || talkIdCol.notnull === 0) return; // already nullable
+
+  database.exec(`
+    -- 1. Backup
+    CREATE TABLE talk_runs_migration_backup AS
+      SELECT * FROM talk_runs;
+
+    -- 2. Drop old table + indexes
+    DROP TABLE talk_runs;
+
+    -- 3. Recreate with current schema (talk_id nullable)
+    CREATE TABLE talk_runs (
+      id TEXT PRIMARY KEY,
+      talk_id TEXT REFERENCES talks(id) ON DELETE CASCADE,
+      requested_by TEXT NOT NULL REFERENCES users(id),
+      status TEXT NOT NULL
+        CHECK(status IN ('queued', 'running', 'awaiting_confirmation', 'cancelled', 'completed', 'failed')),
+      trigger_message_id TEXT REFERENCES talk_messages(id),
+      target_agent_id TEXT,
+      agent_id TEXT REFERENCES registered_agents(id) ON DELETE SET NULL,
+      executor_alias TEXT,
+      executor_model TEXT,
+      thread_id TEXT,
+      idempotency_key TEXT,
+      source_binding_id TEXT,
+      source_external_message_id TEXT,
+      source_thread_key TEXT,
+      created_at TEXT NOT NULL,
+      started_at TEXT,
+      ended_at TEXT,
+      cancel_reason TEXT
+    );
+    CREATE INDEX idx_talk_runs_talk_id_status
+      ON talk_runs(talk_id, status, created_at);
+    CREATE INDEX idx_talk_runs_status_created_at
+      ON talk_runs(status, created_at);
+
+    -- 4. Copy rows back (old table may not have all columns)
+    INSERT INTO talk_runs (
+      id, talk_id, requested_by, status,
+      trigger_message_id, created_at,
+      started_at, ended_at, cancel_reason
+    )
+    SELECT
+      id, talk_id, requested_by, status,
+      trigger_message_id, created_at,
+      started_at, ended_at, cancel_reason
+    FROM talk_runs_migration_backup;
+
+    -- 5. Clean up
+    DROP TABLE talk_runs_migration_backup;
+  `);
+}
+
+/**
  * Generic catch-all migration for columns added to CREATE TABLE statements
  * after the user's database was first created.  `CREATE TABLE IF NOT EXISTS`
  * does NOT add new columns to existing tables, so we must ALTER them in.
@@ -1116,6 +1238,74 @@ function migrateAddMissingColumns(database: Database.Database): void {
     {
       table: 'registered_agents',
       column: 'system_prompt',
+      definition: 'TEXT',
+    },
+    // talks — folder + ordering support
+    {
+      table: 'talks',
+      column: 'folder_id',
+      definition: 'TEXT',
+    },
+    {
+      table: 'talks',
+      column: 'sort_order',
+      definition: 'REAL NOT NULL DEFAULT 0',
+    },
+    // talk_runs — columns added for thread / multi-agent support
+    {
+      table: 'talk_runs',
+      column: 'target_agent_id',
+      definition: 'TEXT',
+    },
+    {
+      table: 'talk_runs',
+      column: 'idempotency_key',
+      definition: 'TEXT',
+    },
+    {
+      table: 'talk_runs',
+      column: 'executor_alias',
+      definition: 'TEXT',
+    },
+    {
+      table: 'talk_runs',
+      column: 'executor_model',
+      definition: 'TEXT',
+    },
+    {
+      table: 'talk_runs',
+      column: 'source_binding_id',
+      definition: 'TEXT',
+    },
+    {
+      table: 'talk_runs',
+      column: 'source_external_message_id',
+      definition: 'TEXT',
+    },
+    {
+      table: 'talk_runs',
+      column: 'source_thread_key',
+      definition: 'TEXT',
+    },
+    // talk_messages — columns added for agent/run tracking
+    {
+      table: 'talk_messages',
+      column: 'agent_id',
+      definition: 'TEXT',
+    },
+    {
+      table: 'talk_messages',
+      column: 'run_id',
+      definition: 'TEXT',
+    },
+    {
+      table: 'talk_messages',
+      column: 'sequence_in_run',
+      definition: 'INTEGER',
+    },
+    {
+      table: 'talk_messages',
+      column: 'metadata_json',
       definition: 'TEXT',
     },
   ];
