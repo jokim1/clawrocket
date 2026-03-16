@@ -1456,6 +1456,7 @@ export function deleteTalkMessagesRoute(input: {
 
 export function enqueueTalkChat(input: {
   talkId: string;
+  threadId?: string | null;
   auth: AuthContext;
   content: string;
   targetAgentIds?: string[] | null;
@@ -1579,6 +1580,7 @@ export function enqueueTalkChat(input: {
     // orphaned messages or runs are left behind.
     persisted = enqueueTalkTurnAtomic({
       talkId: input.talkId,
+      threadId: input.threadId,
       userId: input.auth.userId,
       content,
       messageId,

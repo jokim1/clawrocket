@@ -222,6 +222,7 @@ export class TalkRunWorker implements TalkRunWorkerControl {
         {
           runId: run.id,
           talkId: run.talk_id!,
+          threadId: run.thread_id,
           requestedBy: run.requested_by,
           triggerMessageId: triggerMessage.id,
           triggerContent: triggerMessage.content,

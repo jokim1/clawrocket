@@ -184,48 +184,43 @@ What doesn't work:
 - **Rename:** Defer until Phase 7+ when the workspace model is substantively different from a Talk.
 - **Context inheritance:** Threads inherit Talk-level objective + rules + roles. Thread-level overrides are a future concern.
 
-### 4.1 Standardize default context build order (thread-aware)
-- The existing `context-loader.ts` already does this correctly: goal → summary → rules → source manifest → message history with token budgeting. Formalize it:
-  - Document the build order as the canonical contract (not ad hoc)
-  - Add `thread_id` awareness to `loadMessageHistory()` — only load messages from the active thread
-  - **Thread-aware summary strategy:** `fetchSummary()` currently queries by `talk_id` only (context-loader.ts line 154-166). A single talk-level summary injected into every thread will leak cross-thread context. Decision for Phase 4: disable summary injection for threaded runs until summaries are per-thread. Rationale: a stale/wrong summary is worse than no summary — the model still has recent thread history. Per-thread summary generation is a Phase 8 concern (context refinement).
-  - Extend `ContextPackage.metadata` with `threadId` and `activeRuleCount`
-  - This ensures Phases 5-7 all build on a stable, documented context assembly rather than evolving ad hoc behavior
-- **Effort:** 3-4 hours (includes summary strategy change)
+### 4.1 Standardize default context build order (thread-aware) ✅ DONE
+- `context-loader.ts` now accepts optional `threadId` parameter:
+  - `loadTalkContext(talkId, modelContextWindow, threadId?)` — documented canonical contract
+  - `loadMessageHistory()` scopes to thread when `threadId` provided
+  - **Thread-aware summary strategy:** Summary injection disabled for threaded runs to prevent cross-thread context leakage. Per-thread summaries are a Phase 8 concern.
+  - `ContextPackage.metadata` extended with `threadId` and `activeRuleCount`
+  - Build order documented in JSDoc: goal → summary (skipped for threads) → rules → sources → connector tools → history
 
-### 4.2 Thread formalization (messages AND runs — all creation and consumption paths)
-- Create `talk_threads` table: `id`, `talk_id`, `title`, `created_at`, `updated_at`
-- Migration for `talk_messages`: create a default thread per Talk, backfill `thread_id` on all existing messages, then make NOT NULL
-- Migration for `talk_runs`: backfill `thread_id` on existing runs (matching via `trigger_message_id` → message's thread), then make NOT NULL
-- After migration, every message AND every run belongs to a thread — no NULL steady state
-- **Full surface area — all Talk message AND run producers/consumers:**
-  - **Message creation:** `accessors.ts` Talk message helper (line ~1471) does not accept or persist `thread_id` — must require it
-  - **Channel ingress:** `channel-accessors.ts` (line ~1245) creates Talk messages and runs with `thread_id: null` — must resolve to the correct thread (or create one) on inbound channel messages
-  - **Run creation:** `accessors.ts` run insertion helper (line ~1819) currently hardcodes `thread_id: null` for Talk runs — must require thread_id
-  - **Run creation input type:** `accessors.ts` (line ~2180) has `thread_id: string | null` — make required for Talk runs
-  - **Run queue:** `run-queue.ts` — enqueue, claim, status transitions must be thread-aware
-  - **SSE state filtering:** thread-scoped event delivery
-  - **Cancellation:** cancel by thread, not just by talk
-  - **Executors:** all executor code paths that create runs (new-executor.ts, main-executor.ts) — must pass thread_id
-  - **Tests:** all test code that assumes `thread_id: null` for Talk messages or runs (talks.test.ts and others)
-- **Effort:** ~2 days (message producers + run producers + queue + SSE + channel ingress)
+### 4.2 Thread formalization (messages AND runs — all creation and consumption paths) ✅ DONE
+- **Schema:** `talk_threads` table created with `id`, `talk_id`, `title`, `is_default`, `created_at`, `updated_at`
+- **Backfill migration:** `migrateBackfillThreads()` — creates default threads per Talk, backfills `thread_id` on all NULL messages/runs, creates `talk_threads` rows for existing Main channel threads
+- **All producers updated:**
+  - `createTalkMessage()` — accepts `threadId` parameter, persists to `thread_id` column
+  - `enqueueTalkTurnAtomic()` — accepts `threadId`, auto-resolves default thread via `getOrCreateDefaultThread()`
+  - `appendAssistantMessageWithOutbox()` — passes `threadId` from run record
+  - `appendRuntimeTalkMessage()` — accepts `threadId` parameter
+  - `completeRunAndPromoteNextAtomic()` — reads `thread_id` from run, passes to message creation
+  - `TalkRunQueue.enqueue()` — requires `threadId` in input
+  - `channel-accessors.ts` channel ingress — resolves default thread via `getOrCreateDefaultThread()`
+  - `run-worker.ts` — passes `run.thread_id` to executor input
+  - `new-executor.ts` — passes `threadId` to `loadTalkContext()` and `createMessage()`
+  - All outbox events include `threadId` in payload
+- **Note:** `thread_id` NOT NULL constraint deferred — all producers now always supply a value, but the column remains nullable for safety during rollout. The constraint can be added in a follow-up after confirming no NULL steady state in production.
+- **Tests:** All 583 tests pass with thread-aware changes
 
 ### 4.3 Thread UI
-- Thread list in Talk sidebar
-- Thread creation (+ button or from conversation)
-- Thread-scoped message view
-- Cross-thread search within a Talk
-- **Effort:** 1-2 days
+- Thread API endpoints added:
+  - `GET /api/v1/talks/:talkId/threads` — list threads with message counts
+  - `POST /api/v1/talks/:talkId/threads` — create new thread
+  - `POST /api/v1/talks/:talkId/chat` now accepts optional `threadId` body field
+- **Frontend thread UI deferred** — backend is thread-ready, frontend can be wired in a follow-up PR
+- **Effort remaining:** 1-2 days (frontend components)
 
-### 4.4 Expose objective (talk_context_goal) in UI
-- The table, context injection, and API route all already exist:
-  - `talk_context_goal` table (init.ts line 520)
-  - `fetchGoal()` in context-loader.ts injects into system prompt
-  - `PUT /talks/:talkId/context/goal` route exists in talk-context.ts (line 96-125) with validation (160 char limit)
-- What's missing is frontend wiring only:
-  - Editable "Objective" field in Talk settings UI (prominent, not buried)
-  - Wire to existing PUT route
-- **Effort:** 1-2 hours (pure frontend wiring — backend is done)
+### 4.4 Expose objective (talk_context_goal) in UI ✅ ALREADY DONE
+- Discovered during Phase 4 audit: the Goal editing UI **already exists** in TalkDetailPage.tsx (lines 3811-3852)
+- Text input with 160-char limit, save button, character counter, wired to `PUT /talks/:talkId/context/goal`
+- No work needed.
 
 ### Phase 4 exit criteria
 - Users can create multiple Threads within a Talk

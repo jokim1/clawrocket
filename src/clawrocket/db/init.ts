@@ -513,6 +513,17 @@ function createClawrocketSchema(database: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_talk_messages_thread_id
       ON talk_messages(thread_id);
 
+    CREATE TABLE IF NOT EXISTS talk_threads (
+      id TEXT PRIMARY KEY,
+      talk_id TEXT REFERENCES talks(id) ON DELETE CASCADE,
+      title TEXT,
+      is_default INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_talk_threads_talk_id
+      ON talk_threads(talk_id);
+
     CREATE TABLE IF NOT EXISTS talk_message_attachments (
       id TEXT PRIMARY KEY,
       talk_id TEXT REFERENCES talks(id) ON DELETE CASCADE,
@@ -897,6 +908,13 @@ function createClawrocketSchema(database: Database.Database): void {
   migrateTalkChannelPoliciesTable(database);
   migrateTalkChannelBindingsTable(database);
   migrateTalksTable(database);
+
+  // ---------------------------------------------------------------------------
+  // Phase 4 — Thread formalization.
+  // Creates talk_threads rows for existing data and backfills thread_id on
+  // talk_messages and talk_runs so every message/run belongs to a thread.
+  // ---------------------------------------------------------------------------
+  migrateBackfillThreads(database);
 
   migrateMainAgentToAnthropic(database);
 
@@ -2001,6 +2019,123 @@ function migrateTalksTable(database: Database.Database): void {
 
     DROP TABLE talks_mig;
   `);
+}
+
+/**
+ * Phase 4 — Backfill threads for existing data.
+ *
+ * 1. For each Talk that has messages with NULL thread_id:
+ *    - Create a default talk_threads row (is_default=1)
+ *    - Update all NULL-thread messages and runs to that thread
+ *
+ * 2. For each distinct Main channel thread_id that exists on messages
+ *    but has no talk_threads row:
+ *    - Create a talk_threads row (talk_id=NULL for Main)
+ *
+ * Idempotent: checks whether work is needed before acting.
+ */
+function migrateBackfillThreads(database: Database.Database): void {
+  // Check if talk_threads table exists (fresh DB has it from CREATE TABLE)
+  const ttCols = database
+    .prepare(`PRAGMA table_info(talk_threads)`)
+    .all() as Array<{ name: string }>;
+  if (ttCols.length === 0) return; // table hasn't been created yet
+
+  // --- Part 1: Backfill Talk messages/runs that have NULL thread_id ---
+
+  // Find all talks that have messages with no thread_id
+  const talksNeedingBackfill = database
+    .prepare(
+      `
+      SELECT DISTINCT talk_id
+      FROM talk_messages
+      WHERE talk_id IS NOT NULL AND thread_id IS NULL
+    `,
+    )
+    .all() as Array<{ talk_id: string }>;
+
+  if (talksNeedingBackfill.length > 0) {
+    const uuidStmt = database.prepare(
+      `SELECT lower(hex(randomblob(4)) || '-' || hex(randomblob(2)) || '-4' ||
+        substr(hex(randomblob(2)),2) || '-' ||
+        substr('89ab', abs(random()) % 4 + 1, 1) ||
+        substr(hex(randomblob(2)),2) || '-' ||
+        hex(randomblob(6))) AS uuid`,
+    );
+
+    const insertThread = database.prepare(
+      `INSERT OR IGNORE INTO talk_threads (id, talk_id, title, is_default, created_at, updated_at)
+       VALUES (?, ?, 'Default Thread', 1, ?, ?)`,
+    );
+
+    const updateMessages = database.prepare(
+      `UPDATE talk_messages SET thread_id = ? WHERE talk_id = ? AND thread_id IS NULL`,
+    );
+
+    const updateRuns = database.prepare(
+      `UPDATE talk_runs SET thread_id = ? WHERE talk_id = ? AND thread_id IS NULL`,
+    );
+
+    const now = new Date().toISOString();
+
+    const backfillTx = database.transaction(() => {
+      for (const { talk_id } of talksNeedingBackfill) {
+        // Check if this talk already has a default thread
+        const existing = database
+          .prepare(
+            `SELECT id FROM talk_threads WHERE talk_id = ? AND is_default = 1 LIMIT 1`,
+          )
+          .get(talk_id) as { id: string } | undefined;
+
+        let threadId: string;
+        if (existing) {
+          threadId = existing.id;
+        } else {
+          const { uuid } = uuidStmt.get() as { uuid: string };
+          threadId = `thread_${uuid}`;
+          insertThread.run(threadId, talk_id, now, now);
+        }
+
+        updateMessages.run(threadId, talk_id);
+        updateRuns.run(threadId, talk_id);
+      }
+    });
+
+    backfillTx();
+  }
+
+  // --- Part 2: Backfill Main channel threads ---
+  // Main channel messages have talk_id=NULL and a non-NULL thread_id.
+  // Create talk_threads rows for any thread_id that doesn't have one yet.
+
+  const mainThreadIds = database
+    .prepare(
+      `
+      SELECT DISTINCT m.thread_id
+      FROM talk_messages m
+      WHERE m.talk_id IS NULL AND m.thread_id IS NOT NULL
+        AND NOT EXISTS (
+          SELECT 1 FROM talk_threads t WHERE t.id = m.thread_id
+        )
+    `,
+    )
+    .all() as Array<{ thread_id: string }>;
+
+  if (mainThreadIds.length > 0) {
+    const now = new Date().toISOString();
+    const insertMainThread = database.prepare(
+      `INSERT OR IGNORE INTO talk_threads (id, talk_id, title, is_default, created_at, updated_at)
+       VALUES (?, NULL, NULL, 0, ?, ?)`,
+    );
+
+    const backfillMainTx = database.transaction(() => {
+      for (const { thread_id } of mainThreadIds) {
+        insertMainThread.run(thread_id, now, now);
+      }
+    });
+
+    backfillMainTx();
+  }
 }
 
 /**

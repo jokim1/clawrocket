@@ -34,11 +34,13 @@ describe('TalkRunQueue', () => {
     const first = queue.enqueue({
       runId: 'run-1',
       talkId: 'talk-1',
+      threadId: 'thread-default',
       requestedBy: 'u-owner',
     });
     const second = queue.enqueue({
       runId: 'run-2',
       talkId: 'talk-1',
+      threadId: 'thread-default',
       requestedBy: 'u-owner',
     });
 
@@ -62,11 +64,13 @@ describe('TalkRunQueue', () => {
     queue.enqueue({
       runId: 'run-a',
       talkId: 'talk-1',
+      threadId: 'thread-default',
       requestedBy: 'u-owner',
     });
     queue.enqueue({
       runId: 'run-b',
       talkId: 'talk-1',
+      threadId: 'thread-default',
       requestedBy: 'u-owner',
     });
 
@@ -86,6 +90,7 @@ describe('TalkRunQueue', () => {
     queue.enqueue({
       runId: 'run-a',
       talkId: 'talk-1',
+      threadId: 'thread-default',
       requestedBy: 'u-owner',
     });
     markTalkRunStatus(
@@ -99,6 +104,7 @@ describe('TalkRunQueue', () => {
     const second = queue.enqueue({
       runId: 'run-b',
       talkId: 'talk-1',
+      threadId: 'thread-default',
       requestedBy: 'u-owner',
     });
 
