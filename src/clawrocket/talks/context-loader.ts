@@ -47,9 +47,11 @@ export interface ContextPackage {
   /** Metadata about the loaded context */
   metadata: {
     talkId: string;
+    threadId: string | null;
     sourceCount: number;
     connectorCount: number;
     historyTurnCount: number;
+    activeRuleCount: number;
     hasSummary: boolean;
   };
 }
@@ -67,16 +69,39 @@ const SMALL_SOURCE_THRESHOLD = 250; // Max tokens to inline a source
 // Main Context Loader
 // ---------------------------------------------------------------------------
 
+/**
+ * Load Talk context for agent execution.
+ *
+ * Canonical context build order (documented contract — not ad hoc):
+ *   1. Goal (talk_context_goal)
+ *   2. Rolling summary (talk_context_summary) — disabled for threaded runs
+ *      because a single talk-level summary injected into every thread leaks
+ *      cross-thread context. Per-thread summaries are a future concern.
+ *   3. Rules (talk_context_rules, active only)
+ *   4. Source manifest (talk_context_sources, inline small sources)
+ *   5. Connector tools (verified connectors only)
+ *   6. Message history (thread-scoped when threadId provided, with token budgeting)
+ *
+ * @param talkId - The Talk to load context for
+ * @param modelContextWindow - The model's context window in tokens
+ * @param threadId - Optional thread to scope message history to. When provided,
+ *   only messages from this thread are loaded and summary injection is skipped.
+ */
 export async function loadTalkContext(
   talkId: string,
   modelContextWindow: number,
+  threadId?: string | null,
 ): Promise<ContextPackage> {
   const db = getDb();
 
   // Step 1: Fetch goal, rules, and rolling summary
   const goal = fetchGoal(db, talkId);
   const rules = fetchRules(db, talkId);
-  const summary = fetchSummary(db, talkId);
+
+  // When loading for a specific thread, skip talk-level summary to avoid
+  // leaking cross-thread context. A stale/wrong summary is worse than no
+  // summary — the model still has recent thread history.
+  const summary = threadId ? null : fetchSummary(db, talkId);
 
   // Step 2: Build source manifest
   const sources = fetchSources(db, talkId);
@@ -92,13 +117,13 @@ export async function loadTalkContext(
   // Step 5: Build context tools (always included)
   const contextTools = buildContextTools();
 
-  // Step 6: Load message history with token budgeting
+  // Step 6: Load message history with token budgeting (thread-scoped if threadId provided)
   const availableBudget =
     modelContextWindow -
     OUTPUT_RESERVE -
     systemPromptTokens -
     TOOL_SCHEMA_RESERVE;
-  const history = loadMessageHistory(db, talkId, availableBudget);
+  const history = loadMessageHistory(db, talkId, availableBudget, threadId);
 
   // Estimate total tokens
   const historyTokens = history.reduce((sum, msg) => {
@@ -114,9 +139,11 @@ export async function loadTalkContext(
   // Build metadata
   const metadata = {
     talkId,
+    threadId: threadId ?? null,
     sourceCount: sources.length,
     connectorCount: connectorTools.length,
     historyTurnCount: history.length,
+    activeRuleCount: rules.length,
     hasSummary: summary !== null,
   };
 
@@ -373,17 +400,34 @@ function loadMessageHistory(
   db: any,
   talkId: string,
   budgetTokens: number,
+  threadId?: string | null,
 ): LlmMessage[] {
-  const rows = db
-    .prepare(
-      `
-      SELECT id, role, content, agent_id, created_at, metadata_json
-      FROM talk_messages
-      WHERE talk_id = ?
-      ORDER BY created_at DESC
-    `,
-    )
-    .all(talkId) as MessageRow[];
+  // When threadId is provided, only load messages from that thread.
+  // Otherwise load all messages for the Talk (legacy/pre-thread behavior).
+  let rows: MessageRow[];
+  if (threadId) {
+    rows = db
+      .prepare(
+        `
+        SELECT id, role, content, agent_id, created_at, metadata_json
+        FROM talk_messages
+        WHERE talk_id = ? AND thread_id = ?
+        ORDER BY created_at DESC
+      `,
+      )
+      .all(talkId, threadId) as MessageRow[];
+  } else {
+    rows = db
+      .prepare(
+        `
+        SELECT id, role, content, agent_id, created_at, metadata_json
+        FROM talk_messages
+        WHERE talk_id = ?
+        ORDER BY created_at DESC
+      `,
+      )
+      .all(talkId) as MessageRow[];
+  }
 
   // Walk backward through messages, accumulating token count
   let accumulatedTokens = 0;

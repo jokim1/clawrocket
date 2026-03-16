@@ -312,7 +312,7 @@ export class CleanTalkExecutor implements TalkExecutor {
 
     try {
       // --- Step 1: Load Talk context ---
-      const contextPackage = await loadTalkContext(input.talkId, 128000); // Assume 128K context window for now
+      const contextPackage = await loadTalkContext(input.talkId, 128000, input.threadId); // Assume 128K context window for now
 
       // --- Step 2: Resolve agent ---
       let agent: RegisteredAgentRecord | undefined;
@@ -358,6 +358,7 @@ export class CleanTalkExecutor implements TalkExecutor {
       const contextPackageWithCorrectWindow = await loadTalkContext(
         input.talkId,
         modelContextWindow,
+        input.threadId,
       );
 
       // --- Step 4: Build ExecutionContext ---
@@ -445,6 +446,7 @@ export class CleanTalkExecutor implements TalkExecutor {
       createMessage({
         id: messageId,
         talkId: input.talkId,
+        threadId: input.threadId,
         role: 'assistant',
         content: sanitizedContent,
         agentId: agent.id,

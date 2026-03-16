@@ -6,6 +6,7 @@ import {
   createTalkMessage,
   createTalkRun,
   touchTalkUpdatedAt,
+  getOrCreateDefaultThread,
 } from './accessors.js';
 import { resolvePrimaryAgent } from '../agents/agent-registry.js';
 
@@ -1242,9 +1243,14 @@ export function enqueueChannelTurnAtomic(input: {
       };
     }
 
+    // Resolve thread for channel ingress: use the default thread for now.
+    // Future: could map source_thread_key to a dedicated thread.
+    const threadId = getOrCreateDefaultThread(input.talkId);
+
     createTalkMessage({
       id: input.messageId,
       talkId: input.talkId,
+      threadId,
       role: 'user',
       content: input.content,
       createdBy: null,
@@ -1254,7 +1260,7 @@ export function enqueueChannelTurnAtomic(input: {
     createTalkRun({
       id: input.runId,
       talk_id: input.talkId,
-      thread_id: null,
+      thread_id: threadId,
       requested_by: 'system:channel-ingress',
       status: 'queued',
       trigger_message_id: input.messageId,

@@ -2454,6 +2454,58 @@ function buildApp(opts: WebServerOptions): Hono {
     });
   });
 
+  // ---------------------------------------------------------------------------
+  // Talk threads
+  // ---------------------------------------------------------------------------
+
+  app.get('/api/v1/talks/:talkId/threads', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+
+    const rateResult = checkRateLimit({ userId: auth.userId, bucket: 'read' });
+    if (!rateResult.allowed) {
+      return rateLimitedResponse(c, rateResult);
+    }
+
+    const talkId = safeDecodePathSegment(c.req.param('talkId'));
+    if (!talkId) {
+      return c.json({ ok: false, error: { code: 'invalid_talk_id', message: 'Invalid Talk ID' } }, 400);
+    }
+
+    try {
+      const { listTalkThreads } = await import('../db/accessors.js');
+      const threads = listTalkThreads(talkId);
+      return c.json({ ok: true, data: { threads } });
+    } catch (err) {
+      return c.json({ ok: false, error: { code: 'internal_error', message: String(err) } }, 500);
+    }
+  });
+
+  app.post('/api/v1/talks/:talkId/threads', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+
+    const rateResult = checkRateLimit({ userId: auth.userId, bucket: 'write' });
+    if (!rateResult.allowed) {
+      return rateLimitedResponse(c, rateResult);
+    }
+
+    const talkId = safeDecodePathSegment(c.req.param('talkId'));
+    if (!talkId) {
+      return c.json({ ok: false, error: { code: 'invalid_talk_id', message: 'Invalid Talk ID' } }, 400);
+    }
+
+    try {
+      const body = await c.req.json().catch(() => ({}));
+      const title = typeof body.title === 'string' ? body.title.trim() || null : null;
+      const { createTalkThread } = await import('../db/accessors.js');
+      const thread = createTalkThread({ talkId, title });
+      return c.json({ ok: true, data: thread }, 201);
+    } catch (err) {
+      return c.json({ ok: false, error: { code: 'internal_error', message: String(err) } }, 500);
+    }
+  });
+
   app.get('/api/v1/talks/:talkId/agents', async (c) => {
     const auth = requireAuth(c);
     if (!auth) return unauthorized(c);
@@ -3892,6 +3944,7 @@ function buildApp(opts: WebServerOptions): Hono {
 
     const payload = parseJsonPayload<{
       content?: string;
+      threadId?: string;
       targetAgentIds?: unknown;
       attachmentIds?: unknown;
     }>(bodyText);
@@ -3910,6 +3963,7 @@ function buildApp(opts: WebServerOptions): Hono {
 
     const result = enqueueTalkChat({
       talkId,
+      threadId: typeof payload.data.threadId === 'string' ? payload.data.threadId.trim() || null : null,
       auth,
       content: payload.data.content || '',
       targetAgentIds: Array.isArray(payload.data.targetAgentIds)

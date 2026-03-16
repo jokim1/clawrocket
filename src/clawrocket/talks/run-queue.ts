@@ -12,6 +12,7 @@ import { TalkRunStatus } from '../types.js';
 export interface EnqueueTalkRunInput {
   runId: string;
   talkId: string;
+  threadId: string;
   requestedBy: string;
   idempotencyKey?: string;
 }
@@ -25,7 +26,7 @@ export class TalkRunQueue {
     const record: TalkRunRecord = {
       id: input.runId,
       talk_id: input.talkId,
-      thread_id: null,
+      thread_id: input.threadId,
       requested_by: input.requestedBy,
       status,
       trigger_message_id: null,
@@ -45,6 +46,7 @@ export class TalkRunQueue {
       eventType: status === 'running' ? 'talk_run_started' : 'talk_run_queued',
       payload: JSON.stringify({
         talkId: input.talkId,
+        threadId: input.threadId,
         runId: input.runId,
         status,
         executorAlias: record.executor_alias,
