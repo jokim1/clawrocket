@@ -879,6 +879,8 @@ function createClawrocketSchema(database: Database.Database): void {
   migrateAddThreadIdColumns(database);
   migrateAddMissingColumns(database);
 
+  migrateMainAgentToAnthropic(database);
+
   seedBuiltinLlmProvider(database);
   seedAnthropicProvider(database);
   seedMainAgent(database);
@@ -1346,6 +1348,42 @@ function migrateAddMissingColumns(database: Database.Database): void {
       `ALTER TABLE ${table} ADD COLUMN ${column} ${definition};`,
     );
   }
+}
+
+/**
+ * Migrate the seeded main agent from builtin.mock to provider.anthropic.
+ *
+ * The original seedMainAgent used provider_id = 'builtin.mock' which has no
+ * real execution path. This migration updates it to provider.anthropic with
+ * a real model so that the agent can actually execute via the Anthropic API.
+ *
+ * Idempotent: only updates if the agent still has the old mock provider.
+ */
+function migrateMainAgentToAnthropic(database: Database.Database): void {
+  const row = database
+    .prepare(
+      `SELECT provider_id FROM registered_agents WHERE id = 'agent.main'`,
+    )
+    .get() as { provider_id: string } | undefined;
+
+  if (!row || row.provider_id !== 'builtin.mock') return;
+
+  // Read the user's saved default model, or fall back to sonnet
+  const savedModel = (
+    database
+      .prepare(`SELECT value FROM settings_kv WHERE key = 'executor.defaultClaudeModel'`)
+      .get() as { value: string } | undefined
+  )?.value || 'claude-sonnet-4-6';
+
+  database
+    .prepare(
+      `UPDATE registered_agents
+       SET provider_id = 'provider.anthropic',
+           model_id = ?,
+           updated_at = ?
+       WHERE id = 'agent.main'`,
+    )
+    .run(savedModel, new Date().toISOString());
 }
 
 export function initClawrocketSchema(): void {

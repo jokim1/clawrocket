@@ -755,6 +755,9 @@ function buildApp(opts: WebServerOptions): Hono {
 
     const db = getDb();
 
+    const getSetting = (key: string): string | null =>
+      (db.prepare(`SELECT value FROM settings_kv WHERE key = ?`).get(key) as { value: string } | undefined)?.value || null;
+
     const hasApiKey = !!db
       .prepare(
         `SELECT 1 FROM llm_provider_secrets
@@ -762,16 +765,14 @@ function buildApp(opts: WebServerOptions): Hono {
       )
       .get();
 
-    const hasOauth = !!(
-      db
-        .prepare(`SELECT value FROM settings_kv WHERE key = 'executor.claudeOauthToken'`)
-        .get() as { value: string } | undefined
-    )?.value;
+    const hasOauth = !!getSetting('executor.claudeOauthToken');
 
-    const modeRow = db
-      .prepare(`SELECT value FROM settings_kv WHERE key = 'executor.authMode'`)
-      .get() as { value: string } | undefined;
-    const mode = modeRow?.value || (hasApiKey ? 'api_key' : hasOauth ? 'subscription' : 'none');
+    const mode = getSetting('executor.authMode') || (hasApiKey ? 'api_key' : hasOauth ? 'subscription' : 'none');
+    const hasCredential =
+      (mode === 'api_key' && hasApiKey) || (mode === 'subscription' && hasOauth);
+
+    const storedVerification = getSetting('executor.verificationStatus');
+    const verificationStatus = storedVerification || (hasCredential ? 'not_verified' : 'missing');
 
     return c.json(
       {
@@ -787,20 +788,12 @@ function buildApp(opts: WebServerOptions): Hono {
           apiKeyHint: hasApiKey ? 'sk-ant-***' : null,
           oauthTokenHint: hasOauth ? '***oauth***' : null,
           authTokenHint: null,
-          activeCredentialConfigured:
-            (mode === 'api_key' && hasApiKey) ||
-            (mode === 'subscription' && hasOauth),
-          verificationStatus:
-            (mode === 'api_key' && hasApiKey) ||
-            (mode === 'subscription' && hasOauth)
-              ? 'not_verified'
-              : 'missing',
-          lastVerifiedAt: null,
-          lastVerificationError: null,
+          activeCredentialConfigured: hasCredential,
+          verificationStatus,
+          lastVerifiedAt: getSetting('executor.lastVerifiedAt'),
+          lastVerificationError: getSetting('executor.lastVerificationError'),
           anthropicBaseUrl: 'https://api.anthropic.com',
-          isConfigured:
-            (mode === 'api_key' && hasApiKey) ||
-            (mode === 'subscription' && hasOauth),
+          isConfigured: hasCredential,
           configVersion: 1,
           lastUpdatedAt: null,
           lastUpdatedBy: null,
@@ -815,13 +808,23 @@ function buildApp(opts: WebServerOptions): Hono {
     const auth = requireAuth(c);
     if (!auth) return unauthorized(c);
 
-    const secretRow = getDb()
+    const db = getDb();
+    const getSetting = (key: string): string | null =>
+      (db.prepare(`SELECT value FROM settings_kv WHERE key = ?`).get(key) as { value: string } | undefined)?.value || null;
+
+    const hasApiKey = !!db
       .prepare(
         `SELECT 1 FROM llm_provider_secrets
          WHERE provider_id = 'provider.anthropic' LIMIT 1`,
       )
-      .get() as { 1: number } | undefined;
-    const hasApiKey = !!secretRow;
+      .get();
+    const hasOauth = !!getSetting('executor.claudeOauthToken');
+    const mode = getSetting('executor.authMode') || (hasApiKey ? 'api_key' : hasOauth ? 'subscription' : 'none');
+    const hasCredential =
+      (mode === 'api_key' && hasApiKey) || (mode === 'subscription' && hasOauth);
+
+    const storedVerification = getSetting('executor.verificationStatus');
+    const verificationStatus = storedVerification || (hasCredential ? 'not_verified' : 'missing');
 
     return c.json(
       {
@@ -831,10 +834,10 @@ function buildApp(opts: WebServerOptions): Hono {
           restartSupported: false,
           pendingRestartReasons: [],
           activeRunCount: 0,
-          executorAuthMode: hasApiKey ? 'api_key' : 'none',
-          activeCredentialConfigured: hasApiKey,
-          verificationStatus: hasApiKey ? 'not_verified' : 'missing',
-          lastVerifiedAt: null,
+          executorAuthMode: mode,
+          activeCredentialConfigured: hasCredential,
+          verificationStatus,
+          lastVerifiedAt: getSetting('executor.lastVerifiedAt'),
         },
       },
       200,
@@ -1038,20 +1041,122 @@ function buildApp(opts: WebServerOptions): Hono {
     const auth = requireAuth(c);
     if (!auth) return unauthorized(c);
 
-    // TODO: actually call Anthropic to verify the credential.
-    // For now, return success so the UI flow completes.
-    return c.json(
-      {
-        ok: true,
-        data: {
-          scheduled: false,
-          code: 'not_implemented',
-          message:
-            'Credential saved. Verification will be available in a future update.',
-        },
-      },
-      200,
+    const db = getDb();
+    const now = new Date().toISOString();
+
+    const upsertSetting = db.prepare(
+      `INSERT INTO settings_kv (key, value, updated_at, updated_by)
+       VALUES (?, ?, ?, ?)
+       ON CONFLICT(key) DO UPDATE SET value = excluded.value,
+         updated_at = excluded.updated_at, updated_by = excluded.updated_by`,
     );
+
+    // Get the stored API key
+    const secretRow = db
+      .prepare(
+        `SELECT ciphertext FROM llm_provider_secrets
+         WHERE provider_id = 'provider.anthropic' LIMIT 1`,
+      )
+      .get() as { ciphertext: string } | undefined;
+
+    if (!secretRow) {
+      upsertSetting.run('executor.verificationStatus', 'missing', now, auth.userId);
+      return c.json(
+        {
+          ok: true,
+          data: {
+            scheduled: false,
+            code: 'no_credential',
+            message: 'No Anthropic API key stored. Save one first.',
+          },
+        },
+        200,
+      );
+    }
+
+    let apiKey: string;
+    try {
+      const parsed = JSON.parse(secretRow.ciphertext);
+      apiKey = parsed.apiKey;
+    } catch {
+      upsertSetting.run('executor.verificationStatus', 'invalid', now, auth.userId);
+      return c.json(
+        {
+          ok: true,
+          data: {
+            scheduled: false,
+            code: 'invalid_credential',
+            message: 'Stored credential is corrupted.',
+          },
+        },
+        200,
+      );
+    }
+
+    // Call the Anthropic Messages API with a minimal request to verify the key
+    try {
+      const resp = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+          'x-api-key': apiKey,
+          'anthropic-version': '2023-06-01',
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          model: 'claude-sonnet-4-6',
+          max_tokens: 1,
+          messages: [{ role: 'user', content: 'hi' }],
+        }),
+      });
+
+      if (resp.ok || resp.status === 200) {
+        upsertSetting.run('executor.verificationStatus', 'verified', now, auth.userId);
+        upsertSetting.run('executor.lastVerifiedAt', now, now, auth.userId);
+        upsertSetting.run('executor.lastVerificationError', '', now, auth.userId);
+        return c.json(
+          {
+            ok: true,
+            data: {
+              scheduled: false,
+              code: 'verified',
+              message: 'API key verified successfully.',
+            },
+          },
+          200,
+        );
+      }
+
+      // Non-200 response
+      const errorBody = await resp.text().catch(() => 'unknown error');
+      upsertSetting.run('executor.verificationStatus', 'invalid', now, auth.userId);
+      upsertSetting.run('executor.lastVerificationError', errorBody, now, auth.userId);
+      return c.json(
+        {
+          ok: true,
+          data: {
+            scheduled: false,
+            code: 'invalid',
+            message: `Anthropic API returned ${resp.status}: ${errorBody.slice(0, 200)}`,
+          },
+        },
+        200,
+      );
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      upsertSetting.run('executor.verificationStatus', 'invalid', now, auth.userId);
+      upsertSetting.run('executor.lastVerificationError', errMsg, now, auth.userId);
+      return c.json(
+        {
+          ok: true,
+          data: {
+            scheduled: false,
+            code: 'network_error',
+            message: `Failed to reach Anthropic API: ${errMsg}`,
+          },
+        },
+        200,
+      );
+    }
   });
 
   // =========================================================================
