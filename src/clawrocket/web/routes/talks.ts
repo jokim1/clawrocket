@@ -14,6 +14,7 @@ import {
   getTalkById,
   getTalkForUser,
   listMessageAttachments,
+  resolveThreadIdForTalk,
   listTalkFoldersForOwner,
   listTalkMessages,
   listTalkRunsForTalk,
@@ -23,6 +24,7 @@ import {
   patchTalkMetadata,
   renameTalkFolder,
   reorderTalkSidebarItem,
+  searchTalkMessages,
   TalkThreadValidationError,
   upsertTalkLlmPolicy,
   type TalkMessageRecord,
@@ -94,6 +96,7 @@ interface TalkMessageAttachmentApi {
 
 interface TalkMessageApiRecord {
   id: string;
+  threadId: string;
   role: 'user' | 'assistant' | 'system' | 'tool';
   content: string;
   createdBy: string | null;
@@ -103,6 +106,15 @@ interface TalkMessageApiRecord {
   agentNickname?: string | null;
   metadata?: Record<string, unknown> | null;
   attachments?: TalkMessageAttachmentApi[];
+}
+
+interface TalkMessageSearchResultApiRecord {
+  messageId: string;
+  threadId: string;
+  threadTitle: string | null;
+  role: 'user' | 'assistant' | 'system' | 'tool';
+  createdAt: string;
+  preview: string;
 }
 
 export interface TalkAgentApiRecord {
@@ -121,6 +133,7 @@ export interface TalkAgentApiRecord {
 
 export interface TalkRunApiRecord {
   id: string;
+  threadId: string;
   status:
     | 'queued'
     | 'running'
@@ -329,6 +342,7 @@ function toTalkMessageApiRecord(
 
   return {
     id: message.id,
+    threadId: message.thread_id,
     role: message.role,
     content: message.content,
     createdBy: message.created_by,
@@ -339,6 +353,12 @@ function toTalkMessageApiRecord(
     metadata,
     attachments,
   };
+}
+
+function buildMessagePreview(content: string, maxChars = 140): string {
+  const normalized = content.replace(/\s+/g, ' ').trim();
+  if (normalized.length <= maxChars) return normalized;
+  return `${normalized.slice(0, maxChars - 1).trimEnd()}…`;
 }
 
 function validateAgentInputs(input: unknown): {
@@ -1268,6 +1288,7 @@ export function updateTalkPolicyRoute(input: {
 export function listTalkMessagesRoute(input: {
   talkId: string;
   auth: AuthContext;
+  threadId?: string | null;
   limit?: number;
   beforeCreatedAt?: string;
 }): {
@@ -1297,8 +1318,29 @@ export function listTalkMessagesRoute(input: {
       ? Math.min(200, Math.max(1, Math.floor(input.limit)))
       : 100;
   const beforeCreatedAt = input.beforeCreatedAt || null;
+  let threadId: string | null = null;
+  if (input.threadId) {
+    try {
+      threadId = resolveThreadIdForTalk(input.talkId, input.threadId);
+    } catch (error) {
+      if (error instanceof TalkThreadValidationError) {
+        return {
+          statusCode: 400,
+          body: {
+            ok: false,
+            error: {
+              code: error.code,
+              message: error.message,
+            },
+          },
+        };
+      }
+      throw error;
+    }
+  }
   const messages = listTalkMessages({
     talkId: input.talkId,
+    threadId,
     limit,
     beforeCreatedAt: beforeCreatedAt || undefined,
   });
@@ -1324,6 +1366,7 @@ export function deleteTalkMessagesRoute(input: {
   talkId: string;
   auth: AuthContext;
   messageIds: string[];
+  threadId: string | null;
 }): {
   statusCode: number;
   body: ApiEnvelope<{
@@ -1387,10 +1430,43 @@ export function deleteTalkMessagesRoute(input: {
     };
   }
 
+  if (!input.threadId || input.threadId.trim().length === 0) {
+    return {
+      statusCode: 400,
+      body: {
+        ok: false,
+        error: {
+          code: 'thread_not_found',
+          message: 'Thread not found for this talk.',
+        },
+      },
+    };
+  }
+
+  let threadId: string;
+  try {
+    threadId = resolveThreadIdForTalk(input.talkId, input.threadId);
+  } catch (error) {
+    if (error instanceof TalkThreadValidationError) {
+      return {
+        statusCode: 400,
+        body: {
+          ok: false,
+          error: {
+            code: error.code,
+            message: error.message,
+          },
+        },
+      };
+    }
+    throw error;
+  }
+
   try {
     const deleted = deleteTalkMessagesAtomic({
       talkId: input.talkId,
       messageIds: normalizedIds,
+      threadId,
     });
     return {
       statusCode: 200,
@@ -1404,13 +1480,13 @@ export function deleteTalkMessagesRoute(input: {
       },
     };
   } catch (error) {
-    if (error instanceof TalkActiveRoundError && error.scope === 'talk') {
+    if (error instanceof TalkActiveRoundError && error.scope === 'thread') {
       return {
         statusCode: 409,
         body: {
           ok: false,
           error: {
-            code: 'talk_active_round',
+            code: 'thread_active_round',
             message:
               'Wait for the current round to finish or cancel it before editing history.',
           },
@@ -1439,6 +1515,18 @@ export function deleteTalkMessagesRoute(input: {
           error: {
             code: 'invalid_message_role',
             message: 'System messages cannot be deleted.',
+          },
+        },
+      };
+    }
+    if (message === 'selected messages do not belong to the requested thread') {
+      return {
+        statusCode: 400,
+        body: {
+          ok: false,
+          error: {
+            code: 'thread_mismatch',
+            message: 'Selected messages do not belong to the requested thread.',
           },
         },
       };
@@ -1669,12 +1757,84 @@ export function enqueueTalkChat(input: {
   };
 }
 
+export function searchTalkMessagesRoute(input: {
+  talkId: string;
+  auth: AuthContext;
+  query: string;
+  limit?: number;
+}): {
+  statusCode: number;
+  body: ApiEnvelope<{
+    talkId: string;
+    query: string;
+    results: TalkMessageSearchResultApiRecord[];
+  }>;
+} {
+  const talk = getTalkForUser(input.talkId, input.auth.userId);
+  if (!talk) {
+    return {
+      statusCode: 404,
+      body: {
+        ok: false,
+        error: {
+          code: 'talk_not_found',
+          message: 'Talk not found',
+        },
+      },
+    };
+  }
+
+  const query = input.query.trim();
+  if (query.length === 0) {
+    return {
+      statusCode: 400,
+      body: {
+        ok: false,
+        error: {
+          code: 'invalid_query',
+          message: 'Search query is required.',
+        },
+      },
+    };
+  }
+
+  const limit =
+    typeof input.limit === 'number'
+      ? Math.min(50, Math.max(1, Math.floor(input.limit)))
+      : 20;
+  const results = searchTalkMessages({
+    talkId: input.talkId,
+    query,
+    limit,
+  }).map((row) => ({
+    messageId: row.id,
+    threadId: row.thread_id,
+    threadTitle: row.thread_title,
+    role: row.role,
+    createdAt: row.created_at,
+    preview: buildMessagePreview(row.content),
+  }));
+
+  return {
+    statusCode: 200,
+    body: {
+      ok: true,
+      data: {
+        talkId: input.talkId,
+        query,
+        results,
+      },
+    },
+  };
+}
+
 function toTalkRunApiRecord(
   run: ReturnType<typeof listTalkRunsForTalk>[number],
 ): TalkRunApiRecord {
   const parsedError = parseTalkRunError(run);
   return {
     id: run.id,
+    threadId: run.thread_id,
     status: run.status,
     createdAt: run.created_at,
     startedAt: run.started_at,

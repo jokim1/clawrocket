@@ -896,6 +896,7 @@ describe('phase 0 schema and reliability tables', () => {
     const result = deleteTalkMessagesAtomic({
       talkId: 'talk-1',
       messageIds: ['tm-edit-1', 'tm-edit-2'],
+      threadId: TALK_THREAD_ID,
       now: '2024-01-01T00:00:03.000Z',
     });
 
@@ -916,6 +917,7 @@ describe('phase 0 schema and reliability tables', () => {
     expect(historyEvent).toBeDefined();
     expect(JSON.parse(historyEvent!.payload)).toMatchObject({
       talkId: 'talk-1',
+      threadIds: [TALK_THREAD_ID],
       deletedCount: 2,
       deletedMessageIds: ['tm-edit-1', 'tm-edit-2'],
       editedAt: '2024-01-01T00:00:03.000Z',

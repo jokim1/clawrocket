@@ -2674,6 +2674,187 @@ a {
   }
 }
 
+/* ── Talk Thread Layout ── */
+.talk-thread-shell {
+  display: flex;
+  width: 100%;
+  min-height: 0;
+  gap: 0;
+  border: 1px solid #d8dfec;
+  border-radius: 10px;
+  overflow: hidden;
+  background: #fff;
+}
+
+.talk-thread-rail {
+  width: 280px;
+  min-width: 220px;
+  max-width: 320px;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  padding: 0.9rem;
+  border-right: 1px solid #e1e7f2;
+  background: #f8f9fc;
+}
+
+.talk-thread-rail-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.talk-thread-rail-header h2 {
+  margin: 0;
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: #1f2a44;
+}
+
+.talk-thread-search {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.talk-thread-search input {
+  flex: 1;
+  min-width: 0;
+  border: 1px solid #c4d0e8;
+  border-radius: 8px;
+  padding: 0.55rem 0.7rem;
+  font: inherit;
+  background: #fff;
+}
+
+.talk-thread-search input:focus {
+  outline: none;
+  border-color: #2759d6;
+}
+
+.talk-thread-search-error {
+  margin: 0;
+  font-size: 0.83rem;
+  color: #c0392b;
+}
+
+.talk-thread-search-results,
+.talk-thread-items {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.talk-thread-search-results {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.talk-thread-search-result {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  padding: 0.65rem 0.75rem;
+  border: 1px solid #d8dfec;
+  border-radius: 8px;
+  background: #fff;
+  text-align: left;
+  cursor: pointer;
+  color: #31415f;
+}
+
+.talk-thread-search-result:hover {
+  border-color: #b7c6e3;
+  background: #fdfefe;
+}
+
+.talk-thread-search-result strong {
+  font-size: 0.85rem;
+  color: #1f2a44;
+}
+
+.talk-thread-search-result span {
+  font-size: 0.8rem;
+  color: #60708e;
+}
+
+.talk-thread-items {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.talk-thread-item {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  padding: 0.7rem 0.8rem;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+  color: #31415f;
+}
+
+.talk-thread-item:hover {
+  background: #edf1fa;
+}
+
+.talk-thread-item-active {
+  border-color: #c3d3f0;
+  background: #e4ebf7;
+}
+
+.talk-thread-item-title {
+  font-size: 0.86rem;
+  font-weight: 600;
+  color: #1f2a44;
+}
+
+.talk-thread-item-meta {
+  font-size: 0.76rem;
+  color: #7b8aa2;
+}
+
+.talk-thread-detail {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  background: #fff;
+}
+
+.talk-thread-detail-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 1rem 1.1rem 0.85rem;
+  border-bottom: 1px solid #e8ecf4;
+}
+
+.talk-thread-detail-header h2 {
+  margin: 0 0 0.35rem;
+  font-size: 1rem;
+  color: #1f2a44;
+}
+
+.talk-thread-detail-header .policy-muted {
+  margin: 0;
+}
+
+.talk-thread-timeline {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
 /* ── Talk Onboarding Banner ── */
 .talk-onboarding-banner {
   text-align: center;
@@ -2699,4 +2880,18 @@ a {
 
 .talk-onboarding-link:hover {
   text-decoration: underline;
+}
+
+@media (max-width: 768px) {
+  .talk-thread-shell {
+    flex-direction: column;
+  }
+
+  .talk-thread-rail {
+    width: 100%;
+    max-width: none;
+    min-width: 0;
+    border-right: none;
+    border-bottom: 1px solid #e1e7f2;
+  }
 }

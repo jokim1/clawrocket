@@ -16,6 +16,7 @@ import {
   failInterruptedMainRunsOnStartup,
   failMainRunAtomic,
   getMainThreadOwner,
+  getOrCreateDefaultThread,
   listMainThreadsForUser,
   MainThreadBusyError,
   getTalkRunById,
@@ -291,13 +292,20 @@ describe('Main channel DB accessors', () => {
     it('does not claim Talk runs (talk_id IS NOT NULL)', () => {
       // Create a talk so the FK is satisfied
       upsertTalk({ id: 'talk-1', ownerId: USER_A, topicTitle: 'Test Talk' });
+      const talkThreadId = getOrCreateDefaultThread('talk-1');
       // Insert a Talk run directly
       getDb()
         .prepare(
           `INSERT INTO talk_runs (id, talk_id, thread_id, requested_by, status, created_at)
-           VALUES (?, ?, NULL, ?, 'queued', ?)`,
+           VALUES (?, ?, ?, ?, 'queued', ?)`,
         )
-        .run('talk-run-1', 'talk-1', USER_A, new Date().toISOString());
+        .run(
+          'talk-run-1',
+          'talk-1',
+          talkThreadId,
+          USER_A,
+          new Date().toISOString(),
+        );
 
       const claimed = claimQueuedMainRuns(5);
       expect(claimed).toHaveLength(0);
@@ -472,14 +480,16 @@ describe('Main channel DB accessors', () => {
 
       // Also insert a Talk run in running state
       upsertTalk({ id: 'talk-x', ownerId: USER_A, topicTitle: 'Test Talk' });
+      const talkThreadId = getOrCreateDefaultThread('talk-x');
       getDb()
         .prepare(
           `INSERT INTO talk_runs (id, talk_id, thread_id, requested_by, status, started_at, created_at)
-           VALUES (?, ?, NULL, ?, 'running', ?, ?)`,
+           VALUES (?, ?, ?, ?, 'running', ?, ?)`,
         )
         .run(
           'talk-run-x',
           'talk-x',
+          talkThreadId,
           USER_A,
           new Date().toISOString(),
           new Date().toISOString(),

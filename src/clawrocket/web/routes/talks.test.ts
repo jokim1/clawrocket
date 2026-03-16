@@ -71,6 +71,14 @@ describe('talk routes', () => {
     getDb()
       .prepare(
         `
+      INSERT INTO talk_threads (id, talk_id, title, is_default, created_at, updated_at)
+      VALUES (?, ?, ?, 1, datetime('now'), datetime('now'))
+    `,
+      )
+      .run('thread-talk-owner', 'talk-owner', 'Default Thread');
+    getDb()
+      .prepare(
+        `
       INSERT INTO talk_agents (id, talk_id, registered_agent_id, nickname, is_primary, sort_order, created_at, updated_at)
       VALUES (?, ?, ?, ?, 1, 0, datetime('now'), datetime('now'))
     `,
@@ -85,6 +93,14 @@ describe('talk routes', () => {
     getDb()
       .prepare(
         `
+      INSERT INTO talk_threads (id, talk_id, title, is_default, created_at, updated_at)
+      VALUES (?, ?, ?, 1, datetime('now'), datetime('now'))
+    `,
+      )
+      .run('thread-talk-member', 'talk-member', 'Default Thread');
+    getDb()
+      .prepare(
+        `
       INSERT INTO talk_agents (id, talk_id, registered_agent_id, nickname, is_primary, sort_order, created_at, updated_at)
       VALUES (?, ?, ?, ?, 1, 0, datetime('now'), datetime('now'))
     `,
@@ -96,6 +112,14 @@ describe('talk routes', () => {
       ownerId: 'owner-1',
       topicTitle: 'Private Talk',
     });
+    getDb()
+      .prepare(
+        `
+      INSERT INTO talk_threads (id, talk_id, title, is_default, created_at, updated_at)
+      VALUES (?, ?, ?, 1, datetime('now'), datetime('now'))
+    `,
+      )
+      .run('thread-talk-private', 'talk-private', 'Default Thread');
     getDb()
       .prepare(
         `
@@ -759,7 +783,10 @@ describe('talk routes', () => {
           Authorization: 'Bearer owner-token',
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ messageIds: ['msg-edit-1', 'msg-edit-2'] }),
+        body: JSON.stringify({
+          messageIds: ['msg-edit-1', 'msg-edit-2'],
+          threadId: 'thread-talk-owner',
+        }),
       },
     );
 
@@ -822,14 +849,17 @@ describe('talk routes', () => {
           Authorization: 'Bearer owner-token',
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ messageIds: ['msg-edit-active'] }),
+        body: JSON.stringify({
+          messageIds: ['msg-edit-active'],
+          threadId: 'thread-talk-owner',
+        }),
       },
     );
 
     expect(res.status).toBe(409);
     const body = (await res.json()) as any;
     expect(body.ok).toBe(false);
-    expect(body.error.code).toBe('talk_active_round');
+    expect(body.error.code).toBe('thread_active_round');
   });
 
   it('requires editor permission to enqueue chat', async () => {
