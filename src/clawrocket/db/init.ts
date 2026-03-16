@@ -2179,8 +2179,15 @@ function migrateEnforceThreadIdsNotNull(database: Database.Database): void {
   });
   cleanupTx();
 
-  if (talkMessagesNeedRebuild) {
-    database.exec(`
+  const foreignKeysEnabled =
+    Number(database.pragma('foreign_keys', { simple: true })) !== 0;
+  if (foreignKeysEnabled) {
+    database.pragma('foreign_keys = OFF');
+  }
+
+  try {
+    if (talkMessagesNeedRebuild) {
+      database.exec(`
       CREATE TABLE talk_messages_thread_backup AS
         SELECT * FROM talk_messages;
 
@@ -2215,10 +2222,10 @@ function migrateEnforceThreadIdsNotNull(database: Database.Database): void {
 
       DROP TABLE talk_messages_thread_backup;
     `);
-  }
+    }
 
-  if (talkRunsNeedRebuild) {
-    database.exec(`
+    if (talkRunsNeedRebuild) {
+      database.exec(`
       CREATE TABLE talk_runs_thread_backup AS
         SELECT * FROM talk_runs;
 
@@ -2265,6 +2272,11 @@ function migrateEnforceThreadIdsNotNull(database: Database.Database): void {
 
       DROP TABLE talk_runs_thread_backup;
     `);
+    }
+  } finally {
+    if (foreignKeysEnabled) {
+      database.pragma('foreign_keys = ON');
+    }
   }
 }
 
