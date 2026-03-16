@@ -32,6 +32,7 @@ import {
   parsePolicyAgentsForUiBadges,
 } from '../../talks/policy.js';
 import {
+  getMainAgentId,
   listTalkAgents,
   setTalkAgents,
   getTalkAgentRows,
@@ -699,6 +700,27 @@ export function createTalkRoute(input: { auth: AuthContext; title?: string }): {
     topicTitle: title,
     status: 'active',
   });
+
+  // Auto-assign the main agent so the talk is immediately usable.
+  try {
+    const mainAgentId = getMainAgentId();
+    setTalkAgents(talkId, [
+      {
+        id: mainAgentId,
+        sourceKind: 'claude_default',
+        providerId: null,
+        modelId: 'default',
+        nickname: null,
+        nicknameMode: 'auto',
+        personaRole: 'assistant',
+        isPrimary: true,
+        sortOrder: 0,
+      },
+    ]);
+  } catch {
+    // If main agent isn't configured yet, create the talk without agents.
+    // The user can assign one later via the talk settings.
+  }
 
   const talk = getTalkForUser(talkId, input.auth.userId);
   if (!talk) {
