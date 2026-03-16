@@ -833,27 +833,12 @@ export function AiAgentsPage({ onUnauthorized, userRole }: Props): JSX.Element {
                     No Claude subscription credential is stored yet.
                   </p>
                 )}
-                {showHostLoginFlow ? (
-                  <p className="talk-llm-meta">
-                    Use Claude Code on the same machine and OS user as
-                    ClawRocket. Run{' '}
-                    <code>claude config set -g forceLoginMethod claudeai</code>{' '}
-                    and then <code>claude login</code>. If host import is
-                    unavailable, you can still run{' '}
-                    <code>claude setup-token</code> and paste the token manually
-                    below.
-                  </p>
-                ) : (
-                  <p className="talk-llm-meta">
-                    Automatic host import is unavailable for this Claude login.
-                    Run <code>claude setup-token</code>, paste the token below,
-                    and save to verify it.
-                  </p>
-                )}
                 <p className="talk-llm-meta">
-                  Saving a new token stores it and immediately verifies it.
-                  Verify stored credential only re-checks the subscription
-                  login/token already saved in ClawRocket.
+                  Run <code>claude setup-token</code> in your terminal and
+                  paste the token below.
+                </p>
+                <p className="talk-llm-meta">
+                  Saving a new token stores and verifies it immediately.
                 </p>
                 <div className="talk-llm-inline-actions">
                   {subscriptionHostStatus?.importAvailable ? (

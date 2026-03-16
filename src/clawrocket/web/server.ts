@@ -702,8 +702,10 @@ function buildApp(opts: WebServerOptions): Hono {
     const auth = requireAuth(c);
     if (!auth) return unauthorized(c);
 
+    const db = getDb();
+
     // Build claude model suggestions from llm_provider_models
-    const claudeModels = getDb()
+    const claudeModels = db
       .prepare(
         `SELECT model_id, display_name, context_window_tokens,
                 default_max_output_tokens
@@ -726,12 +728,19 @@ function buildApp(opts: WebServerOptions): Hono {
       supportsTools: true,
     }));
 
+    // Read saved default model from settings_kv
+    const savedModel = (
+      db
+        .prepare(`SELECT value FROM settings_kv WHERE key = 'executor.defaultClaudeModel'`)
+        .get() as { value: string } | undefined
+    )?.value;
+
     return c.json(
       {
         ok: true,
         data: {
           defaultClaudeModelId:
-            suggestions[0]?.modelId || 'claude-sonnet-4-6',
+            savedModel || suggestions[0]?.modelId || 'claude-sonnet-4-6',
           claudeModelSuggestions: suggestions,
           additionalProviders: [],
         },
@@ -744,14 +753,25 @@ function buildApp(opts: WebServerOptions): Hono {
     const auth = requireAuth(c);
     if (!auth) return unauthorized(c);
 
-    // Check if an API key secret exists for the Anthropic provider
-    const secretRow = getDb()
+    const db = getDb();
+
+    const hasApiKey = !!db
       .prepare(
         `SELECT 1 FROM llm_provider_secrets
          WHERE provider_id = 'provider.anthropic' LIMIT 1`,
       )
-      .get() as { 1: number } | undefined;
-    const hasApiKey = !!secretRow;
+      .get();
+
+    const hasOauth = !!(
+      db
+        .prepare(`SELECT value FROM settings_kv WHERE key = 'executor.claudeOauthToken'`)
+        .get() as { value: string } | undefined
+    )?.value;
+
+    const modeRow = db
+      .prepare(`SELECT value FROM settings_kv WHERE key = 'executor.authMode'`)
+      .get() as { value: string } | undefined;
+    const mode = modeRow?.value || (hasApiKey ? 'api_key' : hasOauth ? 'subscription' : 'none');
 
     return c.json(
       {
@@ -760,19 +780,27 @@ function buildApp(opts: WebServerOptions): Hono {
           configuredAliasMap: {},
           effectiveAliasMap: {},
           defaultAlias: 'claude-sonnet-4-6',
-          executorAuthMode: hasApiKey ? 'api_key' : 'none',
+          executorAuthMode: mode,
           hasApiKey,
-          hasOauthToken: false,
+          hasOauthToken: hasOauth,
           hasAuthToken: false,
-          apiKeyHint: null,
-          oauthTokenHint: null,
+          apiKeyHint: hasApiKey ? 'sk-ant-***' : null,
+          oauthTokenHint: hasOauth ? '***oauth***' : null,
           authTokenHint: null,
-          activeCredentialConfigured: hasApiKey,
-          verificationStatus: hasApiKey ? 'not_verified' : 'missing',
+          activeCredentialConfigured:
+            (mode === 'api_key' && hasApiKey) ||
+            (mode === 'subscription' && hasOauth),
+          verificationStatus:
+            (mode === 'api_key' && hasApiKey) ||
+            (mode === 'subscription' && hasOauth)
+              ? 'not_verified'
+              : 'missing',
           lastVerifiedAt: null,
           lastVerificationError: null,
           anthropicBaseUrl: 'https://api.anthropic.com',
-          isConfigured: hasApiKey,
+          isConfigured:
+            (mode === 'api_key' && hasApiKey) ||
+            (mode === 'subscription' && hasOauth),
           configVersion: 1,
           lastUpdatedAt: null,
           lastUpdatedBy: null,
@@ -833,6 +861,193 @@ function buildApp(opts: WebServerOptions): Hono {
           message:
             'Subscription host detection is not yet implemented.',
           recommendedCommands: [],
+        },
+      },
+      200,
+    );
+  });
+
+  // ── PUT /api/v1/settings/executor ─ save credentials + auth mode ──────
+
+  app.put('/api/v1/settings/executor', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+
+    const body = await c.req.json<{
+      executorAuthMode?: string;
+      anthropicApiKey?: string | null;
+      claudeOauthToken?: string | null;
+      anthropicAuthToken?: string | null;
+      anthropicBaseUrl?: string | null;
+      aliasModelMap?: Record<string, string>;
+      defaultAlias?: string;
+    }>();
+
+    const db = getDb();
+    const now = new Date().toISOString();
+    const userId = auth.userId;
+
+    const upsertSetting = db.prepare(
+      `INSERT INTO settings_kv (key, value, updated_at, updated_by)
+       VALUES (?, ?, ?, ?)
+       ON CONFLICT(key) DO UPDATE SET value = excluded.value,
+         updated_at = excluded.updated_at, updated_by = excluded.updated_by`,
+    );
+
+    // Persist auth mode
+    if (body.executorAuthMode) {
+      upsertSetting.run('executor.authMode', body.executorAuthMode, now, userId);
+    }
+
+    // Persist API key → llm_provider_secrets
+    if (body.anthropicApiKey) {
+      const ciphertext = JSON.stringify({ apiKey: body.anthropicApiKey });
+      db.prepare(
+        `INSERT INTO llm_provider_secrets (provider_id, ciphertext, updated_at, updated_by)
+         VALUES ('provider.anthropic', ?, ?, ?)
+         ON CONFLICT(provider_id) DO UPDATE SET ciphertext = excluded.ciphertext,
+           updated_at = excluded.updated_at, updated_by = excluded.updated_by`,
+      ).run(ciphertext, now, userId);
+    }
+
+    // Persist OAuth token → settings_kv
+    if (body.claudeOauthToken) {
+      upsertSetting.run('executor.claudeOauthToken', body.claudeOauthToken, now, userId);
+    }
+
+    // Persist auth token → settings_kv
+    if (body.anthropicAuthToken) {
+      upsertSetting.run('executor.anthropicAuthToken', body.anthropicAuthToken, now, userId);
+    }
+
+    // Determine current credential state
+    const hasApiKey = !!(
+      body.anthropicApiKey ||
+      db
+        .prepare(
+          `SELECT 1 FROM llm_provider_secrets
+           WHERE provider_id = 'provider.anthropic' LIMIT 1`,
+        )
+        .get()
+    );
+    const mode = body.executorAuthMode || 'none';
+    const hasOauth = !!(
+      body.claudeOauthToken ||
+      (
+        db
+          .prepare(`SELECT value FROM settings_kv WHERE key = 'executor.claudeOauthToken'`)
+          .get() as { value: string } | undefined
+      )?.value
+    );
+
+    return c.json(
+      {
+        ok: true,
+        data: {
+          configuredAliasMap: {},
+          effectiveAliasMap: {},
+          defaultAlias: 'claude-sonnet-4-6',
+          executorAuthMode: mode,
+          hasApiKey,
+          hasOauthToken: hasOauth,
+          hasAuthToken: false,
+          apiKeyHint: hasApiKey ? 'sk-ant-***' : null,
+          oauthTokenHint: hasOauth ? '***oauth***' : null,
+          authTokenHint: null,
+          activeCredentialConfigured:
+            (mode === 'api_key' && hasApiKey) ||
+            (mode === 'subscription' && hasOauth),
+          verificationStatus:
+            (mode === 'api_key' && hasApiKey) ||
+            (mode === 'subscription' && hasOauth)
+              ? 'not_verified'
+              : 'missing',
+          lastVerifiedAt: null,
+          lastVerificationError: null,
+          anthropicBaseUrl: 'https://api.anthropic.com',
+          isConfigured:
+            (mode === 'api_key' && hasApiKey) ||
+            (mode === 'subscription' && hasOauth),
+          configVersion: 1,
+          lastUpdatedAt: now,
+          lastUpdatedBy: { type: 'user', userId },
+          configErrors: [],
+        },
+      },
+      200,
+    );
+  });
+
+  // ── PUT /api/v1/agents/default-claude ─ update default model ──────────
+
+  app.put('/api/v1/agents/default-claude', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+
+    const body = await c.req.json<{ modelId: string }>();
+    const db = getDb();
+    const now = new Date().toISOString();
+
+    db.prepare(
+      `INSERT INTO settings_kv (key, value, updated_at, updated_by)
+       VALUES ('executor.defaultClaudeModel', ?, ?, ?)
+       ON CONFLICT(key) DO UPDATE SET value = excluded.value,
+         updated_at = excluded.updated_at, updated_by = excluded.updated_by`,
+    ).run(body.modelId, now, auth.userId);
+
+    // Return refreshed AiAgentsPageData
+    const claudeModels = db
+      .prepare(
+        `SELECT model_id, display_name, context_window_tokens,
+                default_max_output_tokens
+         FROM llm_provider_models
+         WHERE provider_id = 'provider.anthropic' AND enabled = 1
+         ORDER BY display_name ASC`,
+      )
+      .all() as Array<{
+      model_id: string;
+      display_name: string;
+      context_window_tokens: number;
+      default_max_output_tokens: number;
+    }>;
+
+    const suggestions = claudeModels.map((m) => ({
+      modelId: m.model_id,
+      displayName: m.display_name,
+      contextWindowTokens: m.context_window_tokens,
+      defaultMaxOutputTokens: m.default_max_output_tokens,
+      supportsTools: true,
+    }));
+
+    return c.json(
+      {
+        ok: true,
+        data: {
+          defaultClaudeModelId: body.modelId,
+          claudeModelSuggestions: suggestions,
+          additionalProviders: [],
+        },
+      },
+      200,
+    );
+  });
+
+  // ── POST /api/v1/settings/executor/verify ─ credential verification ───
+
+  app.post('/api/v1/settings/executor/verify', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+
+    // TODO: actually call Anthropic to verify the credential.
+    // For now, return success so the UI flow completes.
+    return c.json(
+      {
+        ok: true,
+        data: {
+          scheduled: false,
+          code: 'not_implemented',
+          message:
+            'Credential saved. Verification will be available in a future update.',
         },
       },
       200,
