@@ -877,6 +877,7 @@ function createClawrocketSchema(database: Database.Database): void {
   migrateTalkRunsTable(database);
   migrateAddTtftSupport(database);
   migrateAddThreadIdColumns(database);
+  migrateLlmAttemptsTable(database);
   migrateAddMissingColumns(database);
 
   migrateMainAgentToAnthropic(database);
@@ -896,12 +897,18 @@ function createClawrocketSchema(database: Database.Database): void {
  * Idempotent: skips if the new columns already exist.
  */
 function migrateTalkAgentsTable(database: Database.Database): void {
-  // Check if migration is needed by looking for the source_kind column.
   const columns = database
     .prepare(`PRAGMA table_info(talk_agents)`)
-    .all() as Array<{ name: string }>;
+    .all() as Array<{ name: string; notnull: number }>;
+  if (columns.length === 0) return; // table doesn't exist yet
+
   const hasSourceKind = columns.some((c) => c.name === 'source_kind');
-  if (hasSourceKind) return; // already migrated or fresh DB
+  // Also rebuild if the legacy `name` NOT NULL column exists — the new
+  // schema removed it in favour of `nickname` (nullable).
+  const hasLegacyNameCol = columns.some(
+    (c) => c.name === 'name' && c.notnull === 1,
+  );
+  if (hasSourceKind && !hasLegacyNameCol) return; // already fully migrated
 
   database.exec(`
     -- 1. Copy existing rows into a temp table
@@ -1348,6 +1355,64 @@ function migrateAddMissingColumns(database: Database.Database): void {
       `ALTER TABLE ${table} ADD COLUMN ${column} ${definition};`,
     );
   }
+}
+
+/**
+ * Rebuild llm_attempts when talk_id has NOT NULL constraint.
+ *
+ * The Main channel inserts llm_attempts with talk_id = NULL, but older
+ * databases created the table with `talk_id TEXT NOT NULL`. The new CREATE
+ * TABLE already has talk_id nullable, but existing DBs need a rebuild.
+ *
+ * Idempotent: skips if talk_id is already nullable or table doesn't exist.
+ */
+function migrateLlmAttemptsTable(database: Database.Database): void {
+  const columns = database
+    .prepare(`PRAGMA table_info(llm_attempts)`)
+    .all() as Array<{ name: string; notnull: number }>;
+  if (columns.length === 0) return;
+
+  const talkIdCol = columns.find((c) => c.name === 'talk_id');
+  if (!talkIdCol || talkIdCol.notnull === 0) return; // already nullable
+
+  database.exec(`
+    CREATE TABLE llm_attempts_migration_backup AS
+      SELECT * FROM llm_attempts;
+    DROP TABLE llm_attempts;
+
+    CREATE TABLE llm_attempts (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      run_id TEXT NOT NULL REFERENCES talk_runs(id) ON DELETE CASCADE,
+      talk_id TEXT REFERENCES talks(id) ON DELETE CASCADE,
+      agent_id TEXT REFERENCES registered_agents(id) ON DELETE SET NULL,
+      provider_id TEXT REFERENCES llm_providers(id) ON DELETE SET NULL,
+      model_id TEXT NOT NULL,
+      status TEXT NOT NULL
+        CHECK(status IN ('success', 'failed', 'skipped', 'cancelled')),
+      failure_class TEXT,
+      latency_ms INTEGER,
+      input_tokens INTEGER,
+      output_tokens INTEGER,
+      estimated_cost_usd REAL,
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX idx_llm_attempts_run_id ON llm_attempts(run_id);
+    CREATE INDEX idx_llm_attempts_talk_id_created_at
+      ON llm_attempts(talk_id, created_at);
+
+    INSERT INTO llm_attempts (
+      id, run_id, talk_id, agent_id, provider_id, model_id,
+      status, failure_class, latency_ms, input_tokens, output_tokens,
+      estimated_cost_usd, created_at
+    )
+    SELECT
+      id, run_id, talk_id, agent_id, provider_id, model_id,
+      status, failure_class, latency_ms, input_tokens, output_tokens,
+      estimated_cost_usd, created_at
+    FROM llm_attempts_migration_backup;
+
+    DROP TABLE llm_attempts_migration_backup;
+  `);
 }
 
 /**
