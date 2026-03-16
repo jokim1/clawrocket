@@ -2505,9 +2505,10 @@ function buildApp(opts: WebServerOptions): Hono {
     }
 
     const bodyText = await c.req.text();
-    const payload = parseJsonPayload<{ messageIds?: unknown; threadId?: unknown }>(
-      bodyText,
-    );
+    const payload = parseJsonPayload<{
+      messageIds?: unknown;
+      threadId?: unknown;
+    }>(bodyText);
     if (!payload.ok) {
       return c.json(
         { ok: false, error: { code: 'invalid_json', message: payload.error } },

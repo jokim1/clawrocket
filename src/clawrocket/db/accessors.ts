@@ -1561,7 +1561,14 @@ export function listTalkMessages(input: {
       LIMIT ?
     `,
     )
-    .all(input.talkId, threadId, threadId, before, before, limit) as TalkMessageRecord[];
+    .all(
+      input.talkId,
+      threadId,
+      threadId,
+      before,
+      before,
+      limit,
+    ) as TalkMessageRecord[];
 
   rows.reverse();
   return rows;
@@ -1795,7 +1802,9 @@ export function deleteTalkMessagesAtomic(input: {
       }
       const threadIds = Array.from(new Set(rows.map((row) => row.thread_id)));
       if (threadIds.length !== 1 || threadIds[0] !== txInput.threadId) {
-        throw new Error('selected messages do not belong to the requested thread');
+        throw new Error(
+          'selected messages do not belong to the requested thread',
+        );
       }
       if (hasActiveTalkRuns(txInput.talkId, txInput.threadId)) {
         throw new TalkActiveRoundError('thread');
