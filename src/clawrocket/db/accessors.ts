@@ -1538,6 +1538,7 @@ function extractMessageActorFromMetadata(
 
 export function listTalkMessages(input: {
   talkId: string;
+  threadId?: string | null;
   limit?: number;
   beforeCreatedAt?: string;
 }): TalkMessageRecord[] {
@@ -1546,6 +1547,7 @@ export function listTalkMessages(input: {
       ? Math.min(200, Math.max(1, Math.floor(input.limit)))
       : 100;
   const before = input.beforeCreatedAt || null;
+  const threadId = input.threadId || null;
 
   const rows = getDb()
     .prepare(
@@ -1553,15 +1555,70 @@ export function listTalkMessages(input: {
       SELECT id, talk_id, thread_id, role, content, created_by, created_at, run_id, metadata_json, sequence_in_run
       FROM talk_messages
       WHERE talk_id = ?
+        AND (? IS NULL OR thread_id = ?)
         AND (? IS NULL OR created_at < ?)
       ORDER BY created_at DESC, COALESCE(sequence_in_run, 0) DESC, id DESC
       LIMIT ?
     `,
     )
-    .all(input.talkId, before, before, limit) as TalkMessageRecord[];
+    .all(input.talkId, threadId, threadId, before, before, limit) as TalkMessageRecord[];
 
   rows.reverse();
   return rows;
+}
+
+function escapeLikePattern(query: string): string {
+  return query.replace(/[\\%_]/g, (char) => `\\${char}`);
+}
+
+export function searchTalkMessages(input: {
+  talkId: string;
+  query: string;
+  limit?: number;
+}): Array<{
+  id: string;
+  thread_id: string;
+  thread_title: string | null;
+  role: TalkMessageRole;
+  content: string;
+  created_at: string;
+}> {
+  const normalizedQuery = input.query.trim();
+  const limit =
+    typeof input.limit === 'number'
+      ? Math.min(50, Math.max(1, Math.floor(input.limit)))
+      : 20;
+  if (normalizedQuery.length === 0) {
+    return [];
+  }
+
+  const likePattern = `%${escapeLikePattern(normalizedQuery)}%`;
+  return getDb()
+    .prepare(
+      `
+      SELECT
+        m.id,
+        m.thread_id,
+        t.title AS thread_title,
+        m.role,
+        m.content,
+        m.created_at
+      FROM talk_messages m
+      LEFT JOIN talk_threads t ON t.id = m.thread_id
+      WHERE m.talk_id = ?
+        AND m.content LIKE ? ESCAPE '\\'
+      ORDER BY m.created_at DESC, COALESCE(m.sequence_in_run, 0) DESC, m.id DESC
+      LIMIT ?
+    `,
+    )
+    .all(input.talkId, likePattern, limit) as Array<{
+    id: string;
+    thread_id: string;
+    thread_title: string | null;
+    role: TalkMessageRole;
+    content: string;
+    created_at: string;
+  }>;
 }
 
 export interface TalkReplayRow {
@@ -1694,6 +1751,7 @@ export function getTalkMessageById(
 export function deleteTalkMessagesAtomic(input: {
   talkId: string;
   messageIds: string[];
+  threadId: string;
   now?: string;
 }): { deletedCount: number; deletedMessageIds: string[] } {
   const normalizedIds = Array.from(
@@ -1711,9 +1769,6 @@ export function deleteTalkMessagesAtomic(input: {
     ): { deletedCount: number; deletedMessageIds: string[] } => {
       if (ids.length === 0) {
         throw new Error('talk history edit requires at least one message');
-      }
-      if (hasActiveTalkRuns(txInput.talkId)) {
-        throw new TalkActiveRoundError('talk');
       }
 
       const placeholders = ids.map(() => '?').join(', ');
@@ -1738,6 +1793,13 @@ export function deleteTalkMessagesAtomic(input: {
       if (rows.some((row) => row.role === 'system')) {
         throw new Error('system messages cannot be deleted');
       }
+      const threadIds = Array.from(new Set(rows.map((row) => row.thread_id)));
+      if (threadIds.length !== 1 || threadIds[0] !== txInput.threadId) {
+        throw new Error('selected messages do not belong to the requested thread');
+      }
+      if (hasActiveTalkRuns(txInput.talkId, txInput.threadId)) {
+        throw new TalkActiveRoundError('thread');
+      }
 
       const now = txInput.now || new Date().toISOString();
       getDb()
@@ -1758,7 +1820,7 @@ export function deleteTalkMessagesAtomic(input: {
         eventType: 'talk_history_edited',
         payload: JSON.stringify({
           talkId: txInput.talkId,
-          threadIds: Array.from(new Set(rows.map((row) => row.thread_id))),
+          threadIds: [txInput.threadId],
           deletedCount: ids.length,
           deletedMessageIds: ids,
           editedAt: now,

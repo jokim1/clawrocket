@@ -8,7 +8,7 @@ import {
   useRef,
   useState,
 } from 'react';
-import { Link, useLocation, useParams } from 'react-router-dom';
+import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
 
 import {
   AgentProviderCard,
@@ -23,6 +23,7 @@ import {
   ContextGoal,
   ContextRule,
   ContextSource,
+  createTalkThread,
   createTalkGoogleDriveResource,
   createTalkChannel,
   createTalkContextRule,
@@ -45,12 +46,14 @@ import {
   getTalkContext,
   getTalkDataConnectors,
   getTalkRuns,
+  listTalkThreads,
   listChannelConnections,
   listChannelTargets,
   listTalkChannelDeliveryFailures,
   listTalkChannelIngressFailures,
   listTalkChannels,
   listTalkMessages,
+  searchTalkMessages,
   patchTalkChannel,
   patchTalkContextRule,
   retryTalkChannelDeliveryFailure,
@@ -64,8 +67,10 @@ import {
   TalkChannelBinding,
   TalkDataConnector,
   TalkMessage,
+  TalkMessageSearchResult,
   TalkMessageAttachment,
   TalkRun,
+  TalkThread,
   uploadTalkAttachment,
   testTalkChannelBinding,
   updateTalkTools,
@@ -133,12 +138,20 @@ type TalkTimelineEntry =
       response: LiveResponseView;
     };
 
+type ThreadListState = {
+  threads: TalkThread[];
+  loading: boolean;
+  error: string | null;
+};
+
 type DetailState = {
   kind: 'loading' | 'ready' | 'unavailable' | 'error';
   talk: Talk | null;
   errorMessage: string | null;
+  selectedThreadId: string | null;
   messages: TalkMessage[];
   messageIds: Set<string>;
+  messagesLoading: boolean;
   runsById: Record<string, RunView>;
   streamState: TalkStreamState;
   sendState: {
@@ -160,11 +173,17 @@ type DetailAction =
   | {
       type: 'BOOTSTRAP_READY';
       talk: Talk;
-      messages: TalkMessage[];
       runs: TalkRun[];
     }
   | { type: 'BOOTSTRAP_ERROR'; unavailable: boolean; message: string }
-  | { type: 'RESET_FROM_RESYNC'; messages: TalkMessage[]; runs: TalkRun[] }
+  | { type: 'THREAD_MESSAGES_LOADING'; threadId: string }
+  | {
+      type: 'THREAD_MESSAGES_LOADED';
+      threadId: string;
+      messages: TalkMessage[];
+    }
+  | { type: 'THREAD_MESSAGES_FAILED'; threadId: string; message: string }
+  | { type: 'RESET_FROM_RESYNC'; threadId: string; messages: TalkMessage[]; runs: TalkRun[] }
   | {
       type: 'MESSAGE_APPENDED';
       message: TalkMessage;
@@ -173,6 +192,7 @@ type DetailAction =
   | {
       type: 'RUN_STARTED';
       runId: string;
+      threadId?: string | null;
       triggerMessageId: string | null;
       executorAlias?: string | null;
       executorModel?: string | null;
@@ -183,6 +203,7 @@ type DetailAction =
   | {
       type: 'RUN_QUEUED';
       runId: string;
+      threadId?: string | null;
       triggerMessageId: string | null;
       executorAlias?: string | null;
       executorModel?: string | null;
@@ -193,6 +214,7 @@ type DetailAction =
   | {
       type: 'RUN_COMPLETED';
       runId: string;
+      threadId?: string | null;
       triggerMessageId: string | null;
       responseMessageId: string;
       executorAlias?: string | null;
@@ -201,6 +223,7 @@ type DetailAction =
   | {
       type: 'RUN_FAILED';
       runId: string;
+      threadId?: string | null;
       triggerMessageId: string | null;
       errorCode: string;
       errorMessage: string;
@@ -230,6 +253,7 @@ type DetailAction =
 
 const SCROLL_STICK_THRESHOLD_PX = 120;
 const TALK_MESSAGE_MAX_CHARS = 20_000;
+const MAX_EVENT_RUN_CACHE = 500;
 
 const TALK_AGENT_ROLE_OPTIONS: TalkAgent['role'][] = [
   'assistant',
@@ -289,8 +313,10 @@ function createInitialDetailState(): DetailState {
     kind: 'loading',
     talk: null,
     errorMessage: null,
+    selectedThreadId: null,
     messages: [],
     messageIds: new Set<string>(),
+    messagesLoading: false,
     runsById: {},
     streamState: 'connecting',
     sendState: { status: 'idle' },
@@ -327,6 +353,28 @@ function mapRunsById(runs: TalkRun[]): Record<string, RunView> {
   }, {});
 }
 
+function pruneEventRunCache(
+  runsById: Record<string, RunView>,
+): Record<string, RunView> {
+  const entries = Object.entries(runsById);
+  if (entries.length <= MAX_EVENT_RUN_CACHE) {
+    return runsById;
+  }
+
+  const pinned = entries.filter(([, run]) =>
+    ['queued', 'running', 'awaiting_confirmation'].includes(run.status),
+  );
+  const overflow = Math.max(0, pinned.length - MAX_EVENT_RUN_CACHE);
+  const retainedPinned = overflow > 0 ? pinned.slice(0, MAX_EVENT_RUN_CACHE) : pinned;
+  const remainingSlots = Math.max(0, MAX_EVENT_RUN_CACHE - retainedPinned.length);
+  const recentTerminal = entries
+    .filter(([, run]) => !['queued', 'running', 'awaiting_confirmation'].includes(run.status))
+    .sort((left, right) => right[1].updatedAt - left[1].updatedAt)
+    .slice(0, remainingSlots);
+
+  return Object.fromEntries([...retainedPinned, ...recentTerminal]);
+}
+
 function hasFileTransfer(
   dataTransfer: DataTransfer | null | undefined,
 ): boolean {
@@ -351,10 +399,14 @@ function withRun(
 ): Record<string, RunView> {
   const now = Date.now();
   const current = state.runsById[runId];
-  return {
+  return pruneEventRunCache({
     ...state.runsById,
     [runId]: {
       id: runId,
+      threadId:
+        patch.threadId !== undefined
+          ? patch.threadId
+          : (current?.threadId ?? ''),
       status: patch.status,
       createdAt:
         patch.createdAt ?? current?.createdAt ?? new Date(now).toISOString(),
@@ -396,7 +448,7 @@ function withRun(
           : (current?.executorModel ?? null),
       updatedAt: now,
     },
-  };
+  });
 }
 
 function detailReducer(state: DetailState, action: DetailAction): DetailState {
@@ -411,8 +463,10 @@ function detailReducer(state: DetailState, action: DetailAction): DetailState {
         kind: 'ready',
         talk: action.talk,
         errorMessage: null,
-        messages: action.messages,
-        messageIds: new Set(action.messages.map((message) => message.id)),
+        selectedThreadId: null,
+        messages: [],
+        messageIds: new Set<string>(),
+        messagesLoading: false,
         runsById: mapRunsById(action.runs),
         streamState: 'connecting',
         sendState: { status: 'idle' },
@@ -428,13 +482,49 @@ function detailReducer(state: DetailState, action: DetailAction): DetailState {
         errorMessage: action.message,
         streamState: 'offline',
       };
-    case 'RESET_FROM_RESYNC':
+    case 'THREAD_MESSAGES_LOADING':
       if (state.kind !== 'ready') return state;
+      return {
+        ...state,
+        selectedThreadId: action.threadId,
+        messages: [],
+        messageIds: new Set<string>(),
+        messagesLoading: true,
+        liveResponsesByRunId: {},
+        hasUnreadBelow: false,
+        initialScrollPending: false,
+      };
+    case 'THREAD_MESSAGES_LOADED':
+      if (state.kind !== 'ready') return state;
+      if (action.threadId !== state.selectedThreadId) return state;
       return {
         ...state,
         messages: action.messages,
         messageIds: new Set(action.messages.map((message) => message.id)),
-        runsById: mapRunsById(action.runs),
+        messagesLoading: false,
+        liveResponsesByRunId: {},
+        hasUnreadBelow: false,
+        initialScrollPending: true,
+      };
+    case 'THREAD_MESSAGES_FAILED':
+      if (state.kind !== 'ready') return state;
+      if (action.threadId !== state.selectedThreadId) return state;
+      return {
+        ...state,
+        messages: [],
+        messageIds: new Set<string>(),
+        messagesLoading: false,
+        sendState: { status: 'error', error: action.message },
+      };
+    case 'RESET_FROM_RESYNC':
+      if (state.kind !== 'ready') return state;
+      if (action.threadId !== state.selectedThreadId) return state;
+      return {
+        ...state,
+        messages: action.messages,
+        messageIds: new Set(action.messages.map((message) => message.id)),
+        messagesLoading: false,
+        runsById: pruneEventRunCache(mapRunsById(action.runs)),
         liveResponsesByRunId: {},
         hasUnreadBelow: false,
         initialScrollPending: false,
@@ -467,6 +557,7 @@ function detailReducer(state: DetailState, action: DetailAction): DetailState {
       return {
         ...state,
         runsById: withRun(state, action.runId, {
+          threadId: action.threadId || undefined,
           status: 'running',
           triggerMessageId: action.triggerMessageId,
           executorAlias: action.executorAlias,
@@ -482,6 +573,7 @@ function detailReducer(state: DetailState, action: DetailAction): DetailState {
       return {
         ...state,
         runsById: withRun(state, action.runId, {
+          threadId: action.threadId || undefined,
           status: 'queued',
           triggerMessageId: action.triggerMessageId,
           executorAlias: action.executorAlias,
@@ -499,6 +591,7 @@ function detailReducer(state: DetailState, action: DetailAction): DetailState {
         ...state,
         liveResponsesByRunId,
         runsById: withRun(state, action.runId, {
+          threadId: action.threadId || undefined,
           status: 'completed',
           triggerMessageId: action.triggerMessageId,
           executorAlias: action.executorAlias,
@@ -528,6 +621,7 @@ function detailReducer(state: DetailState, action: DetailAction): DetailState {
           },
         },
         runsById: withRun(state, action.runId, {
+          threadId: action.threadId || undefined,
           status: 'failed',
           triggerMessageId: action.triggerMessageId,
           errorCode: action.errorCode,
@@ -549,6 +643,7 @@ function detailReducer(state: DetailState, action: DetailAction): DetailState {
         runsById[runId] = {
           ...(runsById[runId] || {
             id: runId,
+            threadId: '',
             status: 'cancelled',
             createdAt: new Date().toISOString(),
             startedAt: null,
@@ -567,7 +662,7 @@ function detailReducer(state: DetailState, action: DetailAction): DetailState {
           updatedAt: Date.now(),
         };
       }
-      return { ...state, liveResponsesByRunId, runsById };
+      return { ...state, liveResponsesByRunId, runsById: pruneEventRunCache(runsById) };
     }
     case 'RESPONSE_STARTED':
       if (state.kind !== 'ready') return state;
@@ -847,6 +942,27 @@ function formatDateTime(value: string | null): string {
   return parsed.toLocaleString();
 }
 
+function sortThreads(threads: TalkThread[]): TalkThread[] {
+  return [...threads].sort((left, right) => {
+    const leftAt = left.lastMessageAt || left.createdAt;
+    const rightAt = right.lastMessageAt || right.createdAt;
+    const delta = Date.parse(rightAt) - Date.parse(leftAt);
+    if (Number.isFinite(delta) && delta !== 0) return delta;
+    return rightAt.localeCompare(leftAt);
+  });
+}
+
+function formatThreadLabel(thread: TalkThread): string {
+  if (thread.title?.trim()) return thread.title.trim();
+  if (thread.isDefault) return 'Default Thread';
+  return `Thread ${thread.id.slice(0, 8)}`;
+}
+
+function buildThreadHref(talkId: string, threadId: string, tab?: TabKey): string {
+  const base = tab && tab !== 'talk' ? `/app/talks/${talkId}/${tab}` : `/app/talks/${talkId}`;
+  return `${base}?thread=${encodeURIComponent(threadId)}`;
+}
+
 function buildChannelBindingDraft(
   binding: TalkChannelBinding,
 ): ChannelBindingDraft {
@@ -1105,13 +1221,28 @@ export function TalkDetailPage({
   onRenameDraftCommit: (talkId: string, draft: string) => Promise<void>;
 }): JSX.Element {
   const { talkId = '' } = useParams<{ talkId: string }>();
+  const navigate = useNavigate();
   const location = useLocation();
   const currentTab = getTabFromPath(location.pathname, talkId);
+  const requestedThreadId =
+    new URLSearchParams(location.search).get('thread')?.trim() || null;
   const [state, dispatch] = useReducer(
     detailReducer,
     undefined,
     createInitialDetailState,
   );
+  const [threadState, setThreadState] = useState<ThreadListState>({
+    threads: [],
+    loading: true,
+    error: null,
+  });
+  const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchResults, setSearchResults] = useState<TalkMessageSearchResult[]>(
+    [],
+  );
+  const [searchLoading, setSearchLoading] = useState(false);
+  const [searchError, setSearchError] = useState<string | null>(null);
   const [draft, setDraft] = useState('');
   const [pendingAttachments, setPendingAttachments] = useState<
     Array<{
@@ -1125,6 +1256,18 @@ export function TalkDetailPage({
     }>
   >([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const timelineRef = useRef<HTMLDivElement | null>(null);
+  const endRef = useRef<HTMLDivElement | null>(null);
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const threadRefreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null,
+  );
+  const threadRefreshInFlightRef = useRef(false);
+  const threadRefreshDirtyRef = useRef(false);
+  const pendingComposerFocusRef = useRef(false);
+  const activeThreadIdRef = useRef<string | null>(null);
+  const threadStateRef = useRef<ThreadListState>(threadState);
+  const searchQueryRef = useRef(searchQuery);
   const [agents, setAgents] = useState<TalkAgent[]>([]);
   const [agentDrafts, setAgentDrafts] = useState<TalkAgent[]>([]);
   const [aiAgentsData, setAiAgentsData] = useState<AiAgentsPageData | null>(
@@ -1216,8 +1359,6 @@ export function TalkDetailPage({
     message?: string;
   }>({ status: 'idle' });
 
-  const timelineRef = useRef<HTMLDivElement | null>(null);
-  const endRef = useRef<HTMLDivElement | null>(null);
   const titleInputRef = useRef<HTMLInputElement | null>(null);
   const messageElementRefs = useRef<Map<string, HTMLElement>>(new Map());
   const autoStickToBottomRef = useRef(false);
@@ -1226,6 +1367,10 @@ export function TalkDetailPage({
   useEffect(() => {
     onUnauthorizedRef.current = onUnauthorized;
   }, [onUnauthorized]);
+
+  activeThreadIdRef.current = activeThreadId;
+  threadStateRef.current = threadState;
+  searchQueryRef.current = searchQuery;
 
   const streamBadgeLabel = useMemo(() => {
     switch (state.streamState) {
@@ -1268,20 +1413,69 @@ export function TalkDetailPage({
     onUnauthorizedRef.current();
   }, []);
 
-  const resyncTalkState = useCallback(async () => {
+  const refreshThreadListNow = useCallback(async () => {
+    if (threadRefreshInFlightRef.current) {
+      threadRefreshDirtyRef.current = true;
+      return;
+    }
+    threadRefreshInFlightRef.current = true;
     try {
-      const [messages, runs] = await Promise.all([
-        listTalkMessages(talkId),
-        getTalkRuns(talkId),
-      ]);
-      dispatch({ type: 'RESET_FROM_RESYNC', messages, runs });
-      autoStickToBottomRef.current = true;
+      const next = sortThreads(await listTalkThreads(talkId));
+      setThreadState({ threads: next, loading: false, error: null });
     } catch (err) {
       if (err instanceof UnauthorizedError) {
         handleUnauthorized();
+        return;
+      }
+      setThreadState((current) => ({
+        ...current,
+        loading: false,
+        error: err instanceof Error ? err.message : 'Failed to load threads.',
+      }));
+    } finally {
+      threadRefreshInFlightRef.current = false;
+      if (threadRefreshDirtyRef.current) {
+        threadRefreshDirtyRef.current = false;
+        void refreshThreadListNow();
       }
     }
   }, [handleUnauthorized, talkId]);
+
+  const scheduleThreadListRefresh = useCallback(() => {
+    threadRefreshDirtyRef.current = true;
+    if (threadRefreshTimerRef.current) return;
+    threadRefreshTimerRef.current = setTimeout(() => {
+      threadRefreshTimerRef.current = null;
+      if (!threadRefreshDirtyRef.current) return;
+      threadRefreshDirtyRef.current = false;
+      void refreshThreadListNow();
+    }, 500);
+  }, [refreshThreadListNow]);
+
+  const resyncTalkState = useCallback(
+    async (options?: { refreshThreads?: boolean }) => {
+      const threadId = activeThreadIdRef.current;
+      if (!threadId) return;
+      try {
+        const [threads, messages, runs] = await Promise.all([
+          options?.refreshThreads === false ? Promise.resolve(null) : listTalkThreads(talkId),
+          listTalkMessages(talkId, { threadId }),
+          getTalkRuns(talkId),
+        ]);
+        if (threadId !== activeThreadIdRef.current) return;
+        if (threads) {
+          setThreadState({ threads: sortThreads(threads), loading: false, error: null });
+        }
+        dispatch({ type: 'RESET_FROM_RESYNC', threadId, messages, runs });
+        autoStickToBottomRef.current = true;
+      } catch (err) {
+        if (err instanceof UnauthorizedError) {
+          handleUnauthorized();
+        }
+      }
+    },
+    [handleUnauthorized, talkId],
+  );
 
   const refreshContext = useCallback(
     async (options?: { hydrateGoalDraft?: boolean; showLoading?: boolean }) => {
@@ -1323,6 +1517,12 @@ export function TalkDetailPage({
     let cancelled = false;
     dispatch({ type: 'BOOTSTRAP_LOADING' });
     messageElementRefs.current.clear();
+    setThreadState({ threads: [], loading: true, error: null });
+    setActiveThreadId(null);
+    setSearchQuery('');
+    setSearchResults([]);
+    setSearchLoading(false);
+    setSearchError(null);
     setAgents([]);
     setAgentDrafts([]);
     setTargetAgentIds([]);
@@ -1356,17 +1556,19 @@ export function TalkDetailPage({
 
     const load = async () => {
       try {
-        const [talk, messages, runs, talkAgents] = await Promise.all([
+        const [talk, threads, runs, talkAgents] = await Promise.all([
           getTalk(talkId),
-          listTalkMessages(talkId),
+          listTalkThreads(talkId),
           getTalkRuns(talkId),
           getTalkAgents(talkId),
         ]);
         if (cancelled) return;
+        const sortedThreads = sortThreads(threads);
         setAgents(talkAgents);
         setAgentDrafts(talkAgents);
         setTargetAgentIds(buildTargetSelection(talkAgents, []));
-        dispatch({ type: 'BOOTSTRAP_READY', talk, messages, runs });
+        setThreadState({ threads: sortedThreads, loading: false, error: null });
+        dispatch({ type: 'BOOTSTRAP_READY', talk, runs });
       } catch (err) {
         if (err instanceof UnauthorizedError) {
           handleUnauthorized();
@@ -1395,8 +1597,81 @@ export function TalkDetailPage({
     void load();
     return () => {
       cancelled = true;
+      if (threadRefreshTimerRef.current) {
+        clearTimeout(threadRefreshTimerRef.current);
+        threadRefreshTimerRef.current = null;
+      }
     };
   }, [handleUnauthorized, talkId]);
+
+  useEffect(() => {
+    if (threadState.loading) return;
+    if (threadState.threads.length === 0) {
+      setActiveThreadId(null);
+      return;
+    }
+    const validThreadId =
+      requestedThreadId &&
+      threadState.threads.some((thread) => thread.id === requestedThreadId)
+        ? requestedThreadId
+        : threadState.threads[0]?.id || null;
+    if (!validThreadId) return;
+    if (requestedThreadId !== validThreadId) {
+      navigate(buildThreadHref(talkId, validThreadId, currentTab), {
+        replace: true,
+      });
+    }
+    if (activeThreadId !== validThreadId) {
+      setActiveThreadId(validThreadId);
+    }
+  }, [
+    activeThreadId,
+    currentTab,
+    navigate,
+    requestedThreadId,
+    talkId,
+    threadState.loading,
+    threadState.threads,
+  ]);
+
+  useEffect(() => {
+    setSearchResults([]);
+    setSearchError(null);
+  }, [activeThreadId]);
+
+  useEffect(() => {
+    if (state.kind !== 'ready' || !activeThreadId) return;
+    let cancelled = false;
+    dispatch({ type: 'THREAD_MESSAGES_LOADING', threadId: activeThreadId });
+    listTalkMessages(talkId, { threadId: activeThreadId })
+      .then((messages) => {
+        if (cancelled || activeThreadIdRef.current !== activeThreadId) return;
+        dispatch({ type: 'THREAD_MESSAGES_LOADED', threadId: activeThreadId, messages });
+        requestAnimationFrame(() => {
+          if (pendingComposerFocusRef.current) {
+            pendingComposerFocusRef.current = false;
+            textareaRef.current?.focus();
+          }
+          scrollToBottom('auto');
+        });
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        if (err instanceof UnauthorizedError) {
+          handleUnauthorized();
+          return;
+        }
+        dispatch({
+          type: 'THREAD_MESSAGES_FAILED',
+          threadId: activeThreadId,
+          message:
+            err instanceof Error ? err.message : 'Failed to load thread messages.',
+        });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeThreadId, handleUnauthorized, scrollToBottom, state.kind, talkId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1434,6 +1709,44 @@ export function TalkDetailPage({
     };
   }, [handleUnauthorized]);
 
+  const ensureKnownThread = useCallback(
+    (threadId?: string | null): boolean => {
+      if (!threadId) return false;
+      const known = threadStateRef.current.threads.some(
+        (thread) => thread.id === threadId,
+      );
+      if (!known) {
+        scheduleThreadListRefresh();
+      }
+      return known;
+    },
+    [scheduleThreadListRefresh],
+  );
+
+  const bumpThreadSummaryFromMessage = useCallback(
+    (threadId: string, createdAt: string) => {
+      const known = threadStateRef.current.threads.some(
+        (thread) => thread.id === threadId,
+      );
+      if (!known) {
+        scheduleThreadListRefresh();
+        return;
+      }
+      setThreadState((current) => {
+        const threads = current.threads.map((thread) => {
+          if (thread.id !== threadId) return thread;
+          return {
+            ...thread,
+            messageCount: thread.messageCount + 1,
+            lastMessageAt: createdAt,
+          };
+        });
+        return { ...current, threads: sortThreads(threads) };
+      });
+    },
+    [scheduleThreadListRefresh],
+  );
+
   useEffect(() => {
     if (state.kind !== 'ready') return;
     const stream = openTalkStream({
@@ -1441,8 +1754,21 @@ export function TalkDetailPage({
       onUnauthorized: handleUnauthorized,
       onMessageAppended: (event: MessageAppendedEvent) => {
         if (event.talkId !== talkId) return;
+        if (event.threadId) {
+          ensureKnownThread(event.threadId);
+        }
         if (!event.content || !event.createdAt) {
-          void resyncTalkState();
+          if (event.threadId && event.threadId === activeThreadIdRef.current) {
+            void resyncTalkState({ refreshThreads: true });
+          } else {
+            scheduleThreadListRefresh();
+          }
+          return;
+        }
+        if (event.threadId) {
+          bumpThreadSummaryFromMessage(event.threadId, event.createdAt);
+        }
+        if (!event.threadId || event.threadId !== activeThreadIdRef.current) {
           return;
         }
         const nearBottom = isNearBottom();
@@ -1454,6 +1780,7 @@ export function TalkDetailPage({
           wasNearBottom: nearBottom,
           message: {
             id: event.messageId,
+            threadId: event.threadId || activeThreadIdRef.current || '',
             role: event.role,
             content: event.content,
             createdBy: event.createdBy,
@@ -1467,9 +1794,11 @@ export function TalkDetailPage({
       },
       onRunStarted: (event: TalkRunStartedEvent) => {
         if (event.talkId !== talkId) return;
+        ensureKnownThread(event.threadId);
         dispatch({
           type: event.status === 'queued' ? 'RUN_QUEUED' : 'RUN_STARTED',
           runId: event.runId,
+          threadId: event.threadId,
           triggerMessageId: event.triggerMessageId,
           executorAlias: event.executorAlias,
           executorModel: event.executorModel,
@@ -1477,9 +1806,11 @@ export function TalkDetailPage({
       },
       onRunQueued: (event: TalkRunStartedEvent) => {
         if (event.talkId !== talkId) return;
+        ensureKnownThread(event.threadId);
         dispatch({
           type: 'RUN_QUEUED',
           runId: event.runId,
+          threadId: event.threadId,
           triggerMessageId: event.triggerMessageId,
           executorAlias: event.executorAlias,
           executorModel: event.executorModel,
@@ -1487,10 +1818,12 @@ export function TalkDetailPage({
       },
       onResponseStarted: (event: TalkResponseStartedEvent) => {
         if (event.talkId !== talkId) return;
+        if (event.threadId !== activeThreadIdRef.current) return;
         dispatch({ type: 'RESPONSE_STARTED', event });
       },
       onResponseDelta: (event: TalkResponseDeltaEvent) => {
         if (event.talkId !== talkId) return;
+        if (event.threadId !== activeThreadIdRef.current) return;
         const nearBottom = isNearBottom();
         if (nearBottom) autoStickToBottomRef.current = true;
         dispatch({ type: 'RESPONSE_DELTA', event });
@@ -1500,21 +1833,26 @@ export function TalkDetailPage({
       },
       onResponseCompleted: (event: TalkResponseTerminalEvent) => {
         if (event.talkId !== talkId) return;
+        if (event.threadId !== activeThreadIdRef.current) return;
         dispatch({ type: 'RESPONSE_COMPLETED', event });
       },
       onResponseFailed: (event: TalkResponseTerminalEvent) => {
         if (event.talkId !== talkId) return;
+        if (event.threadId !== activeThreadIdRef.current) return;
         dispatch({ type: 'RESPONSE_FAILED', event });
       },
       onResponseCancelled: (event: TalkResponseTerminalEvent) => {
         if (event.talkId !== talkId) return;
+        if (event.threadId !== activeThreadIdRef.current) return;
         dispatch({ type: 'RESPONSE_CANCELLED', event });
       },
       onRunCompleted: (event: TalkRunCompletedEvent) => {
         if (event.talkId !== talkId) return;
+        ensureKnownThread(event.threadId);
         dispatch({
           type: 'RUN_COMPLETED',
           runId: event.runId,
+          threadId: event.threadId,
           triggerMessageId: event.triggerMessageId,
           responseMessageId: event.responseMessageId,
           executorAlias: event.executorAlias,
@@ -1523,9 +1861,11 @@ export function TalkDetailPage({
       },
       onRunFailed: (event: TalkRunFailedEvent) => {
         if (event.talkId !== talkId) return;
+        ensureKnownThread(event.threadId);
         dispatch({
           type: 'RUN_FAILED',
           runId: event.runId,
+          threadId: event.threadId,
           triggerMessageId: event.triggerMessageId,
           errorCode: event.errorCode,
           errorMessage: event.errorMessage,
@@ -1539,10 +1879,14 @@ export function TalkDetailPage({
       },
       onHistoryEdited: (event: TalkHistoryEditedEvent) => {
         if (event.talkId !== talkId) return;
-        void resyncTalkState();
+        if (event.threadIds?.includes(activeThreadIdRef.current || '')) {
+          void resyncTalkState({ refreshThreads: true });
+          return;
+        }
+        scheduleThreadListRefresh();
       },
       onReplayGap: async () => {
-        await resyncTalkState();
+        await resyncTalkState({ refreshThreads: true });
       },
       onStateChange: (streamState) => {
         switch (streamState) {
@@ -1568,7 +1912,16 @@ export function TalkDetailPage({
       stream.close();
       dispatch({ type: 'STREAM_OFFLINE' });
     };
-  }, [handleUnauthorized, isNearBottom, resyncTalkState, state.kind, talkId]);
+  }, [
+    bumpThreadSummaryFromMessage,
+    ensureKnownThread,
+    handleUnauthorized,
+    isNearBottom,
+    resyncTalkState,
+    scheduleThreadListRefresh,
+    state.kind,
+    talkId,
+  ]);
 
   useEffect(() => {
     if (state.kind !== 'ready' || !state.initialScrollPending) return;
@@ -1637,6 +1990,15 @@ export function TalkDetailPage({
       new Map(state.messages.map((message) => [message.id, message] as const)),
     [state.messages],
   );
+  const sortedThreads = useMemo(
+    () => sortThreads(threadState.threads),
+    [threadState.threads],
+  );
+  const activeThread = useMemo(
+    () =>
+      sortedThreads.find((thread) => thread.id === activeThreadId) || null,
+    [activeThreadId, sortedThreads],
+  );
   const runHistory = useMemo(
     () =>
       Object.values(state.runsById).sort(
@@ -1687,11 +2049,12 @@ export function TalkDetailPage({
     () =>
       Object.values(state.runsById).some(
         (run) =>
-          run.status === 'queued' ||
-          run.status === 'running' ||
-          run.status === 'awaiting_confirmation',
+          run.threadId === activeThreadId &&
+          (run.status === 'queued' ||
+            run.status === 'running' ||
+            run.status === 'awaiting_confirmation'),
       ),
-    [state.runsById],
+    [activeThreadId, state.runsById],
   );
   const canEditHistory = useMemo(
     () =>
@@ -1748,14 +2111,29 @@ export function TalkDetailPage({
   }, [talkTools, toolGrantDrafts]);
 
   const talkTabHref = `/app/talks/${talkId}`;
-  const agentsTabHref = `/app/talks/${talkId}/agents`;
-  const toolsTabHref = `/app/talks/${talkId}/tools`;
-  const contextTabHref = `/app/talks/${talkId}/context`;
-  const channelsTabHref = `/app/talks/${talkId}/channels`;
-  const connectorsTabHref = `/app/talks/${talkId}/data-connectors`;
-  const runsTabHref = `/app/talks/${talkId}/runs`;
+  const threadAwareTalkTabHref = activeThreadId
+    ? buildThreadHref(talkId, activeThreadId)
+    : talkTabHref;
+  const agentsTabHref = activeThreadId
+    ? buildThreadHref(talkId, activeThreadId, 'agents')
+    : `/app/talks/${talkId}/agents`;
+  const toolsTabHref = activeThreadId
+    ? buildThreadHref(talkId, activeThreadId, 'tools')
+    : `/app/talks/${talkId}/tools`;
+  const contextTabHref = activeThreadId
+    ? buildThreadHref(talkId, activeThreadId, 'context')
+    : `/app/talks/${talkId}/context`;
+  const channelsTabHref = activeThreadId
+    ? buildThreadHref(talkId, activeThreadId, 'channels')
+    : `/app/talks/${talkId}/channels`;
+  const connectorsTabHref = activeThreadId
+    ? buildThreadHref(talkId, activeThreadId, 'data-connectors')
+    : `/app/talks/${talkId}/data-connectors`;
+  const runsTabHref = activeThreadId
+    ? buildThreadHref(talkId, activeThreadId, 'runs')
+    : `/app/talks/${talkId}/runs`;
   const manageAgentsHref = `/app/agents?returnTo=${encodeURIComponent(
-    talkTabHref,
+    threadAwareTalkTabHref,
   )}&focus=providers`;
   const manageConnectorsHref = '/app/connectors';
   const isRenaming = renameDraft?.talkId === talkId;
@@ -2543,6 +2921,8 @@ export function TalkDetailPage({
   const handleDeleteHistoryMessages = useCallback(
     async (messageIds: string[]) => {
       if (state.kind !== 'ready' || !state.talk) return;
+      const threadId = activeThreadId;
+      if (!threadId) return;
       if (messageIds.length === 0) {
         setHistoryEditState({
           status: 'error',
@@ -2562,8 +2942,9 @@ export function TalkDetailPage({
         const result = await deleteTalkMessages({
           talkId: state.talk.id,
           messageIds,
+          threadId,
         });
-        await resyncTalkState();
+        await resyncTalkState({ refreshThreads: true });
         setHistoryEditorOpen(false);
         setHistoryEditState({
           status: 'success',
@@ -2583,7 +2964,7 @@ export function TalkDetailPage({
         });
       }
     },
-    [handleUnauthorized, resyncTalkState, state],
+    [activeThreadId, handleUnauthorized, resyncTalkState, state],
   );
 
   const handleDraftChange = (value: string) => {
@@ -2808,7 +3189,7 @@ export function TalkDetailPage({
   };
 
   const submitDraft = async () => {
-    if (state.kind !== 'ready' || !state.talk) return;
+    if (state.kind !== 'ready' || !state.talk || !activeThreadId) return;
 
     const content = draft.trim();
     if (!content) {
@@ -2873,6 +3254,7 @@ export function TalkDetailPage({
         content,
         targetAgentIds,
         attachmentIds: readyAttachments.map((a) => a.attachmentId!),
+        threadId: activeThreadId,
       });
       const nearBottom = isNearBottom();
       dispatch({
@@ -2884,6 +3266,7 @@ export function TalkDetailPage({
         dispatch({
           type: 'RUN_QUEUED',
           runId: run.id,
+          threadId: run.threadId,
           triggerMessageId: run.triggerMessageId,
           createdAt: run.createdAt,
           targetAgentId: run.targetAgentId,
@@ -2929,10 +3312,10 @@ export function TalkDetailPage({
   };
 
   const handleCancelRuns = async () => {
-    if (state.kind !== 'ready' || !state.talk) return;
+    if (state.kind !== 'ready' || !state.talk || !activeThreadId) return;
     dispatch({ type: 'CANCEL_STARTED' });
     try {
-      const result = await cancelTalkRuns(state.talk.id);
+      const result = await cancelTalkRuns(state.talk.id, activeThreadId);
       dispatch({
         type: 'CANCEL_SUCCEEDED',
         message: `Cancelled ${result.cancelledRuns} run${result.cancelledRuns === 1 ? '' : 's'}.`,
@@ -2948,6 +3331,68 @@ export function TalkDetailPage({
       });
     }
   };
+
+  const handleSelectThread = useCallback(
+    (threadId: string) => {
+      navigate(buildThreadHref(talkId, threadId, currentTab));
+    },
+    [currentTab, navigate, talkId],
+  );
+
+  const handleCreateThread = useCallback(async () => {
+    if (state.kind !== 'ready' || !state.talk) return;
+    try {
+      const nextThread = await createTalkThread({ talkId: state.talk.id });
+      setThreadState((current) => ({
+        ...current,
+        threads: sortThreads([nextThread, ...current.threads]),
+      }));
+      pendingComposerFocusRef.current = true;
+      navigate(buildThreadHref(talkId, nextThread.id, currentTab));
+    } catch (err) {
+      if (err instanceof UnauthorizedError) {
+        handleUnauthorized();
+        return;
+      }
+      setThreadState((current) => ({
+        ...current,
+        error: err instanceof Error ? err.message : 'Failed to create thread.',
+      }));
+    }
+  }, [currentTab, handleUnauthorized, navigate, state, talkId]);
+
+  const handleSearch = useCallback(async () => {
+    const query = searchQueryRef.current.trim();
+    if (!query) {
+      setSearchResults([]);
+      setSearchError(null);
+      return;
+    }
+    setSearchLoading(true);
+    setSearchError(null);
+    try {
+      const results = await searchTalkMessages({ talkId, query });
+      setSearchResults(results);
+    } catch (err) {
+      if (err instanceof UnauthorizedError) {
+        handleUnauthorized();
+        return;
+      }
+      setSearchError(
+        err instanceof Error ? err.message : 'Failed to search talk messages.',
+      );
+    } finally {
+      setSearchLoading(false);
+    }
+  }, [handleUnauthorized, talkId]);
+
+  const handleSearchResultSelect = useCallback(
+    (result: TalkMessageSearchResult) => {
+      setSearchResults([]);
+      navigate(buildThreadHref(talkId, result.threadId));
+    },
+    [navigate, talkId],
+  );
 
   const handleAttachConnector = async () => {
     if (!canManageTalkConnectors || !attachConnectorId) return;
@@ -3410,6 +3855,20 @@ export function TalkDetailPage({
     element.scrollIntoView({ behavior: 'smooth', block: 'center' });
   };
 
+  const handleOpenRunTrigger = useCallback(
+    (run: TalkRun) => {
+      if (!run.threadId) return;
+      if (run.threadId !== activeThreadId) {
+        navigate(buildThreadHref(talkId, run.threadId));
+        return;
+      }
+      if (run.triggerMessageId) {
+        jumpToMessage(run.triggerMessageId);
+      }
+    },
+    [activeThreadId, navigate, talkId],
+  );
+
   useEffect(() => {
     if (!isRenaming) return;
     titleInputRef.current?.focus();
@@ -3524,7 +3983,7 @@ export function TalkDetailPage({
               ) : null}
               <nav className="talk-tabs" aria-label="Talk sections">
                 <Link
-                  to={talkTabHref}
+                  to={threadAwareTalkTabHref}
                   className={`talk-tab ${currentTab === 'talk' ? 'talk-tab-active' : ''}`}
                 >
                   Talk
@@ -5542,7 +6001,7 @@ export function TalkDetailPage({
                           <button
                             type="button"
                             className="run-history-link"
-                            onClick={() => jumpToMessage(run.triggerMessageId!)}
+                            onClick={() => handleOpenRunTrigger(run)}
                           >
                             Trigger:{' '}
                             {summarizeMessageForRun(
@@ -5570,353 +6029,454 @@ export function TalkDetailPage({
           ) : null}
 
           {currentTab === 'talk' ? (
-            <div className="timeline" aria-label="Talk timeline">
-              <div
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'space-between',
-                  gap: '12px',
-                  marginBottom: '12px',
-                  flexWrap: 'wrap',
-                }}
-              >
-                <p
-                  style={{
-                    margin: 0,
-                    color: '#475569',
-                    fontSize: '0.94rem',
+            <div className="talk-thread-shell">
+              <aside className="talk-thread-rail" aria-label="Talk threads">
+                <div className="talk-thread-rail-header">
+                  <h2>Threads</h2>
+                  <button
+                    type="button"
+                    className="secondary-btn"
+                    onClick={() => void handleCreateThread()}
+                  >
+                    New
+                  </button>
+                </div>
+                <form
+                  className="talk-thread-search"
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    void handleSearch();
                   }}
                 >
-                  Use <code>/edit</code> or the button here to remove old Talk
-                  messages.
-                </p>
-                <button
-                  type="button"
-                  className="secondary-btn"
-                  onClick={openHistoryEditor}
-                  disabled={!canEditHistory}
-                >
-                  Edit history
-                </button>
-              </div>
-              {talkTimeline.length === 0 ? (
-                <div className="talk-onboarding-banner">
-                  <p>
-                    This Talk is using the default agent with all tools enabled.{' '}
-                    <Link
-                      to={`/app/talks/${talkId}/agents`}
-                      className="talk-onboarding-link"
-                    >
-                      Customize →
-                    </Link>
+                  <input
+                    type="search"
+                    value={searchQuery}
+                    onChange={(event) => setSearchQuery(event.target.value)}
+                    placeholder="Search threads"
+                    aria-label="Search Talk messages"
+                  />
+                  <button
+                    type="submit"
+                    className="secondary-btn"
+                    disabled={searchLoading}
+                  >
+                    {searchLoading ? 'Searching…' : 'Search'}
+                  </button>
+                </form>
+                {searchError ? (
+                  <p className="talk-thread-search-error" role="alert">
+                    {searchError}
                   </p>
-                  <p className="page-state">No messages yet.</p>
-                </div>
-              ) : (
-                talkTimeline.map((entry) => {
-                  if (entry.kind === 'message') {
-                    const { message } = entry;
-                    const agentLabel =
-                      (message.agentId && agentLabelById[message.agentId]) ||
-                      message.agentNickname ||
-                      null;
-                    return (
-                      <article
-                        key={entry.key}
-                        id={`message-${message.id}`}
-                        ref={(element) =>
-                          setMessageElementRef(message.id, element)
-                        }
-                        className={`message message-${message.role}`}
-                      >
-                        <header>
+                ) : null}
+                {searchResults.length > 0 ? (
+                  <ul className="talk-thread-search-results">
+                    {searchResults.map((result) => (
+                      <li key={result.messageId}>
+                        <button
+                          type="button"
+                          className="talk-thread-search-result"
+                          onClick={() => handleSearchResultSelect(result)}
+                        >
                           <strong>
-                            {agentLabel ? `${agentLabel} · ` : ''}
-                            {message.role}
+                            {result.threadTitle?.trim() ||
+                              `Thread ${result.threadId.slice(0, 8)}`}
                           </strong>
-                          <time>
-                            {new Date(message.createdAt).toLocaleString()}
-                          </time>
-                        </header>
-                        <p>
-                          {message.role === 'assistant'
-                            ? stripInternalAssistantText(message.content)
-                            : message.content}
-                        </p>
-                        {message.attachments &&
-                        message.attachments.length > 0 ? (
-                          <div className="message-attachments">
-                            {message.attachments.map((att) => (
-                              <span
-                                key={att.id}
-                                className="message-attachment-chip"
-                                title={att.mimeType}
-                              >
-                                {att.fileName}
-                                <span className="message-attachment-size">
-                                  {' '}
-                                  {att.fileSize < 1024
-                                    ? `${att.fileSize} B`
-                                    : att.fileSize < 1048576
-                                      ? `${(att.fileSize / 1024).toFixed(1)} KB`
-                                      : `${(att.fileSize / 1048576).toFixed(1)} MB`}
-                                </span>
-                              </span>
-                            ))}
-                          </div>
-                        ) : null}
-                      </article>
-                    );
-                  }
+                          <span>{result.preview}</span>
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                ) : null}
+                {threadState.error ? (
+                  <p className="page-state" role="alert">
+                    {threadState.error}
+                  </p>
+                ) : null}
+                {threadState.loading ? (
+                  <p className="page-state">Loading threads…</p>
+                ) : sortedThreads.length === 0 ? (
+                  <p className="page-state">No threads yet.</p>
+                ) : (
+                  <ul className="talk-thread-items">
+                    {sortedThreads.map((thread) => (
+                      <li key={thread.id}>
+                        <button
+                          type="button"
+                          className={`talk-thread-item${
+                            thread.id === activeThreadId
+                              ? ' talk-thread-item-active'
+                              : ''
+                          }`}
+                          onClick={() => handleSelectThread(thread.id)}
+                        >
+                          <span className="talk-thread-item-title">
+                            {formatThreadLabel(thread)}
+                          </span>
+                          <span className="talk-thread-item-meta">
+                            {thread.messageCount} message
+                            {thread.messageCount === 1 ? '' : 's'} ·{' '}
+                            {formatDateTime(thread.lastMessageAt || thread.createdAt)}
+                          </span>
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </aside>
 
-                  const { response } = entry;
-                  const label =
-                    (response.agentId && agentLabelById[response.agentId]) ||
-                    response.agentNickname ||
-                    'Assistant';
-                  return (
-                    <article
-                      key={entry.key}
-                      className={`message message-assistant message-live${
-                        response.terminalStatus === 'failed'
-                          ? ' message-error'
-                          : ''
-                      }`}
-                    >
-                      <header>
-                        <strong>{label}</strong>
-                        <time>
-                          {response.terminalStatus === 'failed'
-                            ? 'Failed'
-                            : 'Streaming…'}
-                        </time>
-                      </header>
-                      <p>{response.text || 'Thinking…'}</p>
-                      {response.errorMessage ? (
-                        <p className="run-history-error">
-                          {response.errorMessage}
-                        </p>
-                      ) : null}
-                    </article>
-                  );
-                })
-              )}
+              <div className="talk-thread-detail">
+                <div className="talk-thread-detail-header">
+                  <div>
+                    <h2>{activeThread ? formatThreadLabel(activeThread) : 'Thread'}</h2>
+                    <p className="policy-muted">
+                      Use <code>/edit</code> or the button here to remove old
+                      messages from this thread.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    className="secondary-btn"
+                    onClick={openHistoryEditor}
+                    disabled={!canEditHistory}
+                  >
+                    Edit history
+                  </button>
+                </div>
 
-              {state.hasUnreadBelow ? (
-                <button
-                  type="button"
-                  className="timeline-new-indicator"
-                  onClick={handleClearUnread}
+                <div
+                  ref={timelineRef}
+                  className="timeline talk-thread-timeline"
+                  aria-label="Talk timeline"
                 >
-                  New messages
-                </button>
-              ) : null}
+                  {state.messagesLoading ? (
+                    <p className="page-state">Loading thread…</p>
+                  ) : !activeThread ? (
+                    <p className="page-state">No thread selected.</p>
+                  ) : talkTimeline.length === 0 ? (
+                    <div className="talk-onboarding-banner">
+                      <p>
+                        This Talk is using the default agent with all tools
+                        enabled.{' '}
+                        <Link
+                          to={agentsTabHref}
+                          className="talk-onboarding-link"
+                        >
+                          Customize →
+                        </Link>
+                      </p>
+                      <p className="page-state">No messages yet.</p>
+                    </div>
+                  ) : (
+                    talkTimeline.map((entry) => {
+                      if (entry.kind === 'message') {
+                        const { message } = entry;
+                        const agentLabel =
+                          (message.agentId &&
+                            agentLabelById[message.agentId]) ||
+                          message.agentNickname ||
+                          null;
+                        return (
+                          <article
+                            key={entry.key}
+                            id={`message-${message.id}`}
+                            ref={(element) =>
+                              setMessageElementRef(message.id, element)
+                            }
+                            className={`message message-${message.role}`}
+                          >
+                            <header>
+                              <strong>
+                                {agentLabel ? `${agentLabel} · ` : ''}
+                                {message.role}
+                              </strong>
+                              <time>
+                                {new Date(message.createdAt).toLocaleString()}
+                              </time>
+                            </header>
+                            <p>
+                              {message.role === 'assistant'
+                                ? stripInternalAssistantText(message.content)
+                                : message.content}
+                            </p>
+                            {message.attachments &&
+                            message.attachments.length > 0 ? (
+                              <div className="message-attachments">
+                                {message.attachments.map((att) => (
+                                  <span
+                                    key={att.id}
+                                    className="message-attachment-chip"
+                                    title={att.mimeType}
+                                  >
+                                    {att.fileName}
+                                    <span className="message-attachment-size">
+                                      {' '}
+                                      {att.fileSize < 1024
+                                        ? `${att.fileSize} B`
+                                        : att.fileSize < 1048576
+                                          ? `${(att.fileSize / 1024).toFixed(1)} KB`
+                                          : `${(att.fileSize / 1048576).toFixed(1)} MB`}
+                                    </span>
+                                  </span>
+                                ))}
+                              </div>
+                            ) : null}
+                          </article>
+                        );
+                      }
 
-              <div ref={endRef} />
+                      const { response } = entry;
+                      const label =
+                        (response.agentId && agentLabelById[response.agentId]) ||
+                        response.agentNickname ||
+                        'Assistant';
+                      return (
+                        <article
+                          key={entry.key}
+                          className={`message message-assistant message-live${
+                            response.terminalStatus === 'failed'
+                              ? ' message-error'
+                              : ''
+                          }`}
+                        >
+                          <header>
+                            <strong>{label}</strong>
+                            <time>
+                              {response.terminalStatus === 'failed'
+                                ? 'Failed'
+                                : 'Streaming…'}
+                            </time>
+                          </header>
+                          <p>{response.text || 'Thinking…'}</p>
+                          {response.errorMessage ? (
+                            <p className="run-history-error">
+                              {response.errorMessage}
+                            </p>
+                          ) : null}
+                        </article>
+                      );
+                    })
+                  )}
+
+                  {state.hasUnreadBelow ? (
+                    <button
+                      type="button"
+                      className="timeline-new-indicator"
+                      onClick={handleClearUnread}
+                    >
+                      New messages
+                    </button>
+                  ) : null}
+
+                  <div ref={endRef} />
+                </div>
+
+                <form
+                  className="composer talk-workspace-composer"
+                  onSubmit={handleSend}
+                >
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    multiple
+                    accept={ALLOWED_ATTACHMENT_EXTENSIONS}
+                    onChange={handleFileInputChange}
+                    style={{ display: 'none' }}
+                  />
+                  <div
+                    className="composer-targets"
+                    role="group"
+                    aria-label="Selected agents"
+                  >
+                    {effectiveAgents.map((agent) => {
+                      const selected = targetAgentIds.includes(agent.id);
+                      return (
+                        <button
+                          key={agent.id}
+                          type="button"
+                          className={`composer-target-chip${
+                            selected ? ' composer-target-chip-selected' : ''
+                          }`}
+                          onClick={() => handleToggleTarget(agent.id)}
+                          disabled={state.sendState.status === 'posting'}
+                          aria-pressed={selected}
+                        >
+                          <span
+                            className={`talk-status-dot talk-status-dot-${agent.health}`}
+                            aria-hidden="true"
+                          />
+                          <span>{buildAgentLabel(agent)}</span>
+                          {agent.isPrimary ? (
+                            <span className="talk-status-primary">Primary</span>
+                          ) : null}
+                        </button>
+                      );
+                    })}
+                  </div>
+                  <p className="composer-target-help">
+                    Selected agents will each respond independently.
+                  </p>
+
+                  <textarea
+                    ref={textareaRef}
+                    value={draft}
+                    onChange={(event) => handleDraftChange(event.target.value)}
+                    onKeyDown={handleComposerKeyDown}
+                    placeholder="Send a message to this thread"
+                    rows={3}
+                    maxLength={TALK_MESSAGE_MAX_CHARS}
+                    disabled={
+                      state.sendState.status === 'posting' ||
+                      activeRound ||
+                      hasUnsavedAgentChanges ||
+                      !activeThreadId
+                    }
+                  />
+
+                  {pendingAttachments.length > 0 ? (
+                    <div className="composer-attachments">
+                      {pendingAttachments.map((att) => (
+                        <span
+                          key={att.localId}
+                          className={`composer-attachment-chip composer-attachment-${att.status}`}
+                          title={
+                            att.status === 'error'
+                              ? att.errorMessage
+                              : att.fileName
+                          }
+                        >
+                          <span className="composer-attachment-name">
+                            {att.fileName}
+                          </span>
+                          {att.status === 'uploading' ? (
+                            <span className="composer-attachment-status">
+                              {' '}
+                              uploading…
+                            </span>
+                          ) : null}
+                          {att.status === 'error' ? (
+                            <span className="composer-attachment-status">
+                              {' '}
+                              failed
+                            </span>
+                          ) : null}
+                          <button
+                            type="button"
+                            className="composer-attachment-remove"
+                            onClick={() => handleRemoveAttachment(att.localId)}
+                            aria-label={`Remove ${att.fileName}`}
+                          >
+                            ×
+                          </button>
+                        </span>
+                      ))}
+                    </div>
+                  ) : null}
+
+                  <div className="composer-controls">
+                    <span className="composer-count">
+                      {draft.length}/{TALK_MESSAGE_MAX_CHARS}
+                    </span>
+                    <button
+                      type="button"
+                      className="secondary-btn composer-attach-btn"
+                      onClick={handleAttachButtonClick}
+                      disabled={
+                        state.sendState.status === 'posting' ||
+                        activeRound ||
+                        hasUnsavedAgentChanges ||
+                        !activeThreadId
+                      }
+                      title="Attach files"
+                    >
+                      Attach
+                    </button>
+                    <button
+                      type="submit"
+                      className="primary-btn"
+                      disabled={
+                        state.sendState.status === 'posting' ||
+                        activeRound ||
+                        hasUnsavedAgentChanges ||
+                        !activeThreadId
+                      }
+                    >
+                      {state.sendState.status === 'posting' ? 'Sending…' : 'Send'}
+                    </button>
+                    {canEditAgents ? (
+                      <button
+                        type="button"
+                        className="secondary-btn"
+                        onClick={handleCancelRuns}
+                        disabled={
+                          state.cancelState.status === 'posting' || !activeRound
+                        }
+                      >
+                        {state.cancelState.status === 'posting'
+                          ? 'Cancelling…'
+                          : 'Cancel Runs'}
+                      </button>
+                    ) : null}
+                  </div>
+
+                  {activeRound ? (
+                    <div
+                      className="inline-banner inline-banner-warning"
+                      role="status"
+                    >
+                      Wait for the current round to finish or cancel it before
+                      sending another message.
+                    </div>
+                  ) : null}
+
+                  {!activeRound && hasUnsavedAgentChanges ? (
+                    <div
+                      className="inline-banner inline-banner-warning"
+                      role="status"
+                    >
+                      Save agent changes before sending a message.
+                    </div>
+                  ) : null}
+
+                  {state.sendState.status === 'error' ? (
+                    <div className="inline-banner inline-banner-error" role="alert">
+                      {state.sendState.error || 'Unable to send message.'}
+                    </div>
+                  ) : null}
+
+                  {historyEditState.status === 'success' ? (
+                    <div
+                      className="inline-banner inline-banner-success"
+                      role="status"
+                    >
+                      {historyEditState.message}
+                    </div>
+                  ) : null}
+
+                  {historyEditState.status === 'error' ? (
+                    <div className="inline-banner inline-banner-error" role="alert">
+                      {historyEditState.message}
+                    </div>
+                  ) : null}
+
+                  {state.cancelState.status === 'success' ? (
+                    <div
+                      className="inline-banner inline-banner-success"
+                      role="status"
+                    >
+                      {state.cancelState.message}
+                    </div>
+                  ) : null}
+
+                  {state.cancelState.status === 'error' ? (
+                    <div className="inline-banner inline-banner-error" role="alert">
+                      {state.cancelState.message}
+                    </div>
+                  ) : null}
+                </form>
+              </div>
             </div>
           ) : null}
         </div>
-
-        {currentTab === 'talk' ? (
-          <form
-            className="composer talk-workspace-composer"
-            onSubmit={handleSend}
-          >
-            <input
-              ref={fileInputRef}
-              type="file"
-              multiple
-              accept={ALLOWED_ATTACHMENT_EXTENSIONS}
-              onChange={handleFileInputChange}
-              style={{ display: 'none' }}
-            />
-            <div
-              className="composer-targets"
-              role="group"
-              aria-label="Selected agents"
-            >
-              {effectiveAgents.map((agent) => {
-                const selected = targetAgentIds.includes(agent.id);
-                return (
-                  <button
-                    key={agent.id}
-                    type="button"
-                    className={`composer-target-chip${
-                      selected ? ' composer-target-chip-selected' : ''
-                    }`}
-                    onClick={() => handleToggleTarget(agent.id)}
-                    disabled={state.sendState.status === 'posting'}
-                    aria-pressed={selected}
-                  >
-                    <span
-                      className={`talk-status-dot talk-status-dot-${agent.health}`}
-                      aria-hidden="true"
-                    />
-                    <span>{buildAgentLabel(agent)}</span>
-                    {agent.isPrimary ? (
-                      <span className="talk-status-primary">Primary</span>
-                    ) : null}
-                  </button>
-                );
-              })}
-            </div>
-            <p className="composer-target-help">
-              Selected agents will each respond independently.
-            </p>
-
-            <textarea
-              value={draft}
-              onChange={(event) => handleDraftChange(event.target.value)}
-              onKeyDown={handleComposerKeyDown}
-              placeholder="Send a message to this talk"
-              rows={3}
-              maxLength={TALK_MESSAGE_MAX_CHARS}
-              disabled={
-                state.sendState.status === 'posting' ||
-                activeRound ||
-                hasUnsavedAgentChanges
-              }
-            />
-
-            {pendingAttachments.length > 0 ? (
-              <div className="composer-attachments">
-                {pendingAttachments.map((att) => (
-                  <span
-                    key={att.localId}
-                    className={`composer-attachment-chip composer-attachment-${att.status}`}
-                    title={
-                      att.status === 'error' ? att.errorMessage : att.fileName
-                    }
-                  >
-                    <span className="composer-attachment-name">
-                      {att.fileName}
-                    </span>
-                    {att.status === 'uploading' ? (
-                      <span className="composer-attachment-status">
-                        {' '}
-                        uploading…
-                      </span>
-                    ) : null}
-                    {att.status === 'error' ? (
-                      <span className="composer-attachment-status">
-                        {' '}
-                        failed
-                      </span>
-                    ) : null}
-                    <button
-                      type="button"
-                      className="composer-attachment-remove"
-                      onClick={() => handleRemoveAttachment(att.localId)}
-                      aria-label={`Remove ${att.fileName}`}
-                    >
-                      ×
-                    </button>
-                  </span>
-                ))}
-              </div>
-            ) : null}
-
-            <div className="composer-controls">
-              <span className="composer-count">
-                {draft.length}/{TALK_MESSAGE_MAX_CHARS}
-              </span>
-              <button
-                type="button"
-                className="secondary-btn composer-attach-btn"
-                onClick={handleAttachButtonClick}
-                disabled={
-                  state.sendState.status === 'posting' ||
-                  activeRound ||
-                  hasUnsavedAgentChanges
-                }
-                title="Attach files"
-              >
-                Attach
-              </button>
-              <button
-                type="submit"
-                className="primary-btn"
-                disabled={
-                  state.sendState.status === 'posting' ||
-                  activeRound ||
-                  hasUnsavedAgentChanges
-                }
-              >
-                {state.sendState.status === 'posting' ? 'Sending…' : 'Send'}
-              </button>
-              {canEditAgents ? (
-                <button
-                  type="button"
-                  className="secondary-btn"
-                  onClick={handleCancelRuns}
-                  disabled={
-                    state.cancelState.status === 'posting' || !activeRound
-                  }
-                >
-                  {state.cancelState.status === 'posting'
-                    ? 'Cancelling…'
-                    : 'Cancel Runs'}
-                </button>
-              ) : null}
-            </div>
-
-            {activeRound ? (
-              <div
-                className="inline-banner inline-banner-warning"
-                role="status"
-              >
-                Wait for the current round to finish or cancel it before sending
-                another message.
-              </div>
-            ) : null}
-
-            {!activeRound && hasUnsavedAgentChanges ? (
-              <div
-                className="inline-banner inline-banner-warning"
-                role="status"
-              >
-                Save agent changes before sending a message.
-              </div>
-            ) : null}
-
-            {state.sendState.status === 'error' ? (
-              <div className="inline-banner inline-banner-error" role="alert">
-                {state.sendState.error || 'Unable to send message.'}
-              </div>
-            ) : null}
-
-            {historyEditState.status === 'success' ? (
-              <div
-                className="inline-banner inline-banner-success"
-                role="status"
-              >
-                {historyEditState.message}
-              </div>
-            ) : null}
-
-            {historyEditState.status === 'error' ? (
-              <div className="inline-banner inline-banner-error" role="alert">
-                {historyEditState.message}
-              </div>
-            ) : null}
-
-            {state.cancelState.status === 'success' ? (
-              <div
-                className="inline-banner inline-banner-success"
-                role="status"
-              >
-                {state.cancelState.message}
-              </div>
-            ) : null}
-
-            {state.cancelState.status === 'error' ? (
-              <div className="inline-banner inline-banner-error" role="alert">
-                {state.cancelState.message}
-              </div>
-            ) : null}
-          </form>
-        ) : null}
       </div>
       <TalkHistoryEditor
         isOpen={historyEditorOpen}

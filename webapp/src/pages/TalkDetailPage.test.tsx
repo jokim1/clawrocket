@@ -28,7 +28,9 @@ import type {
   TalkMessage,
   TalkMessageAttachment,
   TalkRun,
+  TalkThread,
   TalkTools,
+  RegisteredAgent,
 } from '../lib/api';
 
 vi.mock('../lib/talkStream', () => ({
@@ -39,6 +41,8 @@ type StreamCallbacks = Parameters<typeof openTalkStream>[0];
 type SavedTalkAgentRequest = {
   agents: TalkAgent[];
 };
+
+const DEFAULT_THREAD_ID = 'thread-default';
 
 describe('TalkDetailPage', () => {
   const openTalkStreamMock = vi.mocked(openTalkStream);
@@ -109,7 +113,7 @@ describe('TalkDetailPage', () => {
     expect(screen.getByText('Agent: GPT-5 Mini')).toBeTruthy();
 
     await user.click(tabs.getByRole('link', { name: 'Talk' }));
-    await screen.findByPlaceholderText('Send a message to this talk');
+    await screen.findByPlaceholderText('Send a message to this thread');
 
     expect(openTalkStreamMock).toHaveBeenCalledTimes(1);
   });
@@ -152,7 +156,7 @@ describe('TalkDetailPage', () => {
 
     renderDetailPage('/app/talks/talk-1');
 
-    await screen.findByPlaceholderText('Send a message to this talk');
+    await screen.findByPlaceholderText('Send a message to this thread');
     expect(
       screen.getByText(
         'Wait for the current round to finish or cancel it before sending another message.',
@@ -267,23 +271,25 @@ describe('TalkDetailPage', () => {
     renderDetailPage('/app/talks/talk-1/agents');
     await screen.findByRole('heading', { name: 'Agents' });
 
-    const modelSelects = screen.getAllByLabelText('Model');
-    await user.selectOptions(modelSelects[0], 'claude-opus-4-6');
+    const getRegisteredAgentSelects = () =>
+      screen.getAllByLabelText('Registered Agent');
 
-    const nicknameInputs = screen.getAllByLabelText(
-      'Nickname',
-    ) as HTMLInputElement[];
-    expect(nicknameInputs[0].value).toBe('Claude Opus 4.6');
+    await user.selectOptions(getRegisteredAgentSelects()[0], 'agent-claude-opus');
 
-    await user.clear(nicknameInputs[0]);
-    await user.type(nicknameInputs[0], 'Coach');
-    expect(nicknameInputs[0].value).toBe('Coach');
+    const getNicknameInputs = () =>
+      screen.getAllByLabelText('Nickname') as HTMLInputElement[];
 
-    await user.selectOptions(modelSelects[0], 'claude-sonnet-4-6');
-    expect(nicknameInputs[0].value).toBe('Coach');
+    expect(getNicknameInputs()[0].value).toBe('Claude Opus 4.6');
+
+    await user.clear(getNicknameInputs()[0]);
+    await user.type(getNicknameInputs()[0], 'Coach');
+    expect(getNicknameInputs()[0].value).toBe('Coach');
+
+    await user.selectOptions(getRegisteredAgentSelects()[0], 'agent-claude');
+    expect(getNicknameInputs()[0].value).toBe('Coach');
 
     await user.click(screen.getAllByRole('button', { name: 'Reset name' })[0]);
-    expect(nicknameInputs[0].value).toBe('Claude Sonnet 4.6');
+    expect(getNicknameInputs()[0].value).toBe('Claude Sonnet 4.6');
 
     const roleSelects = screen.getAllByLabelText('Role');
     await user.selectOptions(roleSelects[1], 'strategist');
@@ -408,8 +414,8 @@ describe('TalkDetailPage', () => {
     renderDetailPage('/app/talks/talk-1/agents');
     await screen.findByRole('heading', { name: 'Agents' });
 
-    const footerSourceSelect = screen.getAllByLabelText('Source')[0];
-    await user.selectOptions(footerSourceSelect, 'provider.openai');
+    const footerAgentSelect = screen.getByLabelText('Agent');
+    await user.selectOptions(footerAgentSelect, 'agent-openai');
     await user.selectOptions(screen.getAllByLabelText('Role')[1], 'critic');
     await user.click(screen.getByRole('button', { name: 'Add Agent' }));
 
@@ -444,7 +450,7 @@ describe('TalkDetailPage', () => {
       'disabled',
     );
     expect(
-      screen.getByPlaceholderText('Send a message to this talk'),
+      screen.getByPlaceholderText('Send a message to this thread'),
     ).toHaveAttribute('disabled');
   });
 
@@ -468,27 +474,24 @@ describe('TalkDetailPage', () => {
             content: body.content,
             createdAt: '2026-03-06T00:00:05.000Z',
           }),
-          runs: body.targetAgentIds.map((agentId, index) => ({
-            id: `run-${index + 10}`,
-            status: 'queued',
-            createdAt: `2026-03-06T00:00:0${index + 6}.000Z`,
-            startedAt: null,
-            completedAt: null,
-            triggerMessageId: 'msg-posted',
-            targetAgentId: agentId,
-            targetAgentNickname:
-              agentId === 'agent-claude' ? 'Claude Sonnet 4.6' : 'GPT-5 Mini',
-            errorCode: null,
-            errorMessage: null,
-            executorAlias: null,
-            executorModel: null,
-          })),
+          runs: body.targetAgentIds.map((agentId, index) =>
+            buildRun({
+              id: `run-${index + 10}`,
+              threadId: body.threadId ?? DEFAULT_THREAD_ID,
+              status: 'queued',
+              createdAt: `2026-03-06T00:00:0${index + 6}.000Z`,
+              triggerMessageId: 'msg-posted',
+              targetAgentId: agentId,
+              targetAgentNickname:
+                agentId === 'agent-claude' ? 'Claude Sonnet 4.6' : 'GPT-5 Mini',
+            }),
+          ),
         };
       },
     });
 
     renderDetailPage('/app/talks/talk-1');
-    await screen.findByPlaceholderText('Send a message to this talk');
+    await screen.findByPlaceholderText('Send a message to this thread');
 
     const targetGroup = screen.getByRole('group', { name: 'Selected agents' });
     const claudeChip = within(targetGroup).getByRole('button', {
@@ -508,7 +511,7 @@ describe('TalkDetailPage', () => {
     expect(openAiChip.getAttribute('aria-pressed')).toBe('true');
 
     await user.type(
-      screen.getByPlaceholderText('Send a message to this talk'),
+      screen.getByPlaceholderText('Send a message to this thread'),
       'Give me the latest take.',
     );
     await user.click(screen.getByRole('button', { name: 'Send' }));
@@ -525,7 +528,7 @@ describe('TalkDetailPage', () => {
       ),
     ).toBeTruthy();
     expect(
-      screen.getByPlaceholderText('Send a message to this talk'),
+      screen.getByPlaceholderText('Send a message to this thread'),
     ).toHaveAttribute('disabled');
   });
 
@@ -556,7 +559,7 @@ describe('TalkDetailPage', () => {
 
     renderDetailPage('/app/talks/talk-1');
     const composer = await screen.findByPlaceholderText(
-      'Send a message to this talk',
+      'Send a message to this thread',
     );
 
     await user.type(composer, 'Line 1');
@@ -620,7 +623,7 @@ describe('TalkDetailPage', () => {
 
     renderDetailPage('/app/talks/talk-1');
     const composer = await screen.findByPlaceholderText(
-      'Send a message to this talk',
+      'Send a message to this thread',
     );
     const workspace = composer.closest('.talk-workspace');
     if (!workspace) {
@@ -674,12 +677,14 @@ describe('TalkDetailPage', () => {
     await act(async () => {
       stream.onRunStarted({
         talkId: 'talk-1',
+        threadId: DEFAULT_THREAD_ID,
         runId: 'run-claude',
         triggerMessageId: 'msg-1',
         status: 'running',
       });
       stream.onResponseStarted?.({
         talkId: 'talk-1',
+        threadId: DEFAULT_THREAD_ID,
         runId: 'run-claude',
         agentId: 'agent-claude',
         agentNickname: 'Claude Sonnet 4.6',
@@ -688,6 +693,7 @@ describe('TalkDetailPage', () => {
       });
       stream.onResponseDelta?.({
         talkId: 'talk-1',
+        threadId: DEFAULT_THREAD_ID,
         runId: 'run-claude',
         agentId: 'agent-claude',
         agentNickname: 'Claude Sonnet 4.6',
@@ -698,12 +704,14 @@ describe('TalkDetailPage', () => {
 
       stream.onRunStarted({
         talkId: 'talk-1',
+        threadId: DEFAULT_THREAD_ID,
         runId: 'run-openai',
         triggerMessageId: 'msg-1',
         status: 'running',
       });
       stream.onResponseStarted?.({
         talkId: 'talk-1',
+        threadId: DEFAULT_THREAD_ID,
         runId: 'run-openai',
         agentId: 'agent-openai',
         agentNickname: 'GPT-5 Mini',
@@ -712,6 +720,7 @@ describe('TalkDetailPage', () => {
       });
       stream.onResponseDelta?.({
         talkId: 'talk-1',
+        threadId: DEFAULT_THREAD_ID,
         runId: 'run-openai',
         agentId: 'agent-openai',
         agentNickname: 'GPT-5 Mini',
@@ -745,6 +754,7 @@ describe('TalkDetailPage', () => {
     await act(async () => {
       stream.onResponseStarted?.({
         talkId: 'talk-1',
+        threadId: DEFAULT_THREAD_ID,
         runId: 'run-claude',
         agentId: 'agent-claude',
         agentNickname: 'Claude Sonnet 4.6',
@@ -753,6 +763,7 @@ describe('TalkDetailPage', () => {
       });
       stream.onResponseDelta?.({
         talkId: 'talk-1',
+        threadId: DEFAULT_THREAD_ID,
         runId: 'run-claude',
         agentId: 'agent-claude',
         agentNickname: 'Claude Sonnet 4.6',
@@ -762,6 +773,7 @@ describe('TalkDetailPage', () => {
       });
       stream.onResponseDelta?.({
         talkId: 'talk-1',
+        threadId: DEFAULT_THREAD_ID,
         runId: 'run-claude',
         agentId: 'agent-claude',
         agentNickname: 'Claude Sonnet 4.6',
@@ -771,6 +783,7 @@ describe('TalkDetailPage', () => {
       });
       stream.onResponseDelta?.({
         talkId: 'talk-1',
+        threadId: DEFAULT_THREAD_ID,
         runId: 'run-claude',
         agentId: 'agent-claude',
         agentNickname: 'Claude Sonnet 4.6',
@@ -853,6 +866,7 @@ describe('TalkDetailPage', () => {
     await act(async () => {
       stream.onResponseStarted?.({
         talkId: 'talk-1',
+        threadId: DEFAULT_THREAD_ID,
         runId: 'run-failed',
         agentId: 'agent-claude',
         agentNickname: 'Claude Sonnet 4.6',
@@ -861,6 +875,7 @@ describe('TalkDetailPage', () => {
       });
       stream.onResponseDelta?.({
         talkId: 'talk-1',
+        threadId: DEFAULT_THREAD_ID,
         runId: 'run-failed',
         agentId: 'agent-claude',
         agentNickname: 'Claude Sonnet 4.6',
@@ -870,6 +885,7 @@ describe('TalkDetailPage', () => {
       });
       stream.onRunFailed({
         talkId: 'talk-1',
+        threadId: DEFAULT_THREAD_ID,
         runId: 'run-failed',
         triggerMessageId: 'msg-1',
         errorCode: 'tool_capability',
@@ -953,7 +969,7 @@ describe('TalkDetailPage', () => {
 
     renderDetailPage('/app/talks/talk-1');
     const composer = await screen.findByPlaceholderText(
-      'Send a message to this talk',
+      'Send a message to this thread',
     );
 
     await user.type(composer, '/edit');
@@ -1117,12 +1133,46 @@ function buildTalkAgent(
   };
 }
 
+function buildRegisteredAgent(
+  input: Partial<RegisteredAgent> &
+    Pick<RegisteredAgent, 'id' | 'name' | 'providerId' | 'modelId'>,
+): RegisteredAgent {
+  return {
+    id: input.id,
+    name: input.name,
+    providerId: input.providerId,
+    modelId: input.modelId,
+    toolPermissions: input.toolPermissions ?? { web: true, connectors: true },
+    personaRole: input.personaRole ?? 'assistant',
+    systemPrompt: input.systemPrompt ?? null,
+    enabled: input.enabled ?? true,
+    createdAt: input.createdAt ?? '2026-03-06T00:00:00.000Z',
+    updatedAt: input.updatedAt ?? '2026-03-06T00:00:00.000Z',
+  };
+}
+
+function buildThread(
+  input: Partial<TalkThread> & Pick<TalkThread, 'id'>,
+): TalkThread {
+  return {
+    id: input.id,
+    talkId: input.talkId ?? 'talk-1',
+    title: input.title ?? null,
+    isDefault: input.isDefault ?? false,
+    createdAt: input.createdAt ?? '2026-03-06T00:00:00.000Z',
+    updatedAt: input.updatedAt ?? '2026-03-06T00:00:00.000Z',
+    messageCount: input.messageCount ?? 0,
+    lastMessageAt: input.lastMessageAt ?? null,
+  };
+}
+
 function buildMessage(
   input: Partial<TalkMessage> &
     Pick<TalkMessage, 'id' | 'role' | 'content' | 'createdAt'>,
 ): TalkMessage {
   return {
     id: input.id,
+    threadId: input.threadId ?? DEFAULT_THREAD_ID,
     role: input.role,
     content: input.content,
     createdBy: input.createdBy ?? 'owner-1',
@@ -1130,6 +1180,8 @@ function buildMessage(
     runId: input.runId ?? null,
     agentId: input.agentId ?? null,
     agentNickname: input.agentNickname ?? null,
+    metadata: input.metadata ?? null,
+    attachments: input.attachments ?? [],
   };
 }
 
@@ -1154,6 +1206,7 @@ function buildRun(
 ): TalkRun {
   return {
     id: input.id,
+    threadId: input.threadId ?? DEFAULT_THREAD_ID,
     status: input.status,
     createdAt: input.createdAt,
     startedAt: input.startedAt ?? null,
@@ -1205,6 +1258,19 @@ function buildDataConnector(input: Partial<DataConnector> = {}): DataConnector {
     attachedTalkCount: input.attachedTalkCount ?? 0,
     createdAt: input.createdAt ?? '2026-03-06T00:00:00.000Z',
     updatedAt: input.updatedAt ?? '2026-03-06T00:00:00.000Z',
+  };
+}
+
+function toThreadApiRecord(thread: TalkThread) {
+  return {
+    id: thread.id,
+    talk_id: thread.talkId,
+    title: thread.title,
+    is_default: thread.isDefault ? 1 : 0,
+    created_at: thread.createdAt,
+    updated_at: thread.updatedAt,
+    message_count: thread.messageCount,
+    last_message_at: thread.lastMessageAt,
   };
 }
 
@@ -1384,9 +1450,11 @@ function buildAiAgentsData(): AiAgentsPageData {
 
 function installTalkDetailFetch(input?: {
   talk?: Talk;
+  threads?: TalkThread[];
   messages?: TalkMessage[];
   runs?: TalkRun[];
   talkAgents?: TalkAgent[];
+  registeredAgents?: RegisteredAgent[];
   context?: TalkContext;
   dataConnectors?: DataConnector[];
   talkDataConnectors?: TalkDataConnector[];
@@ -1405,6 +1473,7 @@ function installTalkDetailFetch(input?: {
     content: string;
     targetAgentIds: string[];
     attachmentIds?: string[];
+    threadId?: string | null;
   }) => { talkId: string; message: TalkMessage; runs: TalkRun[] };
 }) {
   const talk = input?.talk ?? buildTalk();
@@ -1414,6 +1483,20 @@ function installTalkDetailFetch(input?: {
       role: 'user',
       content: 'How will Cal do next season?',
       createdAt: '2026-03-06T00:00:00.000Z',
+    }),
+  ];
+  let threads = input?.threads ?? [
+    buildThread({
+      id: DEFAULT_THREAD_ID,
+      talkId: 'talk-1',
+      title: null,
+      isDefault: true,
+      messageCount: messages.filter((message) => message.threadId === DEFAULT_THREAD_ID)
+        .length,
+      lastMessageAt:
+        messages
+          .filter((message) => message.threadId === DEFAULT_THREAD_ID)
+          .at(-1)?.createdAt ?? null,
     }),
   ];
   const runs = input?.runs ?? [
@@ -1453,6 +1536,27 @@ function installTalkDetailFetch(input?: {
       modelDisplayName: 'GPT-5 Mini',
     }),
   ];
+  const registeredAgents = input?.registeredAgents ?? [
+    buildRegisteredAgent({
+      id: 'agent-claude',
+      name: 'Claude Sonnet 4.6',
+      providerId: 'provider.anthropic',
+      modelId: 'claude-sonnet-4-6',
+    }),
+    buildRegisteredAgent({
+      id: 'agent-claude-opus',
+      name: 'Claude Opus 4.6',
+      providerId: 'provider.anthropic',
+      modelId: 'claude-opus-4-6',
+    }),
+    buildRegisteredAgent({
+      id: 'agent-openai',
+      name: 'GPT-5 Mini',
+      providerId: 'provider.openai',
+      modelId: 'gpt-5-mini',
+      personaRole: 'critic',
+    }),
+  ];
   const dataConnectors = input?.dataConnectors ?? [
     buildDataConnector({
       id: 'connector-posthog',
@@ -1466,6 +1570,8 @@ function installTalkDetailFetch(input?: {
       id: 'connector-sheet',
       name: 'Economy Sheet',
       connectorKind: 'google_sheets',
+      hasCredential: true,
+      verificationStatus: 'verified',
     }),
   ];
   let talkDataConnectors = input?.talkDataConnectors ?? [
@@ -1503,35 +1609,122 @@ function installTalkDetailFetch(input?: {
               ? request.url
               : String(request);
       const method = init?.method || 'GET';
+      const parsedUrl = new URL(url, 'http://localhost');
+      const path = parsedUrl.pathname;
 
-      if (url.endsWith('/api/v1/talks/talk-1') && method === 'GET') {
+      if (path === '/api/v1/talks/talk-1' && method === 'GET') {
         return jsonResponse(200, { ok: true, data: { talk } });
       }
 
-      if (url.endsWith('/api/v1/talks/talk-1/messages') && method === 'GET') {
+      if (path === '/api/v1/talks/talk-1/threads' && method === 'GET') {
         return jsonResponse(200, {
           ok: true,
           data: {
-            talkId: 'talk-1',
-            messages,
-            page: { limit: 100, count: messages.length, beforeCreatedAt: null },
+            threads: threads.map(toThreadApiRecord),
           },
         });
       }
 
-      if (
-        url.endsWith('/api/v1/talks/talk-1/messages/delete') &&
-        method === 'POST'
-      ) {
+      if (path === '/api/v1/talks/talk-1/threads' && method === 'POST') {
+        const body = JSON.parse(String(init?.body || '{}')) as {
+          title?: string | null;
+        };
+        const created = buildThread({
+          id: `thread-${threads.length + 1}`,
+          talkId: 'talk-1',
+          title: body.title?.trim() || null,
+          isDefault: false,
+          createdAt: '2026-03-06T00:00:12.000Z',
+          updatedAt: '2026-03-06T00:00:12.000Z',
+          messageCount: 0,
+          lastMessageAt: null,
+        });
+        threads = [created, ...threads];
+        return jsonResponse(201, {
+          ok: true,
+          data: {
+            thread: toThreadApiRecord(created),
+          },
+        });
+      }
+
+      if (path === '/api/v1/talks/talk-1/messages/search' && method === 'GET') {
+        const query = parsedUrl.searchParams.get('q')?.trim() || '';
+        const limit = Number(parsedUrl.searchParams.get('limit') || '20');
+        const lowered = query.toLowerCase();
+        const results =
+          query.length === 0
+            ? []
+            : messages
+                .filter((message) =>
+                  message.content.toLowerCase().includes(lowered),
+                )
+                .slice(0, Number.isFinite(limit) ? limit : 20)
+                .map((message) => ({
+                  messageId: message.id,
+                  threadId: message.threadId,
+                  threadTitle:
+                    threads.find((thread) => thread.id === message.threadId)
+                      ?.title ?? null,
+                  role: message.role,
+                  createdAt: message.createdAt,
+                  preview: message.content.slice(0, 140),
+                }));
+        return jsonResponse(200, {
+          ok: true,
+          data: {
+            talkId: 'talk-1',
+            query,
+            results,
+          },
+        });
+      }
+
+      if (path === '/api/v1/talks/talk-1/messages' && method === 'GET') {
+        const threadId = parsedUrl.searchParams.get('threadId');
+        const visibleMessages = threadId
+          ? messages.filter((message) => message.threadId === threadId)
+          : messages;
+        return jsonResponse(200, {
+          ok: true,
+          data: {
+            talkId: 'talk-1',
+            messages: visibleMessages,
+            page: {
+              limit: 100,
+              count: visibleMessages.length,
+              beforeCreatedAt: null,
+            },
+          },
+        });
+      }
+
+      if (path === '/api/v1/talks/talk-1/messages/delete' && method === 'POST') {
         const body = JSON.parse(String(init?.body || '{}')) as {
           messageIds?: string[];
+          threadId?: string | null;
         };
         const deletedMessageIds = Array.isArray(body.messageIds)
           ? body.messageIds
           : [];
         messages = messages.filter(
-          (message) => !deletedMessageIds.includes(message.id),
+          (message) =>
+            !(
+              deletedMessageIds.includes(message.id) &&
+              message.threadId === body.threadId
+            ),
         );
+        threads = threads.map((thread) => {
+          if (thread.id !== body.threadId) return thread;
+          const threadMessages = messages.filter(
+            (message) => message.threadId === thread.id,
+          );
+          return {
+            ...thread,
+            messageCount: threadMessages.length,
+            lastMessageAt: threadMessages.at(-1)?.createdAt ?? null,
+          };
+        });
         return jsonResponse(200, {
           ok: true,
           data: {
@@ -1571,7 +1764,7 @@ function installTalkDetailFetch(input?: {
         });
       }
 
-      if (url.endsWith('/api/v1/talks/talk-1/runs') && method === 'GET') {
+      if (path === '/api/v1/talks/talk-1/runs' && method === 'GET') {
         return jsonResponse(200, {
           ok: true,
           data: {
@@ -1581,28 +1774,35 @@ function installTalkDetailFetch(input?: {
         });
       }
 
-      if (url.endsWith('/api/v1/talks/talk-1/agents') && method === 'GET') {
+      if (path === '/api/v1/talks/talk-1/agents' && method === 'GET') {
         return jsonResponse(200, {
           ok: true,
           data: { talkId: 'talk-1', agents: talkAgents },
         });
       }
 
-      if (url.endsWith('/api/v1/talks/talk-1/context') && method === 'GET') {
+      if (path === '/api/v1/registered-agents' && method === 'GET') {
+        return jsonResponse(200, {
+          ok: true,
+          data: registeredAgents,
+        });
+      }
+
+      if (path === '/api/v1/talks/talk-1/context' && method === 'GET') {
         return jsonResponse(200, {
           ok: true,
           data: input?.onGetContext?.() ?? context,
         });
       }
 
-      if (url.endsWith('/api/v1/talks/talk-1/tools') && method === 'GET') {
+      if (path === '/api/v1/talks/talk-1/tools' && method === 'GET') {
         return jsonResponse(200, {
           ok: true,
           data: talkTools,
         });
       }
 
-      if (url.endsWith('/api/v1/talks/talk-1/tools') && method === 'PUT') {
+      if (path === '/api/v1/talks/talk-1/tools' && method === 'PUT') {
         const body = JSON.parse(String(init?.body || '{}')) as {
           grants?: Array<{ toolId: string; enabled: boolean }>;
         };
@@ -1742,14 +1942,14 @@ function installTalkDetailFetch(input?: {
         });
       }
 
-      if (url.endsWith('/api/v1/talks/talk-1/channels') && method === 'GET') {
+      if (path === '/api/v1/talks/talk-1/channels' && method === 'GET') {
         return jsonResponse(200, {
           ok: true,
           data: { talkId: 'talk-1', bindings: talkChannels },
         });
       }
 
-      if (url.endsWith('/api/v1/talks/talk-1/channels') && method === 'POST') {
+      if (path === '/api/v1/talks/talk-1/channels' && method === 'POST') {
         const body = JSON.parse(String(init?.body || '{}')) as Record<
           string,
           unknown
@@ -1951,20 +2151,14 @@ function installTalkDetailFetch(input?: {
         });
       }
 
-      if (
-        url.endsWith('/api/v1/talks/talk-1/data-connectors') &&
-        method === 'GET'
-      ) {
+      if (path === '/api/v1/talks/talk-1/data-connectors' && method === 'GET') {
         return jsonResponse(200, {
           ok: true,
           data: { talkId: 'talk-1', connectors: talkDataConnectors },
         });
       }
 
-      if (
-        url.endsWith('/api/v1/talks/talk-1/data-connectors') &&
-        method === 'POST'
-      ) {
+      if (path === '/api/v1/talks/talk-1/data-connectors' && method === 'POST') {
         const body = JSON.parse(String(init?.body || '{}')) as {
           connectorId: string;
         };
@@ -2015,7 +2209,7 @@ function installTalkDetailFetch(input?: {
         return jsonResponse(200, { ok: true, data: aiAgents });
       }
 
-      if (url.endsWith('/api/v1/talks/talk-1/agents') && method === 'PUT') {
+      if (path === '/api/v1/talks/talk-1/agents' && method === 'PUT') {
         const body = JSON.parse(
           String(init?.body || '{}'),
         ) as SavedTalkAgentRequest;
@@ -2037,15 +2231,18 @@ function installTalkDetailFetch(input?: {
         });
       }
 
-      if (url.endsWith('/api/v1/talks/talk-1/chat') && method === 'POST') {
+      if (path === '/api/v1/talks/talk-1/chat' && method === 'POST') {
         const body = JSON.parse(String(init?.body || '{}')) as {
           content: string;
           targetAgentIds: string[];
+          attachmentIds?: string[];
+          threadId?: string | null;
         };
         const payload = input?.onSendMessage?.(body) ?? {
           talkId: 'talk-1',
           message: buildMessage({
             id: 'msg-posted',
+            threadId: body.threadId ?? DEFAULT_THREAD_ID,
             role: 'user',
             content: body.content,
             createdAt: '2026-03-06T00:00:05.000Z',
@@ -2053,6 +2250,7 @@ function installTalkDetailFetch(input?: {
           runs: body.targetAgentIds.map((agentId, index) =>
             buildRun({
               id: `run-${index + 10}`,
+              threadId: body.threadId ?? DEFAULT_THREAD_ID,
               status: 'queued',
               createdAt: `2026-03-06T00:00:0${index + 6}.000Z`,
               triggerMessageId: 'msg-posted',
@@ -2062,16 +2260,33 @@ function installTalkDetailFetch(input?: {
             }),
           ),
         };
+        const threadId = payload.message.threadId;
+        const threadMessages = [...messages, payload.message]
+          .filter((message) => message.threadId === threadId)
+          .sort((left, right) => left.createdAt.localeCompare(right.createdAt));
+        threads = threads.map((thread) =>
+          thread.id === threadId
+            ? {
+                ...thread,
+                title: thread.title,
+                messageCount: threadMessages.length,
+                lastMessageAt: threadMessages.at(-1)?.createdAt ?? null,
+              }
+            : thread,
+        );
         return jsonResponse(200, { ok: true, data: payload });
       }
 
-      if (
-        url.endsWith('/api/v1/talks/talk-1/chat/cancel') &&
-        method === 'POST'
-      ) {
+      if (path === '/api/v1/talks/talk-1/chat/cancel' && method === 'POST') {
+        const body = JSON.parse(String(init?.body || '{}')) as {
+          threadId?: string | null;
+        };
         return jsonResponse(200, {
           ok: true,
-          data: { talkId: 'talk-1', cancelledRuns: 2 },
+          data: {
+            talkId: 'talk-1',
+            cancelledRuns: body.threadId ? 1 : 2,
+          },
         });
       }
 

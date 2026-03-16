@@ -208,6 +208,17 @@ export type TalkContext = {
   sources: ContextSource[];
 };
 
+export type TalkThread = {
+  id: string;
+  talkId: string;
+  title: string | null;
+  isDefault: boolean;
+  createdAt: string;
+  updatedAt: string;
+  messageCount: number;
+  lastMessageAt: string | null;
+};
+
 export type TalkMessageAttachment = {
   id: string;
   fileName: string;
@@ -218,6 +229,7 @@ export type TalkMessageAttachment = {
 
 export type TalkMessage = {
   id: string;
+  threadId: string;
   role: 'user' | 'assistant' | 'system' | 'tool';
   content: string;
   createdBy: string | null;
@@ -229,8 +241,18 @@ export type TalkMessage = {
   attachments?: TalkMessageAttachment[];
 };
 
+export type TalkMessageSearchResult = {
+  messageId: string;
+  threadId: string;
+  threadTitle: string | null;
+  role: 'user' | 'assistant' | 'system' | 'tool';
+  createdAt: string;
+  preview: string;
+};
+
 export type TalkRun = {
   id: string;
+  threadId: string;
   status:
     | 'queued'
     | 'running'
@@ -822,18 +844,106 @@ export async function updateTalkPolicy(input: {
   );
 }
 
-export async function listTalkMessages(talkId: string): Promise<TalkMessage[]> {
+export async function listTalkThreads(talkId: string): Promise<TalkThread[]> {
+  const envelope = await apiRequest<{
+    threads: Array<{
+      id: string;
+      talk_id: string;
+      title: string | null;
+      is_default: number;
+      created_at: string;
+      updated_at: string;
+      message_count: number;
+      last_message_at: string | null;
+    }>;
+  }>(`/api/v1/talks/${encodeURIComponent(talkId)}/threads`);
+  return envelope.threads.map((thread) => ({
+    id: thread.id,
+    talkId: thread.talk_id,
+    title: thread.title,
+    isDefault: thread.is_default === 1,
+    createdAt: thread.created_at,
+    updatedAt: thread.updated_at,
+    messageCount: thread.message_count,
+    lastMessageAt: thread.last_message_at,
+  }));
+}
+
+export async function createTalkThread(input: {
+  talkId: string;
+  title?: string;
+}): Promise<TalkThread> {
+  const envelope = await apiMutationRequest<{
+    thread: {
+      id: string;
+      talk_id: string;
+      title: string | null;
+      is_default: number;
+      created_at: string;
+      updated_at: string;
+      message_count?: number;
+      last_message_at?: string | null;
+    };
+  }>(`/api/v1/talks/${encodeURIComponent(input.talkId)}/threads`, {
+    method: 'POST',
+    includeJson: true,
+    body: JSON.stringify({ title: input.title ?? null }),
+  });
+  return {
+    id: envelope.thread.id,
+    talkId: envelope.thread.talk_id,
+    title: envelope.thread.title,
+    isDefault: envelope.thread.is_default === 1,
+    createdAt: envelope.thread.created_at,
+    updatedAt: envelope.thread.updated_at,
+    messageCount: envelope.thread.message_count ?? 0,
+    lastMessageAt: envelope.thread.last_message_at ?? null,
+  };
+}
+
+export async function listTalkMessages(
+  talkId: string,
+  options?: { threadId?: string | null },
+): Promise<TalkMessage[]> {
+  const params = new URLSearchParams();
+  if (options?.threadId) {
+    params.set('threadId', options.threadId);
+  }
   const envelope = await apiRequest<{
     talkId: string;
     messages: TalkMessage[];
     page: { limit: number; count: number; beforeCreatedAt: string | null };
-  }>(`/api/v1/talks/${encodeURIComponent(talkId)}/messages`);
+  }>(
+    `/api/v1/talks/${encodeURIComponent(talkId)}/messages${
+      params.size > 0 ? `?${params.toString()}` : ''
+    }`,
+  );
   return envelope.messages;
+}
+
+export async function searchTalkMessages(input: {
+  talkId: string;
+  query: string;
+  limit?: number;
+}): Promise<TalkMessageSearchResult[]> {
+  const params = new URLSearchParams({ q: input.query });
+  if (typeof input.limit === 'number') {
+    params.set('limit', String(input.limit));
+  }
+  const envelope = await apiRequest<{
+    talkId: string;
+    query: string;
+    results: TalkMessageSearchResult[];
+  }>(
+    `/api/v1/talks/${encodeURIComponent(input.talkId)}/messages/search?${params.toString()}`,
+  );
+  return envelope.results;
 }
 
 export async function deleteTalkMessages(input: {
   talkId: string;
   messageIds: string[];
+  threadId: string;
 }): Promise<{ talkId: string; deletedCount: number; deletedMessageIds: string[] }> {
   return apiMutationRequest<{
     talkId: string;
@@ -844,6 +954,7 @@ export async function deleteTalkMessages(input: {
     includeJson: true,
     body: JSON.stringify({
       messageIds: input.messageIds,
+      threadId: input.threadId,
     }),
   });
 }
@@ -1860,6 +1971,7 @@ export async function sendTalkMessage(input: {
   content: string;
   targetAgentIds?: string[];
   attachmentIds?: string[];
+  threadId?: string | null;
 }): Promise<{ talkId: string; message: TalkMessage; runs: TalkRun[] }> {
   return apiMutationRequest<{ talkId: string; message: TalkMessage; runs: TalkRun[] }>(
     `/api/v1/talks/${encodeURIComponent(input.talkId)}/chat`,
@@ -1870,6 +1982,7 @@ export async function sendTalkMessage(input: {
         content: input.content,
         targetAgentIds: input.targetAgentIds ?? [],
         attachmentIds: input.attachmentIds ?? [],
+        threadId: input.threadId ?? null,
       }),
     },
   );
@@ -1903,11 +2016,14 @@ export async function deleteTalkAttachment(
 
 export async function cancelTalkRuns(
   talkId: string,
+  threadId?: string | null,
 ): Promise<{ talkId: string; cancelledRuns: number }> {
   return apiMutationRequest<{ talkId: string; cancelledRuns: number }>(
     `/api/v1/talks/${encodeURIComponent(talkId)}/chat/cancel`,
     {
       method: 'POST',
+      includeJson: true,
+      body: JSON.stringify(threadId ? { threadId } : {}),
     },
   );
 }

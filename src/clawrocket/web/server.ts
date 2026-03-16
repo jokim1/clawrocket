@@ -80,6 +80,7 @@ import {
   patchTalkFolderRoute,
   patchTalkRoute,
   reorderTalkSidebarRoute,
+  searchTalkMessagesRoute,
   updateTalkAgentsRoute,
   updateTalkPolicyRoute,
 } from './routes/talks.js';
@@ -2467,9 +2468,11 @@ function buildApp(opts: WebServerOptions): Hono {
 
     const limit = parsePositiveInt(c.req.query('limit'));
     const beforeCreatedAt = c.req.query('before') || undefined;
+    const threadId = (c.req.query('threadId') || '').trim() || undefined;
     const result = listTalkMessagesRoute({
       talkId,
       auth,
+      threadId,
       limit: limit ?? undefined,
       beforeCreatedAt,
     });
@@ -2502,7 +2505,9 @@ function buildApp(opts: WebServerOptions): Hono {
     }
 
     const bodyText = await c.req.text();
-    const payload = parseJsonPayload<{ messageIds?: unknown }>(bodyText);
+    const payload = parseJsonPayload<{ messageIds?: unknown; threadId?: unknown }>(
+      bodyText,
+    );
     if (!payload.ok) {
       return c.json(
         { ok: false, error: { code: 'invalid_json', message: payload.error } },
@@ -2524,10 +2529,50 @@ function buildApp(opts: WebServerOptions): Hono {
           (value): value is string => typeof value === 'string',
         )
       : [];
+    const threadId =
+      typeof payload.data.threadId === 'string' ? payload.data.threadId : null;
     const result = deleteTalkMessagesRoute({
       talkId: c.req.param('talkId'),
       auth,
       messageIds,
+      threadId,
+    });
+    return new Response(JSON.stringify(result.body), {
+      status: result.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
+  });
+
+  app.get('/api/v1/talks/:talkId/messages/search', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+
+    const rateResult = checkRateLimit({ userId: auth.userId, bucket: 'read' });
+    if (!rateResult.allowed) {
+      return rateLimitedResponse(c, rateResult);
+    }
+
+    const talkId = safeDecodePathSegment(c.req.param('talkId'));
+    if (!talkId) {
+      return c.json(
+        {
+          ok: false,
+          error: {
+            code: 'invalid_talk_id',
+            message: 'Talk ID path segment is not valid URL encoding',
+          },
+        },
+        400,
+      );
+    }
+
+    const query = c.req.query('q') || '';
+    const limit = parsePositiveInt(c.req.query('limit'));
+    const result = searchTalkMessagesRoute({
+      talkId,
+      auth,
+      query,
+      limit: limit ?? undefined,
     });
     return new Response(JSON.stringify(result.body), {
       status: result.statusCode,
