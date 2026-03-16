@@ -1787,15 +1787,15 @@ export function getOrCreateDefaultThread(talkId: string): string {
   if (existing) return existing.id;
 
   const now = new Date().toISOString();
-  const { uuid } = (
-    getDb().prepare(
+  const { uuid } = getDb()
+    .prepare(
       `SELECT lower(hex(randomblob(4)) || '-' || hex(randomblob(2)) || '-4' ||
         substr(hex(randomblob(2)),2) || '-' ||
         substr('89ab', abs(random()) % 4 + 1, 1) ||
         substr(hex(randomblob(2)),2) || '-' ||
         hex(randomblob(6))) AS uuid`,
-    ).get() as { uuid: string }
-  );
+    )
+    .get() as { uuid: string };
   const threadId = `thread_${uuid}`;
 
   getDb()
@@ -1862,17 +1862,24 @@ export function listTalkThreads(talkId: string): Array<{
 export function createTalkThread(input: {
   talkId: string;
   title?: string | null;
-}): { id: string; talk_id: string; title: string | null; is_default: number; created_at: string; updated_at: string } {
+}): {
+  id: string;
+  talk_id: string;
+  title: string | null;
+  is_default: number;
+  created_at: string;
+  updated_at: string;
+} {
   const now = new Date().toISOString();
-  const { uuid } = (
-    getDb().prepare(
+  const { uuid } = getDb()
+    .prepare(
       `SELECT lower(hex(randomblob(4)) || '-' || hex(randomblob(2)) || '-4' ||
         substr(hex(randomblob(2)),2) || '-' ||
         substr('89ab', abs(random()) % 4 + 1, 1) ||
         substr(hex(randomblob(2)),2) || '-' ||
         hex(randomblob(6))) AS uuid`,
-    ).get() as { uuid: string }
-  );
+    )
+    .get() as { uuid: string };
   const threadId = `thread_${uuid}`;
 
   getDb()
@@ -3208,13 +3215,13 @@ export function failInterruptedRunsOnStartup(now?: string): {
         `,
         )
         .all() as Array<{
-          id: string;
-          talk_id: string;
-          thread_id: string;
-          trigger_message_id: string | null;
-          executor_alias: string | null;
-          executor_model: string | null;
-        }>;
+        id: string;
+        talk_id: string;
+        thread_id: string;
+        trigger_message_id: string | null;
+        executor_alias: string | null;
+        executor_model: string | null;
+      }>;
 
       const failedRunIds: string[] = [];
       for (const run of runningRuns) {

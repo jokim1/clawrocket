@@ -1731,7 +1731,11 @@ export function cancelTalkChat(input: {
   auth: AuthContext;
 }): {
   statusCode: number;
-  body: ApiEnvelope<{ talkId: string; threadId?: string | null; cancelledRuns: number }>;
+  body: ApiEnvelope<{
+    talkId: string;
+    threadId?: string | null;
+    cancelledRuns: number;
+  }>;
   cancelledRunning: boolean;
 } {
   const talk = getTalkForUser(input.talkId, input.auth.userId);

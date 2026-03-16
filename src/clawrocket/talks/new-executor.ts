@@ -318,7 +318,11 @@ export class CleanTalkExecutor implements TalkExecutor {
 
     try {
       // --- Step 1: Load Talk context ---
-      const contextPackage = await loadTalkContext(input.talkId, 128000, input.threadId); // Assume 128K context window for now
+      const contextPackage = await loadTalkContext(
+        input.talkId,
+        128000,
+        input.threadId,
+      ); // Assume 128K context window for now
 
       // --- Step 2: Resolve agent ---
       let agent: RegisteredAgentRecord | undefined;

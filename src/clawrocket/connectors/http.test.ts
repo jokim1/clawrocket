@@ -316,18 +316,20 @@ describe('connector http helpers', () => {
         kind: 'posthog',
         apiKey: 'phc_test_key',
       },
-      query: "SELECT event FROM events LIMIT 5",
+      query: 'SELECT event FROM events LIMIT 5',
       limit: 100,
       fetchImpl: (async (url: string | URL | Request) => {
         capturedUrl = String(url);
-        return new Response(
-          JSON.stringify({ results: [] }),
-          { status: 200, headers: { 'content-type': 'application/json' } },
-        );
+        return new Response(JSON.stringify({ results: [] }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
       }) as typeof fetch,
       signal: new AbortController().signal,
     });
 
-    expect(capturedUrl).toBe('https://us.posthog.com/api/projects/99999/query/');
+    expect(capturedUrl).toBe(
+      'https://us.posthog.com/api/projects/99999/query/',
+    );
   });
 });

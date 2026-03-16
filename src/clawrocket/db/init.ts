@@ -1388,9 +1388,7 @@ function migrateAddMissingColumns(database: Database.Database): void {
       .all() as Array<{ name: string }>;
     if (cols.length === 0) continue; // table doesn't exist yet
     if (cols.some((c) => c.name === column)) continue; // already present
-    database.exec(
-      `ALTER TABLE ${table} ADD COLUMN ${column} ${definition};`,
-    );
+    database.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition};`);
   }
 }
 
@@ -1858,11 +1856,19 @@ function migrateDeadLetterQueueTable(database: Database.Database): void {
 function migrateTalkChannelPoliciesTable(database: Database.Database): void {
   const columns = database
     .prepare(`PRAGMA table_info(talk_channel_policies)`)
-    .all() as Array<{ name: string; notnull: number; dflt_value: string | null }>;
+    .all() as Array<{
+    name: string;
+    notnull: number;
+    dflt_value: string | null;
+  }>;
   if (columns.length === 0) return;
 
-  const rateCol = columns.find((c) => c.name === 'inbound_rate_limit_per_minute');
-  const deferredCol = columns.find((c) => c.name === 'max_deferred_age_minutes');
+  const rateCol = columns.find(
+    (c) => c.name === 'inbound_rate_limit_per_minute',
+  );
+  const deferredCol = columns.find(
+    (c) => c.name === 'max_deferred_age_minutes',
+  );
   const rateNeedsFix = rateCol && rateCol.notnull === 1;
   const defaultNeedsFix = deferredCol && deferredCol.dflt_value === '10';
   if (!rateNeedsFix && !defaultNeedsFix) return;
@@ -1923,8 +1929,12 @@ function migrateTalkChannelBindingsTable(database: Database.Database): void {
 
   const displayCol = columns.find((c) => c.name === 'display_name');
   const displayNeedsFix = displayCol && displayCol.notnull === 1;
-  const missingCols = ['response_mode', 'responder_agent_id', 'allowed_senders_json', 'rate_limit_json']
-    .some((col) => !columns.some((c) => c.name === col));
+  const missingCols = [
+    'response_mode',
+    'responder_agent_id',
+    'allowed_senders_json',
+    'rate_limit_json',
+  ].some((col) => !columns.some((c) => c.name === col));
   if (!displayNeedsFix && !missingCols) return;
 
   // Determine which columns exist in the old table for the SELECT
@@ -1980,9 +1990,10 @@ function migrateTalkChannelBindingsTable(database: Database.Database): void {
  * Low risk due to SQLite type affinity, but fix for schema consistency.
  */
 function migrateTalksTable(database: Database.Database): void {
-  const columns = database
-    .prepare(`PRAGMA table_info(talks)`)
-    .all() as Array<{ name: string; type: string }>;
+  const columns = database.prepare(`PRAGMA table_info(talks)`).all() as Array<{
+    name: string;
+    type: string;
+  }>;
   if (columns.length === 0) return;
 
   const sortCol = columns.find((c) => c.name === 'sort_order');
@@ -2163,12 +2174,8 @@ function migrateEnforceThreadIdsNotNull(database: Database.Database): void {
   if (!talkMessagesNeedRebuild && !talkRunsNeedRebuild) return;
 
   const cleanupTx = database.transaction(() => {
-    database
-      .prepare(`DELETE FROM talk_runs WHERE thread_id IS NULL`)
-      .run();
-    database
-      .prepare(`DELETE FROM talk_messages WHERE thread_id IS NULL`)
-      .run();
+    database.prepare(`DELETE FROM talk_runs WHERE thread_id IS NULL`).run();
+    database.prepare(`DELETE FROM talk_messages WHERE thread_id IS NULL`).run();
   });
   cleanupTx();
 
@@ -2280,11 +2287,14 @@ function migrateMainAgentToAnthropic(database: Database.Database): void {
   if (!row || row.provider_id !== 'builtin.mock') return;
 
   // Read the user's saved default model, or fall back to sonnet
-  const savedModel = (
-    database
-      .prepare(`SELECT value FROM settings_kv WHERE key = 'executor.defaultClaudeModel'`)
-      .get() as { value: string } | undefined
-  )?.value || 'claude-sonnet-4-6';
+  const savedModel =
+    (
+      database
+        .prepare(
+          `SELECT value FROM settings_kv WHERE key = 'executor.defaultClaudeModel'`,
+        )
+        .get() as { value: string } | undefined
+    )?.value || 'claude-sonnet-4-6';
 
   database
     .prepare(
