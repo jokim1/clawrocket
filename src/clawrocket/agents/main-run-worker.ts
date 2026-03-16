@@ -216,7 +216,7 @@ export class MainRunWorker implements MainRunWorkerControl {
       const output = await this.executor(
         {
           runId: run.id,
-          threadId: run.thread_id!,
+          threadId: run.thread_id,
           requestedBy: run.requested_by,
           triggerMessageId: triggerMessage.id,
           triggerContent: triggerMessage.content,
@@ -244,7 +244,7 @@ export class MainRunWorker implements MainRunWorkerControl {
       // Atomic: run status + assistant message + llm_attempt + terminal event
       const completed = completeMainRunAtomic({
         runId: run.id,
-        threadId: run.thread_id!,
+        threadId: run.thread_id,
         requestedBy: run.requested_by,
         responseMessageId: `msg_${randomUUID()}`,
         responseContent: sanitizedContent,
@@ -280,7 +280,7 @@ export class MainRunWorker implements MainRunWorkerControl {
   ): void {
     const result = failMainRunAtomic({
       runId: run.id,
-      threadId: run.thread_id!,
+      threadId: run.thread_id,
       requestedBy: run.requested_by,
       errorCode,
       errorMessage: errorMessageText,

@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { getDb } from '../../../db.js';
 import {
   _initTestDatabase,
+  createTalkThread,
   createTalkMessage,
   createTalkRun,
   getQueuedTalkRuns,
@@ -159,6 +160,9 @@ describe('talk routes', () => {
         },
         abortTalk: (talkId: string) => {
           abortCalls.push(talkId);
+        },
+        abortThread: (threadId: string) => {
+          abortCalls.push(`thread:${threadId}`);
         },
       },
     });
@@ -611,6 +615,7 @@ describe('talk routes', () => {
     createTalkMessage({
       id: 'msg-run-history',
       talkId: 'talk-owner',
+      threadId: 'thread-talk-owner',
       role: 'user',
       content: 'Show me the run history error',
       createdBy: 'owner-1',
@@ -619,7 +624,7 @@ describe('talk routes', () => {
     createTalkRun({
       id: 'run-history-failed',
       talk_id: 'talk-owner',
-      thread_id: null,
+      thread_id: 'thread-talk-owner',
       requested_by: 'owner-1',
       status: 'failed',
       trigger_message_id: 'msg-run-history',
@@ -653,7 +658,7 @@ describe('talk routes', () => {
     createTalkRun({
       id: 'run-runtime-meta',
       talk_id: 'talk-owner',
-      thread_id: null,
+      thread_id: 'thread-talk-owner',
       requested_by: 'owner-1',
       status: 'completed',
       trigger_message_id: null,
@@ -670,6 +675,7 @@ describe('talk routes', () => {
     createTalkMessage({
       id: 'msg-runtime-meta',
       talkId: 'talk-owner',
+      threadId: 'thread-talk-owner',
       role: 'assistant',
       content: 'Checking PostHog',
       createdBy: null,
@@ -712,6 +718,7 @@ describe('talk routes', () => {
     createTalkMessage({
       id: 'msg-edit-1',
       talkId: 'talk-owner',
+      threadId: 'thread-talk-owner',
       role: 'user',
       content: 'Remove me',
       createdBy: 'owner-1',
@@ -720,6 +727,7 @@ describe('talk routes', () => {
     createTalkMessage({
       id: 'msg-edit-2',
       talkId: 'talk-owner',
+      threadId: 'thread-talk-owner',
       role: 'assistant',
       content: 'Remove me too',
       createdBy: null,
@@ -728,6 +736,7 @@ describe('talk routes', () => {
     createTalkMessage({
       id: 'msg-edit-3',
       talkId: 'talk-owner',
+      threadId: 'thread-talk-owner',
       role: 'user',
       content: 'Keep me',
       createdBy: 'owner-1',
@@ -782,6 +791,7 @@ describe('talk routes', () => {
     createTalkMessage({
       id: 'msg-edit-active',
       talkId: 'talk-owner',
+      threadId: 'thread-talk-owner',
       role: 'user',
       content: 'Still here',
       createdBy: 'owner-1',
@@ -790,7 +800,7 @@ describe('talk routes', () => {
     createTalkRun({
       id: 'run-edit-active',
       talk_id: 'talk-owner',
-      thread_id: null,
+      thread_id: 'thread-talk-owner',
       requested_by: 'owner-1',
       status: 'queued',
       trigger_message_id: 'msg-edit-active',
@@ -905,6 +915,35 @@ describe('talk routes', () => {
     expect(body.error.code).toBe('message_too_large');
   });
 
+  it('rejects thread ids that do not belong to the target talk', async () => {
+    upsertTalk({
+      id: 'talk-other',
+      ownerId: 'owner-1',
+      topicTitle: 'Other Talk',
+    });
+    const foreignThread = createTalkThread({
+      talkId: 'talk-other',
+      title: 'Foreign Thread',
+    });
+
+    const res = await server.request('/api/v1/talks/talk-owner/chat', {
+      method: 'POST',
+      headers: {
+        Authorization: 'Bearer owner-token',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        content: 'hello from wrong thread',
+        threadId: foreignThread.id,
+      }),
+    });
+
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as any;
+    expect(body.ok).toBe(false);
+    expect(body.error.code).toBe('thread_not_found');
+  });
+
   it('supports cancel on existing talk and validates talk id encoding', async () => {
     const queued = await server.request('/api/v1/talks/talk-owner/chat', {
       method: 'POST',
@@ -927,6 +966,53 @@ describe('talk routes', () => {
     );
     expect(cancelRes.status).toBe(200);
     expect(abortCalls).toEqual([]);
+
+    const malformedCancelRes = await server.request(
+      '/api/v1/talks/talk-owner/chat/cancel',
+      {
+        method: 'POST',
+        headers: {
+          Authorization: 'Bearer owner-token',
+          'Content-Type': 'application/json',
+        },
+        body: '{"threadId"',
+      },
+    );
+    expect(malformedCancelRes.status).toBe(400);
+    const malformedCancelBody = (await malformedCancelRes.json()) as any;
+    expect(malformedCancelBody.error.code).toBe('invalid_json');
+
+    const threadA = createTalkThread({ talkId: 'talk-owner', title: 'A' });
+    createTalkRun({
+      id: 'run-thread-cancel-a',
+      talk_id: 'talk-owner',
+      thread_id: threadA.id,
+      requested_by: 'owner-1',
+      status: 'running',
+      trigger_message_id: null,
+      target_agent_id: null,
+      idempotency_key: null,
+      executor_alias: null,
+      executor_model: null,
+      created_at: '2026-03-07T02:00:00.000Z',
+      started_at: '2026-03-07T02:00:00.500Z',
+      ended_at: null,
+      cancel_reason: null,
+    });
+
+    const threadCancelRes = await server.request(
+      '/api/v1/talks/talk-owner/chat/cancel',
+      {
+        method: 'POST',
+        headers: {
+          Authorization: 'Bearer owner-token',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ threadId: threadA.id }),
+      },
+    );
+    expect(threadCancelRes.status).toBe(200);
+    expect(abortCalls).toContain(`thread:${threadA.id}`);
 
     const badTalkRes = await server.request('/api/v1/talks/%ZZ/chat', {
       method: 'POST',

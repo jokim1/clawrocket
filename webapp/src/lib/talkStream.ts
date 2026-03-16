@@ -6,6 +6,7 @@ export type TalkStreamState =
 
 export type MessageAppendedEvent = {
   talkId: string;
+  threadId?: string | null;
   messageId: string;
   runId: string | null;
   role: 'user' | 'assistant' | 'system' | 'tool';
@@ -19,6 +20,7 @@ export type MessageAppendedEvent = {
 
 export type TalkRunStartedEvent = {
   talkId: string;
+  threadId?: string | null;
   runId: string;
   triggerMessageId: string | null;
   status: 'running' | 'queued';
@@ -28,6 +30,7 @@ export type TalkRunStartedEvent = {
 
 export type TalkRunCompletedEvent = {
   talkId: string;
+  threadId?: string | null;
   runId: string;
   triggerMessageId: string | null;
   responseMessageId: string;
@@ -37,6 +40,7 @@ export type TalkRunCompletedEvent = {
 
 export type TalkResponseStartedEvent = {
   talkId: string;
+  threadId?: string | null;
   runId: string;
   agentId?: string | null;
   agentNickname?: string | null;
@@ -47,6 +51,7 @@ export type TalkResponseStartedEvent = {
 
 export type TalkResponseDeltaEvent = {
   talkId: string;
+  threadId?: string | null;
   runId: string;
   agentId?: string | null;
   agentNickname?: string | null;
@@ -58,6 +63,7 @@ export type TalkResponseDeltaEvent = {
 
 export type TalkResponseUsageEvent = {
   talkId: string;
+  threadId?: string | null;
   runId: string;
   agentId?: string | null;
   usage?: {
@@ -72,6 +78,7 @@ export type TalkResponseUsageEvent = {
 
 export type TalkResponseTerminalEvent = {
   talkId: string;
+  threadId?: string | null;
   runId: string;
   agentId?: string | null;
   agentNickname?: string | null;
@@ -84,6 +91,7 @@ export type TalkResponseTerminalEvent = {
 
 export type TalkRunFailedEvent = {
   talkId: string;
+  threadId?: string | null;
   runId: string;
   triggerMessageId: string | null;
   errorCode: string;
@@ -94,12 +102,14 @@ export type TalkRunFailedEvent = {
 
 export type TalkRunCancelledEvent = {
   talkId: string;
+  threadIds?: string[];
   cancelledBy: string;
   runIds: string[];
 };
 
 export type TalkHistoryEditedEvent = {
   talkId: string;
+  threadIds?: string[];
   deletedCount: number;
   deletedMessageIds: string[];
   editedAt: string;

@@ -663,7 +663,7 @@ export type MessageRole = 'user' | 'assistant' | 'system' | 'tool';
 export function createMessage(input: {
   id: string;
   talkId?: string | null;
-  threadId?: string | null;
+  threadId: string;
   role: MessageRole;
   content: string;
   agentId?: string | null;
@@ -682,7 +682,7 @@ export function createMessage(input: {
     .run(
       input.id,
       input.talkId || null,
-      input.threadId || null,
+      input.threadId,
       input.role,
       input.content,
       input.agentId || null,

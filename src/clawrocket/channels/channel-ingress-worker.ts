@@ -138,12 +138,12 @@ export class ChannelIngressWorker {
       return;
     }
 
-    if (enqueueResult.status === 'talk_busy') {
+    if (enqueueResult.status === 'thread_busy') {
       const nextAt = new Date(Date.now() + 5_000).toISOString();
       markChannelIngressDeferred({
         rowId: row.id,
         reasonDetail:
-          'Talk has an active round; retrying after the next availability window',
+          'Target thread has an active round; retrying after the next availability window',
         availableAt: nextAt,
       });
       return;

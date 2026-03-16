@@ -5,8 +5,9 @@ import { getDb } from '../../db.js';
 import {
   createTalkMessage,
   createTalkRun,
+  hasActiveTalkRuns,
   touchTalkUpdatedAt,
-  getOrCreateDefaultThread,
+  resolveThreadIdForTalk,
 } from './accessors.js';
 import { resolvePrimaryAgent } from '../agents/agent-registry.js';
 
@@ -1174,7 +1175,7 @@ export function enqueueChannelTurnAtomic(input: {
   now?: string;
 }):
   | { status: 'enqueued'; messageId: string; runId: string }
-  | { status: 'talk_busy' }
+  | { status: 'thread_busy' }
   | { status: 'invalid_state'; code: string; message: string } {
   const now = normalizeTimestamp(input.now);
   const tx = getDb().transaction(() => {
@@ -1211,17 +1212,12 @@ export function enqueueChannelTurnAtomic(input: {
       };
     }
 
-    const active = getDb()
-      .prepare(
-        `
-        SELECT COUNT(*) AS count
-        FROM talk_runs
-        WHERE talk_id = ? AND status IN ('queued', 'running', 'awaiting_confirmation')
-      `,
-      )
-      .get(input.talkId) as { count: number } | undefined;
-    if ((active?.count || 0) > 0) {
-      return { status: 'talk_busy' as const };
+    // Resolve thread for channel ingress: use the default thread for now.
+    // Future: could map source_thread_key to a dedicated thread.
+    const threadId = resolveThreadIdForTalk(input.talkId, null);
+    const active = hasActiveTalkRuns(input.talkId, threadId);
+    if (active) {
+      return { status: 'thread_busy' as const };
     }
 
     const agent = getDb()
@@ -1242,10 +1238,6 @@ export function enqueueChannelTurnAtomic(input: {
         message: 'Configured responder agent is not available on the talk',
       };
     }
-
-    // Resolve thread for channel ingress: use the default thread for now.
-    // Future: could map source_thread_key to a dedicated thread.
-    const threadId = getOrCreateDefaultThread(input.talkId);
 
     createTalkMessage({
       id: input.messageId,
@@ -1310,6 +1302,7 @@ export function enqueueChannelTurnAtomic(input: {
         `talk:${input.talkId}`,
         JSON.stringify({
           talkId: input.talkId,
+          threadId,
           runId: input.runId,
           triggerMessageId: input.messageId,
           targetAgentId: input.targetAgentId,

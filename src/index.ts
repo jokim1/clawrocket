@@ -518,6 +518,7 @@ async function main(): Promise<void> {
         runWorker?: {
           wake: () => void;
           abortTalk: (talkId: string) => void;
+          abortThread: (threadId: string) => void;
         };
       }
     | undefined;

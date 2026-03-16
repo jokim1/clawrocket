@@ -324,6 +324,7 @@ describe('TalkRunWorker', () => {
     createTalkMessage({
       id: 'msg-5',
       talkId: 'talk-1',
+      threadId: 'thread-1',
       role: 'user',
       content: 'stale running work',
       createdBy: 'owner-1',
@@ -332,6 +333,7 @@ describe('TalkRunWorker', () => {
     createTalkMessage({
       id: 'msg-6',
       talkId: 'talk-1',
+      threadId: 'thread-1',
       role: 'user',
       content: 'queued recovery work',
       createdBy: 'owner-1',
@@ -340,7 +342,7 @@ describe('TalkRunWorker', () => {
     createTalkRun({
       id: 'run-5',
       talk_id: 'talk-1',
-      thread_id: null,
+      thread_id: 'thread-1',
       requested_by: 'owner-1',
       status: 'running',
       trigger_message_id: 'msg-5',
@@ -355,7 +357,7 @@ describe('TalkRunWorker', () => {
     createTalkRun({
       id: 'run-6',
       talk_id: 'talk-1',
-      thread_id: null,
+      thread_id: 'thread-1',
       requested_by: 'owner-1',
       status: 'queued',
       trigger_message_id: 'msg-6',

@@ -17,6 +17,7 @@ import { CleanTalkExecutor } from './new-executor.js';
 import type { TalkExecutionEvent } from './executor.js';
 
 const TALK_ID = 'talk-clean-exec';
+const THREAD_ID = 'thread-clean-exec';
 
 function insertSource(input: {
   id: string;
@@ -68,6 +69,7 @@ describe('CleanTalkExecutor', () => {
     createMessage({
       id: 'msg-user-1',
       talkId: TALK_ID,
+      threadId: THREAD_ID,
       role: 'user',
       content: 'Summarize source S1',
       createdBy: 'owner-1',
@@ -76,7 +78,7 @@ describe('CleanTalkExecutor', () => {
     createTalkRun({
       id: 'run-talk-1',
       talk_id: TALK_ID,
-      thread_id: null,
+      thread_id: THREAD_ID,
       requested_by: 'owner-1',
       status: 'running',
       trigger_message_id: 'msg-user-1',
@@ -157,6 +159,7 @@ describe('CleanTalkExecutor', () => {
       {
         runId: 'run-talk-1',
         talkId: TALK_ID,
+        threadId: THREAD_ID,
         requestedBy: 'owner-1',
         triggerMessageId: 'msg-user-1',
         triggerContent: 'Summarize source S1',

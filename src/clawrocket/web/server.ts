@@ -20,6 +20,8 @@ import {
   countRunningTalkRuns,
   getOutboxEventsForTopics,
   getOutboxMinEventIdForTopics,
+  resolveThreadIdForTalk,
+  TalkThreadValidationError,
   getUserById,
   updateUserDisplayName,
 } from '../db/index.js';
@@ -52,6 +54,7 @@ import {
   type RateLimitResult,
 } from './middleware/rate-limit.js';
 import {
+  buildTalkThreadEventFilter,
   buildTalkScopedSseStream,
   buildUserScopedSseStream,
   formatOutboxEventAsSse,
@@ -146,6 +149,7 @@ import {
   type TalkContextSourceIngestionService,
 } from '../talks/source-ingestion.js';
 import { authenticateRequest } from './middleware/auth.js';
+import { canEditTalk } from './middleware/acl.js';
 import { AuthContext } from './types.js';
 import { DataConnectorVerifier } from '../connectors/connector-verifier.js';
 import { logger } from '../../logger.js';
@@ -191,6 +195,9 @@ export function createWebServer(
       /* no-op */
     },
     abortTalk: () => {
+      /* no-op */
+    },
+    abortThread: () => {
       /* no-op */
     },
   };
@@ -2518,6 +2525,12 @@ function buildApp(opts: WebServerOptions): Hono {
       if (!talk) {
         return c.json({ ok: false, error: { code: 'talk_not_found', message: 'Talk not found' } }, 404);
       }
+      if (!canEditTalk(talkId, auth.userId, auth.role)) {
+        return c.json(
+          { ok: false, error: { code: 'forbidden', message: 'You do not have permission to create threads for this talk' } },
+          403,
+        );
+      }
       const body = await c.req.json().catch(() => ({}));
       const title = typeof body.title === 'string' ? body.title.trim() || null : null;
       const thread = createTalkThread({ talkId, title });
@@ -3657,7 +3670,6 @@ function buildApp(opts: WebServerOptions): Hono {
         },
       });
     }
-
     const encodedTalkId = c.req.param('talkId');
     const talkId = safeDecodePathSegment(encodedTalkId);
     if (!talkId) {
@@ -3833,7 +3845,6 @@ function buildApp(opts: WebServerOptions): Hono {
         },
       });
     }
-
     const encodedTalkId = c.req.param('talkId');
     const talkId = safeDecodePathSegment(encodedTalkId);
     if (!talkId) {
@@ -3947,7 +3958,6 @@ function buildApp(opts: WebServerOptions): Hono {
         },
       });
     }
-
     const encodedTalkId = c.req.param('talkId');
     const talkId = safeDecodePathSegment(encodedTalkId);
     if (!talkId) {
@@ -4101,6 +4111,28 @@ function buildApp(opts: WebServerOptions): Hono {
       return rateLimitedResponse(c, rateResult);
     }
 
+    const requestedThreadId = (c.req.query('threadId') || '').trim() || null;
+    let threadId: string | null = null;
+    if (requestedThreadId) {
+      try {
+        threadId = resolveThreadIdForTalk(talkId, requestedThreadId);
+      } catch (error) {
+        if (error instanceof TalkThreadValidationError) {
+          return c.json(
+            {
+              ok: false,
+              error: {
+                code: error.code,
+                message: error.message,
+              },
+            },
+            400,
+          );
+        }
+        throw error;
+      }
+    }
+
     const lastEventId = parseLastEventId(c.req.header('last-event-id'));
     if (isLiveSseMode(c.req.query('stream'))) {
       if (!tryAcquireLiveSseConnection(auth.userId)) {
@@ -4119,12 +4151,15 @@ function buildApp(opts: WebServerOptions): Hono {
       return createLiveSseResponse({
         topics: getTalkScopedEventTopics(talkId),
         lastEventId,
+        eventFilter: threadId
+          ? buildTalkThreadEventFilter(threadId)
+          : undefined,
         requestSignal: c.req.raw.signal,
         onClose: () => releaseLiveSseConnection(auth.userId),
       });
     }
 
-    const stream = buildTalkScopedSseStream({ talkId, lastEventId });
+    const stream = buildTalkScopedSseStream({ talkId, lastEventId, threadId });
 
     return c.body(
       `retry: ${SSE_RETRY_MS}\n\n${stream}`,
@@ -4211,8 +4246,20 @@ function buildApp(opts: WebServerOptions): Hono {
       );
     }
 
+    const payload = parseJsonPayload<Record<string, unknown>>(bodyText);
+    if (!payload.ok) {
+      return c.json(
+        { ok: false, error: { code: 'invalid_json', message: payload.error } },
+        400,
+      );
+    }
+
     const result = cancelTalkChat({
       talkId,
+      threadId:
+        typeof payload.data.threadId === 'string'
+          ? payload.data.threadId.trim() || null
+          : null,
       auth,
     });
     if (
@@ -4220,7 +4267,12 @@ function buildApp(opts: WebServerOptions): Hono {
       result.body.ok &&
       result.cancelledRunning
     ) {
-      opts.runWorker.abortTalk(talkId);
+      const cancelledThreadId = result.body.data.threadId;
+      if (typeof cancelledThreadId === 'string' && cancelledThreadId.length > 0) {
+        opts.runWorker.abortThread(cancelledThreadId);
+      } else {
+        opts.runWorker.abortTalk(talkId);
+      }
     }
 
     const serialized = JSON.stringify(result.body);
@@ -4390,6 +4442,11 @@ function sseHeaders(mode: 'snapshot' | 'stream'): Record<string, string> {
 function createLiveSseResponse(input: {
   topics: string[];
   lastEventId: number;
+  eventFilter?: (event: {
+    event_id: number;
+    event_type: string;
+    payload: string;
+  }) => boolean;
   requestSignal: AbortSignal;
   onClose?: () => void;
 }): Response {
@@ -4447,7 +4504,9 @@ function createLiveSseResponse(input: {
             SSE_STREAM_BATCH_LIMIT,
           );
           for (const event of events) {
-            write(formatOutboxEventAsSse(event));
+            if (!input.eventFilter || input.eventFilter(event)) {
+              write(formatOutboxEventAsSse(event));
+            }
             cursor = event.event_id;
           }
 
