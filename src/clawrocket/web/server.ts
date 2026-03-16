@@ -2111,6 +2111,7 @@ function buildApp(opts: WebServerOptions): Hono {
     const payload = parseJsonPayload<{
       title?: string;
       folderId?: string | null;
+      orchestrationMode?: 'ordered' | 'panel';
     }>(bodyText);
     if (!payload.ok) {
       return c.json(
@@ -2134,6 +2135,11 @@ function buildApp(opts: WebServerOptions): Hono {
         typeof payload.data.folderId === 'string' ||
         payload.data.folderId === null
           ? payload.data.folderId
+          : undefined,
+      orchestrationMode:
+        payload.data.orchestrationMode === 'ordered' ||
+        payload.data.orchestrationMode === 'panel'
+          ? payload.data.orchestrationMode
           : undefined,
     });
     return new Response(JSON.stringify(result.body), {

@@ -56,6 +56,7 @@ import {
   normalizeTalkListPage,
   pruneEventOutbox,
   pruneIdempotencyCache,
+  patchTalkMetadata,
   saveIdempotencyCache,
   setTalkRunExecutorProfile,
   upsertTalk,
@@ -567,6 +568,18 @@ describe('phase 0 schema and reliability tables', () => {
     expect(isDatabaseHealthy()).toBe(true);
   });
 
+  it('defaults talks to ordered orchestration and allows metadata updates to panel', () => {
+    expect(getTalkById('talk-1')?.orchestration_mode).toBe('ordered');
+
+    patchTalkMetadata({
+      talkId: 'talk-1',
+      ownerId: 'owner-1',
+      orchestrationMode: 'panel',
+    });
+
+    expect(getTalkById('talk-1')?.orchestration_mode).toBe('panel');
+  });
+
   it('backfills legacy null thread ids and rebuilds talk tables with NOT NULL thread columns', () => {
     upsertTalk({
       id: 'talk-legacy',
@@ -1069,6 +1082,59 @@ describe('phase 0 schema and reliability tables', () => {
       triggerMessageId: 'msg-atomic-1',
       status: 'queued',
     });
+  });
+
+  it('persists ordered response group metadata for multi-agent turns', () => {
+    const result = enqueueTalkTurnAtomicRaw({
+      talkId: 'talk-1',
+      userId: 'owner-1',
+      content: 'ordered hello',
+      messageId: 'msg-ordered-atomic-1',
+      runIds: [
+        'run-ordered-atomic-1',
+        'run-ordered-atomic-2',
+        'run-ordered-atomic-3',
+      ],
+      targetAgentIds: ['agent.main', 'agent.main', 'agent.main'],
+      responseGroupId: 'group-ordered-atomic-1',
+      sequenceIndexes: [0, 1, 2],
+      now: '2024-01-01T00:00:11.000Z',
+    });
+
+    expect(result.runs.map((run) => run.response_group_id)).toEqual([
+      'group-ordered-atomic-1',
+      'group-ordered-atomic-1',
+      'group-ordered-atomic-1',
+    ]);
+    expect(result.runs.map((run) => run.sequence_index)).toEqual([0, 1, 2]);
+    expect(getTalkRunById('run-ordered-atomic-2')).toMatchObject({
+      response_group_id: 'group-ordered-atomic-1',
+      sequence_index: 1,
+    });
+
+    const queuedEvents = getOutboxEventsForTopics(['talk:talk-1'], 0, 20)
+      .filter((event) => event.event_type === 'talk_run_queued')
+      .map((event) => JSON.parse(event.payload) as Record<string, unknown>);
+
+    expect(queuedEvents).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          runId: 'run-ordered-atomic-1',
+          responseGroupId: 'group-ordered-atomic-1',
+          sequenceIndex: 0,
+        }),
+        expect.objectContaining({
+          runId: 'run-ordered-atomic-2',
+          responseGroupId: 'group-ordered-atomic-1',
+          sequenceIndex: 1,
+        }),
+        expect.objectContaining({
+          runId: 'run-ordered-atomic-3',
+          responseGroupId: 'group-ordered-atomic-1',
+          sequenceIndex: 2,
+        }),
+      ]),
+    );
   });
 
   it('rolls back message writes when run insert fails inside atomic enqueue', () => {

@@ -159,6 +159,8 @@ function enqueueTalkRoundAtomic(input: {
   messageId: string;
   runIds: string[];
   targetAgentIds?: string[];
+  responseGroupId?: string | null;
+  sequenceIndexes?: Array<number | null>;
   idempotencyKey?: string | null;
   now?: string;
 }) {
@@ -170,9 +172,59 @@ function enqueueTalkRoundAtomic(input: {
     runIds: input.runIds,
     targetAgentIds:
       input.targetAgentIds ?? input.runIds.map(() => 'agent-default'),
+    responseGroupId: input.responseGroupId,
+    sequenceIndexes: input.sequenceIndexes,
     idempotencyKey: input.idempotencyKey,
     now: input.now,
   });
+}
+
+class OrderedFailureExecutor implements TalkExecutor {
+  startedRuns: string[] = [];
+
+  private resolveFirstStarted!: () => void;
+  readonly firstStarted = new Promise<void>((resolve) => {
+    this.resolveFirstStarted = resolve;
+  });
+
+  private releaseFirstExecution!: () => void;
+  readonly firstExecutionReleased = new Promise<void>((resolve) => {
+    this.releaseFirstExecution = resolve;
+  });
+
+  releaseFirst(): void {
+    this.releaseFirstExecution();
+  }
+
+  async execute(input: TalkExecutorInput): Promise<TalkExecutorOutput> {
+    this.startedRuns.push(input.runId);
+
+    if (input.runId === 'run-ordered-1') {
+      this.resolveFirstStarted();
+      await this.firstExecutionReleased;
+      return {
+        content: 'Ordered phase one complete',
+        agentId: 'agent.main',
+        agentNickname: 'Nanoclaw',
+        providerId: 'builtin.mock',
+        modelId: 'mock-default',
+        responseSequenceInRun: 1,
+      };
+    }
+
+    if (input.runId === 'run-ordered-2') {
+      throw new TalkExecutorError('rate_limited', 'Provider rate limited');
+    }
+
+    return {
+      content: `Unexpected completion for ${input.runId}`,
+      agentId: 'agent.main',
+      agentNickname: 'Nanoclaw',
+      providerId: 'builtin.mock',
+      modelId: 'mock-default',
+      responseSequenceInRun: 1,
+    };
+  }
 }
 
 describe('TalkRunWorker', () => {
@@ -316,6 +368,59 @@ describe('TalkRunWorker', () => {
     expect(queuedEvent).toBeDefined();
     expect(startedEvent).toBeDefined();
     expect(startedEvent?.payload).toContain('"triggerMessageId":"msg-3"');
+
+    await worker.stop();
+  });
+
+  it('only claims the next eligible ordered run and cancels later queued phases after failure', async () => {
+    const executor = new OrderedFailureExecutor();
+    const worker = new TalkRunWorker({
+      executor,
+      pollMs: 10_000,
+      maxConcurrency: 3,
+    });
+    await worker.start();
+
+    enqueueTalkRoundAtomic({
+      talkId: 'talk-1',
+      userId: 'owner-1',
+      content: 'ordered round prompt',
+      messageId: 'msg-ordered-1',
+      runIds: ['run-ordered-1', 'run-ordered-2', 'run-ordered-3'],
+      responseGroupId: 'group-ordered-1',
+      sequenceIndexes: [0, 1, 2],
+    });
+
+    worker.wake();
+    await executor.firstStarted;
+
+    expect(executor.startedRuns).toEqual(['run-ordered-1']);
+    expect(getTalkRunById('run-ordered-1')?.status).toBe('running');
+    expect(getTalkRunById('run-ordered-2')?.status).toBe('queued');
+    expect(getTalkRunById('run-ordered-3')?.status).toBe('queued');
+
+    executor.releaseFirst();
+
+    await waitFor(
+      () => getTalkRunById('run-ordered-1')?.status === 'completed',
+    );
+    await waitFor(() => getTalkRunById('run-ordered-2')?.status === 'failed');
+    await waitFor(
+      () => getTalkRunById('run-ordered-3')?.status === 'cancelled',
+    );
+
+    expect(executor.startedRuns).toEqual(['run-ordered-1', 'run-ordered-2']);
+    expect(getTalkRunById('run-ordered-3')?.cancel_reason).toBe(
+      'blocked_by_prior_failure',
+    );
+
+    const events = getOutboxEventsForTopics(['talk:talk-1'], 0, 100);
+    const cancelledEvent = events.find(
+      (event) =>
+        event.event_type === 'talk_run_cancelled' &&
+        event.payload.includes('"runIds":["run-ordered-3"]'),
+    );
+    expect(cancelledEvent).toBeDefined();
 
     await worker.stop();
   });

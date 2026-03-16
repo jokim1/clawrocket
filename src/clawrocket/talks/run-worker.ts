@@ -226,6 +226,7 @@ export class TalkRunWorker implements TalkRunWorkerControl {
     }
 
     try {
+      const executionStartedAt = Date.now();
       const output = await this.executor.execute(
         {
           runId: run.id,
@@ -235,10 +236,13 @@ export class TalkRunWorker implements TalkRunWorkerControl {
           triggerMessageId: triggerMessage.id,
           triggerContent: triggerMessage.content,
           targetAgentId: run.target_agent_id,
+          responseGroupId: run.response_group_id ?? null,
+          sequenceIndex: run.sequence_index ?? null,
         },
         signal,
         (event) => this.emitExecutionEvent(event),
       );
+      const latencyMs = Date.now() - executionStartedAt;
 
       const completed = completeRunAndPromoteNextAtomic({
         runId: run.id,
@@ -247,6 +251,10 @@ export class TalkRunWorker implements TalkRunWorkerControl {
         responseMetadataJson: output.metadataJson,
         agentId: output.agentId,
         agentNickname: output.agentNickname,
+        providerId: output.providerId,
+        modelId: output.modelId,
+        latencyMs,
+        usage: output.usage,
         responseSequenceInRun: output.responseSequenceInRun,
       });
       if (!completed.applied) {

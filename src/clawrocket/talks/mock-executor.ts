@@ -65,6 +65,9 @@ export class MockTalkExecutor implements TalkExecutor {
       type: 'talk_response_started',
       runId: input.runId,
       talkId: input.talkId,
+      threadId: input.threadId,
+      responseGroupId: input.responseGroupId ?? null,
+      sequenceIndex: input.sequenceIndex ?? null,
     });
     await waitFor(this.executionMs, signal);
 
@@ -73,16 +76,29 @@ export class MockTalkExecutor implements TalkExecutor {
       type: 'talk_response_delta',
       runId: input.runId,
       talkId: input.talkId,
+      threadId: input.threadId,
+      responseGroupId: input.responseGroupId ?? null,
+      sequenceIndex: input.sequenceIndex ?? null,
       deltaText: content,
     });
     emit?.({
       type: 'talk_response_completed',
       runId: input.runId,
       talkId: input.talkId,
+      threadId: input.threadId,
+      responseGroupId: input.responseGroupId ?? null,
+      sequenceIndex: input.sequenceIndex ?? null,
     });
 
     return {
       content,
+      agentNickname: 'Mock Assistant',
+      responseSequenceInRun: 1,
+      metadataJson: JSON.stringify({
+        runId: input.runId,
+        responseGroupId: input.responseGroupId ?? null,
+        sequenceIndex: input.sequenceIndex ?? null,
+      }),
     };
   }
 }

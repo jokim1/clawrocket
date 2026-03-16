@@ -29,6 +29,7 @@ export type Talk = {
   id: string;
   ownerId: string;
   title: string;
+  orchestrationMode: 'ordered' | 'panel';
   agents: string[];
   status: string;
   folderId: string | null;
@@ -253,6 +254,8 @@ export type TalkMessageSearchResult = {
 export type TalkRun = {
   id: string;
   threadId: string;
+  responseGroupId: string | null;
+  sequenceIndex: number | null;
   status:
     | 'queued'
     | 'running'
@@ -268,6 +271,7 @@ export type TalkRun = {
   targetAgentNickname: string | null;
   errorCode: string | null;
   errorMessage: string | null;
+  cancelReason: string | null;
   executorAlias: string | null;
   executorModel: string | null;
 };
@@ -785,6 +789,7 @@ export async function patchTalkMetadata(input: {
   talkId: string;
   title?: string;
   folderId?: string | null;
+  orchestrationMode?: 'ordered' | 'panel';
 }): Promise<Talk> {
   const envelope = await apiMutationRequest<{ talk: Talk }>(
     `/api/v1/talks/${encodeURIComponent(input.talkId)}`,
@@ -794,6 +799,7 @@ export async function patchTalkMetadata(input: {
       body: JSON.stringify({
         title: input.title,
         folderId: input.folderId,
+        orchestrationMode: input.orchestrationMode,
       }),
     },
   );

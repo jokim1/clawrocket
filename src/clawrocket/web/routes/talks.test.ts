@@ -406,6 +406,30 @@ describe('talk routes', () => {
     expect(outsiderRes.status).toBe(404);
   });
 
+  it('includes orchestrationMode in talk detail and allows patching it', async () => {
+    const detailRes = await server.request('/api/v1/talks/talk-owner', {
+      headers: {
+        Authorization: 'Bearer owner-token',
+      },
+    });
+    expect(detailRes.status).toBe(200);
+    const detailBody = (await detailRes.json()) as any;
+    expect(detailBody.data.talk.orchestrationMode).toBe('ordered');
+
+    const patchRes = await server.request('/api/v1/talks/talk-owner', {
+      method: 'PATCH',
+      headers: {
+        Authorization: 'Bearer owner-token',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ orchestrationMode: 'panel' }),
+    });
+    expect(patchRes.status).toBe(200);
+    const patchBody = (await patchRes.json()) as any;
+    expect(patchBody.ok).toBe(true);
+    expect(patchBody.data.talk.orchestrationMode).toBe('panel');
+  });
+
   it('returns talk policy for authorized users and 404 for outsiders', async () => {
     const viewerRes = await server.request('/api/v1/talks/talk-owner/policy', {
       headers: {
@@ -926,6 +950,104 @@ describe('talk routes', () => {
       ),
     ).toHaveLength(1);
     expect(wakeCalls).toBe(1);
+  });
+
+  it('creates grouped ordered runs for multi-agent chat turns', async () => {
+    const secondAgent = createRegisteredAgent({
+      name: 'GPT-5',
+      providerId: 'provider.openai',
+      modelId: 'gpt-5',
+      toolPermissionsJson: '{}',
+    });
+    getDb()
+      .prepare(
+        `
+        INSERT INTO talk_agents (
+          id, talk_id, registered_agent_id, nickname, is_primary, sort_order, created_at, updated_at
+        )
+        VALUES (?, ?, ?, ?, 0, 1, datetime('now'), datetime('now'))
+      `,
+      )
+      .run('ta-talk-owner-2', 'talk-owner', secondAgent.id, secondAgent.name);
+
+    const res = await server.request('/api/v1/talks/talk-owner/chat', {
+      method: 'POST',
+      headers: {
+        Authorization: 'Bearer owner-token',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        content: 'compare these options',
+      }),
+    });
+
+    expect(res.status).toBe(202);
+    const body = (await res.json()) as any;
+    expect(body.ok).toBe(true);
+    expect(body.data.runs).toHaveLength(2);
+    expect(body.data.runs[0].responseGroupId).toBeTruthy();
+    expect(body.data.runs[0].responseGroupId).toBe(
+      body.data.runs[1].responseGroupId,
+    );
+    expect(body.data.runs.map((run: any) => run.sequenceIndex)).toEqual([0, 1]);
+  });
+
+  it('creates grouped panel runs without ordered sequence indexes', async () => {
+    const patchRes = await server.request('/api/v1/talks/talk-owner', {
+      method: 'PATCH',
+      headers: {
+        Authorization: 'Bearer owner-token',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ orchestrationMode: 'panel' }),
+    });
+    expect(patchRes.status).toBe(200);
+
+    const secondAgent = createRegisteredAgent({
+      name: 'GPT-5 Critic',
+      providerId: 'provider.openai',
+      modelId: 'gpt-5',
+      toolPermissionsJson: '{}',
+    });
+    getDb()
+      .prepare(
+        `
+        INSERT INTO talk_agents (
+          id, talk_id, registered_agent_id, nickname, is_primary, sort_order, created_at, updated_at
+        )
+        VALUES (?, ?, ?, ?, 0, 1, datetime('now'), datetime('now'))
+      `,
+      )
+      .run(
+        'ta-talk-owner-panel-2',
+        'talk-owner',
+        secondAgent.id,
+        secondAgent.name,
+      );
+
+    const res = await server.request('/api/v1/talks/talk-owner/chat', {
+      method: 'POST',
+      headers: {
+        Authorization: 'Bearer owner-token',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        content: 'compare these options in parallel',
+      }),
+    });
+
+    expect(res.status).toBe(202);
+    const body = (await res.json()) as any;
+    expect(body.ok).toBe(true);
+    expect(body.data.runs).toHaveLength(2);
+    expect(body.data.runs[0].responseGroupId).toBeTruthy();
+    expect(body.data.runs[0].responseGroupId).toBe(
+      body.data.runs[1].responseGroupId,
+    );
+    expect(body.data.runs.map((run: any) => run.sequenceIndex)).toEqual([
+      null,
+      null,
+    ]);
   });
 
   it('rejects oversized chat content with message_too_large', async () => {

@@ -91,6 +91,7 @@ export async function loadTalkContext(
   talkId: string,
   modelContextWindow: number,
   threadId?: string | null,
+  historyThroughMessageId?: string | null,
 ): Promise<ContextPackage> {
   const db = getDb();
 
@@ -123,7 +124,13 @@ export async function loadTalkContext(
     OUTPUT_RESERVE -
     systemPromptTokens -
     TOOL_SCHEMA_RESERVE;
-  const history = loadMessageHistory(db, talkId, availableBudget, threadId);
+  const history = loadMessageHistory(
+    db,
+    talkId,
+    availableBudget,
+    threadId,
+    historyThroughMessageId,
+  );
 
   // Estimate total tokens
   const historyTokens = history.reduce((sum, msg) => {
@@ -401,7 +408,27 @@ function loadMessageHistory(
   talkId: string,
   budgetTokens: number,
   threadId?: string | null,
+  historyThroughMessageId?: string | null,
 ): LlmMessage[] {
+  const cutoff = historyThroughMessageId
+    ? (db
+        .prepare(
+          `
+          SELECT id, created_at
+          FROM talk_messages
+          WHERE id = ? AND talk_id = ?
+            AND (? IS NULL OR thread_id = ?)
+          LIMIT 1
+        `,
+        )
+        .get(
+          historyThroughMessageId,
+          talkId,
+          threadId ?? null,
+          threadId ?? null,
+        ) as { id: string; created_at: string } | undefined)
+    : undefined;
+
   // When threadId is provided, only load messages from that thread.
   // Otherwise load all messages for the Talk (legacy/pre-thread behavior).
   let rows: MessageRow[];
@@ -412,10 +439,22 @@ function loadMessageHistory(
         SELECT id, role, content, agent_id, created_at, metadata_json
         FROM talk_messages
         WHERE talk_id = ? AND thread_id = ?
+          AND (
+            ? IS NULL
+            OR created_at < ?
+            OR (created_at = ? AND id <= ?)
+          )
         ORDER BY created_at DESC
       `,
       )
-      .all(talkId, threadId) as MessageRow[];
+      .all(
+        talkId,
+        threadId,
+        cutoff?.id ?? null,
+        cutoff?.created_at ?? null,
+        cutoff?.created_at ?? null,
+        cutoff?.id ?? null,
+      ) as MessageRow[];
   } else {
     rows = db
       .prepare(
@@ -423,10 +462,21 @@ function loadMessageHistory(
         SELECT id, role, content, agent_id, created_at, metadata_json
         FROM talk_messages
         WHERE talk_id = ?
+          AND (
+            ? IS NULL
+            OR created_at < ?
+            OR (created_at = ? AND id <= ?)
+          )
         ORDER BY created_at DESC
       `,
       )
-      .all(talkId) as MessageRow[];
+      .all(
+        talkId,
+        cutoff?.id ?? null,
+        cutoff?.created_at ?? null,
+        cutoff?.created_at ?? null,
+        cutoff?.id ?? null,
+      ) as MessageRow[];
   }
 
   // Walk backward through messages, accumulating token count
