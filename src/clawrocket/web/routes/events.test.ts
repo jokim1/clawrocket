@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import {
   _initTestDatabase,
   appendOutboxEvent,
+  createTalkThread,
   pruneEventOutbox,
   upsertTalk,
   upsertTalkMember,
@@ -91,6 +92,120 @@ describe('events routes', () => {
       },
     );
     expect(memberRes.status).toBe(404);
+  });
+
+  it('filters snapshot talk events by threadId', async () => {
+    const threadA = createTalkThread({ talkId: 'talk-1', title: 'Thread A' });
+    const threadB = createTalkThread({ talkId: 'talk-1', title: 'Thread B' });
+
+    appendOutboxEvent({
+      topic: 'talk:talk-1',
+      eventType: 'message_appended',
+      payload: JSON.stringify({
+        talkId: 'talk-1',
+        threadId: threadA.id,
+        messageId: 'm-thread-a',
+      }),
+    });
+    appendOutboxEvent({
+      topic: 'talk:talk-1',
+      eventType: 'message_appended',
+      payload: JSON.stringify({
+        talkId: 'talk-1',
+        threadId: threadB.id,
+        messageId: 'm-thread-b',
+      }),
+    });
+    appendOutboxEvent({
+      topic: 'talk:talk-1',
+      eventType: 'talk_run_cancelled',
+      payload: JSON.stringify({
+        talkId: 'talk-1',
+        cancelledBy: 'owner-1',
+        runIds: ['run-a'],
+        threadIds: [threadA.id],
+      }),
+    });
+    appendOutboxEvent({
+      topic: 'talk:talk-1',
+      eventType: 'talk_history_edited',
+      payload: JSON.stringify({
+        talkId: 'talk-1',
+        deletedCount: 1,
+        deletedMessageIds: ['m-thread-b'],
+        threadIds: [threadB.id],
+        editedAt: new Date().toISOString(),
+      }),
+    });
+
+    const res = await server.request(
+      `/api/v1/talks/talk-1/events?threadId=${encodeURIComponent(threadA.id)}`,
+      {
+        headers: {
+          Authorization: 'Bearer owner-token',
+        },
+      },
+    );
+
+    expect(res.status).toBe(200);
+    const stream = await res.text();
+    expect(stream).toContain('m-thread-a');
+    expect(stream).not.toContain('m-thread-b');
+    expect(stream).toContain('event: talk_run_cancelled');
+    expect(stream).not.toContain('event: talk_history_edited');
+  });
+
+  it('filters live talk events by threadId and rejects invalid thread ids', async () => {
+    const threadA = createTalkThread({ talkId: 'talk-1', title: 'Thread A' });
+    const threadB = createTalkThread({ talkId: 'talk-1', title: 'Thread B' });
+
+    appendOutboxEvent({
+      topic: 'talk:talk-1',
+      eventType: 'message_appended',
+      payload: JSON.stringify({
+        talkId: 'talk-1',
+        threadId: threadA.id,
+        messageId: 'm-live-a',
+      }),
+    });
+    appendOutboxEvent({
+      topic: 'talk:talk-1',
+      eventType: 'message_appended',
+      payload: JSON.stringify({
+        talkId: 'talk-1',
+        threadId: threadB.id,
+        messageId: 'm-live-b',
+      }),
+    });
+
+    const res = await server.request(
+      `/api/v1/talks/talk-1/events?stream=1&threadId=${encodeURIComponent(threadA.id)}`,
+      {
+        headers: {
+          Authorization: 'Bearer owner-token',
+          'Last-Event-ID': '0',
+        },
+      },
+    );
+
+    expect(res.status).toBe(200);
+    const streamText = await readSseUntil(res, (text) =>
+      text.includes('m-live-a'),
+    );
+    expect(streamText).toContain('m-live-a');
+    expect(streamText).not.toContain('m-live-b');
+
+    const invalidRes = await server.request(
+      '/api/v1/talks/talk-1/events?threadId=missing-thread',
+      {
+        headers: {
+          Authorization: 'Bearer owner-token',
+        },
+      },
+    );
+    expect(invalidRes.status).toBe(400);
+    const invalidBody = (await invalidRes.json()) as any;
+    expect(invalidBody.error.code).toBe('thread_not_found');
   });
 
   it('supports Last-Event-ID replay semantics on user stream', async () => {

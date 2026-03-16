@@ -498,7 +498,7 @@ function createClawrocketSchema(database: Database.Database): void {
     CREATE TABLE IF NOT EXISTS talk_messages (
       id TEXT PRIMARY KEY,
       talk_id TEXT REFERENCES talks(id) ON DELETE CASCADE,
-      thread_id TEXT,
+      thread_id TEXT NOT NULL,
       role TEXT NOT NULL CHECK(role IN ('user', 'assistant', 'system', 'tool')),
       content TEXT NOT NULL,
       agent_id TEXT REFERENCES registered_agents(id) ON DELETE SET NULL,
@@ -708,7 +708,7 @@ function createClawrocketSchema(database: Database.Database): void {
       agent_id TEXT REFERENCES registered_agents(id) ON DELETE SET NULL,
       executor_alias TEXT,
       executor_model TEXT,
-      thread_id TEXT,
+      thread_id TEXT NOT NULL,
       idempotency_key TEXT,
       source_binding_id TEXT,
       source_external_message_id TEXT,
@@ -915,6 +915,7 @@ function createClawrocketSchema(database: Database.Database): void {
   // talk_messages and talk_runs so every message/run belongs to a thread.
   // ---------------------------------------------------------------------------
   migrateBackfillThreads(database);
+  migrateEnforceThreadIdsNotNull(database);
 
   migrateMainAgentToAnthropic(database);
 
@@ -2135,6 +2136,128 @@ function migrateBackfillThreads(database: Database.Database): void {
     });
 
     backfillMainTx();
+  }
+}
+
+/**
+ * Rebuild talk_messages and talk_runs so thread_id is NOT NULL after the
+ * Phase 4 backfill has assigned every surviving row to a thread.
+ *
+ * If any legacy rows still have NULL thread_id after backfill, they are
+ * deleted as unrecoverable pre-thread data rather than keeping the schema
+ * in a nullable state forever.
+ */
+function migrateEnforceThreadIdsNotNull(database: Database.Database): void {
+  const talkMessageCols = database
+    .prepare(`PRAGMA table_info(talk_messages)`)
+    .all() as Array<{ name: string; notnull: number }>;
+  const talkRunCols = database
+    .prepare(`PRAGMA table_info(talk_runs)`)
+    .all() as Array<{ name: string; notnull: number }>;
+
+  const talkMessagesNeedRebuild =
+    talkMessageCols.find((c) => c.name === 'thread_id')?.notnull !== 1;
+  const talkRunsNeedRebuild =
+    talkRunCols.find((c) => c.name === 'thread_id')?.notnull !== 1;
+
+  if (!talkMessagesNeedRebuild && !talkRunsNeedRebuild) return;
+
+  const cleanupTx = database.transaction(() => {
+    database
+      .prepare(`DELETE FROM talk_runs WHERE thread_id IS NULL`)
+      .run();
+    database
+      .prepare(`DELETE FROM talk_messages WHERE thread_id IS NULL`)
+      .run();
+  });
+  cleanupTx();
+
+  if (talkMessagesNeedRebuild) {
+    database.exec(`
+      CREATE TABLE talk_messages_thread_backup AS
+        SELECT * FROM talk_messages;
+
+      DROP TABLE talk_messages;
+
+      CREATE TABLE talk_messages (
+        id TEXT PRIMARY KEY,
+        talk_id TEXT REFERENCES talks(id) ON DELETE CASCADE,
+        thread_id TEXT NOT NULL,
+        role TEXT NOT NULL CHECK(role IN ('user', 'assistant', 'system', 'tool')),
+        content TEXT NOT NULL,
+        agent_id TEXT REFERENCES registered_agents(id) ON DELETE SET NULL,
+        run_id TEXT,
+        sequence_in_run INTEGER,
+        created_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+        created_at TEXT NOT NULL,
+        metadata_json TEXT
+      );
+      CREATE INDEX idx_talk_messages_talk_created_at
+        ON talk_messages(talk_id, created_at);
+      CREATE INDEX idx_talk_messages_thread_id
+        ON talk_messages(thread_id);
+
+      INSERT INTO talk_messages (
+        id, talk_id, thread_id, role, content, agent_id, run_id,
+        sequence_in_run, created_by, created_at, metadata_json
+      )
+      SELECT
+        id, talk_id, thread_id, role, content, agent_id, run_id,
+        sequence_in_run, created_by, created_at, metadata_json
+      FROM talk_messages_thread_backup;
+
+      DROP TABLE talk_messages_thread_backup;
+    `);
+  }
+
+  if (talkRunsNeedRebuild) {
+    database.exec(`
+      CREATE TABLE talk_runs_thread_backup AS
+        SELECT * FROM talk_runs;
+
+      DROP TABLE talk_runs;
+
+      CREATE TABLE talk_runs (
+        id TEXT PRIMARY KEY,
+        talk_id TEXT REFERENCES talks(id) ON DELETE CASCADE,
+        requested_by TEXT NOT NULL REFERENCES users(id),
+        status TEXT NOT NULL
+          CHECK(status IN ('queued', 'running', 'awaiting_confirmation', 'cancelled', 'completed', 'failed')),
+        trigger_message_id TEXT REFERENCES talk_messages(id),
+        target_agent_id TEXT,
+        agent_id TEXT REFERENCES registered_agents(id) ON DELETE SET NULL,
+        executor_alias TEXT,
+        executor_model TEXT,
+        thread_id TEXT NOT NULL,
+        idempotency_key TEXT,
+        source_binding_id TEXT,
+        source_external_message_id TEXT,
+        source_thread_key TEXT,
+        created_at TEXT NOT NULL,
+        started_at TEXT,
+        ended_at TEXT,
+        cancel_reason TEXT
+      );
+      CREATE INDEX idx_talk_runs_talk_id_status
+        ON talk_runs(talk_id, status, created_at);
+      CREATE INDEX idx_talk_runs_status_created_at
+        ON talk_runs(status, created_at);
+
+      INSERT INTO talk_runs (
+        id, talk_id, requested_by, status, trigger_message_id, target_agent_id,
+        agent_id, executor_alias, executor_model, thread_id, idempotency_key,
+        source_binding_id, source_external_message_id, source_thread_key,
+        created_at, started_at, ended_at, cancel_reason
+      )
+      SELECT
+        id, talk_id, requested_by, status, trigger_message_id, target_agent_id,
+        agent_id, executor_alias, executor_model, thread_id, idempotency_key,
+        source_binding_id, source_external_message_id, source_thread_key,
+        created_at, started_at, ended_at, cancel_reason
+      FROM talk_runs_thread_backup;
+
+      DROP TABLE talk_runs_thread_backup;
+    `);
   }
 }
 

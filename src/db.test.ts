@@ -26,6 +26,7 @@ import {
   completeRunAndPromoteNextAtomic,
   consumeOAuthStateByHash,
   createTalkChannelBinding,
+  createTalkThread,
   createOAuthState,
   createTalk,
   createTalkMessage,
@@ -69,6 +70,7 @@ import { createRegisteredAgent } from './clawrocket/db/agent-accessors.js';
 
 function enqueueTalkTurnAtomic(input: {
   talkId: string;
+  threadId?: string | null;
   userId: string;
   content: string;
   messageId: string;
@@ -79,6 +81,7 @@ function enqueueTalkTurnAtomic(input: {
 }) {
   const result = enqueueTalkTurnAtomicRaw({
     talkId: input.talkId,
+    threadId: input.threadId,
     userId: input.userId,
     content: input.content,
     messageId: input.messageId,
@@ -118,6 +121,8 @@ function store(overrides: {
     is_from_me: overrides.is_from_me ?? false,
   });
 }
+
+const TALK_THREAD_ID = 'thread-talk-1';
 
 // --- storeMessage (NewMessage format) ---
 
@@ -562,6 +567,130 @@ describe('phase 0 schema and reliability tables', () => {
     expect(isDatabaseHealthy()).toBe(true);
   });
 
+  it('backfills legacy null thread ids and rebuilds talk tables with NOT NULL thread columns', () => {
+    upsertTalk({
+      id: 'talk-legacy',
+      ownerId: 'owner-1',
+      topicTitle: 'Legacy Talk',
+    });
+
+    const db = getDb();
+    db.exec(`
+      DROP TABLE IF EXISTS talk_runs;
+      DROP TABLE IF EXISTS talk_messages;
+      DROP TABLE IF EXISTS talk_threads;
+
+      CREATE TABLE talk_messages (
+        id TEXT PRIMARY KEY,
+        talk_id TEXT REFERENCES talks(id) ON DELETE CASCADE,
+        thread_id TEXT,
+        role TEXT NOT NULL CHECK(role IN ('user', 'assistant', 'system', 'tool')),
+        content TEXT NOT NULL,
+        agent_id TEXT REFERENCES registered_agents(id) ON DELETE SET NULL,
+        run_id TEXT,
+        sequence_in_run INTEGER,
+        created_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+        created_at TEXT NOT NULL,
+        metadata_json TEXT
+      );
+
+      CREATE TABLE talk_runs (
+        id TEXT PRIMARY KEY,
+        talk_id TEXT REFERENCES talks(id) ON DELETE CASCADE,
+        requested_by TEXT NOT NULL REFERENCES users(id),
+        status TEXT NOT NULL
+          CHECK(status IN ('queued', 'running', 'awaiting_confirmation', 'cancelled', 'completed', 'failed')),
+        trigger_message_id TEXT REFERENCES talk_messages(id),
+        target_agent_id TEXT,
+        agent_id TEXT REFERENCES registered_agents(id) ON DELETE SET NULL,
+        executor_alias TEXT,
+        executor_model TEXT,
+        thread_id TEXT,
+        idempotency_key TEXT,
+        source_binding_id TEXT,
+        source_external_message_id TEXT,
+        source_thread_key TEXT,
+        created_at TEXT NOT NULL,
+        started_at TEXT,
+        ended_at TEXT,
+        cancel_reason TEXT
+      );
+    `);
+
+    db.prepare(
+      `
+        INSERT INTO talk_messages (
+          id, talk_id, thread_id, role, content, created_by, created_at
+        ) VALUES (?, ?, NULL, 'user', ?, ?, ?)
+      `,
+    ).run(
+      'legacy-msg-1',
+      'talk-legacy',
+      'legacy content',
+      'owner-1',
+      '2024-01-01T00:00:00.000Z',
+    );
+    db.prepare(
+      `
+        INSERT INTO talk_runs (
+          id, talk_id, requested_by, status, trigger_message_id, thread_id, created_at
+        ) VALUES (?, ?, ?, 'queued', ?, NULL, ?)
+      `,
+    ).run(
+      'legacy-run-1',
+      'talk-legacy',
+      'owner-1',
+      'legacy-msg-1',
+      '2024-01-01T00:00:01.000Z',
+    );
+
+    _initClawrocketTestSchema();
+
+    const talkMessageThreadColumn = (
+      db.prepare(`PRAGMA table_info(talk_messages)`).all() as Array<{
+        name: string;
+        notnull: number;
+      }>
+    ).find((column) => column.name === 'thread_id');
+    const talkRunThreadColumn = (
+      db.prepare(`PRAGMA table_info(talk_runs)`).all() as Array<{
+        name: string;
+        notnull: number;
+      }>
+    ).find((column) => column.name === 'thread_id');
+
+    expect(talkMessageThreadColumn?.notnull).toBe(1);
+    expect(talkRunThreadColumn?.notnull).toBe(1);
+
+    const migratedMessage = db
+      .prepare(`SELECT thread_id FROM talk_messages WHERE id = ?`)
+      .get('legacy-msg-1') as { thread_id: string };
+    const migratedRun = db
+      .prepare(`SELECT thread_id FROM talk_runs WHERE id = ?`)
+      .get('legacy-run-1') as { thread_id: string };
+    const talkThreadCount = db
+      .prepare(`SELECT COUNT(*) AS count FROM talk_threads WHERE talk_id = ?`)
+      .get('talk-legacy') as { count: number };
+
+    expect(migratedMessage.thread_id).toBeTruthy();
+    expect(migratedRun.thread_id).toBe(migratedMessage.thread_id);
+    expect(talkThreadCount.count).toBeGreaterThan(0);
+    expect(
+      (
+        db.prepare(`SELECT COUNT(*) AS count FROM talk_messages WHERE thread_id IS NULL`).get() as {
+          count: number;
+        }
+      ).count,
+    ).toBe(0);
+    expect(
+      (
+        db.prepare(`SELECT COUNT(*) AS count FROM talk_runs WHERE thread_id IS NULL`).get() as {
+          count: number;
+        }
+      ).count,
+    ).toBe(0);
+  });
+
   it('stores and replays outbox events', () => {
     const eventId = appendOutboxEvent({
       topic: 'talk:talk-1',
@@ -692,6 +821,7 @@ describe('phase 0 schema and reliability tables', () => {
     createTalkMessage({
       id: 'tm-1',
       talkId: 'talk-1',
+      threadId: TALK_THREAD_ID,
       role: 'user',
       content: 'hello',
       createdBy: 'owner-1',
@@ -700,6 +830,7 @@ describe('phase 0 schema and reliability tables', () => {
     createTalkMessage({
       id: 'tm-2',
       talkId: 'talk-1',
+      threadId: TALK_THREAD_ID,
       role: 'assistant',
       content: 'world',
       createdBy: null,
@@ -730,6 +861,7 @@ describe('phase 0 schema and reliability tables', () => {
     createTalkMessage({
       id: 'tm-edit-1',
       talkId: 'talk-1',
+      threadId: TALK_THREAD_ID,
       role: 'user',
       content: 'old question',
       createdBy: 'owner-1',
@@ -738,6 +870,7 @@ describe('phase 0 schema and reliability tables', () => {
     createTalkMessage({
       id: 'tm-edit-2',
       talkId: 'talk-1',
+      threadId: TALK_THREAD_ID,
       role: 'assistant',
       content: 'old answer',
       createdAt: '2024-01-01T00:00:01.000Z',
@@ -745,6 +878,7 @@ describe('phase 0 schema and reliability tables', () => {
     createTalkMessage({
       id: 'tm-edit-3',
       talkId: 'talk-1',
+      threadId: TALK_THREAD_ID,
       role: 'user',
       content: 'keep me',
       createdBy: 'owner-1',
@@ -784,7 +918,7 @@ describe('phase 0 schema and reliability tables', () => {
     createTalkRun({
       id: 'run-seq-1',
       talk_id: 'talk-1',
-      thread_id: null,
+      thread_id: TALK_THREAD_ID,
       requested_by: 'owner-1',
       status: 'running',
       trigger_message_id: null,
@@ -801,6 +935,7 @@ describe('phase 0 schema and reliability tables', () => {
     createTalkMessage({
       id: 'tm-seq-user',
       talkId: 'talk-1',
+      threadId: TALK_THREAD_ID,
       role: 'user',
       content: 'trigger',
       createdBy: 'owner-1',
@@ -810,6 +945,7 @@ describe('phase 0 schema and reliability tables', () => {
     appendRuntimeTalkMessage({
       id: 'tm-seq-assistant',
       talkId: 'talk-1',
+      threadId: TALK_THREAD_ID,
       runId: 'run-seq-1',
       role: 'assistant',
       content: 'Checking connector data',
@@ -825,6 +961,7 @@ describe('phase 0 schema and reliability tables', () => {
     appendRuntimeTalkMessage({
       id: 'tm-seq-tool',
       talkId: 'talk-1',
+      threadId: TALK_THREAD_ID,
       runId: 'run-seq-1',
       role: 'tool',
       content: 'Returned 12 rows',
@@ -1003,12 +1140,54 @@ describe('phase 0 schema and reliability tables', () => {
       now: '2024-01-01T00:00:22.300Z',
     });
 
-    expect(result).toEqual({ status: 'talk_busy' });
+    expect(result).toEqual({ status: 'thread_busy' });
     const afterIds = listTalkMessages({ talkId: 'talk-1', limit: 20 }).map(
       (message) => message.id,
     );
     expect(afterIds).toEqual(beforeIds);
     expect(getTalkRunById('run-channel-busy-1')).toBeNull();
+  });
+
+  it('assigns channel-ingress messages and runs to a valid talk thread', () => {
+    const connection = ensureSystemManagedTelegramConnection(
+      '2024-01-01T00:00:22.600Z',
+    );
+    const binding = createTalkChannelBinding({
+      talkId: 'talk-1',
+      connectionId: connection.id,
+      targetKind: 'chat',
+      targetId: 'tg:chat:threaded',
+      displayName: 'Threaded Telegram Chat',
+      createdBy: 'owner-1',
+      now: '2024-01-01T00:00:22.700Z',
+    });
+
+    const result = enqueueChannelTurnAtomic({
+      talkId: 'talk-1',
+      messageId: 'msg-channel-ok-1',
+      runId: 'run-channel-ok-1',
+      targetAgentId: binding.responder_agent_id!,
+      content: 'hello from telegram',
+      metadataJson: JSON.stringify({ platform: 'telegram' }),
+      externalCreatedAt: '2024-01-01T00:00:22.800Z',
+      sourceBindingId: binding.id,
+      sourceExternalMessageId: 'tg-msg-ok-1',
+      now: '2024-01-01T00:00:22.900Z',
+    });
+
+    expect(result).toEqual({
+      status: 'enqueued',
+      messageId: 'msg-channel-ok-1',
+      runId: 'run-channel-ok-1',
+    });
+
+    const message = listTalkMessages({ talkId: 'talk-1', limit: 20 }).find(
+      (entry) => entry.id === 'msg-channel-ok-1',
+    );
+    const run = getTalkRunById('run-channel-ok-1');
+
+    expect(message?.thread_id).toBeTruthy();
+    expect(run?.thread_id).toBe(message?.thread_id);
   });
 
   it('completes a running run and appends the assistant message', () => {
@@ -1206,6 +1385,61 @@ describe('phase 0 schema and reliability tables', () => {
     expect(getTalkRunById('run-atomic-awaiting')?.status).toBe('cancelled');
   });
 
+  it('cancels only the requested thread when sibling threads still have active work', () => {
+    const threadA = createTalkThread({ talkId: 'talk-1', title: 'Thread A' });
+    const threadB = createTalkThread({ talkId: 'talk-1', title: 'Thread B' });
+
+    enqueueTalkTurnAtomic({
+      talkId: 'talk-1',
+      threadId: threadA.id,
+      userId: 'owner-1',
+      content: 'run A',
+      messageId: 'msg-thread-a',
+      runId: 'run-thread-a',
+      now: '2024-01-01T00:00:47.500Z',
+    });
+    enqueueTalkTurnAtomic({
+      talkId: 'talk-1',
+      threadId: threadB.id,
+      userId: 'owner-1',
+      content: 'run B',
+      messageId: 'msg-thread-b',
+      runId: 'run-thread-b',
+      now: '2024-01-01T00:00:47.600Z',
+    });
+    markTalkRunStatus(
+      'run-thread-a',
+      'running',
+      null,
+      null,
+      '2024-01-01T00:00:47.700Z',
+    );
+
+    const cancelled = cancelTalkRunsAtomic({
+      talkId: 'talk-1',
+      threadId: threadA.id,
+      cancelledBy: 'owner-1',
+      now: '2024-01-01T00:00:47.800Z',
+    });
+
+    expect(cancelled.cancelledRuns).toBe(1);
+    expect(cancelled.cancelledRunIds).toEqual(['run-thread-a']);
+    expect(getTalkRunById('run-thread-a')?.status).toBe('cancelled');
+    expect(getTalkRunById('run-thread-b')?.status).toBe('queued');
+    expect(hasActiveTalkRuns('talk-1', threadA.id)).toBe(false);
+    expect(hasActiveTalkRuns('talk-1', threadB.id)).toBe(true);
+
+    const cancelEvent = getOutboxEventsForTopics(['talk:talk-1'], 0, 100).find(
+      (event) => event.event_type === 'talk_run_cancelled',
+    );
+    expect(cancelEvent).toBeDefined();
+    expect(JSON.parse(cancelEvent!.payload)).toMatchObject({
+      talkId: 'talk-1',
+      runIds: ['run-thread-a'],
+      threadIds: [threadA.id],
+    });
+  });
+
   // it('supersedes pending confirmations when cancelling awaiting confirmation runs', () => {
   //   enqueueTalkTurnAtomic({
   //     talkId: 'talk-1',
@@ -1251,7 +1485,7 @@ describe('phase 0 schema and reliability tables', () => {
     createTalkRun({
       id: 'run-atomic-5a',
       talk_id: 'talk-1',
-      thread_id: null,
+      thread_id: TALK_THREAD_ID,
       requested_by: 'owner-1',
       status: 'running',
       trigger_message_id: null,
@@ -1266,7 +1500,7 @@ describe('phase 0 schema and reliability tables', () => {
     createTalkRun({
       id: 'run-atomic-5b',
       talk_id: 'talk-1',
-      thread_id: null,
+      thread_id: TALK_THREAD_ID,
       requested_by: 'owner-1',
       status: 'queued',
       trigger_message_id: null,
@@ -1336,7 +1570,7 @@ describe('phase 0 schema and reliability tables', () => {
     createTalkRun({
       id: 'run-1',
       talk_id: 'talk-1',
-      thread_id: null,
+      thread_id: TALK_THREAD_ID,
       requested_by: 'owner-1',
       status: 'running',
       trigger_message_id: null,
@@ -1351,7 +1585,7 @@ describe('phase 0 schema and reliability tables', () => {
     createTalkRun({
       id: 'run-2',
       talk_id: 'talk-1',
-      thread_id: null,
+      thread_id: TALK_THREAD_ID,
       requested_by: 'owner-1',
       status: 'queued',
       trigger_message_id: null,

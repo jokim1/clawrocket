@@ -4,6 +4,14 @@ import {
   getTalkIdsAccessibleByUser,
 } from '../../db/index.js';
 
+type OutboxEventLike = {
+  event_id: number;
+  event_type: string;
+  payload: string;
+};
+
+export type OutboxEventFilter = (event: OutboxEventLike) => boolean;
+
 export function formatOutboxEventAsSse(event: {
   event_id: number;
   event_type: string;
@@ -32,16 +40,19 @@ export function buildUserScopedSseStream(input: {
 export function buildTalkScopedSseStream(input: {
   talkId: string;
   lastEventId: number;
+  threadId?: string | null;
 }): string {
   return buildSseStreamForTopics(
     getTalkScopedEventTopics(input.talkId),
     input.lastEventId,
+    input.threadId ? buildTalkThreadEventFilter(input.threadId) : undefined,
   );
 }
 
 function buildSseStreamForTopics(
   topics: string[],
   lastEventId: number,
+  filterEvent?: OutboxEventFilter,
 ): string {
   let output = '';
 
@@ -53,6 +64,9 @@ function buildSseStreamForTopics(
 
   const events = getOutboxEventsForTopics(topics, lastEventId);
   for (const event of events) {
+    if (filterEvent && !filterEvent(event)) {
+      continue;
+    }
     output += formatOutboxEventAsSse(event);
   }
 
@@ -61,4 +75,51 @@ function buildSseStreamForTopics(
   }
 
   return output;
+}
+
+function parsePayload(payload: string): Record<string, unknown> | null {
+  try {
+    const parsed = JSON.parse(payload) as unknown;
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((entry) => typeof entry === 'string');
+}
+
+export function buildTalkThreadEventFilter(
+  threadId: string,
+): OutboxEventFilter {
+  return (event) => {
+    const payload = parsePayload(event.payload);
+    if (!payload) return false;
+
+    switch (event.event_type) {
+      case 'message_appended':
+      case 'talk_run_started':
+      case 'talk_run_completed':
+      case 'talk_run_failed':
+      case 'talk_response_started':
+      case 'talk_response_delta':
+      case 'talk_response_usage':
+      case 'talk_response_completed':
+      case 'talk_response_failed':
+      case 'talk_response_cancelled':
+        return payload.threadId === threadId;
+      case 'talk_run_cancelled':
+      case 'talk_history_edited':
+        return isStringArray(payload.threadIds)
+          ? payload.threadIds.includes(threadId)
+          : false;
+      default:
+        // New event types must be added to this switch to be visible in
+        // thread-scoped SSE. Unknown events are excluded by default.
+        return false;
+    }
+  };
 }

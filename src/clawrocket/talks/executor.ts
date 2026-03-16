@@ -1,7 +1,7 @@
 export interface TalkExecutorInput {
   runId: string;
   talkId: string;
-  threadId?: string | null;
+  threadId: string;
   requestedBy: string;
   triggerMessageId: string;
   triggerContent: string;
@@ -19,6 +19,7 @@ export type TalkExecutionEvent =
       type: 'talk_response_started';
       runId: string;
       talkId: string;
+      threadId?: string | null;
       agentId?: string | null;
       agentNickname?: string | null;
       routeStepPosition?: number | null;
@@ -29,6 +30,7 @@ export type TalkExecutionEvent =
       type: 'talk_response_delta';
       runId: string;
       talkId: string;
+      threadId?: string | null;
       agentId?: string | null;
       agentNickname?: string | null;
       deltaText: string;
@@ -40,6 +42,7 @@ export type TalkExecutionEvent =
       type: 'talk_response_usage';
       runId: string;
       talkId: string;
+      threadId?: string | null;
       agentId?: string | null;
       usage: TalkExecutionUsage;
       routeStepPosition?: number | null;
@@ -50,6 +53,7 @@ export type TalkExecutionEvent =
       type: 'talk_response_completed';
       runId: string;
       talkId: string;
+      threadId?: string | null;
       agentId?: string | null;
       agentNickname?: string | null;
       usage?: TalkExecutionUsage;
@@ -61,6 +65,7 @@ export type TalkExecutionEvent =
       type: 'talk_response_failed';
       runId: string;
       talkId: string;
+      threadId?: string | null;
       agentId?: string | null;
       routeStepPosition?: number | null;
       providerId?: string | null;
@@ -72,6 +77,7 @@ export type TalkExecutionEvent =
       type: 'talk_response_cancelled';
       runId: string;
       talkId: string;
+      threadId?: string | null;
       agentId?: string | null;
     };
 

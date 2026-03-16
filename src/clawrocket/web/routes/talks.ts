@@ -2,6 +2,7 @@ import { randomUUID } from 'crypto';
 
 import {
   AttachmentValidationError,
+  TalkActiveRoundError,
   cancelTalkRunsAtomic,
   createTalk,
   createTalkFolder,
@@ -22,6 +23,7 @@ import {
   patchTalkMetadata,
   renameTalkFolder,
   reorderTalkSidebarItem,
+  TalkThreadValidationError,
   upsertTalkLlmPolicy,
   type TalkMessageRecord,
   type TalkWithAccessRecord,
@@ -1402,9 +1404,7 @@ export function deleteTalkMessagesRoute(input: {
       },
     };
   } catch (error) {
-    const message =
-      error instanceof Error ? error.message : 'Unable to edit talk history';
-    if (message === 'talk already has an active round') {
+    if (error instanceof TalkActiveRoundError && error.scope === 'talk') {
       return {
         statusCode: 409,
         body: {
@@ -1417,6 +1417,8 @@ export function deleteTalkMessagesRoute(input: {
         },
       };
     }
+    const message =
+      error instanceof Error ? error.message : 'Unable to edit talk history';
     if (message === 'one or more talk messages were not found') {
       return {
         statusCode: 404,
@@ -1594,10 +1596,7 @@ export function enqueueTalkChat(input: {
       idempotencyKey: input.idempotencyKey,
     });
   } catch (error) {
-    if (
-      error instanceof Error &&
-      error.message === 'talk already has an active round'
-    ) {
+    if (error instanceof TalkActiveRoundError && error.scope === 'thread') {
       return {
         statusCode: 409,
         body: {
@@ -1605,7 +1604,19 @@ export function enqueueTalkChat(input: {
           error: {
             code: 'talk_round_active',
             message:
-              'Wait for the current round to finish or cancel it before sending another message',
+              'Wait for the current round in this thread to finish or cancel it before sending another message',
+          },
+        },
+      };
+    }
+    if (error instanceof TalkThreadValidationError) {
+      return {
+        statusCode: 400,
+        body: {
+          ok: false,
+          error: {
+            code: error.code,
+            message: error.message,
           },
         },
       };
@@ -1714,9 +1725,13 @@ export function listTalkRunsRoute(input: {
   };
 }
 
-export function cancelTalkChat(input: { talkId: string; auth: AuthContext }): {
+export function cancelTalkChat(input: {
+  talkId: string;
+  threadId?: string | null;
+  auth: AuthContext;
+}): {
   statusCode: number;
-  body: ApiEnvelope<{ talkId: string; cancelledRuns: number }>;
+  body: ApiEnvelope<{ talkId: string; threadId?: string | null; cancelledRuns: number }>;
   cancelledRunning: boolean;
 } {
   const talk = getTalkForUser(input.talkId, input.auth.userId);
@@ -1748,34 +1763,55 @@ export function cancelTalkChat(input: { talkId: string; auth: AuthContext }): {
     };
   }
 
-  const cancellation = cancelTalkRunsAtomic({
-    talkId: input.talkId,
-    cancelledBy: input.auth.userId,
-  });
+  try {
+    const cancellation = cancelTalkRunsAtomic({
+      talkId: input.talkId,
+      threadId: input.threadId,
+      cancelledBy: input.auth.userId,
+    });
 
-  if (cancellation.cancelledRuns === 0) {
+    if (cancellation.cancelledRuns === 0) {
+      return {
+        statusCode: 404,
+        body: {
+          ok: false,
+          error: {
+            code: 'no_active_run',
+            message: input.threadId
+              ? 'No running or queued chat exists for this thread'
+              : 'No running or queued chat exists for this talk',
+          },
+        },
+        cancelledRunning: false,
+      };
+    }
+
     return {
-      statusCode: 404,
+      statusCode: 200,
       body: {
-        ok: false,
-        error: {
-          code: 'no_active_run',
-          message: 'No running or queued chat exists for this talk',
+        ok: true,
+        data: {
+          talkId: input.talkId,
+          threadId: input.threadId ?? null,
+          cancelledRuns: cancellation.cancelledRuns,
         },
       },
-      cancelledRunning: false,
+      cancelledRunning: cancellation.cancelledRunning,
     };
+  } catch (error) {
+    if (error instanceof TalkThreadValidationError) {
+      return {
+        statusCode: 400,
+        body: {
+          ok: false,
+          error: {
+            code: error.code,
+            message: error.message,
+          },
+        },
+        cancelledRunning: false,
+      };
+    }
+    throw error;
   }
-
-  return {
-    statusCode: 200,
-    body: {
-      ok: true,
-      data: {
-        talkId: input.talkId,
-        cancelledRuns: cancellation.cancelledRuns,
-      },
-    },
-    cancelledRunning: cancellation.cancelledRunning,
-  };
 }

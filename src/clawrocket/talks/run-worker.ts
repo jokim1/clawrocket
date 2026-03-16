@@ -36,6 +36,7 @@ export interface TalkRunWorkerOptions {
 export interface TalkRunWorkerControl {
   wake(): void;
   abortTalk(talkId: string): void;
+  abortThread(threadId: string): void;
 }
 
 function errorMessage(error: unknown): string {
@@ -143,6 +144,13 @@ export class TalkRunWorker implements TalkRunWorkerControl {
     for (const active of this.activeRunsById.values()) {
       if (active.run.talk_id !== talkId) continue;
       active.controller.abort(`talk_cancelled:${talkId}`);
+    }
+  }
+
+  abortThread(threadId: string): void {
+    for (const active of this.activeRunsById.values()) {
+      if (active.run.thread_id !== threadId) continue;
+      active.controller.abort(`thread_cancelled:${threadId}`);
     }
   }
 

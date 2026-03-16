@@ -14,6 +14,7 @@ import { getDb } from '../../db.js';
 // ---------------------------------------------------------------------------
 
 const TALK_ID = 'talk-ctx-loader';
+const THREAD_ID = 'thread-ctx-loader';
 
 function insertSource(opts: {
   id: string;
@@ -60,11 +61,29 @@ function insertTalkMessage(opts: {
   createMessage({
     id: opts.id,
     talkId: TALK_ID,
+    threadId: THREAD_ID,
     role: opts.role,
     content: opts.content,
     createdBy: opts.createdBy ?? null,
     createdAt: opts.createdAt,
   });
+}
+
+function insertTalkSummary(summaryText: string) {
+  const now = new Date().toISOString();
+  getDb()
+    .prepare(
+      `
+      INSERT INTO talk_context_summary (
+        talk_id, summary_text, version, updated_at
+      ) VALUES (?, ?, 1, ?)
+      ON CONFLICT(talk_id) DO UPDATE SET
+        summary_text = excluded.summary_text,
+        version = talk_context_summary.version + 1,
+        updated_at = excluded.updated_at
+    `,
+    )
+    .run(TALK_ID, summaryText, now);
 }
 
 // ---------------------------------------------------------------------------
@@ -307,6 +326,21 @@ describe('context-loader', () => {
       expect(ctx.systemPrompt).not.toContain('Small file text');
       expect(ctx.systemPrompt).not.toContain('[S1] Content:');
       expect(ctx.systemPrompt).not.toContain('[S2] Content:');
+    });
+
+    it('suppresses talk-level summary when loading a specific thread', async () => {
+      insertTalkSummary('Cross-thread summary that should not be injected');
+
+      const threadedCtx = await loadTalkContext(TALK_ID, 128000, THREAD_ID);
+      const unthreadedCtx = await loadTalkContext(TALK_ID, 128000);
+
+      expect(unthreadedCtx.systemPrompt).toContain(
+        'Cross-thread summary that should not be injected',
+      );
+      expect(threadedCtx.systemPrompt).not.toContain(
+        'Cross-thread summary that should not be injected',
+      );
+      expect(threadedCtx.metadata.hasSummary).toBe(false);
     });
   });
 

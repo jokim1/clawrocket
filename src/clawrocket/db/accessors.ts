@@ -1459,6 +1459,7 @@ export function getTalkIdsAccessibleByUser(userId: string): string[] {
 export interface TalkMessageRecord {
   id: string;
   talk_id: string | null;
+  thread_id: string;
   role: TalkMessageRole;
   content: string;
   created_by: string | null;
@@ -1471,7 +1472,7 @@ export interface TalkMessageRecord {
 export function createTalkMessage(input: {
   id: string;
   talkId: string;
-  threadId?: string | null;
+  threadId: string;
   role: TalkMessageRole;
   content: string;
   createdBy?: string | null;
@@ -1491,7 +1492,7 @@ export function createTalkMessage(input: {
     .run(
       input.id,
       input.talkId,
-      input.threadId ?? null,
+      input.threadId,
       input.role,
       input.content,
       input.createdBy || null,
@@ -1549,7 +1550,7 @@ export function listTalkMessages(input: {
   const rows = getDb()
     .prepare(
       `
-      SELECT id, talk_id, role, content, created_by, created_at, run_id, metadata_json, sequence_in_run
+      SELECT id, talk_id, thread_id, role, content, created_by, created_at, run_id, metadata_json, sequence_in_run
       FROM talk_messages
       WHERE talk_id = ?
         AND (? IS NULL OR created_at < ?)
@@ -1583,7 +1584,7 @@ export function listTalkReplayRows(input: {
     .prepare(
       `
       WITH recent_messages AS (
-        SELECT id, talk_id, role, content, created_by, created_at, run_id, metadata_json, sequence_in_run
+        SELECT id, talk_id, thread_id, role, content, created_by, created_at, run_id, metadata_json, sequence_in_run
         FROM talk_messages
         WHERE talk_id = ?
         ORDER BY created_at DESC, COALESCE(sequence_in_run, 0) DESC, id DESC
@@ -1592,6 +1593,7 @@ export function listTalkReplayRows(input: {
       SELECT
         u.id AS user_id,
         u.talk_id AS user_talk_id,
+        u.thread_id AS user_thread_id,
         u.role AS user_role,
         u.content AS user_content,
         u.created_by AS user_created_by,
@@ -1601,6 +1603,7 @@ export function listTalkReplayRows(input: {
         u.sequence_in_run AS user_sequence_in_run,
         a.id AS assistant_id,
         a.talk_id AS assistant_talk_id,
+        a.thread_id AS assistant_thread_id,
         a.role AS assistant_role,
         a.content AS assistant_content,
         a.created_by AS assistant_created_by,
@@ -1632,6 +1635,7 @@ export function listTalkReplayRows(input: {
     ) as Array<{
     user_id: string;
     user_talk_id: string;
+    user_thread_id: string;
     user_role: TalkMessageRole;
     user_content: string;
     user_created_by: string | null;
@@ -1641,6 +1645,7 @@ export function listTalkReplayRows(input: {
     user_sequence_in_run: number | null;
     assistant_id: string;
     assistant_talk_id: string;
+    assistant_thread_id: string;
     assistant_role: TalkMessageRole;
     assistant_content: string;
     assistant_created_by: string | null;
@@ -1654,6 +1659,7 @@ export function listTalkReplayRows(input: {
     user: {
       id: row.user_id,
       talk_id: row.user_talk_id,
+      thread_id: row.user_thread_id,
       role: row.user_role,
       content: row.user_content,
       created_by: row.user_created_by,
@@ -1665,6 +1671,7 @@ export function listTalkReplayRows(input: {
     assistant: {
       id: row.assistant_id,
       talk_id: row.assistant_talk_id,
+      thread_id: row.assistant_thread_id,
       role: row.assistant_role,
       content: row.assistant_content,
       created_by: row.assistant_created_by,
@@ -1706,14 +1713,14 @@ export function deleteTalkMessagesAtomic(input: {
         throw new Error('talk history edit requires at least one message');
       }
       if (hasActiveTalkRuns(txInput.talkId)) {
-        throw new Error('talk already has an active round');
+        throw new TalkActiveRoundError('talk');
       }
 
       const placeholders = ids.map(() => '?').join(', ');
       const rows = getDb()
         .prepare(
           `
-          SELECT id, role
+          SELECT id, role, thread_id
           FROM talk_messages
           WHERE talk_id = ?
             AND id IN (${placeholders})
@@ -1722,6 +1729,7 @@ export function deleteTalkMessagesAtomic(input: {
         .all(txInput.talkId, ...ids) as Array<{
         id: string;
         role: TalkMessageRole;
+        thread_id: string;
       }>;
 
       if (rows.length !== ids.length) {
@@ -1750,6 +1758,7 @@ export function deleteTalkMessagesAtomic(input: {
         eventType: 'talk_history_edited',
         payload: JSON.stringify({
           talkId: txInput.talkId,
+          threadIds: Array.from(new Set(rows.map((row) => row.thread_id))),
           deletedCount: ids.length,
           deletedMessageIds: ids,
           editedAt: now,
@@ -1912,37 +1921,26 @@ export function enqueueTalkTurnAtomic(input: {
         throw new Error('talk turn requires one run id per target agent');
       }
 
-      // Resolve thread: use provided threadId, or fall back to the default thread
-      let threadId: string;
-      if (txInput.threadId) {
-        // Validate the thread exists and belongs to this Talk
-        const threadRow = getDb()
-          .prepare(`SELECT id FROM talk_threads WHERE id = ? AND talk_id = ?`)
-          .get(txInput.threadId, txInput.talkId) as { id: string } | undefined;
-        if (!threadRow) {
-          throw new Error('thread not found or does not belong to this talk');
-        }
-        threadId = txInput.threadId;
-      } else {
-        threadId = getOrCreateDefaultThread(txInput.talkId);
-      }
+      const threadId = resolveThreadIdForTalk(txInput.talkId, txInput.threadId);
 
       const active = getDb()
         .prepare(
           `
           SELECT COUNT(*) AS count
           FROM talk_runs
-          WHERE talk_id = ? AND status IN ('queued', 'running', 'awaiting_confirmation')
+          WHERE talk_id = ? AND thread_id = ?
+            AND status IN ('queued', 'running', 'awaiting_confirmation')
         `,
         )
-        .get(txInput.talkId) as { count: number };
+        .get(txInput.talkId, threadId) as { count: number };
       if ((active?.count || 0) > 0) {
-        throw new Error('talk already has an active round');
+        throw new TalkActiveRoundError('thread');
       }
 
       const message: TalkMessageRecord = {
         id: txInput.messageId,
         talk_id: txInput.talkId,
+        thread_id: threadId,
         role: 'user',
         content: txInput.content,
         created_by: txInput.userId,
@@ -2086,6 +2084,48 @@ export class AttachmentValidationError extends Error {
     this.name = 'AttachmentValidationError';
     this.code = code;
   }
+}
+
+export class TalkActiveRoundError extends Error {
+  readonly code = 'talk_active_round';
+  readonly scope: 'talk' | 'thread';
+
+  constructor(scope: 'talk' | 'thread') {
+    super(
+      scope === 'thread'
+        ? 'This thread already has an active round'
+        : 'This talk already has an active round',
+    );
+    this.name = 'TalkActiveRoundError';
+    this.scope = scope;
+  }
+}
+
+export class TalkThreadValidationError extends Error {
+  readonly code: 'thread_not_found';
+
+  constructor(message = 'Thread not found or does not belong to this talk') {
+    super(message);
+    this.name = 'TalkThreadValidationError';
+    this.code = 'thread_not_found';
+  }
+}
+
+export function resolveThreadIdForTalk(
+  talkId: string,
+  threadId?: string | null,
+): string {
+  if (!threadId) {
+    return getOrCreateDefaultThread(talkId);
+  }
+
+  const threadRow = getDb()
+    .prepare(`SELECT id FROM talk_threads WHERE id = ? AND talk_id = ?`)
+    .get(threadId, talkId) as { id: string } | undefined;
+  if (!threadRow) {
+    throw new TalkThreadValidationError();
+  }
+  return threadRow.id;
 }
 
 // --- Event outbox ---
@@ -2319,7 +2359,7 @@ export function scanDeadLetterQueue(limit = 50): DeadLetterRecord[] {
 export interface TalkRunRecord {
   id: string;
   talk_id: string | null;
-  thread_id: string | null;
+  thread_id: string;
   requested_by: string;
   status: TalkRunStatus;
   trigger_message_id: string | null;
@@ -2351,7 +2391,7 @@ export function createTalkRun(input: TalkRunRecord): void {
     .run(
       input.id,
       input.talk_id,
-      input.thread_id ?? null,
+      input.thread_id,
       input.requested_by,
       input.status,
       input.trigger_message_id,
@@ -2489,16 +2529,21 @@ export function countRunningTalkRuns(): number {
   return row.count;
 }
 
-export function hasActiveTalkRuns(talkId: string): boolean {
+export function hasActiveTalkRuns(
+  talkId: string,
+  threadId?: string | null,
+): boolean {
   const row = getDb()
     .prepare(
       `
       SELECT COUNT(*) AS count
       FROM talk_runs
-      WHERE talk_id = ? AND status IN ('queued', 'running', 'awaiting_confirmation')
+      WHERE talk_id = ?
+        AND (? IS NULL OR thread_id = ?)
+        AND status IN ('queued', 'running', 'awaiting_confirmation')
     `,
     )
-    .get(talkId) as { count: number };
+    .get(talkId, threadId ?? null, threadId ?? null) as { count: number };
   return row.count > 0;
 }
 
@@ -2535,7 +2580,7 @@ export function listTalkRunsForTalk(
  */
 export function appendAssistantMessageWithOutbox(input: {
   talkId: string;
-  threadId?: string | null;
+  threadId: string;
   runId: string;
   messageId: string;
   content: string;
@@ -2551,6 +2596,7 @@ export function appendAssistantMessageWithOutbox(input: {
     const message: TalkMessageRecord = {
       id: txInput.messageId,
       talk_id: txInput.talkId,
+      thread_id: txInput.threadId,
       role: 'assistant',
       content: txInput.content,
       created_by: null,
@@ -2586,7 +2632,7 @@ export function appendAssistantMessageWithOutbox(input: {
         'message_appended',
         JSON.stringify({
           talkId: txInput.talkId,
-          threadId: txInput.threadId || null,
+          threadId: txInput.threadId,
           messageId: txInput.messageId,
           runId: txInput.runId,
           role: 'assistant',
@@ -2609,7 +2655,7 @@ export function appendAssistantMessageWithOutbox(input: {
 export function appendRuntimeTalkMessage(input: {
   id: string;
   talkId: string;
-  threadId?: string | null;
+  threadId: string;
   runId: string;
   role: 'assistant' | 'tool';
   content: string;
@@ -2624,6 +2670,7 @@ export function appendRuntimeTalkMessage(input: {
     const message: TalkMessageRecord = {
       id: txInput.id,
       talk_id: txInput.talkId,
+      thread_id: txInput.threadId,
       role: txInput.role,
       content: txInput.content,
       created_by: null,
@@ -2659,7 +2706,7 @@ export function appendRuntimeTalkMessage(input: {
         'message_appended',
         JSON.stringify({
           talkId: txInput.talkId,
-          threadId: txInput.threadId || null,
+          threadId: txInput.threadId,
           messageId: txInput.id,
           runId: txInput.runId,
           role: txInput.role,
@@ -2734,6 +2781,7 @@ export function claimQueuedTalkRuns(
           'talk_run_started',
           JSON.stringify({
             talkId: run.talk_id,
+            threadId: run.thread_id,
             runId: run.id,
             triggerMessageId: run.trigger_message_id,
             targetAgentId: run.target_agent_id || null,
@@ -2789,7 +2837,7 @@ export function completeRunAndPromoteNextAtomic(input: {
         | {
             id: string;
             talk_id: string;
-            thread_id: string | null;
+            thread_id: string;
             trigger_message_id: string | null;
             target_agent_id: string | null;
             executor_alias: string | null;
@@ -2902,6 +2950,7 @@ export function completeRunAndPromoteNextAtomic(input: {
           'talk_run_completed',
           JSON.stringify({
             talkId: run.talk_id,
+            threadId: run.thread_id,
             runId: run.id,
             triggerMessageId: run.trigger_message_id,
             responseMessageId: responseMessage.id,
@@ -2942,7 +2991,7 @@ export function failRunAndPromoteNextAtomic(input: {
       const run = getDb()
         .prepare(
           `
-          SELECT id, talk_id, trigger_message_id, target_agent_id, executor_alias, executor_model
+          SELECT id, talk_id, thread_id, trigger_message_id, target_agent_id, executor_alias, executor_model
           FROM talk_runs
           WHERE id = ? AND status = 'running'
           LIMIT 1
@@ -2952,6 +3001,7 @@ export function failRunAndPromoteNextAtomic(input: {
         | {
             id: string;
             talk_id: string;
+            thread_id: string;
             trigger_message_id: string | null;
             target_agent_id: string | null;
             executor_alias: string | null;
@@ -2993,6 +3043,7 @@ export function failRunAndPromoteNextAtomic(input: {
           'talk_run_failed',
           JSON.stringify({
             talkId: run.talk_id,
+            threadId: run.thread_id,
             runId: run.id,
             triggerMessageId: run.trigger_message_id,
             errorCode: txInput.errorCode,
@@ -3015,6 +3066,7 @@ export function failRunAndPromoteNextAtomic(input: {
 
 export function cancelTalkRunsAtomic(input: {
   talkId: string;
+  threadId?: string | null;
   cancelledBy: string;
   now?: string;
 }): {
@@ -3031,17 +3083,23 @@ export function cancelTalkRunsAtomic(input: {
       cancelledRunning: boolean;
     } => {
       const now = txInput.now || new Date().toISOString();
+      const threadId = txInput.threadId
+        ? resolveThreadIdForTalk(txInput.talkId, txInput.threadId)
+        : null;
       const activeRuns = getDb()
         .prepare(
           `
-          SELECT id, status, trigger_message_id, target_agent_id, executor_alias, executor_model
+          SELECT id, thread_id, status, trigger_message_id, target_agent_id, executor_alias, executor_model
           FROM talk_runs
-          WHERE talk_id = ? AND status IN ('queued', 'running', 'awaiting_confirmation')
+          WHERE talk_id = ?
+            AND (? IS NULL OR thread_id = ?)
+            AND status IN ('queued', 'running', 'awaiting_confirmation')
           ORDER BY created_at ASC
         `,
         )
-        .all(txInput.talkId) as Array<{
+        .all(txInput.talkId, threadId, threadId) as Array<{
         id: string;
+        thread_id: string;
         status: TalkRunStatus;
         trigger_message_id: string | null;
         target_agent_id: string | null;
@@ -3090,6 +3148,7 @@ export function cancelTalkRunsAtomic(input: {
             'talk_response_cancelled',
             JSON.stringify({
               talkId: txInput.talkId,
+              threadId: run.thread_id,
               runId: run.id,
               agentId: run.target_agent_id || null,
             }),
@@ -3106,6 +3165,14 @@ export function cancelTalkRunsAtomic(input: {
             talkId: txInput.talkId,
             cancelledBy: txInput.cancelledBy,
             runIds: cancelledRunIds,
+            threadIds: Array.from(
+              new Set(
+                activeRuns
+                  .filter((run) => cancelledRunIds.includes(run.id))
+                  .map((run) => run.thread_id)
+                  .filter((threadId): threadId is string => Boolean(threadId)),
+              ),
+            ),
           }),
           now,
         );
@@ -3134,19 +3201,20 @@ export function failInterruptedRunsOnStartup(now?: string): {
       const runningRuns = getDb()
         .prepare(
           `
-          SELECT id, talk_id, trigger_message_id, executor_alias, executor_model
+          SELECT id, talk_id, thread_id, trigger_message_id, executor_alias, executor_model
           FROM talk_runs
           WHERE status = 'running' AND talk_id IS NOT NULL
           ORDER BY created_at ASC
         `,
         )
         .all() as Array<{
-        id: string;
-        talk_id: string;
-        trigger_message_id: string | null;
-        executor_alias: string | null;
-        executor_model: string | null;
-      }>;
+          id: string;
+          talk_id: string;
+          thread_id: string;
+          trigger_message_id: string | null;
+          executor_alias: string | null;
+          executor_model: string | null;
+        }>;
 
       const failedRunIds: string[] = [];
       for (const run of runningRuns) {
@@ -3176,6 +3244,7 @@ export function failInterruptedRunsOnStartup(now?: string): {
             'talk_run_failed',
             JSON.stringify({
               talkId: run.talk_id,
+              threadId: run.thread_id,
               runId: run.id,
               triggerMessageId: run.trigger_message_id,
               errorCode: 'interrupted_by_restart',
@@ -3379,6 +3448,7 @@ export function enqueueMainTurnAtomic(input: {
       const message: TalkMessageRecord = {
         id: txInput.messageId,
         talk_id: null,
+        thread_id: txInput.threadId,
         role: 'user',
         content: txInput.content,
         created_by: txInput.userId,
