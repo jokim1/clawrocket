@@ -89,7 +89,9 @@ function parsePayload(payload: string): Record<string, unknown> | null {
 }
 
 function isStringArray(value: unknown): value is string[] {
-  return Array.isArray(value) && value.every((entry) => typeof entry === 'string');
+  return (
+    Array.isArray(value) && value.every((entry) => typeof entry === 'string')
+  );
 }
 
 export function buildTalkThreadEventFilter(

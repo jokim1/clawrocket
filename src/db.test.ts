@@ -677,14 +677,22 @@ describe('phase 0 schema and reliability tables', () => {
     expect(talkThreadCount.count).toBeGreaterThan(0);
     expect(
       (
-        db.prepare(`SELECT COUNT(*) AS count FROM talk_messages WHERE thread_id IS NULL`).get() as {
+        db
+          .prepare(
+            `SELECT COUNT(*) AS count FROM talk_messages WHERE thread_id IS NULL`,
+          )
+          .get() as {
           count: number;
         }
       ).count,
     ).toBe(0);
     expect(
       (
-        db.prepare(`SELECT COUNT(*) AS count FROM talk_runs WHERE thread_id IS NULL`).get() as {
+        db
+          .prepare(
+            `SELECT COUNT(*) AS count FROM talk_runs WHERE thread_id IS NULL`,
+          )
+          .get() as {
           count: number;
         }
       ).count,

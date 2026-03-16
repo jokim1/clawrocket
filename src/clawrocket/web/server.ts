@@ -738,7 +738,9 @@ function buildApp(opts: WebServerOptions): Hono {
     // Read saved default model from settings_kv
     const savedModel = (
       db
-        .prepare(`SELECT value FROM settings_kv WHERE key = 'executor.defaultClaudeModel'`)
+        .prepare(
+          `SELECT value FROM settings_kv WHERE key = 'executor.defaultClaudeModel'`,
+        )
         .get() as { value: string } | undefined
     )?.value;
 
@@ -763,7 +765,11 @@ function buildApp(opts: WebServerOptions): Hono {
     const db = getDb();
 
     const getSetting = (key: string): string | null =>
-      (db.prepare(`SELECT value FROM settings_kv WHERE key = ?`).get(key) as { value: string } | undefined)?.value || null;
+      (
+        db.prepare(`SELECT value FROM settings_kv WHERE key = ?`).get(key) as
+          | { value: string }
+          | undefined
+      )?.value || null;
 
     const hasApiKey = !!db
       .prepare(
@@ -774,12 +780,16 @@ function buildApp(opts: WebServerOptions): Hono {
 
     const hasOauth = !!getSetting('executor.claudeOauthToken');
 
-    const mode = getSetting('executor.authMode') || (hasApiKey ? 'api_key' : hasOauth ? 'subscription' : 'none');
+    const mode =
+      getSetting('executor.authMode') ||
+      (hasApiKey ? 'api_key' : hasOauth ? 'subscription' : 'none');
     const hasCredential =
-      (mode === 'api_key' && hasApiKey) || (mode === 'subscription' && hasOauth);
+      (mode === 'api_key' && hasApiKey) ||
+      (mode === 'subscription' && hasOauth);
 
     const storedVerification = getSetting('executor.verificationStatus');
-    const verificationStatus = storedVerification || (hasCredential ? 'not_verified' : 'missing');
+    const verificationStatus =
+      storedVerification || (hasCredential ? 'not_verified' : 'missing');
 
     return c.json(
       {
@@ -817,7 +827,11 @@ function buildApp(opts: WebServerOptions): Hono {
 
     const db = getDb();
     const getSetting = (key: string): string | null =>
-      (db.prepare(`SELECT value FROM settings_kv WHERE key = ?`).get(key) as { value: string } | undefined)?.value || null;
+      (
+        db.prepare(`SELECT value FROM settings_kv WHERE key = ?`).get(key) as
+          | { value: string }
+          | undefined
+      )?.value || null;
 
     const hasApiKey = !!db
       .prepare(
@@ -826,12 +840,16 @@ function buildApp(opts: WebServerOptions): Hono {
       )
       .get();
     const hasOauth = !!getSetting('executor.claudeOauthToken');
-    const mode = getSetting('executor.authMode') || (hasApiKey ? 'api_key' : hasOauth ? 'subscription' : 'none');
+    const mode =
+      getSetting('executor.authMode') ||
+      (hasApiKey ? 'api_key' : hasOauth ? 'subscription' : 'none');
     const hasCredential =
-      (mode === 'api_key' && hasApiKey) || (mode === 'subscription' && hasOauth);
+      (mode === 'api_key' && hasApiKey) ||
+      (mode === 'subscription' && hasOauth);
 
     const storedVerification = getSetting('executor.verificationStatus');
-    const verificationStatus = storedVerification || (hasCredential ? 'not_verified' : 'missing');
+    const verificationStatus =
+      storedVerification || (hasCredential ? 'not_verified' : 'missing');
 
     return c.json(
       {
@@ -868,8 +886,7 @@ function buildApp(opts: WebServerOptions): Hono {
           serviceEnvOauthPresent: false,
           importAvailable: false,
           hostCredentialFingerprint: null,
-          message:
-            'Subscription host detection is not yet implemented.',
+          message: 'Subscription host detection is not yet implemented.',
           recommendedCommands: [],
         },
       },
@@ -906,7 +923,12 @@ function buildApp(opts: WebServerOptions): Hono {
 
     // Persist auth mode
     if (body.executorAuthMode) {
-      upsertSetting.run('executor.authMode', body.executorAuthMode, now, userId);
+      upsertSetting.run(
+        'executor.authMode',
+        body.executorAuthMode,
+        now,
+        userId,
+      );
     }
 
     // Persist API key → llm_provider_secrets
@@ -922,12 +944,22 @@ function buildApp(opts: WebServerOptions): Hono {
 
     // Persist OAuth token → settings_kv
     if (body.claudeOauthToken) {
-      upsertSetting.run('executor.claudeOauthToken', body.claudeOauthToken, now, userId);
+      upsertSetting.run(
+        'executor.claudeOauthToken',
+        body.claudeOauthToken,
+        now,
+        userId,
+      );
     }
 
     // Persist auth token → settings_kv
     if (body.anthropicAuthToken) {
-      upsertSetting.run('executor.anthropicAuthToken', body.anthropicAuthToken, now, userId);
+      upsertSetting.run(
+        'executor.anthropicAuthToken',
+        body.anthropicAuthToken,
+        now,
+        userId,
+      );
     }
 
     // Determine current credential state
@@ -945,7 +977,9 @@ function buildApp(opts: WebServerOptions): Hono {
       body.claudeOauthToken ||
       (
         db
-          .prepare(`SELECT value FROM settings_kv WHERE key = 'executor.claudeOauthToken'`)
+          .prepare(
+            `SELECT value FROM settings_kv WHERE key = 'executor.claudeOauthToken'`,
+          )
           .get() as { value: string } | undefined
       )?.value
     );
@@ -1067,7 +1101,12 @@ function buildApp(opts: WebServerOptions): Hono {
       .get() as { ciphertext: string } | undefined;
 
     if (!secretRow) {
-      upsertSetting.run('executor.verificationStatus', 'missing', now, auth.userId);
+      upsertSetting.run(
+        'executor.verificationStatus',
+        'missing',
+        now,
+        auth.userId,
+      );
       return c.json(
         {
           ok: true,
@@ -1086,7 +1125,12 @@ function buildApp(opts: WebServerOptions): Hono {
       const parsed = JSON.parse(secretRow.ciphertext);
       apiKey = parsed.apiKey;
     } catch {
-      upsertSetting.run('executor.verificationStatus', 'invalid', now, auth.userId);
+      upsertSetting.run(
+        'executor.verificationStatus',
+        'invalid',
+        now,
+        auth.userId,
+      );
       return c.json(
         {
           ok: true,
@@ -1117,9 +1161,19 @@ function buildApp(opts: WebServerOptions): Hono {
       });
 
       if (resp.ok || resp.status === 200) {
-        upsertSetting.run('executor.verificationStatus', 'verified', now, auth.userId);
+        upsertSetting.run(
+          'executor.verificationStatus',
+          'verified',
+          now,
+          auth.userId,
+        );
         upsertSetting.run('executor.lastVerifiedAt', now, now, auth.userId);
-        upsertSetting.run('executor.lastVerificationError', '', now, auth.userId);
+        upsertSetting.run(
+          'executor.lastVerificationError',
+          '',
+          now,
+          auth.userId,
+        );
         return c.json(
           {
             ok: true,
@@ -1135,8 +1189,18 @@ function buildApp(opts: WebServerOptions): Hono {
 
       // Non-200 response
       const errorBody = await resp.text().catch(() => 'unknown error');
-      upsertSetting.run('executor.verificationStatus', 'invalid', now, auth.userId);
-      upsertSetting.run('executor.lastVerificationError', errorBody, now, auth.userId);
+      upsertSetting.run(
+        'executor.verificationStatus',
+        'invalid',
+        now,
+        auth.userId,
+      );
+      upsertSetting.run(
+        'executor.lastVerificationError',
+        errorBody,
+        now,
+        auth.userId,
+      );
       return c.json(
         {
           ok: true,
@@ -1150,8 +1214,18 @@ function buildApp(opts: WebServerOptions): Hono {
       );
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);
-      upsertSetting.run('executor.verificationStatus', 'invalid', now, auth.userId);
-      upsertSetting.run('executor.lastVerificationError', errMsg, now, auth.userId);
+      upsertSetting.run(
+        'executor.verificationStatus',
+        'invalid',
+        now,
+        auth.userId,
+      );
+      upsertSetting.run(
+        'executor.lastVerificationError',
+        errMsg,
+        now,
+        auth.userId,
+      );
       return c.json(
         {
           ok: true,
@@ -2476,19 +2550,35 @@ function buildApp(opts: WebServerOptions): Hono {
 
     const talkId = safeDecodePathSegment(c.req.param('talkId'));
     if (!talkId) {
-      return c.json({ ok: false, error: { code: 'invalid_talk_id', message: 'Invalid Talk ID' } }, 400);
+      return c.json(
+        {
+          ok: false,
+          error: { code: 'invalid_talk_id', message: 'Invalid Talk ID' },
+        },
+        400,
+      );
     }
 
     try {
-      const { getTalkForUser, listTalkThreads } = await import('../db/accessors.js');
+      const { getTalkForUser, listTalkThreads } =
+        await import('../db/accessors.js');
       const talk = getTalkForUser(talkId, auth.userId);
       if (!talk) {
-        return c.json({ ok: false, error: { code: 'talk_not_found', message: 'Talk not found' } }, 404);
+        return c.json(
+          {
+            ok: false,
+            error: { code: 'talk_not_found', message: 'Talk not found' },
+          },
+          404,
+        );
       }
       const threads = listTalkThreads(talkId);
       return c.json({ ok: true, data: { threads } });
     } catch (err) {
-      return c.json({ ok: false, error: { code: 'internal_error', message: String(err) } }, 500);
+      return c.json(
+        { ok: false, error: { code: 'internal_error', message: String(err) } },
+        500,
+      );
     }
   });
 
@@ -2516,27 +2606,51 @@ function buildApp(opts: WebServerOptions): Hono {
 
     const talkId = safeDecodePathSegment(c.req.param('talkId'));
     if (!talkId) {
-      return c.json({ ok: false, error: { code: 'invalid_talk_id', message: 'Invalid Talk ID' } }, 400);
+      return c.json(
+        {
+          ok: false,
+          error: { code: 'invalid_talk_id', message: 'Invalid Talk ID' },
+        },
+        400,
+      );
     }
 
     try {
-      const { getTalkForUser, createTalkThread } = await import('../db/accessors.js');
+      const { getTalkForUser, createTalkThread } =
+        await import('../db/accessors.js');
       const talk = getTalkForUser(talkId, auth.userId);
       if (!talk) {
-        return c.json({ ok: false, error: { code: 'talk_not_found', message: 'Talk not found' } }, 404);
+        return c.json(
+          {
+            ok: false,
+            error: { code: 'talk_not_found', message: 'Talk not found' },
+          },
+          404,
+        );
       }
       if (!canEditTalk(talkId, auth.userId, auth.role)) {
         return c.json(
-          { ok: false, error: { code: 'forbidden', message: 'You do not have permission to create threads for this talk' } },
+          {
+            ok: false,
+            error: {
+              code: 'forbidden',
+              message:
+                'You do not have permission to create threads for this talk',
+            },
+          },
           403,
         );
       }
       const body = await c.req.json().catch(() => ({}));
-      const title = typeof body.title === 'string' ? body.title.trim() || null : null;
+      const title =
+        typeof body.title === 'string' ? body.title.trim() || null : null;
       const thread = createTalkThread({ talkId, title });
       return c.json({ ok: true, data: thread }, 201);
     } catch (err) {
-      return c.json({ ok: false, error: { code: 'internal_error', message: String(err) } }, 500);
+      return c.json(
+        { ok: false, error: { code: 'internal_error', message: String(err) } },
+        500,
+      );
     }
   });
 
@@ -3994,7 +4108,10 @@ function buildApp(opts: WebServerOptions): Hono {
 
     const result = enqueueTalkChat({
       talkId,
-      threadId: typeof payload.data.threadId === 'string' ? payload.data.threadId.trim() || null : null,
+      threadId:
+        typeof payload.data.threadId === 'string'
+          ? payload.data.threadId.trim() || null
+          : null,
       auth,
       content: payload.data.content || '',
       targetAgentIds: Array.isArray(payload.data.targetAgentIds)
@@ -4268,7 +4385,10 @@ function buildApp(opts: WebServerOptions): Hono {
       result.cancelledRunning
     ) {
       const cancelledThreadId = result.body.data.threadId;
-      if (typeof cancelledThreadId === 'string' && cancelledThreadId.length > 0) {
+      if (
+        typeof cancelledThreadId === 'string' &&
+        cancelledThreadId.length > 0
+      ) {
         opts.runWorker.abortThread(cancelledThreadId);
       } else {
         opts.runWorker.abortTalk(talkId);
