@@ -880,6 +880,24 @@ function createClawrocketSchema(database: Database.Database): void {
   migrateLlmAttemptsTable(database);
   migrateAddMissingColumns(database);
 
+  // ---------------------------------------------------------------------------
+  // PR #105 — Comprehensive schema-audit migrations.
+  // Fixes every NOT NULL / type / default mismatch discovered between the live
+  // database and the current CREATE TABLE definitions so that no more runtime
+  // crashes occur due to constraint violations on stale schemas.
+  // ---------------------------------------------------------------------------
+  migrateSettingsKvTable(database);
+  migrateTalkMessageAttachmentsTable(database);
+  migrateTalkContextGoalTable(database);
+  migrateTalkContextSourcesTable(database);
+  migrateTalkContextRulesTable(database);
+  migrateChannelIngressQueueTable(database);
+  migrateChannelDeliveryOutboxTable(database);
+  migrateDeadLetterQueueTable(database);
+  migrateTalkChannelPoliciesTable(database);
+  migrateTalkChannelBindingsTable(database);
+  migrateTalksTable(database);
+
   migrateMainAgentToAnthropic(database);
 
   seedBuiltinLlmProvider(database);
@@ -1412,6 +1430,576 @@ function migrateLlmAttemptsTable(database: Database.Database): void {
     FROM llm_attempts_migration_backup;
 
     DROP TABLE llm_attempts_migration_backup;
+  `);
+}
+
+// ===========================================================================
+// PR #105 — Comprehensive schema-audit migration functions.
+//
+// Each function follows the same idempotent pattern:
+//   1. PRAGMA table_info to inspect live schema
+//   2. Check if the specific mismatch still exists
+//   3. Backup → drop → recreate → copy → cleanup
+// ===========================================================================
+
+/**
+ * settings_kv: live DB has `value TEXT NOT NULL`, init.ts has `value TEXT` (nullable).
+ * Code stores NULL values for some settings keys.
+ */
+function migrateSettingsKvTable(database: Database.Database): void {
+  const columns = database
+    .prepare(`PRAGMA table_info(settings_kv)`)
+    .all() as Array<{ name: string; notnull: number }>;
+  if (columns.length === 0) return;
+
+  const valueCol = columns.find((c) => c.name === 'value');
+  if (!valueCol || valueCol.notnull === 0) return;
+
+  database.exec(`
+    CREATE TABLE settings_kv_migration_backup AS SELECT * FROM settings_kv;
+    DROP TABLE settings_kv;
+
+    CREATE TABLE settings_kv (
+      key TEXT PRIMARY KEY,
+      value TEXT,
+      updated_at TEXT NOT NULL,
+      updated_by TEXT REFERENCES users(id)
+    );
+
+    INSERT INTO settings_kv (key, value, updated_at, updated_by)
+    SELECT key, value, updated_at, updated_by
+    FROM settings_kv_migration_backup;
+
+    DROP TABLE settings_kv_migration_backup;
+  `);
+}
+
+/**
+ * talk_message_attachments: live DB has talk_id/file_size/mime_type as NOT NULL,
+ * init.ts allows them nullable.
+ */
+function migrateTalkMessageAttachmentsTable(database: Database.Database): void {
+  const columns = database
+    .prepare(`PRAGMA table_info(talk_message_attachments)`)
+    .all() as Array<{ name: string; notnull: number }>;
+  if (columns.length === 0) return;
+
+  const needsRebuild = ['talk_id', 'file_size', 'mime_type'].some((col) => {
+    const c = columns.find((x) => x.name === col);
+    return c && c.notnull === 1;
+  });
+  if (!needsRebuild) return;
+
+  database.exec(`
+    CREATE TABLE talk_message_attachments_mig AS SELECT * FROM talk_message_attachments;
+    DROP TABLE talk_message_attachments;
+
+    CREATE TABLE talk_message_attachments (
+      id TEXT PRIMARY KEY,
+      talk_id TEXT REFERENCES talks(id) ON DELETE CASCADE,
+      message_id TEXT REFERENCES talk_messages(id) ON DELETE CASCADE,
+      file_name TEXT NOT NULL,
+      file_size INTEGER,
+      mime_type TEXT,
+      storage_key TEXT NOT NULL,
+      extracted_text TEXT,
+      extraction_status TEXT NOT NULL DEFAULT 'pending'
+        CHECK(extraction_status IN ('pending', 'ready', 'failed')),
+      extraction_error TEXT,
+      created_at TEXT NOT NULL,
+      created_by TEXT REFERENCES users(id) ON DELETE SET NULL
+    );
+    CREATE INDEX idx_talk_message_attachments_message_id
+      ON talk_message_attachments(message_id);
+    CREATE INDEX idx_talk_message_attachments_talk_created
+      ON talk_message_attachments(talk_id, created_at);
+
+    INSERT INTO talk_message_attachments (
+      id, talk_id, message_id, file_name, file_size, mime_type,
+      storage_key, extracted_text, extraction_status, extraction_error,
+      created_at, created_by
+    )
+    SELECT
+      id, talk_id, message_id, file_name, file_size, mime_type,
+      storage_key, extracted_text,
+      COALESCE(extraction_status, 'pending'),
+      extraction_error, created_at, created_by
+    FROM talk_message_attachments_mig;
+
+    DROP TABLE talk_message_attachments_mig;
+  `);
+}
+
+/**
+ * talk_context_goal: live DB has goal_text NOT NULL, init.ts allows NULL.
+ */
+function migrateTalkContextGoalTable(database: Database.Database): void {
+  const columns = database
+    .prepare(`PRAGMA table_info(talk_context_goal)`)
+    .all() as Array<{ name: string; notnull: number }>;
+  if (columns.length === 0) return;
+
+  const goalCol = columns.find((c) => c.name === 'goal_text');
+  if (!goalCol || goalCol.notnull === 0) return;
+
+  database.exec(`
+    CREATE TABLE talk_context_goal_mig AS SELECT * FROM talk_context_goal;
+    DROP TABLE talk_context_goal;
+
+    CREATE TABLE talk_context_goal (
+      talk_id TEXT PRIMARY KEY REFERENCES talks(id) ON DELETE CASCADE,
+      goal_text TEXT,
+      updated_at TEXT NOT NULL,
+      updated_by TEXT REFERENCES users(id)
+    );
+
+    INSERT INTO talk_context_goal (talk_id, goal_text, updated_at, updated_by)
+    SELECT talk_id, goal_text, updated_at, updated_by
+    FROM talk_context_goal_mig;
+
+    DROP TABLE talk_context_goal_mig;
+  `);
+}
+
+/**
+ * talk_context_sources: live DB has title NOT NULL + sort_order INTEGER.
+ * init.ts has title nullable + sort_order REAL.
+ */
+function migrateTalkContextSourcesTable(database: Database.Database): void {
+  const columns = database
+    .prepare(`PRAGMA table_info(talk_context_sources)`)
+    .all() as Array<{ name: string; notnull: number; type: string }>;
+  if (columns.length === 0) return;
+
+  const titleCol = columns.find((c) => c.name === 'title');
+  const sortCol = columns.find((c) => c.name === 'sort_order');
+  const titleNeedsfix = titleCol && titleCol.notnull === 1;
+  const sortNeedsFix = sortCol && sortCol.type.toUpperCase() === 'INTEGER';
+  if (!titleNeedsfix && !sortNeedsFix) return;
+
+  database.exec(`
+    CREATE TABLE talk_context_sources_mig AS SELECT * FROM talk_context_sources;
+    DROP TABLE talk_context_sources;
+
+    CREATE TABLE talk_context_sources (
+      id TEXT PRIMARY KEY,
+      talk_id TEXT NOT NULL REFERENCES talks(id) ON DELETE CASCADE,
+      source_ref TEXT NOT NULL,
+      source_type TEXT NOT NULL
+        CHECK(source_type IN ('url', 'file', 'text')),
+      title TEXT,
+      note TEXT,
+      sort_order REAL NOT NULL DEFAULT 0,
+      status TEXT NOT NULL DEFAULT 'pending'
+        CHECK(status IN ('pending', 'ready', 'failed')),
+      source_url TEXT,
+      file_name TEXT,
+      file_size INTEGER,
+      mime_type TEXT,
+      storage_key TEXT,
+      extracted_text TEXT,
+      extracted_at TEXT,
+      last_fetched_at TEXT,
+      extraction_error TEXT,
+      fetch_strategy TEXT
+        CHECK(fetch_strategy IN ('http', 'browser', 'managed') OR fetch_strategy IS NULL),
+      is_truncated INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      created_by TEXT REFERENCES users(id)
+    );
+    CREATE INDEX idx_talk_context_sources_talk_sort
+      ON talk_context_sources(talk_id, sort_order, created_at);
+    CREATE UNIQUE INDEX idx_talk_context_sources_ref
+      ON talk_context_sources(talk_id, source_ref);
+
+    INSERT INTO talk_context_sources (
+      id, talk_id, source_ref, source_type, title, note, sort_order,
+      status, source_url, file_name, file_size, mime_type, storage_key,
+      extracted_text, extracted_at, last_fetched_at, extraction_error,
+      fetch_strategy, is_truncated, created_at, updated_at, created_by
+    )
+    SELECT
+      id, talk_id, source_ref, source_type, title, note, sort_order,
+      COALESCE(status, 'pending'),
+      source_url, file_name, file_size, mime_type, storage_key,
+      extracted_text, extracted_at, last_fetched_at, extraction_error,
+      fetch_strategy, COALESCE(is_truncated, 0),
+      created_at, updated_at, created_by
+    FROM talk_context_sources_mig;
+
+    DROP TABLE talk_context_sources_mig;
+  `);
+}
+
+/**
+ * talk_context_rules: live DB has sort_order INTEGER, init.ts has REAL.
+ * Low risk due to SQLite type affinity, but fix for consistency.
+ */
+function migrateTalkContextRulesTable(database: Database.Database): void {
+  const columns = database
+    .prepare(`PRAGMA table_info(talk_context_rules)`)
+    .all() as Array<{ name: string; type: string }>;
+  if (columns.length === 0) return;
+
+  const sortCol = columns.find((c) => c.name === 'sort_order');
+  if (!sortCol || sortCol.type.toUpperCase() !== 'INTEGER') return;
+
+  database.exec(`
+    CREATE TABLE talk_context_rules_mig AS SELECT * FROM talk_context_rules;
+    DROP TABLE talk_context_rules;
+
+    CREATE TABLE talk_context_rules (
+      id TEXT PRIMARY KEY,
+      talk_id TEXT NOT NULL REFERENCES talks(id) ON DELETE CASCADE,
+      rule_text TEXT NOT NULL,
+      sort_order REAL NOT NULL DEFAULT 0,
+      is_active INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE INDEX idx_talk_context_rules_talk_sort
+      ON talk_context_rules(talk_id, sort_order, created_at);
+
+    INSERT INTO talk_context_rules (
+      id, talk_id, rule_text, sort_order, is_active, created_at, updated_at
+    )
+    SELECT
+      id, talk_id, rule_text, sort_order, COALESCE(is_active, 1),
+      created_at, updated_at
+    FROM talk_context_rules_mig;
+
+    DROP TABLE talk_context_rules_mig;
+  `);
+}
+
+/**
+ * channel_ingress_queue: live DB has platform_event_id NOT NULL, init.ts nullable.
+ */
+function migrateChannelIngressQueueTable(database: Database.Database): void {
+  const columns = database
+    .prepare(`PRAGMA table_info(channel_ingress_queue)`)
+    .all() as Array<{ name: string; notnull: number }>;
+  if (columns.length === 0) return;
+
+  const col = columns.find((c) => c.name === 'platform_event_id');
+  if (!col || col.notnull === 0) return;
+
+  database.exec(`
+    CREATE TABLE channel_ingress_queue_mig AS SELECT * FROM channel_ingress_queue;
+    DROP TABLE channel_ingress_queue;
+
+    CREATE TABLE channel_ingress_queue (
+      id TEXT PRIMARY KEY,
+      binding_id TEXT NOT NULL REFERENCES talk_channel_bindings(id) ON DELETE CASCADE,
+      talk_id TEXT NOT NULL REFERENCES talks(id) ON DELETE CASCADE,
+      connection_id TEXT NOT NULL REFERENCES channel_connections(id) ON DELETE CASCADE,
+      target_kind TEXT NOT NULL,
+      target_id TEXT NOT NULL,
+      platform_event_id TEXT,
+      external_message_id TEXT,
+      sender_id TEXT,
+      sender_name TEXT,
+      payload_json TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending'
+        CHECK(status IN ('pending', 'deferred', 'processing', 'completed', 'dropped', 'dead_letter')),
+      reason_code TEXT,
+      reason_detail TEXT,
+      dedupe_key TEXT NOT NULL UNIQUE,
+      available_at TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      attempt_count INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE INDEX idx_channel_ingress_queue_status_available
+      ON channel_ingress_queue(status, available_at, created_at);
+    CREATE INDEX idx_channel_ingress_queue_binding_status_available
+      ON channel_ingress_queue(binding_id, status, available_at, created_at);
+    CREATE INDEX idx_channel_ingress_queue_talk_status_available
+      ON channel_ingress_queue(talk_id, status, available_at, created_at);
+
+    INSERT INTO channel_ingress_queue (
+      id, binding_id, talk_id, connection_id, target_kind, target_id,
+      platform_event_id, external_message_id, sender_id, sender_name,
+      payload_json, status, reason_code, reason_detail, dedupe_key,
+      available_at, created_at, updated_at, attempt_count
+    )
+    SELECT
+      id, binding_id, talk_id, connection_id, target_kind, target_id,
+      platform_event_id, external_message_id, sender_id, sender_name,
+      payload_json, status, reason_code, reason_detail, dedupe_key,
+      available_at, created_at, updated_at, COALESCE(attempt_count, 0)
+    FROM channel_ingress_queue_mig;
+
+    DROP TABLE channel_ingress_queue_mig;
+  `);
+}
+
+/**
+ * channel_delivery_outbox: live DB has dedupe_key NOT NULL, init.ts nullable.
+ */
+function migrateChannelDeliveryOutboxTable(database: Database.Database): void {
+  const columns = database
+    .prepare(`PRAGMA table_info(channel_delivery_outbox)`)
+    .all() as Array<{ name: string; notnull: number }>;
+  if (columns.length === 0) return;
+
+  const col = columns.find((c) => c.name === 'dedupe_key');
+  if (!col || col.notnull === 0) return;
+
+  database.exec(`
+    CREATE TABLE channel_delivery_outbox_mig AS SELECT * FROM channel_delivery_outbox;
+    DROP TABLE channel_delivery_outbox;
+
+    CREATE TABLE channel_delivery_outbox (
+      id TEXT PRIMARY KEY,
+      binding_id TEXT NOT NULL,
+      talk_id TEXT NOT NULL REFERENCES talks(id) ON DELETE CASCADE,
+      run_id TEXT,
+      talk_message_id TEXT,
+      target_kind TEXT NOT NULL,
+      target_id TEXT NOT NULL,
+      payload_json TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending'
+        CHECK(status IN ('pending', 'sending', 'sent', 'failed', 'dead_letter', 'dropped')),
+      reason_code TEXT,
+      reason_detail TEXT,
+      dedupe_key TEXT,
+      available_at TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      attempt_count INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE INDEX idx_channel_delivery_outbox_status
+      ON channel_delivery_outbox(status, available_at);
+
+    INSERT INTO channel_delivery_outbox (
+      id, binding_id, talk_id, run_id, talk_message_id, target_kind,
+      target_id, payload_json, status, reason_code, reason_detail,
+      dedupe_key, available_at, created_at, updated_at, attempt_count
+    )
+    SELECT
+      id, binding_id, talk_id, run_id, talk_message_id, target_kind,
+      target_id, payload_json, status, reason_code, reason_detail,
+      dedupe_key, available_at, created_at, updated_at, COALESCE(attempt_count, 0)
+    FROM channel_delivery_outbox_mig;
+
+    DROP TABLE channel_delivery_outbox_mig;
+  `);
+}
+
+/**
+ * dead_letter_queue: live DB has payload NOT NULL, init.ts nullable.
+ */
+function migrateDeadLetterQueueTable(database: Database.Database): void {
+  const columns = database
+    .prepare(`PRAGMA table_info(dead_letter_queue)`)
+    .all() as Array<{ name: string; notnull: number }>;
+  if (columns.length === 0) return;
+
+  const col = columns.find((c) => c.name === 'payload');
+  if (!col || col.notnull === 0) return;
+
+  database.exec(`
+    CREATE TABLE dead_letter_queue_mig AS SELECT * FROM dead_letter_queue;
+    DROP TABLE dead_letter_queue;
+
+    CREATE TABLE dead_letter_queue (
+      id TEXT PRIMARY KEY,
+      source_type TEXT NOT NULL,
+      source_id TEXT NOT NULL,
+      payload TEXT,
+      error_class TEXT NOT NULL,
+      error_detail TEXT,
+      attempts INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL,
+      last_retry_at TEXT,
+      resolved_at TEXT
+    );
+    CREATE INDEX idx_dead_letter_created_at
+      ON dead_letter_queue(created_at);
+
+    INSERT INTO dead_letter_queue (
+      id, source_type, source_id, payload, error_class, error_detail,
+      attempts, created_at, last_retry_at, resolved_at
+    )
+    SELECT
+      id, source_type, source_id, payload, error_class, error_detail,
+      COALESCE(attempts, 1), created_at, last_retry_at, resolved_at
+    FROM dead_letter_queue_mig;
+
+    DROP TABLE dead_letter_queue_mig;
+  `);
+}
+
+/**
+ * talk_channel_policies: live DB has inbound_rate_limit_per_minute NOT NULL
+ * and max_deferred_age_minutes DEFAULT 10. init.ts has nullable and DEFAULT 60.
+ */
+function migrateTalkChannelPoliciesTable(database: Database.Database): void {
+  const columns = database
+    .prepare(`PRAGMA table_info(talk_channel_policies)`)
+    .all() as Array<{ name: string; notnull: number; dflt_value: string | null }>;
+  if (columns.length === 0) return;
+
+  const rateCol = columns.find((c) => c.name === 'inbound_rate_limit_per_minute');
+  const deferredCol = columns.find((c) => c.name === 'max_deferred_age_minutes');
+  const rateNeedsFix = rateCol && rateCol.notnull === 1;
+  const defaultNeedsFix = deferredCol && deferredCol.dflt_value === '10';
+  if (!rateNeedsFix && !defaultNeedsFix) return;
+
+  database.exec(`
+    CREATE TABLE talk_channel_policies_mig AS SELECT * FROM talk_channel_policies;
+    DROP TABLE talk_channel_policies;
+
+    CREATE TABLE talk_channel_policies (
+      binding_id TEXT PRIMARY KEY REFERENCES talk_channel_bindings(id) ON DELETE CASCADE,
+      response_mode TEXT NOT NULL DEFAULT 'mentions'
+        CHECK(response_mode IN ('off', 'mentions', 'all')),
+      responder_mode TEXT NOT NULL DEFAULT 'primary'
+        CHECK(responder_mode IN ('primary', 'agent')),
+      responder_agent_id TEXT REFERENCES registered_agents(id) ON DELETE SET NULL,
+      delivery_mode TEXT NOT NULL DEFAULT 'reply'
+        CHECK(delivery_mode IN ('reply', 'channel')),
+      thread_mode TEXT NOT NULL DEFAULT 'conversation'
+        CHECK(thread_mode IN ('conversation')),
+      channel_context_note TEXT,
+      allowed_senders_json TEXT,
+      inbound_rate_limit_per_minute INTEGER,
+      max_pending_events INTEGER DEFAULT 20,
+      overflow_policy TEXT NOT NULL DEFAULT 'drop_oldest'
+        CHECK(overflow_policy IN ('drop_oldest', 'drop_newest')),
+      max_deferred_age_minutes INTEGER DEFAULT 60,
+      updated_at TEXT NOT NULL,
+      updated_by TEXT REFERENCES users(id)
+    );
+
+    INSERT INTO talk_channel_policies (
+      binding_id, response_mode, responder_mode, responder_agent_id,
+      delivery_mode, thread_mode, channel_context_note, allowed_senders_json,
+      inbound_rate_limit_per_minute, max_pending_events, overflow_policy,
+      max_deferred_age_minutes, updated_at, updated_by
+    )
+    SELECT
+      binding_id, response_mode, responder_mode, responder_agent_id,
+      delivery_mode, thread_mode, channel_context_note, allowed_senders_json,
+      inbound_rate_limit_per_minute, max_pending_events,
+      COALESCE(overflow_policy, 'drop_oldest'),
+      max_deferred_age_minutes, updated_at, updated_by
+    FROM talk_channel_policies_mig;
+
+    DROP TABLE talk_channel_policies_mig;
+  `);
+}
+
+/**
+ * talk_channel_bindings: live DB has display_name NOT NULL + missing 4 columns
+ * (response_mode, responder_agent_id, allowed_senders_json, rate_limit_json).
+ */
+function migrateTalkChannelBindingsTable(database: Database.Database): void {
+  const columns = database
+    .prepare(`PRAGMA table_info(talk_channel_bindings)`)
+    .all() as Array<{ name: string; notnull: number }>;
+  if (columns.length === 0) return;
+
+  const displayCol = columns.find((c) => c.name === 'display_name');
+  const displayNeedsFix = displayCol && displayCol.notnull === 1;
+  const missingCols = ['response_mode', 'responder_agent_id', 'allowed_senders_json', 'rate_limit_json']
+    .some((col) => !columns.some((c) => c.name === col));
+  if (!displayNeedsFix && !missingCols) return;
+
+  // Determine which columns exist in the old table for the SELECT
+  const oldColNames = columns.map((c) => c.name);
+  const hasResponseMode = oldColNames.includes('response_mode');
+  const hasResponderAgentId = oldColNames.includes('responder_agent_id');
+
+  database.exec(`
+    CREATE TABLE talk_channel_bindings_mig AS SELECT * FROM talk_channel_bindings;
+    DROP TABLE talk_channel_bindings;
+
+    CREATE TABLE talk_channel_bindings (
+      id TEXT PRIMARY KEY,
+      talk_id TEXT NOT NULL REFERENCES talks(id) ON DELETE CASCADE,
+      connection_id TEXT NOT NULL REFERENCES channel_connections(id) ON DELETE CASCADE,
+      target_kind TEXT NOT NULL,
+      target_id TEXT NOT NULL,
+      display_name TEXT,
+      response_mode TEXT NOT NULL DEFAULT 'mentions'
+        CHECK(response_mode IN ('off', 'mentions', 'all')),
+      responder_agent_id TEXT REFERENCES registered_agents(id) ON DELETE SET NULL,
+      allowed_senders_json TEXT,
+      rate_limit_json TEXT,
+      active INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      created_by TEXT REFERENCES users(id),
+      updated_by TEXT REFERENCES users(id)
+    );
+    CREATE INDEX idx_talk_channel_bindings_talk
+      ON talk_channel_bindings(talk_id, active, created_at);
+
+    INSERT INTO talk_channel_bindings (
+      id, talk_id, connection_id, target_kind, target_id, display_name,
+      response_mode, responder_agent_id, allowed_senders_json, rate_limit_json,
+      active, created_at, updated_at, created_by, updated_by
+    )
+    SELECT
+      id, talk_id, connection_id, target_kind, target_id, display_name,
+      ${hasResponseMode ? 'response_mode' : "'mentions'"},
+      ${hasResponderAgentId ? 'responder_agent_id' : 'NULL'},
+      NULL,
+      NULL,
+      COALESCE(active, 1), created_at, updated_at, created_by, updated_by
+    FROM talk_channel_bindings_mig;
+
+    DROP TABLE talk_channel_bindings_mig;
+  `);
+}
+
+/**
+ * talks: live DB has sort_order INTEGER, init.ts has REAL.
+ * Low risk due to SQLite type affinity, but fix for schema consistency.
+ */
+function migrateTalksTable(database: Database.Database): void {
+  const columns = database
+    .prepare(`PRAGMA table_info(talks)`)
+    .all() as Array<{ name: string; type: string }>;
+  if (columns.length === 0) return;
+
+  const sortCol = columns.find((c) => c.name === 'sort_order');
+  if (!sortCol || sortCol.type.toUpperCase() !== 'INTEGER') return;
+
+  database.exec(`
+    CREATE TABLE talks_mig AS SELECT * FROM talks;
+    DROP TABLE talks;
+
+    CREATE TABLE talks (
+      id TEXT PRIMARY KEY,
+      owner_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      folder_id TEXT REFERENCES talk_folders(id) ON DELETE SET NULL,
+      topic_title TEXT,
+      status TEXT NOT NULL DEFAULT 'active'
+        CHECK(status IN ('active', 'paused', 'archived')),
+      sort_order REAL NOT NULL DEFAULT 0,
+      version INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE INDEX idx_talks_owner_folder_sort
+      ON talks(owner_id, folder_id, sort_order, updated_at);
+
+    INSERT INTO talks (
+      id, owner_id, folder_id, topic_title, status,
+      sort_order, version, created_at, updated_at
+    )
+    SELECT
+      id, owner_id, folder_id, topic_title,
+      COALESCE(status, 'active'),
+      COALESCE(sort_order, 0), COALESCE(version, 1),
+      created_at, updated_at
+    FROM talks_mig;
+
+    DROP TABLE talks_mig;
   `);
 }
 
