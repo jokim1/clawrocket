@@ -94,6 +94,7 @@ describe('TalkDetailPage', () => {
       within(statusPills).getByText('GPT-5 Mini (Critic)').parentElement
         ?.className,
     ).toContain('talk-status-pill-invalid');
+    expect(screen.getByLabelText('Response mode')).toHaveValue('ordered');
 
     const tabs = within(
       screen.getByRole('navigation', { name: 'Talk sections' }),
@@ -116,6 +117,32 @@ describe('TalkDetailPage', () => {
     await screen.findByPlaceholderText('Send a message to this thread');
 
     expect(openTalkStreamMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('hides the response-mode selector until the talk has at least two assigned agents', async () => {
+    installTalkDetailFetch({
+      messages: [],
+      runs: [],
+      talkAgents: [
+        buildTalkAgent({
+          id: 'agent-claude',
+          nickname: 'Claude Sonnet 4.6',
+          sourceKind: 'claude_default',
+          role: 'assistant',
+          isPrimary: true,
+          displayOrder: 0,
+          health: 'ready',
+          providerId: null,
+          modelId: 'claude-sonnet-4-6',
+          modelDisplayName: 'Claude Sonnet 4.6',
+        }),
+      ],
+    });
+
+    renderDetailPage('/app/talks/talk-1');
+
+    await screen.findByPlaceholderText('Send a message to this thread');
+    expect(screen.queryByLabelText('Response mode')).toBeNull();
   });
 
   it('loads the Tools tab and renders capability summaries and effective access', async () => {
@@ -168,6 +195,72 @@ describe('TalkDetailPage', () => {
     expect(
       screen.getByRole('button', { name: 'Cancel Runs' }),
     ).not.toHaveAttribute('disabled');
+  });
+
+  it('switches between ordered and parallel response help text', async () => {
+    const user = userEvent.setup();
+    installTalkDetailFetch({
+      messages: [],
+      runs: [],
+    });
+
+    renderDetailPage('/app/talks/talk-1');
+    await screen.findByPlaceholderText('Send a message to this thread');
+
+    const targetGroup = screen.getByRole('group', { name: 'Selected agents' });
+    await user.click(
+      within(targetGroup).getByRole('button', {
+        name: /GPT-5 Mini \(Critic\)/i,
+      }),
+    );
+
+    expect(
+      screen.getByText(
+        'Selected agents will respond in order, with the final response synthesizing earlier perspectives.',
+      ),
+    ).toBeTruthy();
+
+    await user.selectOptions(screen.getByLabelText('Response mode'), 'panel');
+    await waitFor(() =>
+      expect(
+        screen.getByText('Selected agents will each respond independently.'),
+      ).toBeTruthy(),
+    );
+  });
+
+  it('shows live ordered progress for grouped active runs', async () => {
+    installTalkDetailFetch({
+      runs: [
+        buildRun({
+          id: 'run-ordered-1',
+          status: 'running',
+          createdAt: '2026-03-06T00:00:01.000Z',
+          startedAt: '2026-03-06T00:00:02.000Z',
+          triggerMessageId: 'msg-1',
+          targetAgentId: 'agent-claude',
+          targetAgentNickname: 'Claude Sonnet 4.6',
+          responseGroupId: 'group-ordered-1',
+          sequenceIndex: 0,
+        }),
+        buildRun({
+          id: 'run-ordered-2',
+          status: 'queued',
+          createdAt: '2026-03-06T00:00:01.100Z',
+          triggerMessageId: 'msg-1',
+          targetAgentId: 'agent-openai',
+          targetAgentNickname: 'GPT-5 Mini',
+          responseGroupId: 'group-ordered-1',
+          sequenceIndex: 1,
+        }),
+      ],
+    });
+
+    renderDetailPage('/app/talks/talk-1');
+
+    await screen.findByPlaceholderText('Send a message to this thread');
+    expect(
+      screen.getByText('Agent 1 of 2 · Claude Sonnet 4.6 responding…'),
+    ).toBeTruthy();
   });
 
   it('loads talk channels, saves binding edits, and manages failure queues from the Channels tab', async () => {
@@ -740,6 +833,47 @@ describe('TalkDetailPage', () => {
     ).toBeGreaterThanOrEqual(2);
   });
 
+  it('marks synthesis messages in the timeline', async () => {
+    installTalkDetailFetch({
+      messages: [
+        buildMessage({
+          id: 'msg-1',
+          role: 'user',
+          content: 'Help me decide.',
+          createdAt: '2026-03-06T00:00:00.000Z',
+        }),
+        buildMessage({
+          id: 'msg-synthesis',
+          role: 'assistant',
+          content: 'Here is the synthesized recommendation.',
+          createdAt: '2026-03-06T00:00:03.000Z',
+          runId: 'run-synthesis',
+          agentId: 'agent-claude',
+          agentNickname: 'Claude Sonnet 4.6',
+          metadata: { isSynthesis: true },
+        }),
+      ],
+      runs: [
+        buildRun({
+          id: 'run-synthesis',
+          status: 'completed',
+          createdAt: '2026-03-06T00:00:01.000Z',
+          completedAt: '2026-03-06T00:00:03.000Z',
+          triggerMessageId: 'msg-1',
+          targetAgentId: 'agent-claude',
+          targetAgentNickname: 'Claude Sonnet 4.6',
+          responseGroupId: 'group-synthesis-1',
+          sequenceIndex: 1,
+        }),
+      ],
+    });
+
+    renderDetailPage('/app/talks/talk-1');
+
+    await screen.findByText('Here is the synthesized recommendation.');
+    expect(screen.getByText('Synthesis')).toBeTruthy();
+  });
+
   it('strips internal tags from live streamed assistant responses', async () => {
     installTalkDetailFetch();
 
@@ -1024,6 +1158,7 @@ function buildTalk(): Talk {
     id: 'talk-1',
     ownerId: 'owner-1',
     title: 'Cal Football',
+    orchestrationMode: 'ordered',
     agents: ['Claude'],
     status: 'active',
     folderId: null,
@@ -1207,6 +1342,8 @@ function buildRun(
   return {
     id: input.id,
     threadId: input.threadId ?? DEFAULT_THREAD_ID,
+    responseGroupId: input.responseGroupId ?? null,
+    sequenceIndex: input.sequenceIndex ?? null,
     status: input.status,
     createdAt: input.createdAt,
     startedAt: input.startedAt ?? null,
@@ -1216,6 +1353,7 @@ function buildRun(
     targetAgentNickname: input.targetAgentNickname ?? null,
     errorCode: input.errorCode ?? null,
     errorMessage: input.errorMessage ?? null,
+    cancelReason: input.cancelReason ?? null,
     executorAlias: input.executorAlias ?? null,
     executorModel: input.executorModel ?? null,
   };
@@ -1613,6 +1751,16 @@ function installTalkDetailFetch(input?: {
       const path = parsedUrl.pathname;
 
       if (path === '/api/v1/talks/talk-1' && method === 'GET') {
+        return jsonResponse(200, { ok: true, data: { talk } });
+      }
+
+      if (path === '/api/v1/talks/talk-1' && method === 'PATCH') {
+        const body = JSON.parse(String(init?.body || '{}')) as {
+          orchestrationMode?: Talk['orchestrationMode'];
+        };
+        if (body.orchestrationMode) {
+          talk.orchestrationMode = body.orchestrationMode;
+        }
         return jsonResponse(200, { ok: true, data: { talk } });
       }
 
@@ -2247,10 +2395,12 @@ function installTalkDetailFetch(input?: {
             content: body.content,
             createdAt: '2026-03-06T00:00:05.000Z',
           }),
-          runs: body.targetAgentIds.map((agentId, index) =>
+          runs: body.targetAgentIds.map((agentId, index, all) =>
             buildRun({
               id: `run-${index + 10}`,
               threadId: body.threadId ?? DEFAULT_THREAD_ID,
+              responseGroupId: all.length > 1 ? 'group-default-send' : null,
+              sequenceIndex: all.length > 1 ? index : null,
               status: 'queued',
               createdAt: `2026-03-06T00:00:0${index + 6}.000Z`,
               triggerMessageId: 'msg-posted',

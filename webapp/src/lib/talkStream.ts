@@ -22,6 +22,8 @@ export type TalkRunStartedEvent = {
   talkId: string;
   threadId?: string | null;
   runId: string;
+  responseGroupId?: string | null;
+  sequenceIndex?: number | null;
   triggerMessageId: string | null;
   status: 'running' | 'queued';
   executorAlias?: string | null;
@@ -32,6 +34,8 @@ export type TalkRunCompletedEvent = {
   talkId: string;
   threadId?: string | null;
   runId: string;
+  responseGroupId?: string | null;
+  sequenceIndex?: number | null;
   triggerMessageId: string | null;
   responseMessageId: string;
   executorAlias?: string | null;
@@ -44,6 +48,8 @@ export type TalkResponseStartedEvent = {
   runId: string;
   agentId?: string | null;
   agentNickname?: string | null;
+  responseGroupId?: string | null;
+  sequenceIndex?: number | null;
   routeStepPosition?: number | null;
   providerId?: string | null;
   modelId?: string | null;
@@ -55,6 +61,8 @@ export type TalkResponseDeltaEvent = {
   runId: string;
   agentId?: string | null;
   agentNickname?: string | null;
+  responseGroupId?: string | null;
+  sequenceIndex?: number | null;
   deltaText: string;
   routeStepPosition?: number | null;
   providerId?: string | null;
@@ -66,6 +74,8 @@ export type TalkResponseUsageEvent = {
   threadId?: string | null;
   runId: string;
   agentId?: string | null;
+  responseGroupId?: string | null;
+  sequenceIndex?: number | null;
   usage?: {
     inputTokens?: number;
     outputTokens?: number;
@@ -82,6 +92,8 @@ export type TalkResponseTerminalEvent = {
   runId: string;
   agentId?: string | null;
   agentNickname?: string | null;
+  responseGroupId?: string | null;
+  sequenceIndex?: number | null;
   routeStepPosition?: number | null;
   providerId?: string | null;
   modelId?: string | null;
@@ -93,6 +105,8 @@ export type TalkRunFailedEvent = {
   talkId: string;
   threadId?: string | null;
   runId: string;
+  responseGroupId?: string | null;
+  sequenceIndex?: number | null;
   triggerMessageId: string | null;
   errorCode: string;
   errorMessage: string;

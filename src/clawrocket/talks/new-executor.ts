@@ -1,24 +1,19 @@
 /**
- * CleanTalkExecutor — thin orchestrator for Talk execution.
+ * CleanTalkExecutor orchestrates a single Talk run execution.
  *
- * Replaces the 99KB direct-executor.ts with a clean, focused orchestrator that:
- * 1. Loads Talk context (goal, rules, history) via context-loader
- * 2. Resolves the target agent (explicit or primary)
- * 3. Calls agent-router to execute with context
- * 4. Maps ExecutionEvents to TalkExecutionEvents
- * 5. Stores results in the database
+ * Responsibilities:
+ * 1. Resolve the target agent
+ * 2. Load Talk context for that agent
+ * 3. Inject ordered-round prior outputs into the step-local user message
+ * 4. Execute via agent-router
+ * 5. Stream TalkExecutionEvents
  *
- * This is ~300 lines and has a single responsibility: orchestrate the
- * interaction between Talk context loading, agent execution, and result persistence.
+ * Persistence is intentionally handled by the worker / DB atomic helpers.
  */
 
-import { randomUUID } from 'crypto';
 import { getDb } from '../../db.js';
 import {
-  createMessage,
-  createLlmAttempt,
   getRegisteredAgent,
-  type LlmAttemptStatus,
   type RegisteredAgentRecord,
 } from '../db/agent-accessors.js';
 import {
@@ -34,108 +29,72 @@ import {
   executeWithAgent,
   type ExecutionContext,
   type ExecutionEvent,
-  type AgentExecutionResult,
 } from '../agents/agent-router.js';
-import { resolvePrimaryAgent, getMainAgent } from '../agents/agent-registry.js';
+import { getMainAgent, resolvePrimaryAgent } from '../agents/agent-registry.js';
 import { executeWebFetch, executeWebSearch } from '../tools/web-tools.js';
-import { loadTalkContext, type ContextPackage } from './context-loader.js';
+import { loadTalkContext } from './context-loader.js';
 import {
-  stripInternalTalkResponseText,
-  createTalkResponseStreamSanitizer,
-} from './internal-tags.js';
-import type {
-  TalkExecutor,
-  TalkExecutorInput,
-  TalkExecutorOutput,
-  TalkExecutionEvent,
+  TalkExecutorError,
+  type TalkExecutionEvent,
+  type TalkExecutor,
+  type TalkExecutorInput,
+  type TalkExecutorOutput,
 } from './executor.js';
 
-// ============================================================================
-// Event Mapping
-// ============================================================================
-
-/**
- * Map ExecutionEvent from agent-router to TalkExecutionEvent.
- *
- * Agent router emits: started, text_delta, tool_call, tool_result, usage,
- * awaiting_confirmation, completed, failed, cancelled
- *
- * Talk executor emits: talk_response_started, talk_response_delta,
- * talk_response_usage, talk_response_completed, talk_response_failed, talk_response_cancelled
- *
- * Internal events (tool_call, tool_result, awaiting_confirmation) are not
- * mapped; they're handled internally and don't propagate to the caller.
- */
 function mapExecutionEvent(
   event: ExecutionEvent,
   input: TalkExecutorInput,
   agent: RegisteredAgentRecord,
-  providerId: string,
-  modelId: string,
 ): TalkExecutionEvent | null {
+  const shared = {
+    runId: input.runId,
+    talkId: input.talkId,
+    threadId: input.threadId,
+    agentId: agent.id,
+    agentNickname: agent.name,
+    responseGroupId: input.responseGroupId ?? null,
+    sequenceIndex: input.sequenceIndex ?? null,
+    providerId: agent.provider_id,
+    modelId: agent.model_id,
+  };
+
   switch (event.type) {
     case 'started':
       return {
         type: 'talk_response_started',
-        runId: input.runId,
-        talkId: input.talkId,
-        threadId: input.threadId,
-        agentId: agent.id,
-        agentNickname: agent.name,
-        providerId,
-        modelId,
+        ...shared,
+        providerId: event.providerId,
+        modelId: event.modelId,
       };
 
     case 'text_delta':
       return {
         type: 'talk_response_delta',
-        runId: input.runId,
-        talkId: input.talkId,
-        threadId: input.threadId,
-        agentId: agent.id,
-        agentNickname: agent.name,
+        ...shared,
         deltaText: event.text,
-        providerId,
-        modelId,
       };
 
     case 'usage':
       return {
         type: 'talk_response_usage',
-        runId: input.runId,
-        talkId: input.talkId,
-        threadId: input.threadId,
-        agentId: agent.id,
+        ...shared,
         usage: {
           inputTokens: event.inputTokens,
           outputTokens: event.outputTokens,
           estimatedCostUsd: event.estimatedCostUsd,
         },
-        providerId,
-        modelId,
       };
 
     case 'completed':
       return {
         type: 'talk_response_completed',
-        runId: input.runId,
-        talkId: input.talkId,
-        threadId: input.threadId,
-        agentId: agent.id,
-        agentNickname: agent.name,
-        providerId,
-        modelId,
+        ...shared,
       };
 
     case 'failed':
       return {
         type: 'talk_response_failed',
-        runId: input.runId,
-        talkId: input.talkId,
-        threadId: input.threadId,
-        agentId: agent.id,
-        providerId,
-        modelId,
+        ...shared,
         errorCode: event.errorCode,
         errorMessage: event.errorMessage,
       };
@@ -143,47 +102,31 @@ function mapExecutionEvent(
     case 'cancelled':
       return {
         type: 'talk_response_cancelled',
-        runId: input.runId,
-        talkId: input.talkId,
-        threadId: input.threadId,
-        agentId: agent.id,
+        ...shared,
       };
 
     case 'tool_call':
     case 'tool_result':
     case 'awaiting_confirmation':
-      // Internal events; no TalkExecutionEvent equivalent
       return null;
 
-    default:
-      // Exhaustiveness check will catch new event types at compile time
-      const _: never = event;
-      return _;
+    default: {
+      const exhaustive: never = event;
+      return exhaustive;
+    }
   }
 }
 
-// ============================================================================
-// Tool Execution Callback
-// ============================================================================
-
-/**
- * Build the executeToolCall callback for agent-router.
- *
- * This callback handles:
- * - Context tools (read_context_source, read_attachment): query DB directly
- * - Connector tools: delegate to connectors/tool-executors.ts
- * - All other tools: return error (main agent handles these via container)
- */
 /** @internal Exported for integration testing only. */
 export function buildToolExecutor(talkId: string, signal: AbortSignal) {
-  // Cache connectors for the duration of this execution run.
-  // They're loaded lazily on first connector tool call.
   let connectorCache: Map<string, TalkRunConnectorRecord> | null = null;
 
   function loadConnectors(): Map<string, TalkRunConnectorRecord> {
     if (connectorCache) return connectorCache;
     const connectors = listConnectorsForTalkRun(talkId);
-    connectorCache = new Map(connectors.map((c) => [c.id, c]));
+    connectorCache = new Map(
+      connectors.map((connector) => [connector.id, connector]),
+    );
     return connectorCache;
   }
 
@@ -191,15 +134,13 @@ export function buildToolExecutor(talkId: string, signal: AbortSignal) {
     toolName: string,
     args: Record<string, unknown>,
   ): Promise<{ result: string; isError?: boolean }> => {
-    // --- Context tools: query DB directly ---
     if (toolName === 'read_context_source') {
       const ref = args.sourceRef as string | undefined;
       if (!ref) {
         return { result: 'Error: sourceRef parameter required', isError: true };
       }
 
-      const db = getDb();
-      const sourceRow = db
+      const sourceRow = getDb()
         .prepare(
           `
         SELECT extracted_text
@@ -225,8 +166,7 @@ export function buildToolExecutor(talkId: string, signal: AbortSignal) {
         };
       }
 
-      const db = getDb();
-      const attachmentRow = db
+      const attachmentRow = getDb()
         .prepare(
           `
         SELECT extracted_text
@@ -248,7 +188,6 @@ export function buildToolExecutor(talkId: string, signal: AbortSignal) {
       return { result: attachmentRow.extracted_text || '' };
     }
 
-    // --- Connector tools: delegate to tool-executors with execution-time re-verification ---
     if (toolName.startsWith('connector_')) {
       const parsed = parseConnectorToolName(toolName);
       if (!parsed) {
@@ -267,9 +206,6 @@ export function buildToolExecutor(talkId: string, signal: AbortSignal) {
         };
       }
 
-      // Execution-time verification guard: re-check that the connector is
-      // still verified. A connector can go stale between tool definition
-      // (context load) and tool call (credential revoked, service down).
       if (connector.verificationStatus !== 'verified') {
         return {
           result: `Connector '${connector.name}' is no longer verified (status: ${connector.verificationStatus}). Please re-verify the connector credentials.`,
@@ -286,7 +222,6 @@ export function buildToolExecutor(talkId: string, signal: AbortSignal) {
       return { result: result.content, isError: result.isError };
     }
 
-    // --- Web tools: handled below (2.2 / 2.3) ---
     if (toolName === 'web_fetch') {
       return executeWebFetch(args, signal);
     }
@@ -294,7 +229,6 @@ export function buildToolExecutor(talkId: string, signal: AbortSignal) {
       return executeWebSearch(args, signal);
     }
 
-    // --- All other tools: not available in Talk context ---
     return {
       result: `Tool '${toolName}' is not available in Talk context execution`,
       isError: true,
@@ -302,9 +236,276 @@ export function buildToolExecutor(talkId: string, signal: AbortSignal) {
   };
 }
 
-// ============================================================================
-// CleanTalkExecutor
-// ============================================================================
+function resolveTalkAgent(
+  talkId: string,
+  targetAgentId?: string | null,
+): RegisteredAgentRecord {
+  const targeted = targetAgentId ? getRegisteredAgent(targetAgentId) : null;
+  if (targeted) return targeted;
+
+  const primary = resolvePrimaryAgent(talkId);
+  if (primary) return primary;
+
+  const main = getMainAgent();
+  if (main) return main;
+
+  throw new TalkExecutorError(
+    'NO_AGENT_AVAILABLE',
+    'No agent could be resolved for this Talk',
+  );
+}
+
+function getModelContextWindow(agent: RegisteredAgentRecord): number {
+  const row = getDb()
+    .prepare(
+      `
+      SELECT context_window_tokens
+      FROM llm_provider_models
+      WHERE provider_id = ? AND model_id = ?
+      LIMIT 1
+    `,
+    )
+    .get(agent.provider_id, agent.model_id) as
+    | { context_window_tokens: number }
+    | undefined;
+
+  return row?.context_window_tokens || 128000;
+}
+
+const CHARS_TO_TOKENS = 0.25;
+const ORDERED_USER_MESSAGE_RESERVE_TOKENS = 1024;
+const MAX_ORDERED_PRIOR_OUTPUT_TOKENS = 12000;
+const MAX_ORDERED_PRIOR_OUTPUT_CONTEXT_SHARE = 0.15;
+const TRUNCATED_CONTEXT_SUFFIX = '\n\n[truncated for context window]';
+const OMITTED_CONTEXT_MARKER = '[omitted due to context window]';
+
+type PriorOrderedOutput = {
+  sequenceIndex: number;
+  agentId: string | null;
+  agentNickname: string | null;
+  content: string;
+};
+
+function listPriorOrderedOutputs(
+  responseGroupId: string,
+  currentSequenceIndex: number,
+): PriorOrderedOutput[] {
+  return getDb()
+    .prepare(
+      `
+      WITH ordered_assistant_messages AS (
+        SELECT
+          talk_messages.run_id,
+          talk_messages.content
+        FROM talk_messages
+        WHERE talk_messages.role = 'assistant'
+        ORDER BY
+          talk_messages.run_id ASC,
+          COALESCE(talk_messages.sequence_in_run, 0) ASC,
+          talk_messages.created_at ASC,
+          talk_messages.id ASC
+      ),
+      assistant_outputs AS (
+        SELECT
+          ordered_assistant_messages.run_id,
+          GROUP_CONCAT(ordered_assistant_messages.content, '\n\n') AS content
+        FROM ordered_assistant_messages
+        GROUP BY ordered_assistant_messages.run_id
+      )
+      SELECT
+        r.sequence_index AS sequenceIndex,
+        r.target_agent_id AS agentId,
+        COALESCE(ra.name, 'Agent') AS agentNickname,
+        ao.content AS content
+      FROM talk_runs r
+      JOIN assistant_outputs ao ON ao.run_id = r.id
+      LEFT JOIN registered_agents ra ON ra.id = r.target_agent_id
+      WHERE r.response_group_id = ?
+        AND r.sequence_index IS NOT NULL
+        AND r.sequence_index < ?
+        AND r.status = 'completed'
+      ORDER BY r.sequence_index ASC
+    `,
+    )
+    .all(responseGroupId, currentSequenceIndex) as PriorOrderedOutput[];
+}
+
+function getOrderedGroupMaxSequence(responseGroupId: string): number | null {
+  const row = getDb()
+    .prepare(
+      `
+      SELECT MAX(sequence_index) AS max_sequence_index
+      FROM talk_runs
+      WHERE response_group_id = ?
+        AND sequence_index IS NOT NULL
+    `,
+    )
+    .get(responseGroupId) as { max_sequence_index: number | null } | undefined;
+
+  if (!row || row.max_sequence_index == null) {
+    return null;
+  }
+
+  return row.max_sequence_index;
+}
+
+function estimateTokens(text: string): number {
+  return Math.ceil(text.length * CHARS_TO_TOKENS);
+}
+
+function tokenBudgetToCharBudget(tokens: number): number {
+  return Math.max(0, Math.floor(tokens / CHARS_TO_TOKENS));
+}
+
+function truncateForContextWindow(text: string, maxChars: number): string {
+  if (maxChars <= 0) {
+    return OMITTED_CONTEXT_MARKER;
+  }
+  if (text.length <= maxChars) {
+    return text;
+  }
+  if (maxChars <= TRUNCATED_CONTEXT_SUFFIX.length) {
+    return TRUNCATED_CONTEXT_SUFFIX.slice(0, maxChars);
+  }
+  return `${text.slice(0, maxChars - TRUNCATED_CONTEXT_SUFFIX.length).trimEnd()}${TRUNCATED_CONTEXT_SUFFIX}`;
+}
+
+function computePriorOutputBudgetChars(input: {
+  modelContextWindow: number;
+  estimatedContextTokens: number;
+  originalQuestion: string;
+}): number {
+  const questionTokens = estimateTokens(input.originalQuestion);
+  const cappedPromptShare = Math.floor(
+    input.modelContextWindow * MAX_ORDERED_PRIOR_OUTPUT_CONTEXT_SHARE,
+  );
+  const promptBudgetTokens = Math.min(
+    MAX_ORDERED_PRIOR_OUTPUT_TOKENS,
+    cappedPromptShare,
+  );
+  const remainingTokens =
+    input.modelContextWindow -
+    input.estimatedContextTokens -
+    ORDERED_USER_MESSAGE_RESERVE_TOKENS -
+    questionTokens;
+  return tokenBudgetToCharBudget(
+    Math.max(0, Math.min(promptBudgetTokens, remainingTokens)),
+  );
+}
+
+function formatPriorOutputs(
+  priorOutputs: PriorOrderedOutput[],
+  maxContentChars: number,
+): string {
+  const maxCharsPerOutput =
+    priorOutputs.length > 0
+      ? Math.max(0, Math.floor(maxContentChars / priorOutputs.length))
+      : 0;
+  return priorOutputs
+    .map((output) => {
+      const label = output.agentNickname || output.agentId || 'Agent';
+      return `[${label}]\n${truncateForContextWindow(output.content, maxCharsPerOutput)}`;
+    })
+    .join('\n\n');
+}
+
+function buildOrderedUserMessage(input: {
+  originalQuestion: string;
+  priorOutputs: PriorOrderedOutput[];
+  isSynthesis: boolean;
+  maxPriorOutputChars: number;
+}): string {
+  const sections = [
+    `Original user request:\n${input.originalQuestion}`,
+    `Prior analyses from other agents:\n${formatPriorOutputs(input.priorOutputs, input.maxPriorOutputChars)}`,
+  ];
+
+  if (input.isSynthesis) {
+    sections.push(
+      [
+        'Synthesize these perspectives.',
+        'Identify areas of agreement, resolve tensions between differing viewpoints,',
+        'and produce a unified recommendation that captures the strongest insights from each perspective.',
+        "Treat the prior analyses as other agents' work, not as your own previous statements.",
+      ].join(' '),
+    );
+  } else {
+    sections.push(
+      [
+        'Provide your own analysis from your role and perspective.',
+        'Use the prior analyses as context from other agents, not as your own previous statements.',
+        'Do not merely restate them; add your independent reasoning.',
+      ].join(' '),
+    );
+  }
+
+  return sections.join('\n\n');
+}
+
+function buildStepUserMessage(input: {
+  triggerContent: string;
+  estimatedContextTokens: number;
+  modelContextWindow: number;
+  responseGroupId?: string | null;
+  sequenceIndex?: number | null;
+}): { userMessage: string; isSynthesis: boolean } {
+  if (
+    !input.responseGroupId ||
+    typeof input.sequenceIndex !== 'number' ||
+    input.sequenceIndex <= 0
+  ) {
+    return { userMessage: input.triggerContent, isSynthesis: false };
+  }
+
+  const priorOutputs = listPriorOrderedOutputs(
+    input.responseGroupId,
+    input.sequenceIndex,
+  );
+  if (priorOutputs.length === 0) {
+    return { userMessage: input.triggerContent, isSynthesis: false };
+  }
+
+  const maxSequenceIndex = getOrderedGroupMaxSequence(input.responseGroupId);
+  const isSynthesis =
+    maxSequenceIndex != null &&
+    maxSequenceIndex > 0 &&
+    input.sequenceIndex === maxSequenceIndex;
+  const maxPriorOutputChars = computePriorOutputBudgetChars({
+    modelContextWindow: input.modelContextWindow,
+    estimatedContextTokens: input.estimatedContextTokens,
+    originalQuestion: input.triggerContent,
+  });
+
+  return {
+    userMessage: buildOrderedUserMessage({
+      originalQuestion: input.triggerContent,
+      priorOutputs,
+      isSynthesis,
+      maxPriorOutputChars,
+    }),
+    isSynthesis,
+  };
+}
+
+function buildResponseMetadataJson(input: {
+  runId: string;
+  providerId: string;
+  modelId: string;
+  estimatedContextTokens: number;
+  responseGroupId?: string | null;
+  sequenceIndex?: number | null;
+  isSynthesis: boolean;
+}): string {
+  return JSON.stringify({
+    runId: input.runId,
+    providerId: input.providerId,
+    modelId: input.modelId,
+    contextTokens: input.estimatedContextTokens,
+    responseGroupId: input.responseGroupId ?? null,
+    sequenceIndex: input.sequenceIndex ?? null,
+    ...(input.isSynthesis ? { isSynthesis: true } : {}),
+  });
+}
 
 export class CleanTalkExecutor implements TalkExecutor {
   async execute(
@@ -312,241 +513,114 @@ export class CleanTalkExecutor implements TalkExecutor {
     signal: AbortSignal,
     emit?: (event: TalkExecutionEvent) => void,
   ): Promise<TalkExecutorOutput> {
-    const db = getDb();
     const emitEvent = emit || (() => {});
-    const startTime = Date.now();
+    let failureEmitted = false;
+    let resolvedAgent: RegisteredAgentRecord | null = null;
+
+    const emitTalkEvent = (event: TalkExecutionEvent) => {
+      if (event.type === 'talk_response_failed') {
+        failureEmitted = true;
+      }
+      emitEvent(event);
+    };
 
     try {
-      // --- Step 1: Load Talk context ---
+      resolvedAgent = resolveTalkAgent(input.talkId, input.targetAgentId);
+      const modelContextWindow = getModelContextWindow(resolvedAgent);
       const contextPackage = await loadTalkContext(
-        input.talkId,
-        128000,
-        input.threadId,
-      ); // Assume 128K context window for now
-
-      // --- Step 2: Resolve agent ---
-      let agent: RegisteredAgentRecord | undefined;
-      if (input.targetAgentId) {
-        agent = getRegisteredAgent(input.targetAgentId);
-      }
-      if (!agent) {
-        agent = resolvePrimaryAgent(input.talkId);
-      }
-      if (!agent) {
-        agent = getMainAgent();
-      }
-
-      if (!agent) {
-        const errorCode = 'NO_AGENT_AVAILABLE';
-        const errorMessage = 'No agent could be resolved for this Talk';
-        emitEvent({
-          type: 'talk_response_failed',
-          runId: input.runId,
-          talkId: input.talkId,
-          threadId: input.threadId,
-          errorCode,
-          errorMessage,
-        });
-        throw new Error(errorMessage);
-      }
-
-      // --- Step 3: Get agent's model context window ---
-      const modelRow = db
-        .prepare(
-          `
-        SELECT context_window_tokens
-        FROM llm_provider_models
-        WHERE provider_id = ? AND model_id = ?
-      `,
-        )
-        .get(agent.provider_id, agent.model_id) as
-        | { context_window_tokens: number }
-        | undefined;
-
-      const modelContextWindow = modelRow?.context_window_tokens || 128000;
-
-      // Reload context with correct context window
-      const contextPackageWithCorrectWindow = await loadTalkContext(
         input.talkId,
         modelContextWindow,
         input.threadId,
+        input.triggerMessageId,
       );
 
-      // --- Step 4: Build ExecutionContext ---
       const context: ExecutionContext = {
-        systemPrompt: contextPackageWithCorrectWindow.systemPrompt,
-        contextTools: contextPackageWithCorrectWindow.contextTools,
-        connectorTools: contextPackageWithCorrectWindow.connectorTools,
-        history: contextPackageWithCorrectWindow.history,
+        systemPrompt: contextPackage.systemPrompt,
+        contextTools: contextPackage.contextTools,
+        connectorTools: contextPackage.connectorTools,
+        history: contextPackage.history,
       };
 
-      // --- Step 5: Execute via agent router ---
-      let lastExecutionResult: AgentExecutionResult | null = null;
-      let executionFailed = false;
-      let executionErrorCode = '';
-      let executionErrorMessage = '';
+      const orderedStep = buildStepUserMessage({
+        triggerContent: input.triggerContent,
+        estimatedContextTokens: contextPackage.estimatedTokens,
+        modelContextWindow,
+        responseGroupId: input.responseGroupId,
+        sequenceIndex: input.sequenceIndex,
+      });
 
       const toolExecutor = buildToolExecutor(input.talkId, signal);
-      const streamSanitizer = createTalkResponseStreamSanitizer();
-
-      try {
-        lastExecutionResult = await executeWithAgent(
-          agent.id,
-          context,
-          input.triggerContent,
-          {
-            runId: input.runId,
-            userId: input.requestedBy,
-            signal,
-            emit: (event: ExecutionEvent) => {
-              // Map agent-router events to Talk events
-              let talkEvent = mapExecutionEvent(
-                event,
-                input,
-                agent!,
-                agent!.provider_id,
-                agent!.model_id,
-              );
-              if (!talkEvent) return;
-
-              // Strip <internal> tags from streamed text deltas
-              if (talkEvent.type === 'talk_response_delta') {
-                const sanitized = streamSanitizer.push(talkEvent.deltaText);
-                if (!sanitized) return; // Entire chunk was inside <internal> tags
-                talkEvent = { ...talkEvent, deltaText: sanitized };
-              }
-
-              emitEvent(talkEvent);
-            },
-            executeToolCall: toolExecutor,
+      const result = await executeWithAgent(
+        resolvedAgent.id,
+        context,
+        orderedStep.userMessage,
+        {
+          runId: input.runId,
+          userId: input.requestedBy,
+          signal,
+          emit: (event: ExecutionEvent) => {
+            const mappedEvent = mapExecutionEvent(event, input, resolvedAgent!);
+            if (mappedEvent) {
+              emitTalkEvent(mappedEvent);
+            }
           },
-        );
-      } catch (err) {
-        executionFailed = true;
-        executionErrorCode =
-          err instanceof Error ? 'EXECUTION_ERROR' : 'UNKNOWN_ERROR';
-        executionErrorMessage =
-          err instanceof Error ? err.message : String(err);
-      }
+          executeToolCall: toolExecutor,
+        },
+      );
 
-      if (executionFailed || !lastExecutionResult) {
-        emitEvent({
+      return {
+        content: result.content,
+        agentId: result.agentId,
+        agentNickname: resolvedAgent.name,
+        providerId: result.providerId,
+        modelId: result.modelId,
+        usage: result.usage
+          ? {
+              inputTokens: result.usage.inputTokens,
+              outputTokens: result.usage.outputTokens,
+              estimatedCostUsd: result.usage.estimatedCostUsd,
+            }
+          : undefined,
+        responseSequenceInRun: 1,
+        metadataJson: buildResponseMetadataJson({
+          runId: input.runId,
+          providerId: result.providerId,
+          modelId: result.modelId,
+          estimatedContextTokens: contextPackage.estimatedTokens,
+          responseGroupId: input.responseGroupId,
+          sequenceIndex: input.sequenceIndex,
+          isSynthesis: orderedStep.isSynthesis,
+        }),
+      };
+    } catch (error) {
+      const errorCode =
+        error instanceof TalkExecutorError
+          ? error.code
+          : error instanceof Error
+            ? 'EXECUTOR_ERROR'
+            : 'UNKNOWN_ERROR';
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
+
+      if (!failureEmitted) {
+        emitTalkEvent({
           type: 'talk_response_failed',
           runId: input.runId,
           talkId: input.talkId,
           threadId: input.threadId,
-          agentId: agent.id,
-          providerId: agent.provider_id,
-          modelId: agent.model_id,
-          errorCode: executionErrorCode,
-          errorMessage: executionErrorMessage,
+          agentId: resolvedAgent?.id,
+          responseGroupId: input.responseGroupId ?? null,
+          sequenceIndex: input.sequenceIndex ?? null,
+          providerId: resolvedAgent?.provider_id,
+          modelId: resolvedAgent?.model_id,
+          errorCode,
+          errorMessage,
         });
-        throw new Error(executionErrorMessage);
       }
 
-      // --- Step 6: Store results in database ---
-      const messageId = randomUUID();
-      const now = new Date().toISOString();
-
-      // Store the assistant's response message in unified messages table
-      // Note: createdBy is for the *user* who created a message; assistant
-      // messages are system-generated, so createdBy must be null.
-      // Strip internal reasoning tags before persisting.
-      const sanitizedContent = stripInternalTalkResponseText(
-        lastExecutionResult.content,
-      );
-      createMessage({
-        id: messageId,
-        talkId: input.talkId,
-        threadId: input.threadId,
-        role: 'assistant',
-        content: sanitizedContent,
-        agentId: agent.id,
-        createdBy: null,
-        metadataJson: JSON.stringify({
-          runId: input.runId,
-          providerId: agent.provider_id,
-          modelId: agent.model_id,
-        }),
-      });
-
-      // Store LLM attempt for tracking
-      const latencyMs = Date.now() - startTime;
-      const attemptStatus: LlmAttemptStatus = 'success';
-      createLlmAttempt({
-        runId: input.runId,
-        talkId: input.talkId,
-        agentId: agent.id,
-        providerId: agent.provider_id,
-        modelId: agent.model_id,
-        status: attemptStatus,
-        latencyMs,
-        inputTokens: lastExecutionResult.usage?.inputTokens,
-        outputTokens: lastExecutionResult.usage?.outputTokens,
-        estimatedCostUsd: lastExecutionResult.usage?.estimatedCostUsd,
-        createdAt: now,
-      });
-
-      // --- Step 7: Emit completion event ---
-      emitEvent({
-        type: 'talk_response_completed',
-        runId: input.runId,
-        talkId: input.talkId,
-        threadId: input.threadId,
-        agentId: agent.id,
-        agentNickname: agent.name,
-        providerId: agent.provider_id,
-        modelId: agent.model_id,
-        usage: lastExecutionResult.usage
-          ? {
-              inputTokens: lastExecutionResult.usage.inputTokens,
-              outputTokens: lastExecutionResult.usage.outputTokens,
-              estimatedCostUsd: lastExecutionResult.usage.estimatedCostUsd,
-            }
-          : undefined,
-      });
-
-      // --- Step 8: Return result ---
-      return {
-        content: lastExecutionResult.content,
-        agentId: agent.id,
-        agentNickname: agent.name,
-        providerId: agent.provider_id,
-        modelId: agent.model_id,
-        usage: lastExecutionResult.usage
-          ? {
-              inputTokens: lastExecutionResult.usage.inputTokens,
-              outputTokens: lastExecutionResult.usage.outputTokens,
-              estimatedCostUsd: lastExecutionResult.usage.estimatedCostUsd,
-            }
-          : undefined,
-        responseSequenceInRun: 1,
-        metadataJson: JSON.stringify({
-          agentId: agent.id,
-          providerId: agent.provider_id,
-          modelId: agent.model_id,
-          contextTokens: contextPackageWithCorrectWindow.estimatedTokens,
-        }),
-      };
-    } catch (err) {
-      // Final catch: emit failure if not already emitted
-      const errorCode =
-        err instanceof Error ? 'EXECUTOR_ERROR' : 'UNKNOWN_ERROR';
-      const errorMessage = err instanceof Error ? err.message : String(err);
-
-      emitEvent({
-        type: 'talk_response_failed',
-        runId: input.runId,
-        talkId: input.talkId,
-        threadId: input.threadId,
-        errorCode,
-        errorMessage,
-      });
-
-      throw err;
+      throw error;
     }
   }
 }
 
-// Export for use
 export default CleanTalkExecutor;

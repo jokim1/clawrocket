@@ -6,6 +6,8 @@ export interface TalkExecutorInput {
   triggerMessageId: string;
   triggerContent: string;
   targetAgentId?: string | null;
+  responseGroupId?: string | null;
+  sequenceIndex?: number | null;
 }
 
 export interface TalkExecutionUsage {
@@ -22,6 +24,8 @@ export type TalkExecutionEvent =
       threadId?: string | null;
       agentId?: string | null;
       agentNickname?: string | null;
+      responseGroupId?: string | null;
+      sequenceIndex?: number | null;
       routeStepPosition?: number | null;
       providerId?: string | null;
       modelId?: string | null;
@@ -33,6 +37,8 @@ export type TalkExecutionEvent =
       threadId?: string | null;
       agentId?: string | null;
       agentNickname?: string | null;
+      responseGroupId?: string | null;
+      sequenceIndex?: number | null;
       deltaText: string;
       routeStepPosition?: number | null;
       providerId?: string | null;
@@ -44,6 +50,8 @@ export type TalkExecutionEvent =
       talkId: string;
       threadId?: string | null;
       agentId?: string | null;
+      responseGroupId?: string | null;
+      sequenceIndex?: number | null;
       usage: TalkExecutionUsage;
       routeStepPosition?: number | null;
       providerId?: string | null;
@@ -56,6 +64,8 @@ export type TalkExecutionEvent =
       threadId?: string | null;
       agentId?: string | null;
       agentNickname?: string | null;
+      responseGroupId?: string | null;
+      sequenceIndex?: number | null;
       usage?: TalkExecutionUsage;
       routeStepPosition?: number | null;
       providerId?: string | null;
@@ -67,6 +77,8 @@ export type TalkExecutionEvent =
       talkId: string;
       threadId?: string | null;
       agentId?: string | null;
+      responseGroupId?: string | null;
+      sequenceIndex?: number | null;
       routeStepPosition?: number | null;
       providerId?: string | null;
       modelId?: string | null;
@@ -79,6 +91,8 @@ export type TalkExecutionEvent =
       talkId: string;
       threadId?: string | null;
       agentId?: string | null;
+      responseGroupId?: string | null;
+      sequenceIndex?: number | null;
     };
 
 export interface TalkExecutorOutput {

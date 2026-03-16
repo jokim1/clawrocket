@@ -470,6 +470,7 @@ export interface TalkRecord {
   folder_id: string | null;
   sort_order: number;
   topic_title: string | null;
+  orchestration_mode: 'ordered' | 'panel';
   status: 'active' | 'paused' | 'archived';
   version: number;
   created_at: string;
@@ -700,6 +701,7 @@ export function createTalk(input: {
   id: string;
   ownerId: string;
   topicTitle?: string;
+  orchestrationMode?: 'ordered' | 'panel';
   status?: 'active' | 'paused' | 'archived';
 }): void {
   const tx = getDb().transaction((txInput: typeof input) => {
@@ -709,15 +711,17 @@ export function createTalk(input: {
       .prepare(
         `
       INSERT INTO talks (
-        id, owner_id, folder_id, sort_order, topic_title, status, version, created_at, updated_at
+        id, owner_id, folder_id, sort_order, topic_title, orchestration_mode,
+        status, version, created_at, updated_at
       )
-      VALUES (?, ?, NULL, 0, ?, ?, 1, ?, ?)
+      VALUES (?, ?, NULL, 0, ?, ?, ?, 1, ?, ?)
     `,
       )
       .run(
         txInput.id,
         txInput.ownerId,
         txInput.topicTitle || null,
+        txInput.orchestrationMode || 'ordered',
         txInput.status || 'active',
         now,
         now,
@@ -760,7 +764,7 @@ export function listTalksForUser(input: {
       .prepare(
         `
         SELECT t.id, t.owner_id, t.topic_title, t.status, t.version, t.created_at, t.updated_at,
-               t.folder_id, t.sort_order,
+               t.folder_id, t.sort_order, t.orchestration_mode,
                p.llm_policy,
                CASE WHEN t.owner_id = ? THEN 'owner' ELSE ? END AS access_role
         FROM talks t
@@ -789,6 +793,7 @@ export function listTalksForUser(input: {
         t.owner_id,
         t.folder_id,
         t.sort_order,
+        t.orchestration_mode,
         t.topic_title,
         t.status,
         t.version,
@@ -833,7 +838,7 @@ export function getTalkForUser(
       .prepare(
         `
         SELECT t.id, t.owner_id, t.topic_title, t.status, t.version, t.created_at, t.updated_at,
-               t.folder_id, t.sort_order,
+               t.folder_id, t.sort_order, t.orchestration_mode,
                p.llm_policy,
                CASE WHEN t.owner_id = ? THEN 'owner' ELSE ? END AS access_role
         FROM talks t
@@ -857,6 +862,7 @@ export function getTalkForUser(
         t.owner_id,
         t.folder_id,
         t.sort_order,
+        t.orchestration_mode,
         t.topic_title,
         t.status,
         t.version,
@@ -885,6 +891,7 @@ export function upsertTalk(input: {
   id: string;
   ownerId: string;
   topicTitle?: string;
+  orchestrationMode?: 'ordered' | 'panel';
   status?: 'active' | 'paused' | 'archived';
 }): void {
   const now = new Date().toISOString();
@@ -892,11 +899,13 @@ export function upsertTalk(input: {
     .prepare(
       `
     INSERT INTO talks (
-      id, owner_id, folder_id, sort_order, topic_title, status, version, created_at, updated_at
+      id, owner_id, folder_id, sort_order, topic_title, orchestration_mode,
+      status, version, created_at, updated_at
     )
-    VALUES (?, ?, NULL, 0, ?, ?, 1, ?, ?)
+    VALUES (?, ?, NULL, 0, ?, ?, ?, 1, ?, ?)
     ON CONFLICT(id) DO UPDATE SET
       topic_title = excluded.topic_title,
+      orchestration_mode = excluded.orchestration_mode,
       status = excluded.status,
       updated_at = excluded.updated_at,
       version = talks.version + 1
@@ -906,6 +915,7 @@ export function upsertTalk(input: {
       input.id,
       input.ownerId,
       input.topicTitle || null,
+      input.orchestrationMode || 'ordered',
       input.status || 'active',
       now,
       now,
@@ -992,6 +1002,7 @@ export function patchTalkMetadata(input: {
   ownerId: string;
   title?: string;
   folderId?: string | null;
+  orchestrationMode?: 'ordered' | 'panel';
 }): TalkRecord | undefined {
   const tx = getDb().transaction((txInput: typeof input) => {
     const talk = getTalkById(txInput.talkId);
@@ -1005,16 +1016,28 @@ export function patchTalkMetadata(input: {
     }
 
     const now = new Date().toISOString();
-    if (txInput.title !== undefined) {
+    if (
+      txInput.title !== undefined ||
+      txInput.orchestrationMode !== undefined
+    ) {
       getDb()
         .prepare(
           `
           UPDATE talks
-          SET topic_title = ?, updated_at = ?, version = version + 1
+          SET topic_title = COALESCE(?, topic_title),
+              orchestration_mode = COALESCE(?, orchestration_mode),
+              updated_at = ?,
+              version = version + 1
           WHERE id = ? AND owner_id = ?
         `,
         )
-        .run(txInput.title || null, now, txInput.talkId, txInput.ownerId);
+        .run(
+          txInput.title !== undefined ? txInput.title || null : null,
+          txInput.orchestrationMode ?? null,
+          now,
+          txInput.talkId,
+          txInput.ownerId,
+        );
     }
 
     if (txInput.folderId !== undefined && txInput.folderId !== talk.folder_id) {
@@ -1978,6 +2001,8 @@ export function enqueueTalkTurnAtomic(input: {
   messageId: string;
   runIds: string[];
   targetAgentIds: string[];
+  responseGroupId?: string | null;
+  sequenceIndexes?: Array<number | null> | null;
   attachmentIds?: string[] | null;
   maxAttachmentsPerMessage?: number;
   idempotencyKey?: string | null;
@@ -1998,8 +2023,28 @@ export function enqueueTalkTurnAtomic(input: {
       ) {
         throw new Error('talk turn requires one run id per target agent');
       }
+      if (
+        txInput.sequenceIndexes &&
+        txInput.sequenceIndexes.length !== txInput.runIds.length
+      ) {
+        throw new Error('talk turn requires one sequence index per run');
+      }
 
       const threadId = resolveThreadIdForTalk(txInput.talkId, txInput.threadId);
+      const responseGroupId =
+        txInput.responseGroupId?.trim() || `group_${randomUUID()}`;
+      const sequenceIndexes = txInput.runIds.map((_, index) => {
+        const raw = txInput.sequenceIndexes?.[index];
+        if (
+          typeof raw === 'number' &&
+          Number.isFinite(raw) &&
+          Number.isInteger(raw) &&
+          raw >= 0
+        ) {
+          return raw;
+        }
+        return null;
+      });
 
       const active = getDb()
         .prepare(
@@ -2037,6 +2082,8 @@ export function enqueueTalkTurnAtomic(input: {
         trigger_message_id: txInput.messageId,
         target_agent_id: txInput.targetAgentIds[index] || null,
         idempotency_key: index === 0 ? txInput.idempotencyKey || null : null,
+        response_group_id: responseGroupId,
+        sequence_index: sequenceIndexes[index],
         executor_alias: null,
         executor_model: null,
         source_binding_id: null,
@@ -2103,6 +2150,8 @@ export function enqueueTalkTurnAtomic(input: {
             runId: run.id,
             triggerMessageId: txInput.messageId,
             targetAgentId: run.target_agent_id || null,
+            responseGroupId,
+            sequenceIndex: run.sequence_index,
             status: 'queued',
             executorAlias: run.executor_alias,
             executorModel: run.executor_model,
@@ -2443,6 +2492,8 @@ export interface TalkRunRecord {
   trigger_message_id: string | null;
   target_agent_id?: string | null;
   idempotency_key: string | null;
+  response_group_id?: string | null;
+  sequence_index?: number | null;
   executor_alias: string | null;
   executor_model: string | null;
   source_binding_id?: string | null;
@@ -2460,10 +2511,11 @@ export function createTalkRun(input: TalkRunRecord): void {
       `
     INSERT INTO talk_runs (
       id, talk_id, thread_id, requested_by, status, trigger_message_id, target_agent_id, idempotency_key,
-      executor_alias, executor_model, source_binding_id, source_external_message_id, source_thread_key,
+      response_group_id, sequence_index, executor_alias, executor_model,
+      source_binding_id, source_external_message_id, source_thread_key,
       created_at, started_at, ended_at, cancel_reason
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `,
     )
     .run(
@@ -2475,6 +2527,8 @@ export function createTalkRun(input: TalkRunRecord): void {
       input.trigger_message_id,
       input.target_agent_id || null,
       input.idempotency_key,
+      input.response_group_id || null,
+      input.sequence_index ?? null,
       input.executor_alias,
       input.executor_model,
       input.source_binding_id || null,
@@ -2815,10 +2869,21 @@ export function claimQueuedTalkRuns(
       const queued = getDb()
         .prepare(
           `
-          SELECT *
-          FROM talk_runs
-          WHERE status = 'queued' AND talk_id IS NOT NULL
-          ORDER BY created_at ASC
+          SELECT r.*
+          FROM talk_runs r
+          WHERE r.status = 'queued' AND r.talk_id IS NOT NULL
+            AND (
+              r.sequence_index IS NULL
+              OR NOT EXISTS (
+                SELECT 1
+                FROM talk_runs prior
+                WHERE prior.response_group_id = r.response_group_id
+                  AND prior.sequence_index IS NOT NULL
+                  AND prior.sequence_index < r.sequence_index
+                  AND prior.status <> 'completed'
+              )
+            )
+          ORDER BY r.created_at ASC, COALESCE(r.sequence_index, -1) ASC, r.id ASC
           LIMIT ?
         `,
         )
@@ -2863,6 +2928,8 @@ export function claimQueuedTalkRuns(
             runId: run.id,
             triggerMessageId: run.trigger_message_id,
             targetAgentId: run.target_agent_id || null,
+            responseGroupId: run.response_group_id || null,
+            sequenceIndex: run.sequence_index ?? null,
             status: 'running',
             executorAlias: run.executor_alias,
             executorModel: run.executor_model,
@@ -2885,6 +2952,14 @@ export function completeRunAndPromoteNextAtomic(input: {
   responseMetadataJson?: string | null;
   agentId?: string | null;
   agentNickname?: string | null;
+  providerId?: string | null;
+  modelId?: string | null;
+  latencyMs?: number | null;
+  usage?: {
+    inputTokens?: number;
+    outputTokens?: number;
+    estimatedCostUsd?: number;
+  } | null;
   responseSequenceInRun?: number | null;
   now?: string;
 }): {
@@ -2905,6 +2980,7 @@ export function completeRunAndPromoteNextAtomic(input: {
         .prepare(
           `
           SELECT id, talk_id, thread_id, trigger_message_id, target_agent_id, executor_alias, executor_model,
+                 response_group_id, sequence_index,
                  source_binding_id, source_external_message_id, source_thread_key
           FROM talk_runs
           WHERE id = ? AND status = 'running'
@@ -2920,6 +2996,8 @@ export function completeRunAndPromoteNextAtomic(input: {
             target_agent_id: string | null;
             executor_alias: string | null;
             executor_model: string | null;
+            response_group_id: string | null;
+            sequence_index: number | null;
             source_binding_id: string | null;
             source_external_message_id: string | null;
             source_thread_key: string | null;
@@ -2956,6 +3034,31 @@ export function completeRunAndPromoteNextAtomic(input: {
         sequenceInRun: txInput.responseSequenceInRun ?? null,
         createdAt: now,
       });
+
+      if (txInput.modelId) {
+        getDb()
+          .prepare(
+            `
+            INSERT INTO llm_attempts (
+              run_id, talk_id, agent_id, provider_id, model_id,
+              status, latency_ms, input_tokens, output_tokens,
+              estimated_cost_usd, created_at
+            ) VALUES (?, ?, ?, ?, ?, 'success', ?, ?, ?, ?, ?)
+          `,
+          )
+          .run(
+            txInput.runId,
+            run.talk_id,
+            txInput.agentId || run.target_agent_id || null,
+            txInput.providerId || null,
+            txInput.modelId,
+            txInput.latencyMs ?? null,
+            txInput.usage?.inputTokens ?? null,
+            txInput.usage?.outputTokens ?? null,
+            txInput.usage?.estimatedCostUsd ?? null,
+            now,
+          );
+      }
 
       let deliveryQueued = false;
       if (run.source_binding_id) {
@@ -3032,6 +3135,8 @@ export function completeRunAndPromoteNextAtomic(input: {
             runId: run.id,
             triggerMessageId: run.trigger_message_id,
             responseMessageId: responseMessage.id,
+            responseGroupId: run.response_group_id,
+            sequenceIndex: run.sequence_index,
             executorAlias: run.executor_alias,
             executorModel: run.executor_model,
           }),
@@ -3069,7 +3174,8 @@ export function failRunAndPromoteNextAtomic(input: {
       const run = getDb()
         .prepare(
           `
-          SELECT id, talk_id, thread_id, trigger_message_id, target_agent_id, executor_alias, executor_model
+          SELECT id, talk_id, thread_id, trigger_message_id, target_agent_id, executor_alias, executor_model,
+                 response_group_id, sequence_index
           FROM talk_runs
           WHERE id = ? AND status = 'running'
           LIMIT 1
@@ -3084,6 +3190,8 @@ export function failRunAndPromoteNextAtomic(input: {
             target_agent_id: string | null;
             executor_alias: string | null;
             executor_model: string | null;
+            response_group_id: string | null;
+            sequence_index: number | null;
           }
         | undefined;
       if (!run) {
@@ -3124,6 +3232,8 @@ export function failRunAndPromoteNextAtomic(input: {
             threadId: run.thread_id,
             runId: run.id,
             triggerMessageId: run.trigger_message_id,
+            responseGroupId: run.response_group_id,
+            sequenceIndex: run.sequence_index,
             errorCode: txInput.errorCode,
             errorMessage: txInput.errorMessage,
             executorAlias: run.executor_alias,
@@ -3131,6 +3241,73 @@ export function failRunAndPromoteNextAtomic(input: {
           }),
           now,
         );
+
+      if (
+        run.response_group_id &&
+        typeof run.sequence_index === 'number' &&
+        Number.isInteger(run.sequence_index)
+      ) {
+        const queuedLaterRuns = getDb()
+          .prepare(
+            `
+            SELECT id, thread_id
+            FROM talk_runs
+            WHERE response_group_id = ?
+              AND sequence_index IS NOT NULL
+              AND sequence_index > ?
+              AND status = 'queued'
+            ORDER BY sequence_index ASC
+          `,
+          )
+          .all(run.response_group_id, run.sequence_index) as Array<{
+          id: string;
+          thread_id: string;
+        }>;
+
+        if (queuedLaterRuns.length > 0) {
+          const cancelStmt = getDb().prepare(
+            `
+            UPDATE talk_runs
+            SET status = 'cancelled',
+                ended_at = ?,
+                cancel_reason = ?
+            WHERE id = ? AND status = 'queued'
+          `,
+          );
+          const cancelledRunIds: string[] = [];
+          for (const queuedRun of queuedLaterRuns) {
+            const cancelled = cancelStmt.run(
+              now,
+              'blocked_by_prior_failure',
+              queuedRun.id,
+            );
+            if (cancelled.changes === 1) {
+              cancelledRunIds.push(queuedRun.id);
+            }
+          }
+
+          if (cancelledRunIds.length > 0) {
+            getDb()
+              .prepare(
+                `
+                INSERT INTO event_outbox (topic, event_type, payload, created_at)
+                VALUES (?, ?, ?, ?)
+              `,
+              )
+              .run(
+                `talk:${run.talk_id}`,
+                'talk_run_cancelled',
+                JSON.stringify({
+                  talkId: run.talk_id,
+                  cancelledBy: 'system',
+                  runIds: cancelledRunIds,
+                  threadIds: [run.thread_id],
+                }),
+                now,
+              );
+          }
+        }
+      }
 
       return {
         applied: true,
@@ -3168,6 +3345,7 @@ export function cancelTalkRunsAtomic(input: {
         .prepare(
           `
           SELECT id, thread_id, status, trigger_message_id, target_agent_id, executor_alias, executor_model
+                 , response_group_id, sequence_index
           FROM talk_runs
           WHERE talk_id = ?
             AND (? IS NULL OR thread_id = ?)
@@ -3183,6 +3361,8 @@ export function cancelTalkRunsAtomic(input: {
         target_agent_id: string | null;
         executor_alias: string | null;
         executor_model: string | null;
+        response_group_id: string | null;
+        sequence_index: number | null;
       }>;
 
       const cancelledRunIds: string[] = [];
@@ -3229,6 +3409,8 @@ export function cancelTalkRunsAtomic(input: {
               threadId: run.thread_id,
               runId: run.id,
               agentId: run.target_agent_id || null,
+              responseGroupId: run.response_group_id,
+              sequenceIndex: run.sequence_index,
             }),
             now,
           );

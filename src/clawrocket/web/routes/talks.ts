@@ -28,6 +28,7 @@ import {
   TalkThreadValidationError,
   upsertTalkLlmPolicy,
   type TalkMessageRecord,
+  type TalkSidebarTalkRecord,
   type TalkWithAccessRecord,
 } from '../../db/index.js';
 import type { TalkPersonaRole } from '../../llm/types.js';
@@ -52,6 +53,7 @@ interface TalkApiRecord {
   folderId: string | null;
   sortOrder: number;
   title: string | null;
+  orchestrationMode: 'ordered' | 'panel';
   agents: string[];
   status: 'active' | 'paused' | 'archived';
   version: number;
@@ -134,6 +136,8 @@ export interface TalkAgentApiRecord {
 export interface TalkRunApiRecord {
   id: string;
   threadId: string;
+  responseGroupId: string | null;
+  sequenceIndex: number | null;
   status:
     | 'queued'
     | 'running'
@@ -149,6 +153,7 @@ export interface TalkRunApiRecord {
   targetAgentNickname: string | null;
   errorCode: string | null;
   errorMessage: string | null;
+  cancelReason: string | null;
   executorAlias: string | null;
   executorModel: string | null;
 }
@@ -182,6 +187,7 @@ function toTalkApiRecord(talk: TalkWithAccessRecord): TalkApiRecord {
     folderId: talk.folder_id,
     sortOrder: talk.sort_order,
     title: talk.topic_title,
+    orchestrationMode: talk.orchestration_mode,
     agents: agents.length > 0 ? agents : DEFAULT_TALK_AGENTS,
     status: talk.status,
     version: talk.version,
@@ -192,7 +198,7 @@ function toTalkApiRecord(talk: TalkWithAccessRecord): TalkApiRecord {
 }
 
 function toSidebarTalkApiRecord(
-  talk: TalkWithAccessRecord,
+  talk: TalkSidebarTalkRecord,
 ): SidebarTalkApiRecord {
   return {
     id: talk.id,
@@ -774,6 +780,7 @@ export function patchTalkRoute(input: {
   talkId: string;
   title?: string;
   folderId?: string | null;
+  orchestrationMode?: 'ordered' | 'panel';
 }): {
   statusCode: number;
   body: ApiEnvelope<{ talk: TalkApiRecord }>;
@@ -823,12 +830,29 @@ export function patchTalkRoute(input: {
       },
     };
   }
+  if (
+    input.orchestrationMode !== undefined &&
+    input.orchestrationMode !== 'ordered' &&
+    input.orchestrationMode !== 'panel'
+  ) {
+    return {
+      statusCode: 400,
+      body: {
+        ok: false,
+        error: {
+          code: 'invalid_orchestration_mode',
+          message: 'Orchestration mode must be ordered or panel',
+        },
+      },
+    };
+  }
 
   const updated = patchTalkMetadata({
     talkId: input.talkId,
     ownerId: talk.owner_id,
     title: rawTitle,
     folderId: input.folderId,
+    orchestrationMode: input.orchestrationMode,
   });
   const reloaded = updated
     ? getTalkForUser(updated.id, input.auth.userId)
@@ -1559,6 +1583,8 @@ export function enqueueTalkChat(input: {
     message: TalkMessageApiRecord;
     runs: Array<{
       id: string;
+      responseGroupId: string | null;
+      sequenceIndex: number | null;
       status:
         | 'queued'
         | 'running'
@@ -1574,6 +1600,7 @@ export function enqueueTalkChat(input: {
       targetAgentNickname: string | null;
       errorCode: string | null;
       errorMessage: string | null;
+      cancelReason: string | null;
       executorAlias: string | null;
       executorModel: string | null;
     }>;
@@ -1646,6 +1673,8 @@ export function enqueueTalkChat(input: {
           .filter((a) => requestedTargetIds.includes(a.agentId))
           .map((a) => ({ id: a.agentId, name: a.agentName }))
       : talkAgents.map((a) => ({ id: a.agentId, name: a.agentName }));
+  const orderedRunSet =
+    talk.orchestration_mode === 'ordered' && selectedAgents.length > 1;
 
   if (selectedAgents.length === 0) {
     return {
@@ -1662,6 +1691,7 @@ export function enqueueTalkChat(input: {
 
   const messageId = `msg_${randomUUID()}`;
   const runIds = selectedAgents.map(() => `run_${randomUUID()}`);
+  const responseGroupId = `group_${randomUUID()}`;
   let persisted: ReturnType<typeof enqueueTalkTurnAtomic>;
   try {
     // Attachment validation and linking happen inside the same SQLite
@@ -1676,6 +1706,10 @@ export function enqueueTalkChat(input: {
       messageId,
       runIds,
       targetAgentIds: selectedAgents.map((agent) => agent.id),
+      responseGroupId,
+      sequenceIndexes: orderedRunSet
+        ? selectedAgents.map((_, index) => index)
+        : selectedAgents.map(() => null),
       attachmentIds:
         Array.isArray(input.attachmentIds) && input.attachmentIds.length > 0
           ? input.attachmentIds
@@ -1737,6 +1771,9 @@ export function enqueueTalkChat(input: {
         message: toTalkMessageApiRecord(persisted.message),
         runs: persisted.runs.map((run) => ({
           id: run.id,
+          threadId: run.thread_id,
+          responseGroupId: run.response_group_id || null,
+          sequenceIndex: run.sequence_index ?? null,
           status: run.status,
           createdAt: run.created_at,
           startedAt: run.started_at,
@@ -1749,6 +1786,7 @@ export function enqueueTalkChat(input: {
             null,
           errorCode: null,
           errorMessage: null,
+          cancelReason: run.cancel_reason,
           executorAlias: run.executor_alias,
           executorModel: run.executor_model,
         })),
@@ -1835,6 +1873,8 @@ function toTalkRunApiRecord(
   return {
     id: run.id,
     threadId: run.thread_id,
+    responseGroupId: run.response_group_id || null,
+    sequenceIndex: run.sequence_index ?? null,
     status: run.status,
     createdAt: run.created_at,
     startedAt: run.started_at,
@@ -1844,6 +1884,7 @@ function toTalkRunApiRecord(
     targetAgentNickname: run.target_agent_nickname,
     errorCode: parsedError.errorCode,
     errorMessage: parsedError.errorMessage,
+    cancelReason: run.cancel_reason,
     executorAlias: run.executor_alias,
     executorModel: run.executor_model,
   };

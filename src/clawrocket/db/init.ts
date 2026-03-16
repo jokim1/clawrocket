@@ -202,10 +202,11 @@ function seedDefaultSettings(database: Database.Database): void {
 }
 
 function createClawrocketSchema(database: Database.Database): void {
-  // Run thread_id migration BEFORE the schema exec block, because the exec
-  // block contains CREATE INDEX statements that reference the column.
-  // For fresh databases the tables don't exist yet, so this is a no-op.
+  // Run additive/thread migrations BEFORE the schema exec block, because the
+  // exec block contains CREATE INDEX statements that reference newer columns.
+  // For fresh databases the tables don't exist yet, so these are no-ops.
   migrateAddThreadIdColumns(database);
+  migrateAddMissingColumns(database);
 
   database.exec(`
     CREATE TABLE IF NOT EXISTS users (
@@ -476,6 +477,8 @@ function createClawrocketSchema(database: Database.Database): void {
       owner_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
       folder_id TEXT REFERENCES talk_folders(id) ON DELETE SET NULL,
       topic_title TEXT,
+      orchestration_mode TEXT NOT NULL DEFAULT 'ordered'
+        CHECK(orchestration_mode IN ('ordered', 'panel')),
       status TEXT NOT NULL DEFAULT 'active'
         CHECK(status IN ('active', 'paused', 'archived')),
       sort_order REAL NOT NULL DEFAULT 0,
@@ -710,6 +713,8 @@ function createClawrocketSchema(database: Database.Database): void {
       executor_model TEXT,
       thread_id TEXT NOT NULL,
       idempotency_key TEXT,
+      response_group_id TEXT,
+      sequence_index INTEGER,
       source_binding_id TEXT,
       source_external_message_id TEXT,
       source_thread_key TEXT,
@@ -722,6 +727,8 @@ function createClawrocketSchema(database: Database.Database): void {
       ON talk_runs(talk_id, status, created_at);
     CREATE INDEX IF NOT EXISTS idx_talk_runs_status_created_at
       ON talk_runs(status, created_at);
+    CREATE INDEX IF NOT EXISTS idx_talk_runs_group_sequence
+      ON talk_runs(response_group_id, sequence_index, created_at);
 
     CREATE TABLE IF NOT EXISTS run_confirmations (
       id TEXT PRIMARY KEY,
@@ -1223,6 +1230,8 @@ function migrateTalkRunsTable(database: Database.Database): void {
       executor_model TEXT,
       thread_id TEXT,
       idempotency_key TEXT,
+      response_group_id TEXT,
+      sequence_index INTEGER,
       source_binding_id TEXT,
       source_external_message_id TEXT,
       source_thread_key TEXT,
@@ -1235,6 +1244,8 @@ function migrateTalkRunsTable(database: Database.Database): void {
       ON talk_runs(talk_id, status, created_at);
     CREATE INDEX idx_talk_runs_status_created_at
       ON talk_runs(status, created_at);
+    CREATE INDEX idx_talk_runs_group_sequence
+      ON talk_runs(response_group_id, sequence_index, created_at);
 
     -- 4. Copy rows back (old table may not have all columns)
     INSERT INTO talk_runs (
@@ -1319,9 +1330,24 @@ function migrateAddMissingColumns(database: Database.Database): void {
       definition: 'TEXT',
     },
     {
+      table: 'talks',
+      column: 'orchestration_mode',
+      definition: "TEXT NOT NULL DEFAULT 'ordered'",
+    },
+    {
       table: 'talk_runs',
       column: 'source_binding_id',
       definition: 'TEXT',
+    },
+    {
+      table: 'talk_runs',
+      column: 'response_group_id',
+      definition: 'TEXT',
+    },
+    {
+      table: 'talk_runs',
+      column: 'sequence_index',
+      definition: 'INTEGER',
     },
     {
       table: 'talk_runs',
@@ -2008,6 +2034,8 @@ function migrateTalksTable(database: Database.Database): void {
       owner_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
       folder_id TEXT REFERENCES talk_folders(id) ON DELETE SET NULL,
       topic_title TEXT,
+      orchestration_mode TEXT NOT NULL DEFAULT 'ordered'
+        CHECK(orchestration_mode IN ('ordered', 'panel')),
       status TEXT NOT NULL DEFAULT 'active'
         CHECK(status IN ('active', 'paused', 'archived')),
       sort_order REAL NOT NULL DEFAULT 0,
@@ -2019,11 +2047,12 @@ function migrateTalksTable(database: Database.Database): void {
       ON talks(owner_id, folder_id, sort_order, updated_at);
 
     INSERT INTO talks (
-      id, owner_id, folder_id, topic_title, status,
+      id, owner_id, folder_id, topic_title, orchestration_mode, status,
       sort_order, version, created_at, updated_at
     )
     SELECT
       id, owner_id, folder_id, topic_title,
+      COALESCE(orchestration_mode, 'ordered'),
       COALESCE(status, 'active'),
       COALESCE(sort_order, 0), COALESCE(version, 1),
       created_at, updated_at
@@ -2170,6 +2199,7 @@ function migrateEnforceThreadIdsNotNull(database: Database.Database): void {
     talkMessageCols.find((c) => c.name === 'thread_id')?.notnull !== 1;
   const talkRunsNeedRebuild =
     talkRunCols.find((c) => c.name === 'thread_id')?.notnull !== 1;
+  const talkRunColumnNames = new Set(talkRunCols.map((column) => column.name));
 
   if (!talkMessagesNeedRebuild && !talkRunsNeedRebuild) return;
 
@@ -2225,6 +2255,9 @@ function migrateEnforceThreadIdsNotNull(database: Database.Database): void {
     }
 
     if (talkRunsNeedRebuild) {
+      const selectOrNull = (column: string) =>
+        talkRunColumnNames.has(column) ? column : `NULL AS ${column}`;
+
       database.exec(`
       CREATE TABLE talk_runs_thread_backup AS
         SELECT * FROM talk_runs;
@@ -2244,6 +2277,8 @@ function migrateEnforceThreadIdsNotNull(database: Database.Database): void {
         executor_model TEXT,
         thread_id TEXT NOT NULL,
         idempotency_key TEXT,
+        response_group_id TEXT,
+        sequence_index INTEGER,
         source_binding_id TEXT,
         source_external_message_id TEXT,
         source_thread_key TEXT,
@@ -2256,17 +2291,21 @@ function migrateEnforceThreadIdsNotNull(database: Database.Database): void {
         ON talk_runs(talk_id, status, created_at);
       CREATE INDEX idx_talk_runs_status_created_at
         ON talk_runs(status, created_at);
+      CREATE INDEX idx_talk_runs_group_sequence
+        ON talk_runs(response_group_id, sequence_index, created_at);
 
       INSERT INTO talk_runs (
         id, talk_id, requested_by, status, trigger_message_id, target_agent_id,
         agent_id, executor_alias, executor_model, thread_id, idempotency_key,
+        response_group_id, sequence_index,
         source_binding_id, source_external_message_id, source_thread_key,
         created_at, started_at, ended_at, cancel_reason
       )
       SELECT
-        id, talk_id, requested_by, status, trigger_message_id, target_agent_id,
-        agent_id, executor_alias, executor_model, thread_id, idempotency_key,
-        source_binding_id, source_external_message_id, source_thread_key,
+        id, talk_id, requested_by, status, trigger_message_id, ${selectOrNull('target_agent_id')},
+        ${selectOrNull('agent_id')}, ${selectOrNull('executor_alias')}, ${selectOrNull('executor_model')}, thread_id, ${selectOrNull('idempotency_key')},
+        ${selectOrNull('response_group_id')}, ${selectOrNull('sequence_index')},
+        ${selectOrNull('source_binding_id')}, ${selectOrNull('source_external_message_id')}, ${selectOrNull('source_thread_key')},
         created_at, started_at, ended_at, cancel_reason
       FROM talk_runs_thread_backup;
 

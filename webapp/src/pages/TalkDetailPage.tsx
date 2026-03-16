@@ -56,6 +56,7 @@ import {
   searchTalkMessages,
   patchTalkChannel,
   patchTalkContextRule,
+  patchTalkMetadata,
   retryTalkChannelDeliveryFailure,
   retryTalkChannelIngressFailure,
   retryTalkContextSource,
@@ -115,6 +116,8 @@ type LiveResponseView = {
   text: string;
   agentId?: string | null;
   agentNickname?: string | null;
+  responseGroupId?: string | null;
+  sequenceIndex?: number | null;
   providerId?: string | null;
   modelId?: string | null;
   errorMessage?: string;
@@ -176,6 +179,7 @@ type DetailAction =
       runs: TalkRun[];
     }
   | { type: 'BOOTSTRAP_ERROR'; unavailable: boolean; message: string }
+  | { type: 'TALK_UPDATED'; talk: Talk }
   | { type: 'THREAD_MESSAGES_LOADING'; threadId: string }
   | {
       type: 'THREAD_MESSAGES_LOADED';
@@ -199,6 +203,8 @@ type DetailAction =
       createdAt?: string | null;
       targetAgentId?: string | null;
       targetAgentNickname?: string | null;
+      responseGroupId?: string | null;
+      sequenceIndex?: number | null;
     }
   | {
       type: 'RUN_QUEUED';
@@ -210,6 +216,8 @@ type DetailAction =
       createdAt?: string | null;
       targetAgentId?: string | null;
       targetAgentNickname?: string | null;
+      responseGroupId?: string | null;
+      sequenceIndex?: number | null;
     }
   | {
       type: 'RUN_COMPLETED';
@@ -219,6 +227,8 @@ type DetailAction =
       responseMessageId: string;
       executorAlias?: string | null;
       executorModel?: string | null;
+      responseGroupId?: string | null;
+      sequenceIndex?: number | null;
     }
   | {
       type: 'RUN_FAILED';
@@ -229,10 +239,13 @@ type DetailAction =
       errorMessage: string;
       executorAlias?: string | null;
       executorModel?: string | null;
+      responseGroupId?: string | null;
+      sequenceIndex?: number | null;
     }
   | {
       type: 'RUN_CANCELLED_BATCH';
       runIds: string[];
+      cancelledBy?: string | null;
     }
   | { type: 'RESPONSE_STARTED'; event: TalkResponseStartedEvent }
   | { type: 'RESPONSE_DELTA'; event: TalkResponseDeltaEvent }
@@ -422,6 +435,14 @@ function withRun(
         patch.triggerMessageId !== undefined
           ? patch.triggerMessageId
           : (current?.triggerMessageId ?? null),
+      responseGroupId:
+        patch.responseGroupId !== undefined
+          ? patch.responseGroupId
+          : (current?.responseGroupId ?? null),
+      sequenceIndex:
+        patch.sequenceIndex !== undefined
+          ? patch.sequenceIndex
+          : (current?.sequenceIndex ?? null),
       targetAgentId:
         patch.targetAgentId !== undefined
           ? patch.targetAgentId
@@ -438,6 +459,10 @@ function withRun(
         patch.errorMessage !== undefined
           ? patch.errorMessage
           : (current?.errorMessage ?? null),
+      cancelReason:
+        patch.cancelReason !== undefined
+          ? patch.cancelReason
+          : (current?.cancelReason ?? null),
       executorAlias:
         patch.executorAlias !== undefined
           ? patch.executorAlias
@@ -481,6 +506,12 @@ function detailReducer(state: DetailState, action: DetailAction): DetailState {
         kind: action.unavailable ? 'unavailable' : 'error',
         errorMessage: action.message,
         streamState: 'offline',
+      };
+    case 'TALK_UPDATED':
+      if (state.kind !== 'ready') return state;
+      return {
+        ...state,
+        talk: action.talk,
       };
     case 'THREAD_MESSAGES_LOADING':
       if (state.kind !== 'ready') return state;
@@ -566,6 +597,8 @@ function detailReducer(state: DetailState, action: DetailAction): DetailState {
           startedAt: new Date().toISOString(),
           targetAgentId: action.targetAgentId,
           targetAgentNickname: action.targetAgentNickname,
+          responseGroupId: action.responseGroupId,
+          sequenceIndex: action.sequenceIndex,
         }),
       };
     case 'RUN_QUEUED':
@@ -581,6 +614,8 @@ function detailReducer(state: DetailState, action: DetailAction): DetailState {
           createdAt: action.createdAt || undefined,
           targetAgentId: action.targetAgentId,
           targetAgentNickname: action.targetAgentNickname,
+          responseGroupId: action.responseGroupId,
+          sequenceIndex: action.sequenceIndex,
         }),
       };
     case 'RUN_COMPLETED': {
@@ -597,6 +632,8 @@ function detailReducer(state: DetailState, action: DetailAction): DetailState {
           executorAlias: action.executorAlias,
           executorModel: action.executorModel,
           completedAt: new Date().toISOString(),
+          responseGroupId: action.responseGroupId,
+          sequenceIndex: action.sequenceIndex,
         }),
       };
     }
@@ -613,6 +650,8 @@ function detailReducer(state: DetailState, action: DetailAction): DetailState {
             text: existing?.text || '',
             agentId: existing?.agentId,
             agentNickname: existing?.agentNickname,
+            responseGroupId: existing?.responseGroupId,
+            sequenceIndex: existing?.sequenceIndex,
             providerId: existing?.providerId,
             modelId: existing?.modelId,
             errorMessage: action.errorMessage,
@@ -629,6 +668,8 @@ function detailReducer(state: DetailState, action: DetailAction): DetailState {
           executorAlias: action.executorAlias,
           executorModel: action.executorModel,
           completedAt: new Date().toISOString(),
+          responseGroupId: action.responseGroupId,
+          sequenceIndex: action.sequenceIndex,
         }),
       };
     }
@@ -649,16 +690,26 @@ function detailReducer(state: DetailState, action: DetailAction): DetailState {
             startedAt: null,
             completedAt: null,
             triggerMessageId: null,
+            responseGroupId: null,
+            sequenceIndex: null,
             targetAgentId: null,
             targetAgentNickname: null,
             errorCode: null,
             errorMessage: null,
+            cancelReason: null,
             executorAlias: null,
             executorModel: null,
             updatedAt: Date.now(),
           }),
           status: 'cancelled',
           completedAt: new Date().toISOString(),
+          cancelReason:
+            runsById[runId]?.cancelReason ??
+            (action.cancelledBy === 'system' &&
+            runsById[runId]?.responseGroupId &&
+            runsById[runId]?.sequenceIndex != null
+              ? 'blocked_by_prior_failure'
+              : null),
           updatedAt: Date.now(),
         };
       }
@@ -676,6 +727,8 @@ function detailReducer(state: DetailState, action: DetailAction): DetailState {
             text: '',
             agentId: action.event.agentId,
             agentNickname: action.event.agentNickname,
+            responseGroupId: action.event.responseGroupId ?? null,
+            sequenceIndex: action.event.sequenceIndex ?? null,
             providerId: action.event.providerId,
             modelId: action.event.modelId,
             startedAt: Date.now(),
@@ -696,6 +749,10 @@ function detailReducer(state: DetailState, action: DetailAction): DetailState {
             text: stripInternalAssistantText(rawText),
             agentId: action.event.agentId,
             agentNickname: action.event.agentNickname,
+            responseGroupId:
+              action.event.responseGroupId ?? existing?.responseGroupId ?? null,
+            sequenceIndex:
+              action.event.sequenceIndex ?? existing?.sequenceIndex ?? null,
             providerId: action.event.providerId,
             modelId: action.event.modelId,
             startedAt: existing?.startedAt || Date.now(),
@@ -720,6 +777,10 @@ function detailReducer(state: DetailState, action: DetailAction): DetailState {
             text: existing?.text || '',
             agentId: action.event.agentId,
             agentNickname: action.event.agentNickname,
+            responseGroupId:
+              action.event.responseGroupId ?? existing?.responseGroupId ?? null,
+            sequenceIndex:
+              action.event.sequenceIndex ?? existing?.sequenceIndex ?? null,
             providerId: action.event.providerId,
             modelId: action.event.modelId,
             startedAt: existing?.startedAt || Date.now(),
@@ -1319,6 +1380,10 @@ export function TalkDetailPage({
     status: 'idle' | 'saving' | 'error' | 'success';
     message?: string;
   }>({ status: 'idle' });
+  const [orchestrationState, setOrchestrationState] = useState<{
+    status: 'idle' | 'saving' | 'error';
+    message?: string;
+  }>({ status: 'idle' });
 
   // Context tab state
   const [contextGoal, setContextGoal] = useState<ContextGoal | null>(null);
@@ -1534,6 +1599,7 @@ export function TalkDetailPage({
     setConnectorState({ status: 'idle' });
     setHistoryEditorOpen(false);
     setHistoryEditState({ status: 'idle' });
+    setOrchestrationState({ status: 'idle' });
     setContextLoaded(false);
     setContextGoal(null);
     setContextRules([]);
@@ -1802,6 +1868,8 @@ export function TalkDetailPage({
           triggerMessageId: event.triggerMessageId,
           executorAlias: event.executorAlias,
           executorModel: event.executorModel,
+          responseGroupId: event.responseGroupId,
+          sequenceIndex: event.sequenceIndex,
         });
       },
       onRunQueued: (event: TalkRunStartedEvent) => {
@@ -1814,6 +1882,8 @@ export function TalkDetailPage({
           triggerMessageId: event.triggerMessageId,
           executorAlias: event.executorAlias,
           executorModel: event.executorModel,
+          responseGroupId: event.responseGroupId,
+          sequenceIndex: event.sequenceIndex,
         });
       },
       onResponseStarted: (event: TalkResponseStartedEvent) => {
@@ -1857,6 +1927,8 @@ export function TalkDetailPage({
           responseMessageId: event.responseMessageId,
           executorAlias: event.executorAlias,
           executorModel: event.executorModel,
+          responseGroupId: event.responseGroupId,
+          sequenceIndex: event.sequenceIndex,
         });
       },
       onRunFailed: (event: TalkRunFailedEvent) => {
@@ -1871,11 +1943,17 @@ export function TalkDetailPage({
           errorMessage: event.errorMessage,
           executorAlias: event.executorAlias,
           executorModel: event.executorModel,
+          responseGroupId: event.responseGroupId,
+          sequenceIndex: event.sequenceIndex,
         });
       },
       onRunCancelled: (event: TalkRunCancelledEvent) => {
         if (event.talkId !== talkId) return;
-        dispatch({ type: 'RUN_CANCELLED_BATCH', runIds: event.runIds });
+        dispatch({
+          type: 'RUN_CANCELLED_BATCH',
+          runIds: event.runIds,
+          cancelledBy: event.cancelledBy,
+        });
       },
       onHistoryEdited: (event: TalkHistoryEditedEvent) => {
         if (event.talkId !== talkId) return;
@@ -1985,6 +2063,24 @@ export function TalkDetailPage({
       }, {}),
     [effectiveAgents],
   );
+  const orchestrationMode =
+    state.kind === 'ready' && state.talk
+      ? state.talk.orchestrationMode
+      : 'ordered';
+  const showOrchestrationSelector = agents.length >= 2;
+  const selectedTargetAgents = useMemo(
+    () => effectiveAgents.filter((agent) => targetAgentIds.includes(agent.id)),
+    [effectiveAgents, targetAgentIds],
+  );
+  const composerTargetHelp = useMemo(() => {
+    if (selectedTargetAgents.length <= 1) {
+      return 'Only the selected agent will respond.';
+    }
+    if (orchestrationMode === 'ordered') {
+      return 'Selected agents will respond in order, with the final response synthesizing earlier perspectives.';
+    }
+    return 'Selected agents will each respond independently.';
+  }, [orchestrationMode, selectedTargetAgents.length]);
   const messageLookup = useMemo(
     () =>
       new Map(state.messages.map((message) => [message.id, message] as const)),
@@ -2013,6 +2109,69 @@ export function TalkDetailPage({
       ),
     [state.liveResponsesByRunId],
   );
+  const activeOrderedProgress = useMemo(() => {
+    const orderedRuns = Object.values(state.runsById).filter(
+      (run) =>
+        run.threadId === activeThreadId &&
+        Boolean(run.responseGroupId) &&
+        run.sequenceIndex != null,
+    );
+    if (orderedRuns.length === 0) return null;
+
+    const groups = orderedRuns.reduce<Record<string, RunView[]>>((acc, run) => {
+      const groupId = run.responseGroupId!;
+      (acc[groupId] ||= []).push(run);
+      return acc;
+    }, {});
+
+    const activeGroups = Object.values(groups)
+      .filter((groupRuns) =>
+        groupRuns.some((run) =>
+          ['queued', 'running', 'awaiting_confirmation'].includes(run.status),
+        ),
+      )
+      .sort((left, right) => {
+        const leftAt = Math.max(...left.map((run) => run.updatedAt));
+        const rightAt = Math.max(...right.map((run) => run.updatedAt));
+        return rightAt - leftAt;
+      });
+
+    const groupRuns = activeGroups[0];
+    if (!groupRuns) return null;
+
+    const orderedGroupRuns = [...groupRuns].sort(
+      (left, right) => (left.sequenceIndex ?? 0) - (right.sequenceIndex ?? 0),
+    );
+    const currentRun =
+      orderedGroupRuns.find((run) => run.status === 'running') ||
+      orderedGroupRuns.find((run) => run.status === 'awaiting_confirmation') ||
+      orderedGroupRuns.find((run) => run.status === 'queued');
+    if (!currentRun || currentRun.sequenceIndex == null) return null;
+
+    const liveResponse = state.liveResponsesByRunId[currentRun.id];
+    const label =
+      currentRun.targetAgentNickname ||
+      (currentRun.targetAgentId
+        ? agentLabelById[currentRun.targetAgentId]
+        : null) ||
+      liveResponse?.agentNickname ||
+      'Agent';
+    const statusText =
+      currentRun.status === 'awaiting_confirmation'
+        ? 'awaiting confirmation…'
+        : currentRun.status === 'queued'
+          ? 'queued…'
+          : currentRun.sequenceIndex === orderedGroupRuns.length - 1
+            ? 'synthesizing…'
+            : 'responding…';
+
+    return {
+      responseGroupId: currentRun.responseGroupId,
+      currentStep: currentRun.sequenceIndex + 1,
+      totalSteps: orderedGroupRuns.length,
+      label: `Agent ${currentRun.sequenceIndex + 1} of ${orderedGroupRuns.length} · ${label} ${statusText}`,
+    };
+  }, [activeThreadId, agentLabelById, state.liveResponsesByRunId, state.runsById]);
   const talkTimeline = useMemo<TalkTimelineEntry[]>(
     () =>
       [
@@ -3271,6 +3430,8 @@ export function TalkDetailPage({
           createdAt: run.createdAt,
           targetAgentId: run.targetAgentId,
           targetAgentNickname: run.targetAgentNickname,
+          responseGroupId: run.responseGroupId,
+          sequenceIndex: run.sequenceIndex,
           executorAlias: run.executorAlias,
           executorModel: run.executorModel,
         });
@@ -3337,6 +3498,36 @@ export function TalkDetailPage({
       navigate(buildThreadHref(talkId, threadId, currentTab));
     },
     [currentTab, navigate, talkId],
+  );
+
+  const handleOrchestrationModeChange = useCallback(
+    async (nextMode: 'ordered' | 'panel') => {
+      if (state.kind !== 'ready' || !state.talk) return;
+      if (state.talk.orchestrationMode === nextMode) return;
+
+      setOrchestrationState({ status: 'saving' });
+      try {
+        const updatedTalk = await patchTalkMetadata({
+          talkId: state.talk.id,
+          orchestrationMode: nextMode,
+        });
+        dispatch({ type: 'TALK_UPDATED', talk: updatedTalk });
+        setOrchestrationState({ status: 'idle' });
+      } catch (err) {
+        if (err instanceof UnauthorizedError) {
+          handleUnauthorized();
+          return;
+        }
+        setOrchestrationState({
+          status: 'error',
+          message:
+            err instanceof Error
+              ? err.message
+              : 'Failed to update response mode.',
+        });
+      }
+    },
+    [handleUnauthorized, state],
   );
 
   const handleCreateThread = useCallback(async () => {
@@ -3981,50 +4172,80 @@ export function TalkDetailPage({
                   ))}
                 </div>
               ) : null}
-              <nav className="talk-tabs" aria-label="Talk sections">
-                <Link
-                  to={threadAwareTalkTabHref}
-                  className={`talk-tab ${currentTab === 'talk' ? 'talk-tab-active' : ''}`}
-                >
-                  Talk
-                </Link>
-                <Link
-                  to={agentsTabHref}
-                  className={`talk-tab ${currentTab === 'agents' ? 'talk-tab-active' : ''}`}
-                >
-                  Agents
-                </Link>
-                <Link
-                  to={toolsTabHref}
-                  className={`talk-tab ${currentTab === 'tools' ? 'talk-tab-active' : ''}`}
-                >
-                  Tools
-                </Link>
-                <Link
-                  to={contextTabHref}
-                  className={`talk-tab ${currentTab === 'context' ? 'talk-tab-active' : ''}`}
-                >
-                  Context
-                </Link>
-                <Link
-                  to={channelsTabHref}
-                  className={`talk-tab ${currentTab === 'channels' ? 'talk-tab-active' : ''}`}
-                >
-                  Channels
-                </Link>
-                <Link
-                  to={connectorsTabHref}
-                  className={`talk-tab ${currentTab === 'data-connectors' ? 'talk-tab-active' : ''}`}
-                >
-                  Data Connectors
-                </Link>
-                <Link
-                  to={runsTabHref}
-                  className={`talk-tab ${currentTab === 'runs' ? 'talk-tab-active' : ''}`}
-                >
-                  Run History
-                </Link>
-              </nav>
+              <div className="talk-tabs-row">
+                <nav className="talk-tabs" aria-label="Talk sections">
+                  <Link
+                    to={threadAwareTalkTabHref}
+                    className={`talk-tab ${currentTab === 'talk' ? 'talk-tab-active' : ''}`}
+                  >
+                    Talk
+                  </Link>
+                  <Link
+                    to={agentsTabHref}
+                    className={`talk-tab ${currentTab === 'agents' ? 'talk-tab-active' : ''}`}
+                  >
+                    Agents
+                  </Link>
+                  <Link
+                    to={toolsTabHref}
+                    className={`talk-tab ${currentTab === 'tools' ? 'talk-tab-active' : ''}`}
+                  >
+                    Tools
+                  </Link>
+                  <Link
+                    to={contextTabHref}
+                    className={`talk-tab ${currentTab === 'context' ? 'talk-tab-active' : ''}`}
+                  >
+                    Context
+                  </Link>
+                  <Link
+                    to={channelsTabHref}
+                    className={`talk-tab ${currentTab === 'channels' ? 'talk-tab-active' : ''}`}
+                  >
+                    Channels
+                  </Link>
+                  <Link
+                    to={connectorsTabHref}
+                    className={`talk-tab ${currentTab === 'data-connectors' ? 'talk-tab-active' : ''}`}
+                  >
+                    Data Connectors
+                  </Link>
+                  <Link
+                    to={runsTabHref}
+                    className={`talk-tab ${currentTab === 'runs' ? 'talk-tab-active' : ''}`}
+                  >
+                    Run History
+                  </Link>
+                </nav>
+                {showOrchestrationSelector ? (
+                  <label className="talk-orchestration-picker">
+                    <span>Response mode</span>
+                    <select
+                      value={orchestrationMode}
+                      onChange={(event) =>
+                        void handleOrchestrationModeChange(
+                          event.target.value as 'ordered' | 'panel',
+                        )
+                      }
+                      disabled={orchestrationState.status === 'saving'}
+                    >
+                      <option value="ordered">Ordered Responses</option>
+                      <option value="panel">Parallel Responses (Quick)</option>
+                    </select>
+                  </label>
+                ) : null}
+              </div>
+              {showOrchestrationSelector ? (
+                <p className="policy-muted talk-orchestration-hint">
+                  Ordered mode is the default for synthesis-focused multi-agent
+                  talks. Switch to parallel for faster independent responses.
+                </p>
+              ) : null}
+              {orchestrationState.status === 'error' ? (
+                <p className="talk-thread-search-error" role="alert">
+                  {orchestrationState.message}
+                </p>
+              ) : null}
             </div>
             <Link to="/app/talks">Back</Link>
           </header>
@@ -6021,6 +6242,11 @@ export function TalkDetailPage({
                           {run.errorMessage}
                         </p>
                       ) : null}
+                      {run.status === 'cancelled' && run.cancelReason ? (
+                        <p className="run-history-muted">
+                          Cancel reason: {run.cancelReason}
+                        </p>
+                      ) : null}
                     </li>
                   ))}
                 </ul>
@@ -6143,6 +6369,12 @@ export function TalkDetailPage({
                   </button>
                 </div>
 
+                {activeOrderedProgress ? (
+                  <div className="talk-ordered-progress" role="status">
+                    {activeOrderedProgress.label}
+                  </div>
+                ) : null}
+
                 <div
                   ref={timelineRef}
                   className="timeline talk-thread-timeline"
@@ -6170,6 +6402,7 @@ export function TalkDetailPage({
                     talkTimeline.map((entry) => {
                       if (entry.kind === 'message') {
                         const { message } = entry;
+                        const isSynthesis = message.metadata?.isSynthesis === true;
                         const agentLabel =
                           (message.agentId &&
                             agentLabelById[message.agentId]) ||
@@ -6182,13 +6415,20 @@ export function TalkDetailPage({
                             ref={(element) =>
                               setMessageElementRef(message.id, element)
                             }
-                            className={`message message-${message.role}`}
+                            className={`message message-${message.role}${
+                              isSynthesis ? ' message-synthesis' : ''
+                            }`}
                           >
                             <header>
                               <strong>
                                 {agentLabel ? `${agentLabel} · ` : ''}
                                 {message.role}
                               </strong>
+                              {isSynthesis ? (
+                                <span className="message-synthesis-badge">
+                                  Synthesis
+                                </span>
+                              ) : null}
                               <time>
                                 {new Date(message.createdAt).toLocaleString()}
                               </time>
@@ -6313,7 +6553,7 @@ export function TalkDetailPage({
                     })}
                   </div>
                   <p className="composer-target-help">
-                    Selected agents will each respond independently.
+                    {composerTargetHelp}
                   </p>
 
                   <textarea

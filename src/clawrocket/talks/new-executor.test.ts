@@ -7,7 +7,7 @@ vi.mock('../agents/agent-router.js', () => ({
 import { getDb } from '../../db.js';
 import {
   _initTestDatabase,
-  createMessage,
+  createTalkMessage,
   createTalkRun,
   upsertTalk,
   upsertUser,
@@ -64,9 +64,9 @@ describe('CleanTalkExecutor', () => {
     vi.mocked(executeWithAgent).mockReset();
   });
 
-  it('executes read_context_source through executeToolCall and persists assistant messages with createdBy null', async () => {
+  it('executes context tools but does not persist assistant messages or llm attempts directly', async () => {
     const now = new Date().toISOString();
-    createMessage({
+    createTalkMessage({
       id: 'msg-user-1',
       talkId: TALK_ID,
       threadId: THREAD_ID,
@@ -74,25 +74,6 @@ describe('CleanTalkExecutor', () => {
       content: 'Summarize source S1',
       createdBy: 'owner-1',
       createdAt: now,
-    });
-    createTalkRun({
-      id: 'run-talk-1',
-      talk_id: TALK_ID,
-      thread_id: THREAD_ID,
-      requested_by: 'owner-1',
-      status: 'running',
-      trigger_message_id: 'msg-user-1',
-      target_agent_id: null,
-      idempotency_key: null,
-      executor_alias: null,
-      executor_model: null,
-      source_binding_id: null,
-      source_external_message_id: null,
-      source_thread_key: null,
-      created_at: now,
-      started_at: now,
-      ended_at: null,
-      cancel_reason: null,
     });
     insertSource({
       id: 'src-1',
@@ -104,14 +85,12 @@ describe('CleanTalkExecutor', () => {
     vi.mocked(executeWithAgent).mockImplementation(
       async (agentId, context, userMessage, options) => {
         expect(context).not.toBeNull();
-        const talkContext = context!;
         expect(agentId).toBe('agent.main');
         expect(userMessage).toBe('Summarize source S1');
-        expect(talkContext.systemPrompt).toContain('[S1] Meeting Notes');
-        expect(talkContext.contextTools.map((tool) => tool.name)).toContain(
+        expect(context!.systemPrompt).toContain('[S1] Meeting Notes');
+        expect(context!.contextTools.map((tool) => tool.name)).toContain(
           'read_context_source',
         );
-        expect(typeof options.executeToolCall).toBe('function');
 
         const toolResult = await options.executeToolCall!(
           'read_context_source',
@@ -137,6 +116,10 @@ describe('CleanTalkExecutor', () => {
           inputTokens: 12,
           outputTokens: 34,
           estimatedCostUsd: 0,
+        });
+        options.emit?.({
+          type: 'completed',
+          content: 'Summary ready.',
         });
 
         return {
@@ -171,6 +154,19 @@ describe('CleanTalkExecutor', () => {
     expect(result.content).toBe(
       'Summary ready. Revenue grew 20 percent quarter over quarter.',
     );
+    expect(result.agentId).toBe('agent.main');
+    expect(result.providerId).toBe('builtin.mock');
+    expect(result.modelId).toBe('mock-default');
+    expect(result.responseSequenceInRun).toBe(1);
+    expect(result.metadataJson).toBeTruthy();
+    expect(JSON.parse(result.metadataJson!)).toMatchObject({
+      runId: 'run-talk-1',
+      providerId: 'builtin.mock',
+      modelId: 'mock-default',
+      responseGroupId: null,
+      sequenceIndex: null,
+    });
+
     expect(events.some((event) => event.type === 'talk_response_started')).toBe(
       true,
     );
@@ -185,56 +181,478 @@ describe('CleanTalkExecutor', () => {
       ),
     ).toBe(true);
 
-    const messageRow = getDb()
+    const assistantMessages = getDb()
       .prepare(
         `
-        SELECT role, content, created_by, agent_id
+        SELECT COUNT(*) AS count
         FROM talk_messages
         WHERE talk_id = ? AND role = 'assistant'
-        ORDER BY created_at DESC
-        LIMIT 1
       `,
       )
-      .get(TALK_ID) as
-      | {
-          role: string;
-          content: string;
-          created_by: string | null;
-          agent_id: string | null;
-        }
-      | undefined;
+      .get(TALK_ID) as { count: number };
+    expect(assistantMessages.count).toBe(0);
 
-    expect(messageRow).toBeDefined();
-    expect(messageRow?.content).toBe(
-      'Summary ready. Revenue grew 20 percent quarter over quarter.',
-    );
-    expect(messageRow?.created_by).toBeNull();
-    expect(messageRow?.agent_id).toBe('agent.main');
-
-    const attemptRow = getDb()
+    const llmAttempts = getDb()
       .prepare(
         `
-        SELECT run_id, talk_id, agent_id, provider_id, model_id, status
+        SELECT COUNT(*) AS count
         FROM llm_attempts
         WHERE run_id = ?
       `,
       )
-      .get('run-talk-1') as
-      | {
-          run_id: string;
-          talk_id: string | null;
-          agent_id: string | null;
-          provider_id: string | null;
-          model_id: string;
-          status: string;
-        }
-      | undefined;
+      .get('run-talk-1') as { count: number };
+    expect(llmAttempts.count).toBe(0);
+  });
 
-    expect(attemptRow).toBeDefined();
-    expect(attemptRow?.talk_id).toBe(TALK_ID);
-    expect(attemptRow?.agent_id).toBe('agent.main');
-    expect(attemptRow?.provider_id).toBe('builtin.mock');
-    expect(attemptRow?.model_id).toBe('mock-default');
-    expect(attemptRow?.status).toBe('success');
+  it('injects prior ordered outputs into later phases as attributed user context', async () => {
+    createTalkMessage({
+      id: 'msg-user-ordered',
+      talkId: TALK_ID,
+      threadId: THREAD_ID,
+      role: 'user',
+      content: 'Compare the go-to-market options.',
+      createdBy: 'owner-1',
+      createdAt: '2024-01-01T00:00:00.000Z',
+    });
+    createTalkRun({
+      id: 'run-ordered-1',
+      talk_id: TALK_ID,
+      thread_id: THREAD_ID,
+      requested_by: 'owner-1',
+      status: 'completed',
+      trigger_message_id: 'msg-user-ordered',
+      target_agent_id: 'agent.main',
+      idempotency_key: null,
+      response_group_id: 'group-ordered',
+      sequence_index: 0,
+      executor_alias: null,
+      executor_model: null,
+      source_binding_id: null,
+      source_external_message_id: null,
+      source_thread_key: null,
+      created_at: '2024-01-01T00:00:00.100Z',
+      started_at: '2024-01-01T00:00:00.100Z',
+      ended_at: '2024-01-01T00:00:01.000Z',
+      cancel_reason: null,
+    });
+    createTalkMessage({
+      id: 'msg-assistant-ordered-1',
+      talkId: TALK_ID,
+      threadId: THREAD_ID,
+      role: 'assistant',
+      content: 'Agent A thinks partnerships are the fastest path.',
+      createdBy: null,
+      runId: 'run-ordered-1',
+      createdAt: '2024-01-01T00:00:01.000Z',
+    });
+    createTalkRun({
+      id: 'run-ordered-2',
+      talk_id: TALK_ID,
+      thread_id: THREAD_ID,
+      requested_by: 'owner-1',
+      status: 'running',
+      trigger_message_id: 'msg-user-ordered',
+      target_agent_id: 'agent.main',
+      idempotency_key: null,
+      response_group_id: 'group-ordered',
+      sequence_index: 1,
+      executor_alias: null,
+      executor_model: null,
+      source_binding_id: null,
+      source_external_message_id: null,
+      source_thread_key: null,
+      created_at: '2024-01-01T00:00:01.100Z',
+      started_at: '2024-01-01T00:00:01.100Z',
+      ended_at: null,
+      cancel_reason: null,
+    });
+    createTalkRun({
+      id: 'run-ordered-3',
+      talk_id: TALK_ID,
+      thread_id: THREAD_ID,
+      requested_by: 'owner-1',
+      status: 'queued',
+      trigger_message_id: 'msg-user-ordered',
+      target_agent_id: 'agent.main',
+      idempotency_key: null,
+      response_group_id: 'group-ordered',
+      sequence_index: 2,
+      executor_alias: null,
+      executor_model: null,
+      source_binding_id: null,
+      source_external_message_id: null,
+      source_thread_key: null,
+      created_at: '2024-01-01T00:00:01.200Z',
+      started_at: null,
+      ended_at: null,
+      cancel_reason: null,
+    });
+
+    vi.mocked(executeWithAgent).mockImplementation(
+      async (_agentId, context, userMessage) => {
+        expect(context).not.toBeNull();
+        expect(
+          context!.history.some((message) =>
+            typeof message.content === 'string'
+              ? message.content.includes('partnerships are the fastest path')
+              : false,
+          ),
+        ).toBe(false);
+        expect(userMessage).toContain(
+          'Original user request:\nCompare the go-to-market options.',
+        );
+        expect(userMessage).toContain(
+          '[Nanoclaw]\nAgent A thinks partnerships are the fastest path.',
+        );
+        expect(userMessage).toContain(
+          'Provide your own analysis from your role and perspective.',
+        );
+        expect(userMessage).not.toContain('Synthesize these perspectives.');
+
+        return {
+          content: 'Agent B prefers direct sales.',
+          agentId: 'agent.main',
+          providerId: 'builtin.mock',
+          modelId: 'mock-default',
+        };
+      },
+    );
+
+    const result = await new CleanTalkExecutor().execute(
+      {
+        runId: 'run-ordered-2',
+        talkId: TALK_ID,
+        threadId: THREAD_ID,
+        requestedBy: 'owner-1',
+        triggerMessageId: 'msg-user-ordered',
+        triggerContent: 'Compare the go-to-market options.',
+        responseGroupId: 'group-ordered',
+        sequenceIndex: 1,
+      },
+      new AbortController().signal,
+    );
+
+    expect(JSON.parse(result.metadataJson!)).toMatchObject({
+      responseGroupId: 'group-ordered',
+      sequenceIndex: 1,
+    });
+    expect(JSON.parse(result.metadataJson!)).not.toHaveProperty('isSynthesis');
+  });
+
+  it('marks the final ordered phase as synthesis and injects synthesis instructions', async () => {
+    createTalkMessage({
+      id: 'msg-user-synth',
+      talkId: TALK_ID,
+      threadId: THREAD_ID,
+      role: 'user',
+      content: 'Recommend a pricing strategy.',
+      createdBy: 'owner-1',
+      createdAt: '2024-01-01T00:00:00.000Z',
+    });
+
+    for (const [runId, sequenceIndex, content] of [
+      ['run-synth-1', 0, 'Agent A recommends premium positioning.'],
+      ['run-synth-2', 1, 'Agent B warns about market share risk.'],
+    ] as const) {
+      createTalkRun({
+        id: runId,
+        talk_id: TALK_ID,
+        thread_id: THREAD_ID,
+        requested_by: 'owner-1',
+        status: 'completed',
+        trigger_message_id: 'msg-user-synth',
+        target_agent_id: 'agent.main',
+        idempotency_key: null,
+        response_group_id: 'group-synth',
+        sequence_index: sequenceIndex,
+        executor_alias: null,
+        executor_model: null,
+        source_binding_id: null,
+        source_external_message_id: null,
+        source_thread_key: null,
+        created_at: `2024-01-01T00:00:0${sequenceIndex + 1}.000Z`,
+        started_at: `2024-01-01T00:00:0${sequenceIndex + 1}.000Z`,
+        ended_at: `2024-01-01T00:00:0${sequenceIndex + 1}.500Z`,
+        cancel_reason: null,
+      });
+      createTalkMessage({
+        id: `msg-${runId}`,
+        talkId: TALK_ID,
+        threadId: THREAD_ID,
+        role: 'assistant',
+        content,
+        createdBy: null,
+        runId,
+        createdAt: `2024-01-01T00:00:0${sequenceIndex + 1}.500Z`,
+      });
+    }
+    createTalkRun({
+      id: 'run-synth-3',
+      talk_id: TALK_ID,
+      thread_id: THREAD_ID,
+      requested_by: 'owner-1',
+      status: 'running',
+      trigger_message_id: 'msg-user-synth',
+      target_agent_id: 'agent.main',
+      idempotency_key: null,
+      response_group_id: 'group-synth',
+      sequence_index: 2,
+      executor_alias: null,
+      executor_model: null,
+      source_binding_id: null,
+      source_external_message_id: null,
+      source_thread_key: null,
+      created_at: '2024-01-01T00:00:03.000Z',
+      started_at: '2024-01-01T00:00:03.000Z',
+      ended_at: null,
+      cancel_reason: null,
+    });
+
+    vi.mocked(executeWithAgent).mockImplementation(
+      async (_agentId, _context, userMessage) => {
+        expect(userMessage).toContain(
+          '[Nanoclaw]\nAgent A recommends premium positioning.',
+        );
+        expect(userMessage).toContain(
+          '[Nanoclaw]\nAgent B warns about market share risk.',
+        );
+        expect(userMessage).toContain('Synthesize these perspectives.');
+
+        return {
+          content: 'Synthesis: pursue premium entry pricing with guardrails.',
+          agentId: 'agent.main',
+          providerId: 'builtin.mock',
+          modelId: 'mock-default',
+        };
+      },
+    );
+
+    const result = await new CleanTalkExecutor().execute(
+      {
+        runId: 'run-synth-3',
+        talkId: TALK_ID,
+        threadId: THREAD_ID,
+        requestedBy: 'owner-1',
+        triggerMessageId: 'msg-user-synth',
+        triggerContent: 'Recommend a pricing strategy.',
+        responseGroupId: 'group-synth',
+        sequenceIndex: 2,
+      },
+      new AbortController().signal,
+    );
+
+    expect(JSON.parse(result.metadataJson!)).toMatchObject({
+      responseGroupId: 'group-synth',
+      sequenceIndex: 2,
+      isSynthesis: true,
+    });
+  });
+
+  it('coalesces multiple assistant messages from one prior run into a single attributed block', async () => {
+    createTalkMessage({
+      id: 'msg-user-multi-output',
+      talkId: TALK_ID,
+      threadId: THREAD_ID,
+      role: 'user',
+      content: 'Evaluate the trade-offs.',
+      createdBy: 'owner-1',
+      createdAt: '2024-01-02T00:00:00.000Z',
+    });
+    createTalkRun({
+      id: 'run-multi-output-1',
+      talk_id: TALK_ID,
+      thread_id: THREAD_ID,
+      requested_by: 'owner-1',
+      status: 'completed',
+      trigger_message_id: 'msg-user-multi-output',
+      target_agent_id: 'agent.main',
+      idempotency_key: null,
+      response_group_id: 'group-multi-output',
+      sequence_index: 0,
+      executor_alias: null,
+      executor_model: null,
+      source_binding_id: null,
+      source_external_message_id: null,
+      source_thread_key: null,
+      created_at: '2024-01-02T00:00:00.100Z',
+      started_at: '2024-01-02T00:00:00.100Z',
+      ended_at: '2024-01-02T00:00:01.000Z',
+      cancel_reason: null,
+    });
+    createTalkMessage({
+      id: 'msg-multi-output-1a',
+      talkId: TALK_ID,
+      threadId: THREAD_ID,
+      role: 'assistant',
+      content: 'First supporting point.',
+      createdBy: null,
+      runId: 'run-multi-output-1',
+      sequenceInRun: 1,
+      createdAt: '2024-01-02T00:00:00.500Z',
+    });
+    createTalkMessage({
+      id: 'msg-multi-output-1b',
+      talkId: TALK_ID,
+      threadId: THREAD_ID,
+      role: 'assistant',
+      content: 'Second supporting point.',
+      createdBy: null,
+      runId: 'run-multi-output-1',
+      sequenceInRun: 2,
+      createdAt: '2024-01-02T00:00:00.700Z',
+    });
+    createTalkRun({
+      id: 'run-multi-output-2',
+      talk_id: TALK_ID,
+      thread_id: THREAD_ID,
+      requested_by: 'owner-1',
+      status: 'running',
+      trigger_message_id: 'msg-user-multi-output',
+      target_agent_id: 'agent.main',
+      idempotency_key: null,
+      response_group_id: 'group-multi-output',
+      sequence_index: 1,
+      executor_alias: null,
+      executor_model: null,
+      source_binding_id: null,
+      source_external_message_id: null,
+      source_thread_key: null,
+      created_at: '2024-01-02T00:00:01.100Z',
+      started_at: '2024-01-02T00:00:01.100Z',
+      ended_at: null,
+      cancel_reason: null,
+    });
+
+    vi.mocked(executeWithAgent).mockImplementation(
+      async (_agentId, _context, userMessage) => {
+        expect(userMessage).toContain(
+          '[Nanoclaw]\nFirst supporting point.\n\nSecond supporting point.',
+        );
+        expect(userMessage.match(/\[Nanoclaw\]/g)).toHaveLength(1);
+
+        return {
+          content: 'Independent second-pass analysis.',
+          agentId: 'agent.main',
+          providerId: 'builtin.mock',
+          modelId: 'mock-default',
+        };
+      },
+    );
+
+    await new CleanTalkExecutor().execute(
+      {
+        runId: 'run-multi-output-2',
+        talkId: TALK_ID,
+        threadId: THREAD_ID,
+        requestedBy: 'owner-1',
+        triggerMessageId: 'msg-user-multi-output',
+        triggerContent: 'Evaluate the trade-offs.',
+        responseGroupId: 'group-multi-output',
+        sequenceIndex: 1,
+      },
+      new AbortController().signal,
+    );
+  });
+
+  it('caps injected prior outputs to the remaining prompt budget', async () => {
+    getDb()
+      .prepare(
+        `
+        UPDATE llm_provider_models
+        SET context_window_tokens = 4096
+        WHERE provider_id = 'builtin.mock' AND model_id = 'mock-default'
+      `,
+      )
+      .run();
+
+    createTalkMessage({
+      id: 'msg-user-budgeted',
+      talkId: TALK_ID,
+      threadId: THREAD_ID,
+      role: 'user',
+      content: 'Recommend a launch plan.',
+      createdBy: 'owner-1',
+      createdAt: '2024-01-03T00:00:00.000Z',
+    });
+    createTalkRun({
+      id: 'run-budgeted-1',
+      talk_id: TALK_ID,
+      thread_id: THREAD_ID,
+      requested_by: 'owner-1',
+      status: 'completed',
+      trigger_message_id: 'msg-user-budgeted',
+      target_agent_id: 'agent.main',
+      idempotency_key: null,
+      response_group_id: 'group-budgeted',
+      sequence_index: 0,
+      executor_alias: null,
+      executor_model: null,
+      source_binding_id: null,
+      source_external_message_id: null,
+      source_thread_key: null,
+      created_at: '2024-01-03T00:00:00.100Z',
+      started_at: '2024-01-03T00:00:00.100Z',
+      ended_at: '2024-01-03T00:00:01.000Z',
+      cancel_reason: null,
+    });
+    createTalkMessage({
+      id: 'msg-budgeted-1',
+      talkId: TALK_ID,
+      threadId: THREAD_ID,
+      role: 'assistant',
+      content: 'A'.repeat(8000),
+      createdBy: null,
+      runId: 'run-budgeted-1',
+      createdAt: '2024-01-03T00:00:01.000Z',
+    });
+    createTalkRun({
+      id: 'run-budgeted-2',
+      talk_id: TALK_ID,
+      thread_id: THREAD_ID,
+      requested_by: 'owner-1',
+      status: 'running',
+      trigger_message_id: 'msg-user-budgeted',
+      target_agent_id: 'agent.main',
+      idempotency_key: null,
+      response_group_id: 'group-budgeted',
+      sequence_index: 1,
+      executor_alias: null,
+      executor_model: null,
+      source_binding_id: null,
+      source_external_message_id: null,
+      source_thread_key: null,
+      created_at: '2024-01-03T00:00:01.100Z',
+      started_at: '2024-01-03T00:00:01.100Z',
+      ended_at: null,
+      cancel_reason: null,
+    });
+
+    vi.mocked(executeWithAgent).mockImplementation(
+      async (_agentId, _context, userMessage) => {
+        expect(userMessage.length).toBeLessThan(3500);
+        expect(userMessage).toContain('[truncated for context window]');
+
+        return {
+          content: 'Budget-aware analysis.',
+          agentId: 'agent.main',
+          providerId: 'builtin.mock',
+          modelId: 'mock-default',
+        };
+      },
+    );
+
+    await new CleanTalkExecutor().execute(
+      {
+        runId: 'run-budgeted-2',
+        talkId: TALK_ID,
+        threadId: THREAD_ID,
+        requestedBy: 'owner-1',
+        triggerMessageId: 'msg-user-budgeted',
+        triggerContent: 'Recommend a launch plan.',
+        responseGroupId: 'group-budgeted',
+        sequenceIndex: 1,
+      },
+      new AbortController().signal,
+    );
   });
 });
