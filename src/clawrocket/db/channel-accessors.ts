@@ -1288,6 +1288,7 @@ export function enqueueChannelTurnAtomic(input: {
         `talk:${input.talkId}`,
         JSON.stringify({
           talkId: input.talkId,
+          threadId,
           messageId: input.messageId,
           runId: null,
           role: 'user',

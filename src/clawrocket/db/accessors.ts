@@ -1913,7 +1913,19 @@ export function enqueueTalkTurnAtomic(input: {
       }
 
       // Resolve thread: use provided threadId, or fall back to the default thread
-      const threadId = txInput.threadId || getOrCreateDefaultThread(txInput.talkId);
+      let threadId: string;
+      if (txInput.threadId) {
+        // Validate the thread exists and belongs to this Talk
+        const threadRow = getDb()
+          .prepare(`SELECT id FROM talk_threads WHERE id = ? AND talk_id = ?`)
+          .get(txInput.threadId, txInput.talkId) as { id: string } | undefined;
+        if (!threadRow) {
+          throw new Error('thread not found or does not belong to this talk');
+        }
+        threadId = txInput.threadId;
+      } else {
+        threadId = getOrCreateDefaultThread(txInput.talkId);
+      }
 
       const active = getDb()
         .prepare(
@@ -2574,6 +2586,7 @@ export function appendAssistantMessageWithOutbox(input: {
         'message_appended',
         JSON.stringify({
           talkId: txInput.talkId,
+          threadId: txInput.threadId || null,
           messageId: txInput.messageId,
           runId: txInput.runId,
           role: 'assistant',
@@ -2646,6 +2659,7 @@ export function appendRuntimeTalkMessage(input: {
         'message_appended',
         JSON.stringify({
           talkId: txInput.talkId,
+          threadId: txInput.threadId || null,
           messageId: txInput.id,
           runId: txInput.runId,
           role: txInput.role,

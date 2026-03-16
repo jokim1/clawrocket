@@ -2473,7 +2473,11 @@ function buildApp(opts: WebServerOptions): Hono {
     }
 
     try {
-      const { listTalkThreads } = await import('../db/accessors.js');
+      const { getTalkForUser, listTalkThreads } = await import('../db/accessors.js');
+      const talk = getTalkForUser(talkId, auth.userId);
+      if (!talk) {
+        return c.json({ ok: false, error: { code: 'talk_not_found', message: 'Talk not found' } }, 404);
+      }
       const threads = listTalkThreads(talkId);
       return c.json({ ok: true, data: { threads } });
     } catch (err) {
@@ -2490,15 +2494,32 @@ function buildApp(opts: WebServerOptions): Hono {
       return rateLimitedResponse(c, rateResult);
     }
 
+    const csrf = validateCsrfToken({
+      method: c.req.method,
+      authType: auth.authType,
+      cookieHeader: c.req.header('cookie'),
+      csrfHeader: c.req.header('x-csrf-token'),
+    });
+    if (!csrf.ok) {
+      return c.json(
+        { ok: false, error: { code: 'csrf_failed', message: csrf.reason } },
+        403,
+      );
+    }
+
     const talkId = safeDecodePathSegment(c.req.param('talkId'));
     if (!talkId) {
       return c.json({ ok: false, error: { code: 'invalid_talk_id', message: 'Invalid Talk ID' } }, 400);
     }
 
     try {
+      const { getTalkForUser, createTalkThread } = await import('../db/accessors.js');
+      const talk = getTalkForUser(talkId, auth.userId);
+      if (!talk) {
+        return c.json({ ok: false, error: { code: 'talk_not_found', message: 'Talk not found' } }, 404);
+      }
       const body = await c.req.json().catch(() => ({}));
       const title = typeof body.title === 'string' ? body.title.trim() || null : null;
-      const { createTalkThread } = await import('../db/accessors.js');
       const thread = createTalkThread({ talkId, title });
       return c.json({ ok: true, data: thread }, 201);
     } catch (err) {
