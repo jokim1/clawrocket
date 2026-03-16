@@ -75,11 +75,10 @@ function insertTalkSummary(summaryText: string) {
     .prepare(
       `
       INSERT INTO talk_context_summary (
-        talk_id, summary_text, version, updated_at
-      ) VALUES (?, ?, 1, ?)
+        talk_id, summary_text, updated_at
+      ) VALUES (?, ?, ?)
       ON CONFLICT(talk_id) DO UPDATE SET
         summary_text = excluded.summary_text,
-        version = talk_context_summary.version + 1,
         updated_at = excluded.updated_at
     `,
     )
@@ -521,13 +520,12 @@ describe('context-loader', () => {
   describe('buildToolExecutor (read_attachment)', () => {
     it('resolves an attachment by ID and returns extracted_text', async () => {
       const now = new Date().toISOString();
-      // Insert a parent message first (FK requirement)
-      getDb()
-        .prepare(
-          `INSERT INTO talk_messages (id, talk_id, role, content, created_at)
-           VALUES (?, ?, ?, ?, ?)`,
-        )
-        .run('msg-1', TALK_ID, 'user', 'See attached', now);
+      insertTalkMessage({
+        id: 'msg-1',
+        role: 'user',
+        content: 'See attached',
+        createdAt: now,
+      });
       getDb()
         .prepare(
           `INSERT INTO talk_message_attachments (
