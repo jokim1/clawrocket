@@ -1,4 +1,60 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+const executionPlannerMocks = vi.hoisted(() => {
+  class MockExecutionPlannerError extends Error {
+    constructor(
+      message: string,
+      public readonly code:
+        | 'CONTAINER_BROWSER_REQUIRES_SHELL'
+        | 'CONTAINER_PROVIDER_INCOMPATIBLE'
+        | 'CONTAINER_BACKEND_UNAVAILABLE'
+        | 'CONTAINER_CREDENTIAL_MISSING'
+        | 'DIRECT_EXECUTION_UNAVAILABLE',
+      public readonly details?: Record<string, unknown>,
+    ) {
+      super(message);
+      this.name = 'ExecutionPlannerError';
+    }
+  }
+
+  return {
+    planExecutionMock: vi.fn(),
+    MockExecutionPlannerError,
+  };
+});
+
+vi.mock('../../agents/execution-planner.js', async () => {
+  const actual = await vi.importActual<
+    typeof import('../../agents/execution-planner.js')
+  >('../../agents/execution-planner.js');
+  return {
+    ...actual,
+    ExecutionPlannerError: executionPlannerMocks.MockExecutionPlannerError,
+    planExecution: executionPlannerMocks.planExecutionMock,
+  };
+});
+
+vi.mock('../../../mount-security.js', () => ({
+  validateMount: (mount: { hostPath?: string }) => {
+    const hostPath = mount.hostPath?.trim() || '';
+    if (!hostPath) {
+      return { allowed: false, reason: 'Project path is required' };
+    }
+    if (hostPath.includes('/blocked/')) {
+      return { allowed: false, reason: 'Path matches blocked pattern' };
+    }
+    if (hostPath.endsWith('/missing')) {
+      return { allowed: false, reason: 'Path does not exist' };
+    }
+    return {
+      allowed: true,
+      reason: 'Allowed',
+      realHostPath: hostPath,
+      effectiveReadonly: true,
+      resolvedContainerPath: 'project',
+    };
+  },
+}));
 
 import { getDb } from '../../../db.js';
 import {
@@ -29,6 +85,10 @@ describe('talk routes', () => {
   beforeEach(async () => {
     _initTestDatabase();
     _resetRateLimitStateForTests();
+    executionPlannerMocks.planExecutionMock.mockReset();
+    executionPlannerMocks.planExecutionMock.mockReturnValue({
+      backend: 'direct_http',
+    });
 
     upsertUser({
       id: 'owner-1',
@@ -430,6 +490,85 @@ describe('talk routes', () => {
     expect(patchBody.data.talk.orchestrationMode).toBe('panel');
   });
 
+  it('exposes projectPath to owners and lets them update and clear it', async () => {
+    const detailRes = await server.request('/api/v1/talks/talk-owner', {
+      headers: {
+        Authorization: 'Bearer owner-token',
+      },
+    });
+    expect(detailRes.status).toBe(200);
+    const detailBody = (await detailRes.json()) as any;
+    expect(detailBody.data.talk.projectPath).toBeNull();
+
+    const saveRes = await server.request(
+      '/api/v1/talks/talk-owner/project-mount',
+      {
+        method: 'PUT',
+        headers: {
+          Authorization: 'Bearer owner-token',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ projectPath: '/tmp/project-alpha' }),
+      },
+    );
+    expect(saveRes.status).toBe(200);
+    const saveBody = (await saveRes.json()) as any;
+    expect(saveBody.data.talk.projectPath).toBe('/tmp/project-alpha');
+
+    const clearRes = await server.request(
+      '/api/v1/talks/talk-owner/project-mount',
+      {
+        method: 'DELETE',
+        headers: {
+          Authorization: 'Bearer owner-token',
+        },
+      },
+    );
+    expect(clearRes.status).toBe(200);
+    const clearBody = (await clearRes.json()) as any;
+    expect(clearBody.data.talk.projectPath).toBeNull();
+  });
+
+  it('rejects invalid project paths and hides them from non-owner editors', async () => {
+    const saveRes = await server.request(
+      '/api/v1/talks/talk-owner/project-mount',
+      {
+        method: 'PUT',
+        headers: {
+          Authorization: 'Bearer owner-token',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ projectPath: '/blocked/project' }),
+      },
+    );
+    expect(saveRes.status).toBe(400);
+    const saveBody = (await saveRes.json()) as any;
+    expect(saveBody.error.code).toBe('invalid_project_path');
+
+    getDb()
+      .prepare(`UPDATE talks SET project_path = ? WHERE id = ?`)
+      .run('/tmp/secret-project', 'talk-owner');
+
+    const memberDetailRes = await server.request('/api/v1/talks/talk-owner', {
+      headers: {
+        Authorization: 'Bearer member-token',
+      },
+    });
+    expect(memberDetailRes.status).toBe(200);
+    const memberDetailBody = (await memberDetailRes.json()) as any;
+    expect(memberDetailBody.data.talk.projectPath).toBeNull();
+
+    const memberProjectRes = await server.request(
+      '/api/v1/talks/talk-owner/project-mount',
+      {
+        headers: {
+          Authorization: 'Bearer member-token',
+        },
+      },
+    );
+    expect(memberProjectRes.status).toBe(403);
+  });
+
   it('returns talk policy for authorized users and 404 for outsiders', async () => {
     const viewerRes = await server.request('/api/v1/talks/talk-owner/policy', {
       headers: {
@@ -647,6 +786,92 @@ describe('talk routes', () => {
     expect(getQueuedTalkRuns('talk-owner').map((row) => row.id)).toEqual([
       firstBody.data.runs[0].id,
     ]);
+    expect(wakeCalls).toBe(1);
+  });
+
+  it('rejects multi-agent turns when any selected agent would require container routing', async () => {
+    const heavyAgent = createRegisteredAgent({
+      name: 'Heavy Claude',
+      providerId: 'provider.anthropic',
+      modelId: 'claude-sonnet-4-6',
+      toolPermissionsJson: '{"shell":true,"filesystem":true}',
+    });
+    getDb()
+      .prepare(
+        `
+      INSERT INTO talk_agents (id, talk_id, registered_agent_id, nickname, is_primary, sort_order, created_at, updated_at)
+      VALUES (?, ?, ?, ?, 0, 1, datetime('now'), datetime('now'))
+    `,
+      )
+      .run('ta-talk-owner-heavy', 'talk-owner', heavyAgent.id, heavyAgent.name);
+
+    executionPlannerMocks.planExecutionMock.mockImplementation(
+      (agent: { id: string }) =>
+        agent.id === heavyAgent.id
+          ? { backend: 'container' }
+          : { backend: 'direct_http' },
+    );
+
+    const res = await server.request('/api/v1/talks/talk-owner/chat', {
+      method: 'POST',
+      headers: {
+        Authorization: 'Bearer owner-token',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ content: 'Run the full panel' }),
+    });
+
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as any;
+    expect(body.ok).toBe(false);
+    expect(body.error.code).toBe('multi_agent_container_unsupported');
+    expect(body.error.message).toContain('Heavy Claude');
+    expect(body.error.message).toContain('Target that agent alone');
+    expect(getQueuedTalkRuns('talk-owner')).toHaveLength(0);
+    expect(wakeCalls).toBe(0);
+  });
+
+  it('allows targeted single-agent turns even when that agent requires container routing', async () => {
+    const heavyAgent = createRegisteredAgent({
+      name: 'Heavy Claude',
+      providerId: 'provider.anthropic',
+      modelId: 'claude-sonnet-4-6',
+      toolPermissionsJson: '{"shell":true,"filesystem":true}',
+    });
+    getDb()
+      .prepare(
+        `
+      INSERT INTO talk_agents (id, talk_id, registered_agent_id, nickname, is_primary, sort_order, created_at, updated_at)
+      VALUES (?, ?, ?, ?, 0, 1, datetime('now'), datetime('now'))
+    `,
+      )
+      .run('ta-talk-owner-heavy', 'talk-owner', heavyAgent.id, heavyAgent.name);
+
+    executionPlannerMocks.planExecutionMock.mockImplementation(
+      (agent: { id: string }) =>
+        agent.id === heavyAgent.id
+          ? { backend: 'container' }
+          : { backend: 'direct_http' },
+    );
+
+    const res = await server.request('/api/v1/talks/talk-owner/chat', {
+      method: 'POST',
+      headers: {
+        Authorization: 'Bearer owner-token',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        content: 'Target only the heavy agent',
+        targetAgentIds: [heavyAgent.id],
+      }),
+    });
+
+    expect(res.status).toBe(202);
+    const body = (await res.json()) as any;
+    expect(body.ok).toBe(true);
+    expect(body.data.runs).toHaveLength(1);
+    expect(body.data.runs[0].targetAgentId).toBe(heavyAgent.id);
+    expect(getQueuedTalkRuns('talk-owner')).toHaveLength(1);
     expect(wakeCalls).toBe(1);
   });
 

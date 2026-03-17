@@ -477,6 +477,7 @@ function createClawrocketSchema(database: Database.Database): void {
       owner_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
       folder_id TEXT REFERENCES talk_folders(id) ON DELETE SET NULL,
       topic_title TEXT,
+      project_path TEXT,
       orchestration_mode TEXT NOT NULL DEFAULT 'ordered'
         CHECK(orchestration_mode IN ('ordered', 'panel')),
       status TEXT NOT NULL DEFAULT 'active'
@@ -1335,6 +1336,11 @@ function migrateAddMissingColumns(database: Database.Database): void {
       definition: "TEXT NOT NULL DEFAULT 'ordered'",
     },
     {
+      table: 'talks',
+      column: 'project_path',
+      definition: 'TEXT',
+    },
+    {
       table: 'talk_runs',
       column: 'source_binding_id',
       definition: 'TEXT',
@@ -2024,6 +2030,9 @@ function migrateTalksTable(database: Database.Database): void {
 
   const sortCol = columns.find((c) => c.name === 'sort_order');
   if (!sortCol || sortCol.type.toUpperCase() !== 'INTEGER') return;
+  const projectPathSelect = columns.some((c) => c.name === 'project_path')
+    ? 'project_path'
+    : 'NULL';
 
   database.exec(`
     CREATE TABLE talks_mig AS SELECT * FROM talks;
@@ -2034,6 +2043,7 @@ function migrateTalksTable(database: Database.Database): void {
       owner_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
       folder_id TEXT REFERENCES talk_folders(id) ON DELETE SET NULL,
       topic_title TEXT,
+      project_path TEXT,
       orchestration_mode TEXT NOT NULL DEFAULT 'ordered'
         CHECK(orchestration_mode IN ('ordered', 'panel')),
       status TEXT NOT NULL DEFAULT 'active'
@@ -2047,11 +2057,11 @@ function migrateTalksTable(database: Database.Database): void {
       ON talks(owner_id, folder_id, sort_order, updated_at);
 
     INSERT INTO talks (
-      id, owner_id, folder_id, topic_title, orchestration_mode, status,
+      id, owner_id, folder_id, topic_title, project_path, orchestration_mode, status,
       sort_order, version, created_at, updated_at
     )
     SELECT
-      id, owner_id, folder_id, topic_title,
+      id, owner_id, folder_id, topic_title, ${projectPathSelect},
       COALESCE(orchestration_mode, 'ordered'),
       COALESCE(status, 'active'),
       COALESCE(sort_order, 0), COALESCE(version, 1),

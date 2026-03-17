@@ -16,6 +16,7 @@ import {
   getRegisteredAgent,
   type RegisteredAgentRecord,
 } from '../db/agent-accessors.js';
+import { getTalkById } from '../db/accessors.js';
 import {
   listConnectorsForTalkRun,
   type TalkRunConnectorRecord,
@@ -30,7 +31,13 @@ import {
   type ExecutionContext,
   type ExecutionEvent,
 } from '../agents/agent-router.js';
+import {
+  getContainerAllowedTools,
+  planExecution,
+} from '../agents/execution-planner.js';
 import { getMainAgent, resolvePrimaryAgent } from '../agents/agent-registry.js';
+import { resolveValidatedProjectMountPath } from '../agents/project-mounts.js';
+import { executeContainerAgentTurn } from '../agents/container-turn-executor.js';
 import { executeWebFetch, executeWebSearch } from '../tools/web-tools.js';
 import { loadTalkContext } from './context-loader.js';
 import {
@@ -548,6 +555,88 @@ export class CleanTalkExecutor implements TalkExecutor {
         responseGroupId: input.responseGroupId,
         sequenceIndex: input.sequenceIndex,
       });
+
+      const plan = planExecution(resolvedAgent, input.requestedBy);
+
+      if (plan.backend === 'container') {
+        const talk = getTalkById(input.talkId);
+        const projectMountHostPath = resolveValidatedProjectMountPath(
+          talk?.project_path ?? null,
+          false,
+        );
+        emitTalkEvent({
+          type: 'talk_response_started',
+          runId: input.runId,
+          talkId: input.talkId,
+          threadId: input.threadId,
+          agentId: resolvedAgent.id,
+          agentNickname: resolvedAgent.name,
+          responseGroupId: input.responseGroupId ?? null,
+          sequenceIndex: input.sequenceIndex ?? null,
+          providerId: resolvedAgent.provider_id,
+          modelId: resolvedAgent.model_id,
+        });
+
+        const containerResult = await executeContainerAgentTurn({
+          runId: input.runId,
+          userId: input.requestedBy,
+          agent: resolvedAgent,
+          promptLabel: 'talk',
+          userMessage: orderedStep.userMessage,
+          signal,
+          allowedTools: getContainerAllowedTools({
+            effectiveTools: plan.effectiveTools,
+            includeConnectorTools: contextPackage.connectorTools.length > 0,
+          }),
+          context: {
+            systemPrompt: [
+              contextPackage.systemPrompt,
+              resolvedAgent.system_prompt?.trim() || '',
+            ]
+              .filter(Boolean)
+              .join('\n\n'),
+            history: contextPackage.history,
+          },
+          modelContextWindow,
+          containerCredential: plan.containerCredential,
+          talkId: input.talkId,
+          threadId: input.threadId,
+          triggerMessageId: input.triggerMessageId,
+          historyMessageIds: contextPackage.metadata.historyMessageIds,
+          projectMountHostPath,
+        });
+
+        emitTalkEvent({
+          type: 'talk_response_completed',
+          runId: input.runId,
+          talkId: input.talkId,
+          threadId: input.threadId,
+          agentId: resolvedAgent.id,
+          agentNickname: resolvedAgent.name,
+          responseGroupId: input.responseGroupId ?? null,
+          sequenceIndex: input.sequenceIndex ?? null,
+          providerId: resolvedAgent.provider_id,
+          modelId: resolvedAgent.model_id,
+        });
+
+        return {
+          content: containerResult.content,
+          agentId: resolvedAgent.id,
+          agentNickname: resolvedAgent.name,
+          providerId: resolvedAgent.provider_id,
+          modelId: resolvedAgent.model_id,
+          responseSequenceInRun: 1,
+          metadataJson: buildResponseMetadataJson({
+            runId: input.runId,
+            providerId: resolvedAgent.provider_id,
+            modelId: resolvedAgent.model_id,
+            estimatedContextTokens: contextPackage.estimatedTokens,
+            responseGroupId: input.responseGroupId,
+            sequenceIndex: input.sequenceIndex,
+            isSynthesis: orderedStep.isSynthesis,
+          }),
+        };
+      }
 
       const toolExecutor = buildToolExecutor(input.talkId, signal);
       const result = await executeWithAgent(

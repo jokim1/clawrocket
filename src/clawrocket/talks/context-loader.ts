@@ -51,6 +51,7 @@ export interface ContextPackage {
     sourceCount: number;
     connectorCount: number;
     historyTurnCount: number;
+    historyMessageIds: string[];
     activeRuleCount: number;
     hasSummary: boolean;
   };
@@ -124,13 +125,14 @@ export async function loadTalkContext(
     OUTPUT_RESERVE -
     systemPromptTokens -
     TOOL_SCHEMA_RESERVE;
-  const history = loadMessageHistory(
+  const historySelection = loadMessageHistory(
     db,
     talkId,
     availableBudget,
     threadId,
     historyThroughMessageId,
   );
+  const history = historySelection.messages;
 
   // Estimate total tokens
   const historyTokens = history.reduce((sum, msg) => {
@@ -150,6 +152,7 @@ export async function loadTalkContext(
     sourceCount: sources.length,
     connectorCount: connectorTools.length,
     historyTurnCount: history.length,
+    historyMessageIds: historySelection.messageIds,
     activeRuleCount: rules.length,
     hasSummary: summary !== null,
   };
@@ -409,7 +412,7 @@ function loadMessageHistory(
   budgetTokens: number,
   threadId?: string | null,
   historyThroughMessageId?: string | null,
-): LlmMessage[] {
+): { messages: LlmMessage[]; messageIds: string[] } {
   const cutoff = historyThroughMessageId
     ? (db
         .prepare(
@@ -496,8 +499,11 @@ function loadMessageHistory(
   selectedRows.reverse();
 
   // Convert to LlmMessage format
-  return selectedRows.map((row) => ({
-    role: row.role as 'user' | 'assistant' | 'system' | 'tool',
-    content: row.content,
-  }));
+  return {
+    messages: selectedRows.map((row) => ({
+      role: row.role as 'user' | 'assistant' | 'system' | 'tool',
+      content: row.content,
+    })),
+    messageIds: selectedRows.map((row) => row.id),
+  };
 }

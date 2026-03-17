@@ -232,71 +232,74 @@ What doesn't work:
 
 ---
 
-## Phase 5: Container Routing in Talk/Main (Weeks 7-9)
+## Phase 5A: Backend Routing Foundation for Talk/Main (Weeks 7-9)
 
-**Goal:** Agents with Tier 5 capabilities (shell, filesystem, browser) route to container execution from Talk and Main — not just from external chat paths. This is where the execution model expands beyond "direct HTTP only."
+**Goal:** Add a real execution planner and stateless container adapter for Main and single-agent Talk runs. Ordered multi-agent orchestration already shipped in Phase 4; 5A is the backend-routing milestone that prepares writable project execution later.
 
-### Decision gate before starting Phase 5
+### 5A.1 Docs and execution contract cleanup
+- Ordered Talk orchestration is already shipped: `ordered` is the default mode, `panel` is the quick alternative, and target subsets override Talk-wide orchestration scope.
+- Container spawn is **not** the approval boundary. Runtime approval is reserved for high-consequence external mutation families, not for `shell` / `filesystem` / `browser` routing itself.
+- No explicit `execution_kind` field is added in 5A. Backend choice remains runtime-derived from effective permissions plus compatibility.
 
-The following infrastructure must exist:
+### 5A.2 Execution planner
+- Add a planner above `execution-resolver.ts` with a discriminated-union result:
+  - `backend: 'direct_http'`
+  - `backend: 'container'`
+- Routing is derived from effective tool access, not raw agent flags.
+- 5A heavy routing families are `shell` and `filesystem`; `browser` only counts when `shell` is also enabled because the current browser path depends on shell tooling.
+- Container compatibility requires:
+  - provider `api_format === 'anthropic_messages'`
+  - provider `core_compatibility === 'claude_sdk_proxy'`
+- 5A asymmetry is explicit:
+  - direct HTTP uses the agent/provider secret path
+  - container uses the executor Claude credential path
 
-1. Docker-in-Talk infrastructure exists (container-runner can be invoked from Talk/Main executors, not just external chat worker)
-2. The output protocol is defined (v1: final-result-only, not streaming deltas)
+### 5A.3 Stateless container adapter
+- Talk/Main container turns are stateless per run:
+  - no `sessionId`
+  - no `resume`
+  - no `resumeAt`
+- The adapter is called from the Talk/Main executors and returns the same higher-level executor result shape they already expect.
+- v1 remains final-result-only for container output; usage/cost fields may be null when the runtime cannot report them.
 
-The state ownership model is already decided (ARCHITECTURE-REVIEW.md Commitment #1): containerized Talk/Main agents are stateless per turn. DB is truth. No session resume. This is not open for debate — it's a firm architectural commitment. The gate here is whether the infrastructure to enforce it is built.
+### 5A.4 Ephemeral run context and read-only project mounts
+- The container `cwd` is an ephemeral per-run directory.
+- Generated run-local context files:
+  - `CLAUDE.md` for Talk/workspace/run instructions
+  - `HISTORY.md` for bounded transcript history
+- `CLAUDE.md` is rendered first; `HISTORY.md` is then budgeted from the remaining context window.
+- Talk/Main context is compiled by the host from DB state. Containers do not read SQLite directly.
+- Talk single-agent runs may mount a Talk-configured `project_path` read-only at `/workspace/project`.
+- Main may use an optional host-configured read-only project path from `settings_kv`.
+- Repo `CLAUDE.md` is not auto-loaded at startup, but if the agent later navigates into `/workspace/project`, repo-local `CLAUDE.md` may be discovered and is treated as additive project guidance.
 
-If the infrastructure isn't ready, Phase 5 blocks. Phase 6 can proceed independently.
+### 5A.5 Source and attachment parity
+- 5A does **not** rely on synchronous host callbacks through the current NanoClaw IPC seam.
+- Instead, the host materializes file-based context in the ephemeral run directory:
+  - all ready Talk sources under `sources/`
+  - in-scope extracted attachments under `attachments/`
+- Generated `CLAUDE.md` manifests point to those file paths directly.
 
-### 5.1 Per-agent container routing
-- In Talk executor (`new-executor.ts`) and Main executor (`main-executor.ts`): compute `effectiveToolAccess(agent, user)`
-- If effective permissions include shell/filesystem/browser → route to container execution
-- Validate provider is Claude-compatible (container requires Claude Agent SDK)
-- If Tier 5 tools are `requiresApproval` → check approval state before spawning container (reuse `awaiting_confirmation`/`run_confirmations`)
-- **Effort:** ~1 day for routing logic
+### 5A.6 Talk/Main routing scope
+- Main runs planner selection per run.
+- Talk uses planner only for:
+  - single-agent turns
+  - targeted single-agent turns
+- Multi-agent Talk turns remain direct-only in 5A.
+- If a multi-agent Talk turn includes any agent that would require container, reject pre-enqueue with a clear error naming the blocking agents and the resolution path.
 
-### 5.2 Stateless container adapter for Talk/Main
-- No `sessionId`, no `resume`, no `resumeAt` for Talk/Main container runs
-- Each turn: load context from DB → compile into container input → execute → persist result back
-- Session resume kept ONLY for legacy external-chat paths (WhatsApp/Telegram)
-- **Effort:** ~1 day
+### 5A exit criteria
+- Single-agent Talk and Main runs can route to a stateless container path when heavy tools require it.
+- Multi-agent Talk turns reject unsupported would-be container combinations before enqueue.
+- Read-only project-path configuration exists for Talk, with a dedicated route/UI.
+- Container-backed runs operate on generated context files plus optional read-only project mounts, not hidden session memory.
 
-### 5.3 Ephemeral per-run context directory
-- Create `/workspace/run-{runId}/` per container invocation
-- Mount context files there (TALK_CONTEXT.md, source snapshots) via `additionalDirectories`
-- Delete after run completes (success or failure)
-- Context files MUST NOT land in persistent `/workspace/group` mount (Commitment #5)
-- **Effort:** ~0.5 days
-
-### 5.4 Output mapping
-- v1: final-result-only (container returns on `message.type === 'result'`)
-- Talk UI shows "running..." → completed result
-- Map container output into Talk/Main message format
-- Future: delta streaming protocol (separate phase)
-- **Effort:** ~0.5 days
-
-### 5.5 User tool permissions UI
-- Profile page or sidebar destination
-- Per tool family: toggle (allowed/blocked) + checkbox (requires approval)
-- Reflects per-agent routing tiers: Tier 5 permissions gate container execution
-- **Effort:** 2-3 hours
-
-### 5.6 Agent chip tooltip — capability vs effective execution
-- Hover shows: agent capabilities, effective execution (after user permission intersection), execution backend
-- Makes the per-agent routing model visible to users
-- **Effort:** 3-4 hours
-- **Depends on:** 5.1 (routing logic), 1.4 (real agent data via JOIN), and ideally Talk agent health from provider verification (ARCHITECTURE-REVIEW #7/#12) for accurate health display
-
-### Phase 5 exit criteria
-- A Claude agent with shell/filesystem permissions in a Talk routes to container execution
-- A GPT agent in the same Talk routes to direct executor
-- Users see which execution backend each agent uses
-- User permissions correctly gate container spawn
-- Container agents are stateless per turn — no session drift
-
-### What Phase 5 does NOT deliver
-- Streaming from containerized Talk/Main agents (final-result-only)
-- Automatic execution mode selection at agent creation (user explicitly enables Tier 5 tools)
-- Container execution for non-Claude providers (Claude Agent SDK requirement)
+### What 5A does NOT deliver
+- Mixed direct/container multi-agent Talk rounds
+- Writable project mounts
+- Container delta streaming
+- Per-provider-secret parity for container auth
+- Monthly cost/usage status row
 
 ---
 
@@ -426,20 +429,20 @@ If the infrastructure isn't ready, Phase 5 blocks. Phase 6 can proceed independe
 
 These are architectural decisions that don't need to be made now but will need resolution before or during their respective phases.
 
-### Execution model (Phase 5 gate)
-The current execution-resolver.ts is honest about v1 scope: direct HTTP only. Container-in-Talk is the next execution expansion. The key questions:
+### Execution model (Phase 5A)
+The current execution-resolver.ts is honest about direct-HTTP scope. 5A adds a planner above it rather than mutating it into a mixed abstraction. The remaining questions are:
 
 1. **Should `execution_kind` live on `registered_agents` or be computed at runtime?** Through Phase 5, routing is derived from effective permissions + runtime compatibility. Do NOT add an explicit `execution_kind` field until there are multiple real backends in Talk/Main AND a user-facing reason to expose the choice. Adding it before container-in-Talk is fully real creates a second source of truth that disagrees with the derived routing. If/when it's added (post Phase 5), it should be a user-declared preference, not the authoritative runtime decision — the runtime still validates compatibility.
 
-2. **What happens when a user with only OAuth credentials tries to create a Claude agent for direct HTTP?** Currently: rejected with `ANTHROPIC_REQUIRES_API_KEY`. Future: if container-in-Talk exists, the agent could be created and routed to container execution automatically. This requires Phase 5 to be complete.
+2. **What happens when a user with only OAuth credentials tries to create a Claude agent for direct HTTP?** Currently: rejected with `ANTHROPIC_REQUIRES_API_KEY`. 5A does not change direct-HTTP credential rules; container routing is a runtime execution decision, not an agent-creation shortcut.
 
 3. **Proxy path (v1.5):** `TALK_EXECUTOR_ANTHROPIC_BASE_URL` exists in the resolver specifically for the case where the host layer stands up a proxy that accepts API-key-style auth and translates to the user's actual credential. If this proxy ships before Phase 5, it closes the OAuth/subscription gap without container routing. This is the lowest-effort path to universal Claude agent support.
 
 ### Workspace rename (Phase 7+ gate)
 When does "Talk" become "Workspace"? The north-star uses Workspace terminology. The current codebase uses Talk everywhere. Renaming is a large surface-area change (DB tables, API routes, frontend). Recommendation: defer rename until Phase 7+ when the workspace model is substantively different from a Talk. Premature rename creates confusion without product value.
 
-### Multi-role execution (Post Phase 6)
-The north-star describes Independent, Ordered, and Targeted execution modes for multi-role workspaces. v1 delivers Independent (fan-out panel — all agents respond to the same user turn). Ordered and Targeted require queue changes and explicit UI for role addressing. These should be built only after Rules + State are solid and there's real user demand for sequenced role execution.
+### Multi-role execution (Shipped / Next)
+Ordered execution is shipped as the default Talk response mode, with panel as the quick alternative. What remains for later phases is not the basic orchestration model, but backend parity inside that model — especially mixed direct/container rounds and richer internalization.
 
 ### Main → Talk migration (Post Phase 7)
 The product direction is decided: Main (Nanoclaw) eventually becomes a special Talk so it can sync with external channels. This migration happens when channel sync is built. Until then, Main runs on its own executor with `talk_id IS NULL`.

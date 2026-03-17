@@ -26,12 +26,14 @@ import {
   reorderTalkSidebarItem,
   searchTalkMessages,
   TalkThreadValidationError,
+  updateTalkProjectPath,
   upsertTalkLlmPolicy,
   type TalkMessageRecord,
   type TalkSidebarTalkRecord,
   type TalkWithAccessRecord,
 } from '../../db/index.js';
 import type { TalkPersonaRole } from '../../llm/types.js';
+import { validateMount } from '../../../mount-security.js';
 import {
   parsePolicyAgentsForExecution,
   parsePolicyAgentsForUiBadges,
@@ -43,6 +45,11 @@ import {
   getTalkAgentRows,
   type TalkAgentInput,
 } from '../../agents/agent-registry.js';
+import {
+  ExecutionPlannerError,
+  planExecution,
+} from '../../agents/execution-planner.js';
+import { getRegisteredAgent } from '../../db/agent-accessors.js';
 import { MAX_ATTACHMENTS_PER_MESSAGE } from '../../talks/attachment-extraction.js';
 import { canEditTalk } from '../middleware/acl.js';
 import { AuthContext, ApiEnvelope } from '../types.js';
@@ -53,6 +60,7 @@ interface TalkApiRecord {
   folderId: string | null;
   sortOrder: number;
   title: string | null;
+  projectPath: string | null;
   orchestrationMode: 'ordered' | 'panel';
   agents: string[];
   status: 'active' | 'paused' | 'archived';
@@ -181,12 +189,15 @@ function toTalkApiRecord(talk: TalkWithAccessRecord): TalkApiRecord {
     policyBadges.length > 0 && talk.llm_policy
       ? policyBadges
       : listEffectiveTalkAgents(talk.id).map((a) => a.nickname);
+  const canManageProjectPath =
+    talk.access_role === 'owner' || talk.access_role === 'admin';
   return {
     id: talk.id,
     ownerId: talk.owner_id,
     folderId: talk.folder_id,
     sortOrder: talk.sort_order,
     title: talk.topic_title,
+    projectPath: canManageProjectPath ? talk.project_path : null,
     orchestrationMode: talk.orchestration_mode,
     agents: agents.length > 0 ? agents : DEFAULT_TALK_AGENTS,
     status: talk.status,
@@ -365,6 +376,92 @@ function buildMessagePreview(content: string, maxChars = 140): string {
   const normalized = content.replace(/\s+/g, ' ').trim();
   if (normalized.length <= maxChars) return normalized;
   return `${normalized.slice(0, maxChars - 1).trimEnd()}…`;
+}
+
+function canManageTalkProjectMount(
+  talk: Pick<TalkWithAccessRecord, 'owner_id'>,
+  auth: AuthContext,
+): boolean {
+  return (
+    auth.role === 'owner' ||
+    auth.role === 'admin' ||
+    talk.owner_id === auth.userId
+  );
+}
+
+function validateTalkProjectPath(rawPath: string): {
+  projectPath?: string;
+  error?: { code: string; message: string };
+} {
+  const trimmed = rawPath.trim();
+  if (!trimmed) {
+    return {
+      error: {
+        code: 'invalid_project_path',
+        message: 'Project path is required',
+      },
+    };
+  }
+
+  const result = validateMount(
+    {
+      hostPath: trimmed,
+      readonly: true,
+    },
+    false,
+  );
+  if (!result.allowed || !result.realHostPath) {
+    return {
+      error: {
+        code: 'invalid_project_path',
+        message: result.reason || 'Project path is not allowed',
+      },
+    };
+  }
+
+  return { projectPath: result.realHostPath };
+}
+
+function summarizeBlockingAgentNames(names: string[]): string {
+  if (names.length === 0) return 'One or more selected agents';
+  if (names.length === 1) return names[0]!;
+  if (names.length === 2) return `${names[0]} and ${names[1]}`;
+  return `${names.slice(0, -1).join(', ')}, and ${names.at(-1)}`;
+}
+
+function getUnsupportedMultiAgentContainerNames(input: {
+  selectedAgents: Array<{ id: string; name: string }>;
+  userId: string;
+}): string[] {
+  const blockingNames = new Set<string>();
+
+  for (const selectedAgent of input.selectedAgents) {
+    const agent = getRegisteredAgent(selectedAgent.id);
+    if (!agent || agent.enabled !== 1) {
+      continue;
+    }
+
+    try {
+      const plan = planExecution(agent, input.userId);
+      if (plan.backend === 'container') {
+        blockingNames.add(selectedAgent.name);
+      }
+    } catch (error) {
+      if (
+        error instanceof ExecutionPlannerError &&
+        error.code !== 'DIRECT_EXECUTION_UNAVAILABLE'
+      ) {
+        blockingNames.add(selectedAgent.name);
+        continue;
+      }
+      if (error instanceof ExecutionPlannerError) {
+        continue;
+      }
+      throw error;
+    }
+  }
+
+  return Array.from(blockingNames);
 }
 
 function validateAgentInputs(input: unknown): {
@@ -916,6 +1013,183 @@ export function deleteTalkRoute(input: { auth: AuthContext; talkId: string }): {
   return {
     statusCode: 200,
     body: { ok: true, data: { deleted: true } },
+  };
+}
+
+export function getTalkProjectMountRoute(input: {
+  auth: AuthContext;
+  talkId: string;
+}): {
+  statusCode: number;
+  body: ApiEnvelope<{ talk: TalkApiRecord }>;
+} {
+  const talk = getTalkForUser(input.talkId, input.auth.userId);
+  if (!talk) {
+    return {
+      statusCode: 404,
+      body: {
+        ok: false,
+        error: { code: 'talk_not_found', message: 'Talk not found' },
+      },
+    };
+  }
+  if (!canManageTalkProjectMount(talk, input.auth)) {
+    return {
+      statusCode: 403,
+      body: {
+        ok: false,
+        error: {
+          code: 'forbidden',
+          message:
+            'Only the talk owner or an admin can manage the project mount',
+        },
+      },
+    };
+  }
+
+  return {
+    statusCode: 200,
+    body: {
+      ok: true,
+      data: {
+        talk: toTalkApiRecord(talk),
+      },
+    },
+  };
+}
+
+export function updateTalkProjectMountRoute(input: {
+  auth: AuthContext;
+  talkId: string;
+  projectPath: string;
+}): {
+  statusCode: number;
+  body: ApiEnvelope<{ talk: TalkApiRecord }>;
+} {
+  const talk = getTalkForUser(input.talkId, input.auth.userId);
+  if (!talk) {
+    return {
+      statusCode: 404,
+      body: {
+        ok: false,
+        error: { code: 'talk_not_found', message: 'Talk not found' },
+      },
+    };
+  }
+  if (!canManageTalkProjectMount(talk, input.auth)) {
+    return {
+      statusCode: 403,
+      body: {
+        ok: false,
+        error: {
+          code: 'forbidden',
+          message:
+            'Only the talk owner or an admin can manage the project mount',
+        },
+      },
+    };
+  }
+
+  const validated = validateTalkProjectPath(input.projectPath);
+  if (!validated.projectPath) {
+    return {
+      statusCode: 400,
+      body: {
+        ok: false,
+        error: validated.error || {
+          code: 'invalid_project_path',
+          message: 'Project path is invalid',
+        },
+      },
+    };
+  }
+
+  const updated = updateTalkProjectPath({
+    talkId: input.talkId,
+    ownerId: talk.owner_id,
+    projectPath: validated.projectPath,
+  });
+  const reloaded = updated
+    ? getTalkForUser(updated.id, input.auth.userId)
+    : undefined;
+  if (!reloaded) {
+    return {
+      statusCode: 404,
+      body: {
+        ok: false,
+        error: { code: 'talk_not_found', message: 'Talk not found' },
+      },
+    };
+  }
+
+  return {
+    statusCode: 200,
+    body: {
+      ok: true,
+      data: {
+        talk: toTalkApiRecord(reloaded),
+      },
+    },
+  };
+}
+
+export function clearTalkProjectMountRoute(input: {
+  auth: AuthContext;
+  talkId: string;
+}): {
+  statusCode: number;
+  body: ApiEnvelope<{ talk: TalkApiRecord }>;
+} {
+  const talk = getTalkForUser(input.talkId, input.auth.userId);
+  if (!talk) {
+    return {
+      statusCode: 404,
+      body: {
+        ok: false,
+        error: { code: 'talk_not_found', message: 'Talk not found' },
+      },
+    };
+  }
+  if (!canManageTalkProjectMount(talk, input.auth)) {
+    return {
+      statusCode: 403,
+      body: {
+        ok: false,
+        error: {
+          code: 'forbidden',
+          message:
+            'Only the talk owner or an admin can manage the project mount',
+        },
+      },
+    };
+  }
+
+  const updated = updateTalkProjectPath({
+    talkId: input.talkId,
+    ownerId: talk.owner_id,
+    projectPath: null,
+  });
+  const reloaded = updated
+    ? getTalkForUser(updated.id, input.auth.userId)
+    : undefined;
+  if (!reloaded) {
+    return {
+      statusCode: 404,
+      body: {
+        ok: false,
+        error: { code: 'talk_not_found', message: 'Talk not found' },
+      },
+    };
+  }
+
+  return {
+    statusCode: 200,
+    body: {
+      ok: true,
+      data: {
+        talk: toTalkApiRecord(reloaded),
+      },
+    },
   };
 }
 
@@ -1687,6 +1961,26 @@ export function enqueueTalkChat(input: {
         },
       },
     };
+  }
+
+  if (selectedAgents.length > 1) {
+    const blockingAgentNames = getUnsupportedMultiAgentContainerNames({
+      selectedAgents,
+      userId: input.auth.userId,
+    });
+    if (blockingAgentNames.length > 0) {
+      const agentSummary = summarizeBlockingAgentNames(blockingAgentNames);
+      return {
+        statusCode: 400,
+        body: {
+          ok: false,
+          error: {
+            code: 'multi_agent_container_unsupported',
+            message: `${agentSummary} require container execution, which is not supported for multi-agent Talk turns in Phase 5A. Target that agent alone, disable heavy tools on it, or use a direct-safe agent set.`,
+          },
+        },
+      };
+    }
   }
 
   const messageId = `msg_${randomUUID()}`;

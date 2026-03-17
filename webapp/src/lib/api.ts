@@ -29,6 +29,7 @@ export type Talk = {
   id: string;
   ownerId: string;
   title: string;
+  projectPath: string | null;
   orchestrationMode: 'ordered' | 'panel';
   agents: string[];
   status: string;
@@ -801,6 +802,31 @@ export async function patchTalkMetadata(input: {
         folderId: input.folderId,
         orchestrationMode: input.orchestrationMode,
       }),
+    },
+  );
+  return envelope.talk;
+}
+
+export async function updateTalkProjectMount(input: {
+  talkId: string;
+  projectPath: string;
+}): Promise<Talk> {
+  const envelope = await apiMutationRequest<{ talk: Talk }>(
+    `/api/v1/talks/${encodeURIComponent(input.talkId)}/project-mount`,
+    {
+      method: 'PUT',
+      includeJson: true,
+      body: JSON.stringify({ projectPath: input.projectPath }),
+    },
+  );
+  return envelope.talk;
+}
+
+export async function clearTalkProjectMount(talkId: string): Promise<Talk> {
+  const envelope = await apiMutationRequest<{ talk: Talk }>(
+    `/api/v1/talks/${encodeURIComponent(talkId)}/project-mount`,
+    {
+      method: 'DELETE',
     },
   );
   return envelope.talk;
