@@ -20,12 +20,13 @@ What is already shipped:
   - Web Talk/Main container execution decoupled from `registered_groups.is_main`
 - **Phase 5A** backend routing foundation for Talk/Main
 - **Phase 6** Rules elevation + structured Talk State
+- **Phase 7** connector/binding cleanup, fully editable channel bindings, Google Docs data connector/tool surface
 
 What is next:
 
-1. **Phase 7** — complete connector/binding product split and add Google Docs
-2. **Phase 8** — context inspection, lightweight role-aware context hints, lightweight retrieval
-3. Post-phase work — mixed direct/container multi-agent parity, Main→Talk migration, Outputs, Jobs, fuller execution planner, eventual Talk→Workspace rename
+1. **Phase 8** — context inspection, lightweight role-aware context hints, lightweight retrieval
+2. Mixed direct/container multi-agent parity and pre-send guardrails for unsupported heavy-tool agent mixes
+3. Post-phase work — Main→Talk migration, Outputs, Jobs, fuller execution planner, eventual Talk→Workspace rename
 
 This changes practical sequencing, not the remaining numbered phase inventory in this document.
 
@@ -366,7 +367,7 @@ What doesn't work:
 
 ---
 
-## Phase 7: Complete Connector/Binding Split + Google Docs (Weeks 11-13)
+## Phase 7: Complete Connector/Binding Split + Google Docs (Weeks 11-13) ✅ SHIPPED
 
 **Goal:** Finish and clean up the already-existing split between data connectors and channel bindings. Add Google Docs as a real data connector.
 
@@ -378,22 +379,12 @@ What doesn't work:
 - TalkDetailPage.tsx (~line 4860) already has a live Channels UI: create binding with full policy controls (response mode, delivery mode, busy timeout, context note), list/manage existing bindings.
 - The data model split already exists end-to-end. Both sides have working UI.
 
-### What's missing
+### What shipped
 
-- The UI does not visually separate data connectors from channel bindings as distinct concepts — they're in different tabs but not labeled as a clear "Integrations" taxonomy
-- Channel binding policy editing for existing bindings (create works, edit/update may be incomplete)
-- Google Docs as a data connector type
-
-### 7.1 Clarify the connector/binding split in UI
-- Rename/reorganize the Talk config to make the split explicit: "Data Connectors" section and "Channel Bindings" section under a shared "Integrations" area
-- Ensure existing channel binding policies are fully editable (not just create-only)
-- No schema migration — the split is already in the DB and the UI surfaces exist
-- **Effort:** ~0.5-1 day (UI reorganization, not new features)
-
-### 7.2 Google Docs read/write connector
-- New connector kind following Google Sheets OAuth pattern
-- Tools: `google_docs_read`, `google_docs_write`, `google_docs_create`
-- **Effort:** ~1 day
+- Talk config now labels **Channel Bindings** and **Data Connectors** as distinct integration surfaces with reciprocal explanatory copy.
+- Existing channel binding policies are fully editable in the Talk UI.
+- `google_docs` ships as a real data connector kind using the linked Google account flow.
+- Verified Google Docs connectors expose document read + batchUpdate tools through the same connector runtime used by Sheets/PostHog.
 
 ### Phase 7 exit criteria
 - UI clearly labels and separates data connectors from channel bindings

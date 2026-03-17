@@ -2,11 +2,13 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 
 const GOOGLE_TOKEN_ENDPOINT = 'https://oauth2.googleapis.com/token';
+const GOOGLE_DOCS_BASE_URL = 'https://docs.googleapis.com';
 const GOOGLE_SHEETS_BASE_URL = 'https://sheets.googleapis.com';
 const DEFAULT_MAX_RESPONSE_BYTES = 512 * 1024;
 const MAX_TOOL_RESULT_CHARS = 16_000;
 const GOOGLE_REFRESH_SKEW_MS = 60_000;
 const GOOGLE_TIMEOUT_MS = 10_000;
+const MAX_GOOGLE_DOCS_BATCH_REQUESTS = 50;
 const POSTHOG_TIMEOUT_MS = 15_000;
 const MAX_POSTHOG_LIMIT = 1_000;
 const DEFAULT_POSTHOG_LIMIT = 100;
@@ -21,6 +23,13 @@ type ContainerConnectorSecretPayload =
       apiKey: string;
     }
   | {
+      kind: 'google_docs';
+      accessToken: string;
+      refreshToken?: string;
+      expiryDate?: string | null;
+      scopes?: string[];
+    }
+  | {
       kind: 'google_sheets';
       accessToken: string;
       refreshToken?: string;
@@ -28,6 +37,10 @@ type ContainerConnectorSecretPayload =
       scopes?: string[];
     };
 
+type GoogleDocsSecret = Extract<
+  ContainerConnectorSecretPayload,
+  { kind: 'google_docs' }
+>;
 type GoogleSheetsSecret = Extract<
   ContainerConnectorSecretPayload,
   { kind: 'google_sheets' }
@@ -37,13 +50,13 @@ export interface WebTalkConnectorBundle {
   connectors: Array<{
     id: string;
     name: string;
-    connectorKind: 'google_sheets' | 'posthog';
+    connectorKind: 'google_docs' | 'google_sheets' | 'posthog';
     config: JsonMap | null;
     secret: ContainerConnectorSecretPayload;
   }>;
   toolDefinitions: Array<{
     connectorId: string;
-    connectorKind: 'google_sheets' | 'posthog';
+    connectorKind: 'google_docs' | 'google_sheets' | 'posthog';
     connectorName: string;
     toolName: string;
     description: string;
@@ -69,6 +82,10 @@ interface GoogleSheetsConnectorConfig {
   spreadsheetId: string;
 }
 
+interface GoogleDocsConnectorConfig {
+  documentId: string;
+}
+
 class ConnectorToolError extends Error {
   readonly code: string;
   readonly status?: number;
@@ -85,6 +102,7 @@ const googleSheetsRefreshInFlight = new Map<
   string,
   Promise<GoogleSheetsSecret>
 >();
+const googleDocsRefreshInFlight = new Map<string, Promise<GoogleDocsSecret>>();
 
 function readString(value: unknown): string | null {
   return typeof value === 'string' && value.trim() ? value.trim() : null;
@@ -126,8 +144,10 @@ function parseWebTalkConnectorBundleValue(
               !Array.isArray(item) &&
               typeof (item as { id?: unknown }).id === 'string' &&
               typeof (item as { name?: unknown }).name === 'string' &&
-              (((item as { connectorKind?: unknown }).connectorKind ===
-                'posthog') ||
+              ((item as { connectorKind?: unknown }).connectorKind ===
+                'google_docs' ||
+                (item as { connectorKind?: unknown }).connectorKind ===
+                  'posthog' ||
                 (item as { connectorKind?: unknown }).connectorKind ===
                   'google_sheets'),
           ),
@@ -200,6 +220,14 @@ function parseGoogleSheetsConnectorConfig(
   const spreadsheetId = readString(config?.spreadsheetId);
   if (!spreadsheetId) return null;
   return { spreadsheetId };
+}
+
+function parseGoogleDocsConnectorConfig(
+  config: JsonMap | null,
+): GoogleDocsConnectorConfig | null {
+  const documentId = readString(config?.documentId);
+  if (!documentId) return null;
+  return { documentId };
 }
 
 function createTimeoutSignal(timeoutMs: number): {
@@ -283,7 +311,9 @@ async function readJsonResponse(
   }
 }
 
-function isGoogleSecretExpired(secret: GoogleSheetsSecret): boolean {
+function isGoogleSecretExpired(
+  secret: GoogleSheetsSecret | GoogleDocsSecret,
+): boolean {
   if (!secret.expiryDate) return false;
   const expiresAt = Date.parse(secret.expiryDate);
   if (!Number.isFinite(expiresAt)) return false;
@@ -448,6 +478,121 @@ async function getGoogleSheetsSecret(input: {
   return refreshGoogleSheetsSecret(input);
 }
 
+async function performGoogleDocsSecretRefresh(input: {
+  connector: WebTalkConnectorBundle['connectors'][number];
+  googleOAuth?: WebTalkConnectorBundle['googleOAuth'];
+}): Promise<GoogleDocsSecret> {
+  const secret = input.connector.secret;
+  if (secret.kind !== 'google_docs') {
+    throw new ConnectorToolError(
+      'google_docs_credential_invalid',
+      'Connector credential is not a Google Docs OAuth credential.',
+    );
+  }
+  if (!secret.refreshToken) {
+    throw new ConnectorToolError(
+      'google_docs_refresh_unavailable',
+      'Google Docs access token expired and no refresh token is available.',
+    );
+  }
+  if (!input.googleOAuth?.clientId || !input.googleOAuth?.clientSecret) {
+    throw new ConnectorToolError(
+      'google_docs_refresh_unavailable',
+      'Google OAuth client credentials are not configured for Docs token refresh.',
+    );
+  }
+
+  const body = new URLSearchParams({
+    client_id: input.googleOAuth.clientId,
+    client_secret: input.googleOAuth.clientSecret,
+    grant_type: 'refresh_token',
+    refresh_token: secret.refreshToken,
+  });
+
+  const response = await fetch(GOOGLE_TOKEN_ENDPOINT, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/x-www-form-urlencoded',
+      accept: 'application/json',
+    },
+    body: body.toString(),
+  });
+
+  if (!response.ok) {
+    throw new ConnectorToolError(
+      'google_docs_refresh_failed',
+      `Google Docs token refresh failed with HTTP ${response.status}.`,
+      response.status,
+    );
+  }
+
+  const payload = await readJsonResponse(response, 64 * 1024);
+  const accessToken = readString(payload.access_token);
+  const expiresIn =
+    typeof payload.expires_in === 'number' && Number.isFinite(payload.expires_in)
+      ? payload.expires_in
+      : 3600;
+
+  if (!accessToken) {
+    throw new ConnectorToolError(
+      'google_docs_refresh_failed',
+      'Google Docs token refresh did not return an access token.',
+    );
+  }
+
+  const refreshed: GoogleDocsSecret = {
+    ...secret,
+    accessToken,
+    refreshToken:
+      typeof payload.refresh_token === 'string'
+        ? payload.refresh_token
+        : secret.refreshToken,
+    expiryDate: new Date(Date.now() + expiresIn * 1000).toISOString(),
+  };
+
+  input.connector.secret = refreshed;
+  return refreshed;
+}
+
+async function refreshGoogleDocsSecret(input: {
+  connector: WebTalkConnectorBundle['connectors'][number];
+  googleOAuth?: WebTalkConnectorBundle['googleOAuth'];
+  signal: AbortSignal;
+}): Promise<GoogleDocsSecret> {
+  const existing = googleDocsRefreshInFlight.get(input.connector.id);
+  if (existing) {
+    return waitForPromiseWithSignal(existing, input.signal);
+  }
+
+  const refreshPromise = performGoogleDocsSecretRefresh({
+    connector: input.connector,
+    googleOAuth: input.googleOAuth,
+  }).finally(() => {
+    googleDocsRefreshInFlight.delete(input.connector.id);
+  });
+  googleDocsRefreshInFlight.set(input.connector.id, refreshPromise);
+  return waitForPromiseWithSignal(refreshPromise, input.signal);
+}
+
+async function getGoogleDocsSecret(input: {
+  connector: WebTalkConnectorBundle['connectors'][number];
+  googleOAuth?: WebTalkConnectorBundle['googleOAuth'];
+  signal: AbortSignal;
+}): Promise<GoogleDocsSecret> {
+  if (input.connector.secret.kind !== 'google_docs') {
+    throw new ConnectorToolError(
+      'google_docs_credential_invalid',
+      'Connector credential is not a Google Docs OAuth credential.',
+    );
+  }
+
+  if (!isGoogleSecretExpired(input.connector.secret)) {
+    return input.connector.secret;
+  }
+
+  return refreshGoogleDocsSecret(input);
+}
+
 async function fetchGoogleSheetsJson(input: {
   connector: WebTalkConnectorBundle['connectors'][number];
   googleOAuth?: WebTalkConnectorBundle['googleOAuth'];
@@ -501,6 +646,62 @@ async function fetchGoogleSheetsJson(input: {
   );
 }
 
+async function fetchGoogleDocsJson(input: {
+  connector: WebTalkConnectorBundle['connectors'][number];
+  googleOAuth?: WebTalkConnectorBundle['googleOAuth'];
+  url: string;
+  method?: 'GET' | 'POST';
+  body?: string;
+  signal: AbortSignal;
+}): Promise<JsonMap> {
+  let activeSecret = await getGoogleDocsSecret({
+    connector: input.connector,
+    googleOAuth: input.googleOAuth,
+    signal: input.signal,
+  });
+
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const response = await fetch(input.url, {
+      method: input.method || 'GET',
+      headers: {
+        authorization: `Bearer ${activeSecret.accessToken}`,
+        accept: 'application/json',
+        ...(input.body ? { 'content-type': 'application/json' } : {}),
+      },
+      ...(input.body ? { body: input.body } : {}),
+      signal: input.signal,
+    });
+
+    if (response.ok) {
+      return readJsonResponse(response, DEFAULT_MAX_RESPONSE_BYTES);
+    }
+
+    if (
+      attempt === 0 &&
+      (response.status === 401 || response.status === 403) &&
+      activeSecret.refreshToken
+    ) {
+      activeSecret = await refreshGoogleDocsSecret({
+        connector: input.connector,
+        googleOAuth: input.googleOAuth,
+        signal: input.signal,
+      });
+      continue;
+    }
+
+    throw new ConnectorToolError(
+      'google_docs_request_failed',
+      `Google Docs request failed with HTTP ${response.status}.`,
+      response.status,
+    );
+  }
+
+  throw new ConnectorToolError(
+    'google_docs_request_failed',
+    'Google Docs request failed.',
+  );
+}
+
 async function fetchGoogleSheetsMetadata(input: {
   connector: WebTalkConnectorBundle['connectors'][number];
   googleOAuth?: WebTalkConnectorBundle['googleOAuth'];
@@ -539,6 +740,122 @@ async function fetchGoogleSheetRange(input: {
     ),
     signal: input.signal,
     maxBytes: DEFAULT_MAX_RESPONSE_BYTES,
+  });
+}
+
+function readGoogleDocParagraphText(paragraph: JsonMap): string {
+  const elements = Array.isArray(paragraph.elements) ? paragraph.elements : [];
+  return elements
+    .map((element) => {
+      const map = parseJsonMap(element);
+      const textRun = parseJsonMap(map?.textRun);
+      return typeof textRun?.content === 'string' ? textRun.content : '';
+    })
+    .join('')
+    .trimEnd();
+}
+
+function extractGoogleDocText(elements: unknown[]): string {
+  const blocks: string[] = [];
+
+  for (const element of elements) {
+    const map = parseJsonMap(element);
+    if (!map) continue;
+
+    const paragraph = parseJsonMap(map.paragraph);
+    if (paragraph) {
+      const text = readGoogleDocParagraphText(paragraph).trim();
+      if (text) blocks.push(text);
+      continue;
+    }
+
+    const table = parseJsonMap(map.table);
+    if (table) {
+      const rows = Array.isArray(table.tableRows) ? table.tableRows : [];
+      for (const row of rows) {
+        const rowMap = parseJsonMap(row);
+        if (!rowMap) continue;
+        const cells = Array.isArray(rowMap.tableCells) ? rowMap.tableCells : [];
+        const cellTexts = cells
+          .map((cell) => {
+            const cellMap = parseJsonMap(cell);
+            if (!cellMap) return '';
+            const content = Array.isArray(cellMap.content)
+              ? cellMap.content
+              : [];
+            return extractGoogleDocText(content).trim();
+          })
+          .filter(Boolean);
+        if (cellTexts.length > 0) {
+          blocks.push(cellTexts.join(' | '));
+        }
+      }
+      continue;
+    }
+
+    const tableOfContents = parseJsonMap(map.tableOfContents);
+    if (tableOfContents) {
+      const content = Array.isArray(tableOfContents.content)
+        ? tableOfContents.content
+        : [];
+      const text = extractGoogleDocText(content).trim();
+      if (text) blocks.push(text);
+    }
+  }
+
+  return blocks.join('\n\n');
+}
+
+async function fetchGoogleDoc(input: {
+  connector: WebTalkConnectorBundle['connectors'][number];
+  googleOAuth?: WebTalkConnectorBundle['googleOAuth'];
+  documentId: string;
+  signal: AbortSignal;
+}): Promise<{ title: string; text: string }> {
+  const payload = await fetchGoogleDocsJson({
+    connector: input.connector,
+    googleOAuth: input.googleOAuth,
+    url: joinUrl(
+      GOOGLE_DOCS_BASE_URL,
+      `/v1/documents/${encodeURIComponent(input.documentId)}`,
+    ),
+    signal: input.signal,
+  });
+
+  const title =
+    typeof payload.title === 'string' && payload.title.trim()
+      ? payload.title.trim()
+      : input.documentId;
+  const body = parseJsonMap(payload.body);
+  const content = Array.isArray(body?.content) ? body.content : [];
+
+  return {
+    title,
+    text: extractGoogleDocText(content),
+  };
+}
+
+async function batchUpdateGoogleDoc(input: {
+  connector: WebTalkConnectorBundle['connectors'][number];
+  googleOAuth?: WebTalkConnectorBundle['googleOAuth'];
+  documentId: string;
+  requests: JsonMap[];
+  writeControl: JsonMap | null;
+  signal: AbortSignal;
+}): Promise<JsonMap> {
+  return fetchGoogleDocsJson({
+    connector: input.connector,
+    googleOAuth: input.googleOAuth,
+    url: joinUrl(
+      GOOGLE_DOCS_BASE_URL,
+      `/v1/documents/${encodeURIComponent(input.documentId)}:batchUpdate`,
+    ),
+    method: 'POST',
+    body: JSON.stringify({
+      requests: input.requests,
+      ...(input.writeControl ? { writeControl: input.writeControl } : {}),
+    }),
+    signal: input.signal,
   });
 }
 
@@ -675,6 +992,38 @@ function validateRangeInput(value: unknown): string {
   return range;
 }
 
+function validateGoogleDocsBatchUpdateInput(value: unknown): {
+  requests: JsonMap[];
+  writeControl: JsonMap | null;
+} {
+  const input = parseJsonMap(value);
+  const rawRequests = Array.isArray(input?.requests) ? input.requests : [];
+  const requests = rawRequests.map((request) => parseJsonMap(request));
+  if (requests.some((request) => !request)) {
+    throw new ConnectorToolError(
+      'google_docs_batch_update_invalid',
+      'Google Docs batchUpdate requests must be JSON objects.',
+    );
+  }
+  if (requests.length === 0) {
+    throw new ConnectorToolError(
+      'google_docs_batch_update_invalid',
+      'Google Docs batchUpdate requires a non-empty requests array.',
+    );
+  }
+  if (requests.length > MAX_GOOGLE_DOCS_BATCH_REQUESTS) {
+    throw new ConnectorToolError(
+      'google_docs_batch_update_invalid',
+      `Google Docs batchUpdate supports at most ${MAX_GOOGLE_DOCS_BATCH_REQUESTS} requests per call.`,
+    );
+  }
+
+  return {
+    requests: requests as JsonMap[],
+    writeControl: parseJsonMap(input?.writeControl),
+  };
+}
+
 function mapToolError(error: unknown): ToolExecutionResult {
   return {
     content:
@@ -783,12 +1132,86 @@ async function executeReadRangeTool(
   }
 }
 
+async function executeReadDocumentTool(
+  connector: WebTalkConnectorBundle['connectors'][number],
+  googleOAuth: WebTalkConnectorBundle['googleOAuth'] | undefined,
+): Promise<ToolExecutionResult> {
+  const config = parseGoogleDocsConnectorConfig(connector.config);
+  if (!config) {
+    return {
+      content: 'Google Docs connector is missing documentId.',
+      isError: true,
+    };
+  }
+
+  const timed = createTimeoutSignal(GOOGLE_TIMEOUT_MS);
+  try {
+    const result = await fetchGoogleDoc({
+      connector,
+      googleOAuth,
+      documentId: config.documentId,
+      signal: timed.signal,
+    });
+    return {
+      content: serializeToolResult(result),
+      isError: false,
+    };
+  } catch (error) {
+    return mapToolError(error);
+  } finally {
+    timed.dispose();
+  }
+}
+
+async function executeBatchUpdateTool(
+  connector: WebTalkConnectorBundle['connectors'][number],
+  googleOAuth: WebTalkConnectorBundle['googleOAuth'] | undefined,
+  args: unknown,
+): Promise<ToolExecutionResult> {
+  const config = parseGoogleDocsConnectorConfig(connector.config);
+  if (!config) {
+    return {
+      content: 'Google Docs connector is missing documentId.',
+      isError: true,
+    };
+  }
+
+  const timed = createTimeoutSignal(GOOGLE_TIMEOUT_MS);
+  try {
+    const input = validateGoogleDocsBatchUpdateInput(args);
+    const result = await batchUpdateGoogleDoc({
+      connector,
+      googleOAuth,
+      documentId: config.documentId,
+      requests: input.requests,
+      writeControl: input.writeControl,
+      signal: timed.signal,
+    });
+    return {
+      content: serializeToolResult(result),
+      isError: false,
+    };
+  } catch (error) {
+    return mapToolError(error);
+  } finally {
+    timed.dispose();
+  }
+}
+
 function parseToolOperation(
   toolName: string,
-): 'posthog_query' | 'list_sheets' | 'read_range' | null {
+):
+  | 'posthog_query'
+  | 'list_sheets'
+  | 'read_range'
+  | 'read_document'
+  | 'batch_update'
+  | null {
   if (toolName.endsWith('__posthog_query')) return 'posthog_query';
   if (toolName.endsWith('__list_sheets')) return 'list_sheets';
   if (toolName.endsWith('__read_range')) return 'read_range';
+  if (toolName.endsWith('__read_document')) return 'read_document';
+  if (toolName.endsWith('__batch_update')) return 'batch_update';
   return null;
 }
 
@@ -833,7 +1256,7 @@ export function registerConnectorTools(
               .optional()
               .describe('Optional result row cap from 1 to 1000.'),
           },
-          async (args) =>
+          async (args: Record<string, unknown>) =>
             formatToolResult(await executePostHogTool(connector, args)),
         );
         break;
@@ -859,9 +1282,47 @@ export function registerConnectorTools(
                 'A1-style range, for example Summary!A1:C20 or Sheet1!1:1.',
               ),
           },
-          async (args) =>
+          async (args: Record<string, unknown>) =>
             formatToolResult(
               await executeReadRangeTool(connector, bundle.googleOAuth, args),
+            ),
+        );
+        break;
+      case 'read_document':
+        server.tool(
+          tool.toolName,
+          tool.description,
+          {},
+          async () =>
+            formatToolResult(
+              await executeReadDocumentTool(connector, bundle.googleOAuth),
+            ),
+        );
+        break;
+      case 'batch_update':
+        server.tool(
+          tool.toolName,
+          tool.description,
+          {
+            requests: z
+              .array(z.record(z.string(), z.unknown()))
+              .describe(
+                'Array of Google Docs API batchUpdate request objects.',
+              ),
+            writeControl: z
+              .record(z.string(), z.unknown())
+              .optional()
+              .describe(
+                'Optional Google Docs writeControl object for revision-guarded updates.',
+              ),
+          },
+          async (args: Record<string, unknown>) =>
+            formatToolResult(
+              await executeBatchUpdateTool(
+                connector,
+                bundle.googleOAuth,
+                args,
+              ),
             ),
         );
         break;

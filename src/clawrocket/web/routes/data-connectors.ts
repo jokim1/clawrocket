@@ -26,6 +26,7 @@ const GOOGLE_SHEETS_CONNECTOR_SCOPES = [
   'spreadsheets.readonly',
   'spreadsheets',
 ];
+const GOOGLE_DOCS_CONNECTOR_SCOPES = ['documents'];
 
 function canManageDataConnectors(auth: AuthContext): boolean {
   return auth.role === 'owner' || auth.role === 'admin';
@@ -39,10 +40,24 @@ function normalizeJsonMap(value: unknown): JsonMap | null {
 }
 
 function validateConnectorKind(value: string): ConnectorKind | null {
-  if (value === 'google_sheets' || value === 'posthog') {
+  if (
+    value === 'google_docs' ||
+    value === 'google_sheets' ||
+    value === 'posthog'
+  ) {
     return value;
   }
   return null;
+}
+
+function getRequiredGoogleConnectorScopes(kind: ConnectorKind): string[] {
+  return kind === 'google_docs'
+    ? GOOGLE_DOCS_CONNECTOR_SCOPES
+    : GOOGLE_SHEETS_CONNECTOR_SCOPES;
+}
+
+function formatGoogleConnectorLabel(kind: ConnectorKind): string {
+  return kind === 'google_docs' ? 'Google Docs' : 'Google Sheets';
 }
 
 function hasAnyGoogleScope(
@@ -355,7 +370,17 @@ export function setDataConnectorCredentialRoute(input: {
             updatedBy: input.auth.userId,
           })
         : deleteDataConnectorCredential(input.connectorId, input.auth.userId);
-    } else if (connector.connectorKind === 'google_sheets') {
+    } else if (
+      connector.connectorKind === 'google_sheets' ||
+      connector.connectorKind === 'google_docs'
+    ) {
+      const googleConnectorLabel = formatGoogleConnectorLabel(
+        connector.connectorKind,
+      );
+      const requiredScopes = getRequiredGoogleConnectorScopes(
+        connector.connectorKind,
+      );
+
       if (clearCredential) {
         updated = deleteDataConnectorCredential(
           input.connectorId,
@@ -366,7 +391,7 @@ export function setDataConnectorCredentialRoute(input: {
         if (!googleCredential) {
           return invalidResponse(
             'google_account_not_connected',
-            'Connect a Google account before using it for a Sheets connector.',
+            `Connect a Google account before using it for a ${googleConnectorLabel} connector.`,
           );
         }
 
@@ -380,19 +405,17 @@ export function setDataConnectorCredentialRoute(input: {
           );
         }
 
-        if (
-          !hasAnyGoogleScope(payload.scopes, GOOGLE_SHEETS_CONNECTOR_SCOPES)
-        ) {
+        if (!hasAnyGoogleScope(payload.scopes, requiredScopes)) {
           return invalidResponse(
             'google_scopes_missing',
-            'Linked Google account is missing Sheets access. Grant Google Sheets permissions and try again.',
+            `Linked Google account is missing ${googleConnectorLabel} access. Grant ${googleConnectorLabel} permissions and try again.`,
           );
         }
 
         updated = setDataConnectorCredential({
           connectorId: input.connectorId,
           ciphertext: encryptConnectorSecret({
-            kind: 'google_sheets',
+            kind: connector.connectorKind,
             accessToken: payload.accessToken,
             refreshToken: payload.refreshToken,
             expiryDate: payload.expiryDate,
@@ -407,8 +430,7 @@ export function setDataConnectorCredentialRoute(input: {
             ok: false,
             error: {
               code: 'oauth_required',
-              message:
-                'Google Sheets connectors require a linked Google account credential.',
+              message: `${googleConnectorLabel} connectors require a linked Google account credential.`,
             },
           },
         };

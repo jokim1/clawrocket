@@ -25,15 +25,20 @@ type Props = {
 type ConnectorDraft = {
   name: string;
   enabled: boolean;
+  documentId: string;
+  documentUrl: string;
   hostUrl: string;
   projectId: string;
   spreadsheetId: string;
   spreadsheetUrl: string;
 };
-const GOOGLE_SHEETS_CONNECTOR_SCOPES = [
-  'spreadsheets.readonly',
-  'spreadsheets',
-];
+const GOOGLE_CONNECTOR_SCOPES: Record<
+  Extract<DataConnector['connectorKind'], 'google_docs' | 'google_sheets'>,
+  string[]
+> = {
+  google_docs: ['documents'],
+  google_sheets: ['spreadsheets.readonly', 'spreadsheets'],
+};
 
 function canManageDataConnectors(userRole: string): boolean {
   return userRole === 'owner' || userRole === 'admin';
@@ -49,8 +54,11 @@ function createEmptyGoogleAccount(): UserGoogleAccount {
   };
 }
 
-function hasGoogleSheetsConnectorAccess(account: UserGoogleAccount): boolean {
-  return GOOGLE_SHEETS_CONNECTOR_SCOPES.some((scope) =>
+function hasGoogleConnectorAccess(
+  kind: Extract<DataConnector['connectorKind'], 'google_docs' | 'google_sheets'>,
+  account: UserGoogleAccount,
+): boolean {
+  return GOOGLE_CONNECTOR_SCOPES[kind].some((scope) =>
     account.scopes.includes(scope),
   );
 }
@@ -92,7 +100,8 @@ function verificationStatusClass(
 }
 
 function formatConnectorKind(kind: DataConnector['connectorKind']): string {
-  return kind === 'posthog' ? 'PostHog' : 'Google Sheets';
+  if (kind === 'posthog') return 'PostHog';
+  return kind === 'google_docs' ? 'Google Docs' : 'Google Sheets';
 }
 
 function formatDateTime(value: string | null): string {
@@ -115,6 +124,8 @@ function buildConnectorDraft(connector: DataConnector): ConnectorDraft {
   return {
     name: connector.name,
     enabled: connector.enabled,
+    documentId: readConfigString(connector, 'documentId'),
+    documentUrl: readConfigString(connector, 'documentUrl'),
     hostUrl: readConfigString(connector, 'hostUrl', 'https://us.posthog.com'),
     projectId: readConfigString(connector, 'projectId'),
     spreadsheetId: readConfigString(connector, 'spreadsheetId'),
@@ -128,6 +139,8 @@ function createEmptyDraft(
   return {
     name: '',
     enabled: true,
+    documentId: '',
+    documentUrl: '',
     hostUrl: 'https://us.posthog.com',
     projectId: '',
     spreadsheetId: '',
@@ -143,6 +156,12 @@ function buildConnectorConfig(
     return {
       hostUrl: draft.hostUrl.trim(),
       projectId: draft.projectId.trim(),
+    };
+  }
+  if (kind === 'google_docs') {
+    return {
+      documentId: draft.documentId.trim(),
+      documentUrl: draft.documentUrl.trim(),
     };
   }
   return {
@@ -371,42 +390,48 @@ export function DataConnectorsPage({
     }
   };
 
-  const ensureGoogleSheetsConnectorAccess =
-    async (): Promise<UserGoogleAccount> => {
-      let nextGoogleAccount = googleAccount;
-      const returnTo = location.pathname;
+  const ensureGoogleConnectorAccess = async (
+    kind: Extract<DataConnector['connectorKind'], 'google_docs' | 'google_sheets'>,
+  ): Promise<UserGoogleAccount> => {
+    let nextGoogleAccount = googleAccount;
+    const returnTo = location.pathname;
+    const requiredScopes = GOOGLE_CONNECTOR_SCOPES[kind];
 
-      if (!nextGoogleAccount.connected) {
-        const launch = await connectUserGoogleAccount({
-          returnTo,
-          scopes: ['spreadsheets.readonly'],
-        });
-        await launchGoogleAccountPopup(launch.authorizationUrl);
-        nextGoogleAccount = await refreshGoogleAccount();
-      }
+    if (!nextGoogleAccount.connected) {
+      const launch = await connectUserGoogleAccount({
+        returnTo,
+        scopes: requiredScopes,
+      });
+      await launchGoogleAccountPopup(launch.authorizationUrl);
+      nextGoogleAccount = await refreshGoogleAccount();
+    }
 
-      if (!hasGoogleSheetsConnectorAccess(nextGoogleAccount)) {
-        const launch = await expandUserGoogleScopes({
-          scopes: ['spreadsheets.readonly'],
-          returnTo,
-        });
-        await launchGoogleAccountPopup(launch.authorizationUrl);
-        nextGoogleAccount = await refreshGoogleAccount();
-      }
+    if (!hasGoogleConnectorAccess(kind, nextGoogleAccount)) {
+      const launch = await expandUserGoogleScopes({
+        scopes: requiredScopes,
+        returnTo,
+      });
+      await launchGoogleAccountPopup(launch.authorizationUrl);
+      nextGoogleAccount = await refreshGoogleAccount();
+    }
 
-      if (!hasGoogleSheetsConnectorAccess(nextGoogleAccount)) {
-        throw new Error(
-          'Linked Google account is still missing Google Sheets access.',
-        );
-      }
+    if (!hasGoogleConnectorAccess(kind, nextGoogleAccount)) {
+      throw new Error(
+        `Linked Google account is still missing ${formatConnectorKind(kind)} access.`,
+      );
+    }
 
-      return nextGoogleAccount;
-    };
+    return nextGoogleAccount;
+  };
 
-  const handleSaveGoogleSheetsCredential = async (connector: DataConnector) => {
+  const handleSaveGoogleConnectorCredential = async (
+    connector: DataConnector,
+  ) => {
     setBusyKey(`credential:${connector.id}`);
     try {
-      const account = await ensureGoogleSheetsConnectorAccess();
+      const account = await ensureGoogleConnectorAccess(
+        connector.connectorKind as 'google_docs' | 'google_sheets',
+      );
       const updated = await setDataConnectorCredential({
         connectorId: connector.id,
         useGoogleAccount: true,
@@ -426,14 +451,14 @@ export function DataConnectorsPage({
       setError(
         err instanceof ApiError || err instanceof Error
           ? err.message
-          : 'Failed to save Google Sheets credential.',
+          : `Failed to save ${formatConnectorKind(connector.connectorKind)} credential.`,
       );
     } finally {
       setBusyKey(null);
     }
   };
 
-  const handleClearGoogleSheetsCredential = async (
+  const handleClearGoogleConnectorCredential = async (
     connector: DataConnector,
   ) => {
     setBusyKey(`credential:${connector.id}`);
@@ -451,7 +476,9 @@ export function DataConnectorsPage({
         return;
       }
       setError(
-        err instanceof ApiError ? err.message : 'Failed to clear credential.',
+        err instanceof ApiError
+          ? err.message
+          : `Failed to clear ${formatConnectorKind(connector.connectorKind)} credential.`,
       );
     } finally {
       setBusyKey(null);
@@ -499,7 +526,8 @@ export function DataConnectorsPage({
         <p className="settings-copy">
           Define org-level data sources and store credentials. Verified
           connectors can be attached to talks and are available as query tools
-          during execution.
+          during execution. External inbox routing is configured separately as
+          Talk channel bindings.
         </p>
         {error ? (
           <div className="settings-banner settings-banner-error" role="alert">
@@ -532,6 +560,7 @@ export function DataConnectorsPage({
               }}
             >
               <option value="posthog">PostHog</option>
+              <option value="google_docs">Google Docs</option>
               <option value="google_sheets">Google Sheets</option>
             </select>
           </label>
@@ -546,7 +575,11 @@ export function DataConnectorsPage({
                 }))
               }
               placeholder={
-                createKind === 'posthog' ? 'FTUE PostHog' : 'Live Ops Sheet'
+                createKind === 'posthog'
+                  ? 'FTUE PostHog'
+                  : createKind === 'google_docs'
+                    ? 'Season Preview Doc'
+                    : 'Live Ops Sheet'
               }
             />
           </label>
@@ -592,26 +625,48 @@ export function DataConnectorsPage({
           ) : (
             <>
               <label>
-                <span className="settings-label">Spreadsheet ID</span>
+                <span className="settings-label">
+                  {createKind === 'google_docs' ? 'Document ID' : 'Spreadsheet ID'}
+                </span>
                 <input
-                  value={createDraft.spreadsheetId}
+                  value={
+                    createKind === 'google_docs'
+                      ? createDraft.documentId
+                      : createDraft.spreadsheetId
+                  }
                   onChange={(event) =>
                     setCreateDraft((current) => ({
                       ...current,
-                      spreadsheetId: event.target.value,
+                      ...(createKind === 'google_docs'
+                        ? { documentId: event.target.value }
+                        : { spreadsheetId: event.target.value }),
                     }))
                   }
-                  placeholder="1AbC..."
+                  placeholder={
+                    createKind === 'google_docs'
+                      ? '1BxiMVs0XRA5...'
+                      : '1AbC...'
+                  }
                 />
               </label>
               <label>
-                <span className="settings-label">Spreadsheet URL</span>
+                <span className="settings-label">
+                  {createKind === 'google_docs'
+                    ? 'Document URL'
+                    : 'Spreadsheet URL'}
+                </span>
                 <input
-                  value={createDraft.spreadsheetUrl}
+                  value={
+                    createKind === 'google_docs'
+                      ? createDraft.documentUrl
+                      : createDraft.spreadsheetUrl
+                  }
                   onChange={(event) =>
                     setCreateDraft((current) => ({
                       ...current,
-                      spreadsheetUrl: event.target.value,
+                      ...(createKind === 'google_docs'
+                        ? { documentUrl: event.target.value }
+                        : { spreadsheetUrl: event.target.value }),
                     }))
                   }
                   placeholder="https://docs.google.com/..."
@@ -733,15 +788,25 @@ export function DataConnectorsPage({
                     ) : (
                       <>
                         <label>
-                          <span className="settings-label">Spreadsheet ID</span>
+                          <span className="settings-label">
+                            {connector.connectorKind === 'google_docs'
+                              ? 'Document ID'
+                              : 'Spreadsheet ID'}
+                          </span>
                           <input
-                            value={draft.spreadsheetId}
+                            value={
+                              connector.connectorKind === 'google_docs'
+                                ? draft.documentId
+                                : draft.spreadsheetId
+                            }
                             onChange={(event) =>
                               setDrafts((current) => ({
                                 ...current,
                                 [connector.id]: {
                                   ...draft,
-                                  spreadsheetId: event.target.value,
+                                  ...(connector.connectorKind === 'google_docs'
+                                    ? { documentId: event.target.value }
+                                    : { spreadsheetId: event.target.value }),
                                 },
                               }))
                             }
@@ -749,16 +814,24 @@ export function DataConnectorsPage({
                         </label>
                         <label>
                           <span className="settings-label">
-                            Spreadsheet URL
+                            {connector.connectorKind === 'google_docs'
+                              ? 'Document URL'
+                              : 'Spreadsheet URL'}
                           </span>
                           <input
-                            value={draft.spreadsheetUrl}
+                            value={
+                              connector.connectorKind === 'google_docs'
+                                ? draft.documentUrl
+                                : draft.spreadsheetUrl
+                            }
                             onChange={(event) =>
                               setDrafts((current) => ({
                                 ...current,
                                 [connector.id]: {
                                   ...draft,
-                                  spreadsheetUrl: event.target.value,
+                                  ...(connector.connectorKind === 'google_docs'
+                                    ? { documentUrl: event.target.value }
+                                    : { spreadsheetUrl: event.target.value }),
                                 },
                               }))
                             }
@@ -849,9 +922,14 @@ export function DataConnectorsPage({
                             : 'Not connected'}
                         </p>
                         <p className="talk-llm-meta">
-                          {hasGoogleSheetsConnectorAccess(googleAccount)
+                          {hasGoogleConnectorAccess(
+                            connector.connectorKind as
+                              | 'google_docs'
+                              | 'google_sheets',
+                            googleAccount,
+                          )
                             ? 'This account can be saved as the connector credential.'
-                            : 'Google Sheets access is required before saving this connector credential.'}
+                            : `${formatConnectorKind(connector.connectorKind)} access is required before saving this connector credential.`}
                         </p>
                       </div>
                       <div className="settings-button-row">
@@ -859,7 +937,7 @@ export function DataConnectorsPage({
                           type="button"
                           className="secondary-btn"
                           onClick={() =>
-                            void handleSaveGoogleSheetsCredential(connector)
+                            void handleSaveGoogleConnectorCredential(connector)
                           }
                           disabled={busyKey === `credential:${connector.id}`}
                         >
@@ -867,16 +945,25 @@ export function DataConnectorsPage({
                             ? 'Saving…'
                             : !googleAccount.connected
                               ? 'Connect Google'
-                              : hasGoogleSheetsConnectorAccess(googleAccount)
+                              : hasGoogleConnectorAccess(
+                                    connector.connectorKind as
+                                      | 'google_docs'
+                                      | 'google_sheets',
+                                    googleAccount,
+                                  )
                                 ? 'Use Linked Google Account'
-                                : 'Grant Sheets Access'}
+                                : connector.connectorKind === 'google_docs'
+                                  ? 'Grant Docs Access'
+                                  : 'Grant Sheets Access'}
                         </button>
                         {connector.hasCredential ? (
                           <button
                             type="button"
                             className="secondary-btn"
                             onClick={() =>
-                              void handleClearGoogleSheetsCredential(connector)
+                              void handleClearGoogleConnectorCredential(
+                                connector,
+                              )
                             }
                             disabled={busyKey === `credential:${connector.id}`}
                           >

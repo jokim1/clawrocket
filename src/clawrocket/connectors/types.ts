@@ -1,4 +1,4 @@
-export type ConnectorKind = 'google_sheets' | 'posthog';
+export type ConnectorKind = 'google_docs' | 'google_sheets' | 'posthog';
 
 export type DataConnectorVerificationStatus =
   | 'missing'
@@ -52,6 +52,13 @@ export type ConnectorSecretPayload =
   | {
       kind: 'posthog';
       apiKey: string;
+    }
+  | {
+      kind: 'google_docs';
+      accessToken: string;
+      refreshToken?: string;
+      expiryDate?: string | null;
+      scopes?: string[];
     }
   | {
       kind: 'google_sheets';

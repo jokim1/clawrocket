@@ -1,5 +1,6 @@
 import type { TalkRunConnectorRecord } from '../db/connector-accessors.js';
 
+import { MAX_GOOGLE_DOCS_BATCH_REQUESTS } from './google-docs-constants.js';
 import type { ConnectorKind } from './types.js';
 
 type JsonMap = Record<string, unknown>;
@@ -18,6 +19,11 @@ export interface GoogleSheetsConnectorConfig {
   spreadsheetUrl: string | null;
 }
 
+export interface GoogleDocsConnectorConfig {
+  documentId: string;
+  documentUrl: string | null;
+}
+
 export interface PostHogConnectorDiscovery {
   projectName: string | null;
   eventNames: string[];
@@ -31,6 +37,10 @@ export interface GoogleSheetDiscoveryItem {
 
 export interface GoogleSheetsConnectorDiscovery {
   sheets: GoogleSheetDiscoveryItem[];
+}
+
+export interface GoogleDocsConnectorDiscovery {
+  title: string | null;
 }
 
 export interface ConnectorToolDefinition {
@@ -75,6 +85,17 @@ export function parseGoogleSheetsConnectorConfig(
   };
 }
 
+export function parseGoogleDocsConnectorConfig(
+  config: JsonMap | null,
+): GoogleDocsConnectorConfig | null {
+  const documentId = readString(config?.documentId);
+  if (!documentId) return null;
+  return {
+    documentId,
+    documentUrl: readString(config?.documentUrl),
+  };
+}
+
 export function parsePostHogDiscovery(
   discovered: JsonMap | null,
 ): PostHogConnectorDiscovery {
@@ -114,6 +135,14 @@ export function parseGoogleSheetsDiscovery(
   return { sheets };
 }
 
+export function parseGoogleDocsDiscovery(
+  discovered: JsonMap | null,
+): GoogleDocsConnectorDiscovery {
+  return {
+    title: readString(discovered?.title),
+  };
+}
+
 function buildGoogleSheetsHint(connector: TalkRunConnectorRecord): string {
   const discovery = parseGoogleSheetsDiscovery(connector.discovered);
   if (discovery.sheets.length === 0) {
@@ -149,16 +178,35 @@ function buildPostHogHint(connector: TalkRunConnectorRecord): string {
   return `Connector "${connector.name}" (PostHog, ${projectLabel}). Known events: ${events.join(', ')}.`;
 }
 
+function buildGoogleDocsHint(connector: TalkRunConnectorRecord): string {
+  const discovery = parseGoogleDocsDiscovery(connector.discovered);
+  if (!discovery.title) {
+    return `Connector "${connector.name}" (Google Docs).`;
+  }
+
+  return `Connector "${connector.name}" (Google Docs, "${discovery.title}").`;
+}
+
 function buildToolName(
   connectorId: string,
-  operation: 'posthog_query' | 'list_sheets' | 'read_range',
+  operation:
+    | 'posthog_query'
+    | 'list_sheets'
+    | 'read_range'
+    | 'read_document'
+    | 'batch_update',
 ): string {
   return `${TOOL_NAME_PREFIX}${connectorId}__${operation}`;
 }
 
 export function parseConnectorToolName(toolName: string): {
   connectorId: string;
-  operation: 'posthog_query' | 'list_sheets' | 'read_range';
+  operation:
+    | 'posthog_query'
+    | 'list_sheets'
+    | 'read_range'
+    | 'read_document'
+    | 'batch_update';
 } | null {
   if (!toolName.startsWith(TOOL_NAME_PREFIX)) return null;
   const suffix = toolName.slice(TOOL_NAME_PREFIX.length);
@@ -169,7 +217,9 @@ export function parseConnectorToolName(toolName: string): {
   if (
     operation !== 'posthog_query' &&
     operation !== 'list_sheets' &&
-    operation !== 'read_range'
+    operation !== 'read_range' &&
+    operation !== 'read_document' &&
+    operation !== 'batch_update'
   ) {
     return null;
   }
@@ -217,6 +267,49 @@ export function buildConnectorToolDefinitions(
             },
           },
           required: ['query'],
+        },
+      });
+      continue;
+    }
+
+    if (connector.connectorKind === 'google_docs') {
+      const hint = buildGoogleDocsHint(connector);
+      definitions.push({
+        connectorId: connector.id,
+        connectorKind: connector.connectorKind,
+        connectorName: connector.name,
+        toolName: buildToolName(connector.id, 'read_document'),
+        description: `${hint} Read the full text of this Google Doc.`,
+        inputSchema: {
+          type: 'object',
+          properties: {},
+          required: [],
+        },
+      });
+      definitions.push({
+        connectorId: connector.id,
+        connectorKind: connector.connectorKind,
+        connectorName: connector.name,
+        toolName: buildToolName(connector.id, 'batch_update'),
+        description: `${hint} Apply Google Docs API batchUpdate requests to this document. Supports at most ${MAX_GOOGLE_DOCS_BATCH_REQUESTS} requests per call.`,
+        inputSchema: {
+          type: 'object',
+          properties: {
+            requests: {
+              type: 'array',
+              description:
+                'Array of Google Docs API batchUpdate request objects such as insertText or replaceAllText.',
+              items: {
+                type: 'object',
+              },
+            },
+            writeControl: {
+              type: 'object',
+              description:
+                'Optional Google Docs writeControl object for revision-guarded updates.',
+            },
+          },
+          required: ['requests'],
         },
       });
       continue;

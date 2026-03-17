@@ -43,6 +43,49 @@ describe('DataConnectorsPage', () => {
     expect(screen.getByText('Economy PostHog connector created.')).toBeTruthy();
   });
 
+  it('renders Docs-specific labels and creates a new Google Docs connector', async () => {
+    const user = userEvent.setup();
+    installDataConnectorsFetch();
+
+    render(
+      <MemoryRouter initialEntries={['/app/connectors']}>
+        <DataConnectorsPage onUnauthorized={vi.fn()} userRole="owner" />
+      </MemoryRouter>,
+    );
+
+    await screen.findByRole('heading', { name: 'Data Connectors' });
+    const addCard = screen
+      .getByRole('heading', { name: 'Add Connector' })
+      .closest('article');
+    if (!addCard) {
+      throw new Error('Expected Add Connector card');
+    }
+
+    await user.selectOptions(within(addCard).getByLabelText('Kind'), 'google_docs');
+    expect(within(addCard).getByLabelText('Document ID')).toBeTruthy();
+    expect(within(addCard).getByLabelText('Document URL')).toBeTruthy();
+
+    await user.clear(within(addCard).getByLabelText('Name'));
+    await user.type(
+      within(addCard).getByLabelText('Name'),
+      'Depth Chart Doc',
+    );
+    await user.type(
+      within(addCard).getByLabelText('Document ID'),
+      'doc-depth-chart',
+    );
+    await user.type(
+      within(addCard).getByLabelText('Document URL'),
+      'https://docs.google.com/document/d/doc-depth-chart/edit',
+    );
+    await user.click(
+      within(addCard).getByRole('button', { name: 'Create Connector' }),
+    );
+
+    expect(await screen.findByText('Depth Chart Doc')).toBeTruthy();
+    expect(screen.getByText('Depth Chart Doc connector created.')).toBeTruthy();
+  });
+
   it('saves a credential and deletes a connector', async () => {
     const user = userEvent.setup();
     vi.spyOn(window, 'confirm').mockReturnValue(true);
@@ -142,6 +185,69 @@ describe('DataConnectorsPage', () => {
     expect(
       await screen.findByText(
         'Live Ops Sheet credential saved from owner@example.com.',
+      ),
+    ).toBeTruthy();
+  });
+
+  it('saves a Google Docs connector from the linked Google account', async () => {
+    const user = userEvent.setup();
+    installDataConnectorsFetch({
+      googleAccount: {
+        connected: true,
+        email: 'owner@example.com',
+        displayName: 'Owner',
+        scopes: ['documents'],
+        accessExpiresAt: null,
+      },
+      connectors: [
+        {
+          id: 'connector-docs',
+          name: 'Season Preview Doc',
+          connectorKind: 'google_docs',
+          config: {
+            documentId: 'doc-1',
+            documentUrl: 'https://docs.google.com/document/d/doc-1/edit',
+          },
+          discovered: null,
+          enabled: true,
+          hasCredential: false,
+          verificationStatus: 'missing',
+          lastVerifiedAt: null,
+          lastVerificationError: null,
+          attachedTalkCount: 0,
+          createdAt: '2026-03-06T00:00:00.000Z',
+          updatedAt: '2026-03-06T00:00:00.000Z',
+        },
+      ],
+    });
+
+    render(
+      <MemoryRouter initialEntries={['/app/connectors']}>
+        <DataConnectorsPage onUnauthorized={vi.fn()} userRole="owner" />
+      </MemoryRouter>,
+    );
+
+    await screen.findByRole('heading', { name: 'Data Connectors' });
+    const connectorCard = screen
+      .getByRole('heading', { name: 'Season Preview Doc' })
+      .closest('article');
+    if (!connectorCard) {
+      throw new Error('Expected Season Preview Doc card');
+    }
+
+    expect(
+      within(connectorCard).getByText('Connected as owner@example.com'),
+    ).toBeTruthy();
+
+    await user.click(
+      within(connectorCard).getByRole('button', {
+        name: 'Use Linked Google Account',
+      }),
+    );
+
+    expect(
+      await screen.findByText(
+        'Season Preview Doc credential saved from owner@example.com.',
       ),
     ).toBeTruthy();
   });

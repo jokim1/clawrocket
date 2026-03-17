@@ -64,6 +64,13 @@ export type ContainerConnectorSecretPayload =
       apiKey: string;
     }
   | {
+      kind: 'google_docs';
+      accessToken: string;
+      refreshToken?: string;
+      expiryDate?: string | null;
+      scopes?: string[];
+    }
+  | {
       kind: 'google_sheets';
       accessToken: string;
       refreshToken?: string;
@@ -74,14 +81,14 @@ export type ContainerConnectorSecretPayload =
 export interface ContainerWebTalkConnectorRecord {
   id: string;
   name: string;
-  connectorKind: 'google_sheets' | 'posthog';
+  connectorKind: 'google_docs' | 'google_sheets' | 'posthog';
   config: Record<string, unknown> | null;
   secret: ContainerConnectorSecretPayload;
 }
 
 export interface ContainerWebTalkConnectorToolDefinition {
   connectorId: string;
-  connectorKind: 'google_sheets' | 'posthog';
+  connectorKind: 'google_docs' | 'google_sheets' | 'posthog';
   connectorName: string;
   toolName: string;
   description: string;

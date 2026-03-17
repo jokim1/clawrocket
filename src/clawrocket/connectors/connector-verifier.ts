@@ -9,10 +9,12 @@ import {
 import { decryptConnectorSecret } from './connector-secret-store.js';
 import {
   ConnectorHttpError,
+  fetchGoogleDoc,
   fetchGoogleSheetsMetadata,
   fetchPostHogEventDefinitions,
 } from './http.js';
 import {
+  parseGoogleDocsConnectorConfig,
   parseGoogleSheetsConnectorConfig,
   parsePostHogConnectorConfig,
 } from './runtime.js';
@@ -117,7 +119,7 @@ export class DataConnectorVerifier {
           projectName: discovery.projectName,
           eventNames: discovery.eventNames,
         });
-      } else {
+      } else if (connector.connectorKind === 'google_sheets') {
         const config = parseGoogleSheetsConnectorConfig(connector.config);
         if (!config) {
           throw new ConnectorHttpError(
@@ -147,6 +149,37 @@ export class DataConnectorVerifier {
             columnCount: sheet.columnCount,
           })),
         });
+      } else if (connector.connectorKind === 'google_docs') {
+        const config = parseGoogleDocsConnectorConfig(connector.config);
+        if (!config) {
+          throw new ConnectorHttpError(
+            'google_docs_config_invalid',
+            'Google Docs connector requires documentId.',
+          );
+        }
+        if (secret.kind !== 'google_docs') {
+          throw new ConnectorHttpError(
+            'google_docs_credential_invalid',
+            'Stored connector credential is not a Google Docs OAuth credential.',
+          );
+        }
+
+        const document = await fetchGoogleDoc({
+          connectorId,
+          secret,
+          documentId: config.documentId,
+          fetchImpl: this.fetchImpl,
+          signal: controller.signal,
+        });
+
+        patchDataConnectorDiscovery(connectorId, {
+          title: document.title,
+        });
+      } else {
+        throw new ConnectorHttpError(
+          'connector_kind_unsupported',
+          `Unsupported connector kind: ${connector.connectorKind}.`,
+        );
       }
 
       upsertDataConnectorVerification({

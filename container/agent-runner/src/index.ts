@@ -35,10 +35,17 @@ interface ContainerInput {
     connectors: Array<{
       id: string;
       name: string;
-      connectorKind: 'google_sheets' | 'posthog';
+      connectorKind: 'google_docs' | 'google_sheets' | 'posthog';
       config: Record<string, unknown> | null;
       secret:
         | { kind: 'posthog'; apiKey: string }
+        | {
+            kind: 'google_docs';
+            accessToken: string;
+            refreshToken?: string;
+            expiryDate?: string | null;
+            scopes?: string[];
+          }
         | {
             kind: 'google_sheets';
             accessToken: string;
@@ -49,7 +56,7 @@ interface ContainerInput {
     }>;
     toolDefinitions: Array<{
       connectorId: string;
-      connectorKind: 'google_sheets' | 'posthog';
+      connectorKind: 'google_docs' | 'google_sheets' | 'posthog';
       connectorName: string;
       toolName: string;
       description: string;

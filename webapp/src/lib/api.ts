@@ -74,7 +74,7 @@ export type DataConnectorVerificationStatus =
 export type DataConnector = {
   id: string;
   name: string;
-  connectorKind: 'google_sheets' | 'posthog';
+  connectorKind: 'google_docs' | 'google_sheets' | 'posthog';
   config: Record<string, unknown> | null;
   discovered: Record<string, unknown> | null;
   enabled: boolean;
