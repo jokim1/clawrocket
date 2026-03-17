@@ -113,6 +113,12 @@ import {
   verifyExecutorRoute,
 } from './routes/executor-settings.js';
 import {
+  getAiAgentsRoute,
+  putAiProviderCredentialRoute,
+  updateDefaultClaudeModelRoute,
+  verifyAiProviderCredentialRoute,
+} from './routes/ai-agents.js';
+import {
   listUserToolPermissionsRoute,
   updateUserToolPermissionRoute,
   getEffectiveToolsRoute,
@@ -941,54 +947,11 @@ function buildApp(opts: WebServerOptions): Hono {
   app.get('/api/v1/agents', async (c) => {
     const auth = requireAuth(c);
     if (!auth) return unauthorized(c);
-
-    const db = getDb();
-
-    // Build claude model suggestions from llm_provider_models
-    const claudeModels = db
-      .prepare(
-        `SELECT model_id, display_name, context_window_tokens,
-                default_max_output_tokens
-         FROM llm_provider_models
-         WHERE provider_id = 'provider.anthropic' AND enabled = 1
-         ORDER BY display_name ASC`,
-      )
-      .all() as Array<{
-      model_id: string;
-      display_name: string;
-      context_window_tokens: number;
-      default_max_output_tokens: number;
-    }>;
-
-    const suggestions = claudeModels.map((m) => ({
-      modelId: m.model_id,
-      displayName: m.display_name,
-      contextWindowTokens: m.context_window_tokens,
-      defaultMaxOutputTokens: m.default_max_output_tokens,
-      supportsTools: true,
-    }));
-
-    // Read saved default model from settings_kv
-    const savedModel = (
-      db
-        .prepare(
-          `SELECT value FROM settings_kv WHERE key = 'executor.defaultClaudeModel'`,
-        )
-        .get() as { value: string } | undefined
-    )?.value;
-
-    return c.json(
-      {
-        ok: true,
-        data: {
-          defaultClaudeModelId:
-            savedModel || suggestions[0]?.modelId || 'claude-sonnet-4-6',
-          claudeModelSuggestions: suggestions,
-          additionalProviders: [],
-        },
-      },
-      200,
-    );
+    const result = getAiAgentsRoute();
+    return new Response(JSON.stringify(result.body), {
+      status: result.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
   });
 
   app.get('/api/v1/settings/executor', async (c) => {
@@ -1039,53 +1002,35 @@ function buildApp(opts: WebServerOptions): Hono {
   app.put('/api/v1/agents/default-claude', async (c) => {
     const auth = requireAuth(c);
     if (!auth) return unauthorized(c);
+    const body = await c.req.json();
+    const result = updateDefaultClaudeModelRoute(auth, body);
+    return new Response(JSON.stringify(result.body), {
+      status: result.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
+  });
 
-    const body = await c.req.json<{ modelId: string }>();
-    const db = getDb();
-    const now = new Date().toISOString();
+  app.put('/api/v1/agents/providers/:providerId', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+    const providerId = c.req.param('providerId');
+    const body = await c.req.json();
+    const result = await putAiProviderCredentialRoute(auth, providerId, body);
+    return new Response(JSON.stringify(result.body), {
+      status: result.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
+  });
 
-    db.prepare(
-      `INSERT INTO settings_kv (key, value, updated_at, updated_by)
-       VALUES ('executor.defaultClaudeModel', ?, ?, ?)
-       ON CONFLICT(key) DO UPDATE SET value = excluded.value,
-         updated_at = excluded.updated_at, updated_by = excluded.updated_by`,
-    ).run(body.modelId, now, auth.userId);
-
-    // Return refreshed AiAgentsPageData
-    const claudeModels = db
-      .prepare(
-        `SELECT model_id, display_name, context_window_tokens,
-                default_max_output_tokens
-         FROM llm_provider_models
-         WHERE provider_id = 'provider.anthropic' AND enabled = 1
-         ORDER BY display_name ASC`,
-      )
-      .all() as Array<{
-      model_id: string;
-      display_name: string;
-      context_window_tokens: number;
-      default_max_output_tokens: number;
-    }>;
-
-    const suggestions = claudeModels.map((m) => ({
-      modelId: m.model_id,
-      displayName: m.display_name,
-      contextWindowTokens: m.context_window_tokens,
-      defaultMaxOutputTokens: m.default_max_output_tokens,
-      supportsTools: true,
-    }));
-
-    return c.json(
-      {
-        ok: true,
-        data: {
-          defaultClaudeModelId: body.modelId,
-          claudeModelSuggestions: suggestions,
-          additionalProviders: [],
-        },
-      },
-      200,
-    );
+  app.post('/api/v1/agents/providers/:providerId/verify', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+    const providerId = c.req.param('providerId');
+    const result = await verifyAiProviderCredentialRoute(auth, providerId);
+    return new Response(JSON.stringify(result.body), {
+      status: result.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
   });
 
   // ── POST /api/v1/settings/executor/verify ─ credential verification ───

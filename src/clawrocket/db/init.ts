@@ -1,6 +1,7 @@
 import Database from 'better-sqlite3';
 
 import { getDb } from '../../db.js';
+import { BUILTIN_ADDITIONAL_PROVIDERS } from '../agents/builtin-additional-providers.js';
 
 function seedBuiltinLlmProvider(database: Database.Database): void {
   const now = new Date().toISOString();
@@ -139,6 +140,60 @@ function seedAnthropicProvider(database: Database.Database): void {
     `,
     )
     .run(now);
+}
+
+function seedAdditionalProviders(database: Database.Database): void {
+  const now = new Date().toISOString();
+
+  for (const provider of BUILTIN_ADDITIONAL_PROVIDERS) {
+    database
+      .prepare(
+        `
+        INSERT INTO llm_providers (
+          id, name, provider_kind, api_format, base_url, auth_scheme, enabled,
+          core_compatibility, response_start_timeout_ms, stream_idle_timeout_ms,
+          absolute_timeout_ms, updated_at, updated_by
+        )
+        VALUES (?, ?, ?, ?, ?, ?, 1, 'none', ?, ?, ?, ?, NULL)
+        ON CONFLICT(id) DO NOTHING
+      `,
+      )
+      .run(
+        provider.id,
+        provider.name,
+        provider.providerKind,
+        provider.apiFormat,
+        provider.baseUrl,
+        provider.authScheme,
+        provider.responseStartTimeoutMs,
+        provider.streamIdleTimeoutMs,
+        provider.absoluteTimeoutMs,
+        now,
+      );
+
+    for (const model of provider.models) {
+      database
+        .prepare(
+          `
+          INSERT INTO llm_provider_models (
+            provider_id, model_id, display_name, context_window_tokens,
+            default_max_output_tokens, default_ttft_timeout_ms, enabled, updated_at, updated_by
+          )
+          VALUES (?, ?, ?, ?, ?, ?, 1, ?, NULL)
+          ON CONFLICT(provider_id, model_id) DO NOTHING
+        `,
+        )
+        .run(
+          provider.id,
+          model.modelId,
+          model.displayName,
+          model.contextWindowTokens,
+          model.defaultMaxOutputTokens,
+          model.defaultTtftTimeoutMs,
+          now,
+        );
+    }
+  }
 }
 
 function getSeedClaudeModel(database: Database.Database): string {
@@ -1067,6 +1122,7 @@ function createClawrocketSchema(database: Database.Database): void {
 
   seedBuiltinLlmProvider(database);
   seedAnthropicProvider(database);
+  seedAdditionalProviders(database);
   seedMainAgent(database);
   seedDefaultTalkAgent(database);
   seedSystemUsers(database);

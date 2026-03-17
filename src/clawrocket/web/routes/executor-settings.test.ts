@@ -7,6 +7,7 @@ import {
   upsertSettingValue,
   upsertUser,
 } from '../../db/index.js';
+import { encryptProviderSecret } from '../../llm/provider-secret-store.js';
 import { ExecutorSubscriptionHostAuthService } from '../../talks/executor-subscription-host-auth.js';
 import type { AuthContext } from '../types.js';
 import {
@@ -33,7 +34,7 @@ function seedAnthropicSecret(apiKey = 'sk-ant-test'): void {
        ON CONFLICT(provider_id) DO UPDATE SET ciphertext = excluded.ciphertext,
          updated_at = excluded.updated_at, updated_by = excluded.updated_by`,
     )
-    .run(JSON.stringify({ apiKey }), now, auth.userId);
+    .run(encryptProviderSecret({ apiKey }), now, auth.userId);
 }
 
 describe('executor-settings routes', () => {
@@ -162,6 +163,22 @@ describe('executor-settings routes', () => {
       expect(result.body.data.activeCredentialConfigured).toBe(false);
       expect(result.body.data.verificationStatus).toBe('missing');
     }
+  });
+
+  it('stores Anthropic API keys encrypted at rest', () => {
+    const result = putExecutorSettingsRoute(auth, {
+      executorAuthMode: 'api_key',
+      anthropicApiKey: 'sk-ant-encrypted',
+    });
+
+    expect(result.statusCode).toBe(200);
+    const row = getDb()
+      .prepare(
+        `SELECT ciphertext FROM llm_provider_secrets WHERE provider_id = 'provider.anthropic'`,
+      )
+      .get() as { ciphertext: string } | undefined;
+    expect(row?.ciphertext).toBeTruthy();
+    expect(row?.ciphertext.includes('sk-ant-encrypted')).toBe(false);
   });
 
   it('imports a host subscription credential only when the fingerprint matches', async () => {

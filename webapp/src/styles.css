@@ -1459,6 +1459,23 @@ a {
   font-weight: 700;
 }
 
+.talk-status-constraint {
+  border-radius: 999px;
+  padding: 0.1rem 0.45rem;
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+
+.talk-status-constraint-single_agent_only {
+  background: rgba(191, 129, 18, 0.12);
+  color: #8c630d;
+}
+
+.talk-status-constraint-unavailable {
+  background: rgba(191, 44, 44, 0.12);
+  color: #9a2b2b;
+}
+
 .talk-tabs-row {
   display: flex;
   align-items: flex-end;
@@ -1711,6 +1728,12 @@ a {
   border-color: #aec4f0;
   background: #eef5ff;
   color: #1d4ca1;
+}
+
+.composer-target-chip-warning {
+  border-color: #dfc27c;
+  background: #fff9ec;
+  color: #7a5510;
 }
 
 .composer-target-chip:disabled {

@@ -5,6 +5,7 @@ import {
   type RegisteredAgentRecord,
 } from '../db/agent-accessors.js';
 import { getSettingValue } from '../db/accessors.js';
+import { decryptProviderSecret } from '../llm/provider-secret-store.js';
 import type { LlmProviderRecord } from '../llm/types.js';
 import {
   resolveExecution,
@@ -94,10 +95,7 @@ function getAnthropicApiKeyFromDb(): string | null {
   }
 
   try {
-    const parsed = JSON.parse(row.ciphertext) as { apiKey?: unknown };
-    return typeof parsed.apiKey === 'string' && parsed.apiKey.trim()
-      ? parsed.apiKey.trim()
-      : null;
+    return decryptProviderSecret(row.ciphertext).apiKey.trim();
   } catch {
     return null;
   }
