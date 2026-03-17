@@ -8,7 +8,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import { getDb } from '../../db.js';
+import { getAllRegisteredGroups, getDb } from '../../db.js';
 import {
   createRegisteredAgent,
   deleteRegisteredAgent,
@@ -29,6 +29,8 @@ import {
 // ---------------------------------------------------------------------------
 
 const MAIN_AGENT_SETTING_KEY = 'system.mainAgentId';
+const DEFAULT_TALK_AGENT_SETTING_KEY = 'system.defaultTalkAgentId';
+const DEFAULT_TALK_AGENT_FALLBACK_ID = 'agent.talk';
 
 /**
  * Returns the main agent ID from settings_kv.
@@ -44,6 +46,27 @@ export function getMainAgentId(): string {
     );
   }
   return row.value;
+}
+
+/**
+ * Returns the default Talk agent ID from settings_kv.
+ * Falls back to the direct-safe seeded Talk agent when the setting is absent,
+ * and then to the main agent if the fallback agent has been removed.
+ */
+export function getDefaultTalkAgentId(): string {
+  const row = getDb()
+    .prepare(`SELECT value FROM settings_kv WHERE key = ?`)
+    .get(DEFAULT_TALK_AGENT_SETTING_KEY) as { value: string } | undefined;
+  const candidate = row?.value?.trim() || DEFAULT_TALK_AGENT_FALLBACK_ID;
+  const agent = getRegisteredAgent(candidate);
+  if (agent && agent.enabled === 1) {
+    return candidate;
+  }
+  return getMainAgentId();
+}
+
+export function hasRegisteredMainGroup(): boolean {
+  return Object.values(getAllRegisteredGroups()).some((group) => group.isMain);
 }
 
 /**
@@ -315,6 +338,72 @@ export function getTalkAgentRows(talkId: string): TalkAgentRow[] {
     isPrimary: !!row.is_primary,
     sortOrder: row.sort_order,
   }));
+}
+
+/**
+ * Self-heal legacy bootstrap Talks on installs that do not have a registered
+ * main NanoClaw runtime group yet.
+ *
+ * The original bootstrap path assigned the seeded container-capable main agent
+ * to every new Talk. On hosts without a registered main group, that made fresh
+ * Talks fail out of the box. We only rewrite the narrow legacy case:
+ * - no registered main group exists
+ * - the Talk has zero agents, or exactly one assigned agent
+ * - that lone agent is the seeded main agent
+ */
+export function ensureTalkUsesUsableDefaultAgent(talkId: string): void {
+  if (hasRegisteredMainGroup()) return;
+
+  const defaultTalkAgentId = getDefaultTalkAgentId();
+  const defaultTalkAgent = getRegisteredAgent(defaultTalkAgentId);
+  if (!defaultTalkAgent || defaultTalkAgent.enabled !== 1) {
+    return;
+  }
+
+  const rows = getTalkAgentRows(talkId);
+  if (rows.length === 0) {
+    setTalkAgents(talkId, [
+      {
+        id: defaultTalkAgentId,
+        sourceKind: 'claude_default',
+        providerId: null,
+        modelId: 'default',
+        nickname: null,
+        nicknameMode: 'auto',
+        personaRole: 'assistant',
+        isPrimary: true,
+        sortOrder: 0,
+      },
+    ]);
+    return;
+  }
+
+  if (rows.length !== 1) return;
+
+  const seededMainAgentId = getMainAgentId();
+  const onlyAgent = rows[0]!;
+  if (
+    defaultTalkAgentId === seededMainAgentId ||
+    onlyAgent.registeredAgentId !== seededMainAgentId
+  ) {
+    return;
+  }
+
+  const preserveCustomNickname = onlyAgent.nicknameMode === 'custom';
+
+  setTalkAgents(talkId, [
+    {
+      id: defaultTalkAgentId,
+      sourceKind: onlyAgent.sourceKind,
+      providerId: onlyAgent.providerId,
+      modelId: onlyAgent.modelId || 'default',
+      nickname: preserveCustomNickname ? onlyAgent.nickname : null,
+      nicknameMode: preserveCustomNickname ? 'custom' : 'auto',
+      personaRole: onlyAgent.personaRole || 'assistant',
+      isPrimary: true,
+      sortOrder: 0,
+    },
+  ]);
 }
 
 // ---------------------------------------------------------------------------

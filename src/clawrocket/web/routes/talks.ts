@@ -39,7 +39,8 @@ import {
   parsePolicyAgentsForUiBadges,
 } from '../../talks/policy.js';
 import {
-  getMainAgentId,
+  getDefaultTalkAgentId,
+  ensureTalkUsesUsableDefaultAgent,
   listTalkAgents,
   setTalkAgents,
   getTalkAgentRows,
@@ -826,12 +827,13 @@ export function createTalkRoute(input: { auth: AuthContext; title?: string }): {
     status: 'active',
   });
 
-  // Auto-assign the main agent so the talk is immediately usable.
+  // Auto-assign the default Talk agent so the talk is immediately usable even
+  // on installs that do not have a registered container runtime yet.
   try {
-    const mainAgentId = getMainAgentId();
+    const defaultTalkAgentId = getDefaultTalkAgentId();
     setTalkAgents(talkId, [
       {
-        id: mainAgentId,
+        id: defaultTalkAgentId,
         sourceKind: 'claude_default',
         providerId: null,
         modelId: 'default',
@@ -1287,6 +1289,8 @@ export function getTalkRoute(input: { talkId: string; auth: AuthContext }): {
     };
   }
 
+  ensureTalkUsesUsableDefaultAgent(input.talkId);
+
   return {
     statusCode: 200,
     body: {
@@ -1321,6 +1325,8 @@ export function listTalkAgentsRoute(input: {
       },
     };
   }
+
+  ensureTalkUsesUsableDefaultAgent(input.talkId);
 
   return {
     statusCode: 200,
@@ -1940,6 +1946,7 @@ export function enqueueTalkChat(input: {
         ),
       ]
     : [];
+  ensureTalkUsesUsableDefaultAgent(input.talkId);
   const talkAgents = listTalkAgents(input.talkId);
   const selectedAgents: Array<{ id: string; name: string }> =
     requestedTargetIds.length > 0

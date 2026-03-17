@@ -78,4 +78,47 @@ describe('clawrocket schema init', () => {
 
     expect(colNames).toContain('tool_permissions_json');
   });
+
+  it('seeds separate main and default Talk agents', () => {
+    _initTestDatabase();
+    const db = getDb();
+
+    const agents = db
+      .prepare(
+        `SELECT id, provider_id, model_id FROM registered_agents WHERE id IN ('agent.main', 'agent.talk') ORDER BY id`,
+      )
+      .all() as Array<{
+      id: string;
+      provider_id: string;
+      model_id: string;
+    }>;
+    expect(agents).toEqual([
+      {
+        id: 'agent.main',
+        provider_id: 'provider.anthropic',
+        model_id: 'claude-sonnet-4-6',
+      },
+      {
+        id: 'agent.talk',
+        provider_id: 'provider.anthropic',
+        model_id: 'claude-sonnet-4-6',
+      },
+    ]);
+
+    const settings = db
+      .prepare(
+        `SELECT key, value FROM settings_kv WHERE key IN ('system.mainAgentId', 'system.defaultTalkAgentId') ORDER BY key`,
+      )
+      .all() as Array<{ key: string; value: string }>;
+    expect(settings).toEqual([
+      {
+        key: 'system.defaultTalkAgentId',
+        value: 'agent.talk',
+      },
+      {
+        key: 'system.mainAgentId',
+        value: 'agent.main',
+      },
+    ]);
+  });
 });

@@ -118,8 +118,21 @@ function seedAnthropicProvider(database: Database.Database): void {
     .run(now);
 }
 
+function getSeedClaudeModel(database: Database.Database): string {
+  return (
+    (
+      database
+        .prepare(
+          `SELECT value FROM settings_kv WHERE key = 'executor.defaultClaudeModel'`,
+        )
+        .get() as { value: string } | undefined
+    )?.value || 'claude-sonnet-4-6'
+  );
+}
+
 function seedMainAgent(database: Database.Database): void {
   const now = new Date().toISOString();
+  const modelId = getSeedClaudeModel(database);
   const toolPermissions = JSON.stringify({
     shell: true,
     filesystem: true,
@@ -147,8 +160,46 @@ function seedMainAgent(database: Database.Database): void {
     .run(
       'agent.main',
       'Nanoclaw',
-      'builtin.mock',
-      'mock-default',
+      'provider.anthropic',
+      modelId,
+      toolPermissions,
+      'assistant',
+      null,
+      1,
+      now,
+      now,
+    );
+}
+
+function seedDefaultTalkAgent(database: Database.Database): void {
+  const now = new Date().toISOString();
+  const modelId = getSeedClaudeModel(database);
+  const toolPermissions = JSON.stringify({
+    web: true,
+    connectors: true,
+    google_read: true,
+    google_write: true,
+    gmail_read: true,
+    gmail_send: true,
+    messaging: true,
+  });
+
+  database
+    .prepare(
+      `
+      INSERT INTO registered_agents (
+        id, name, provider_id, model_id, tool_permissions_json,
+        persona_role, system_prompt, enabled, created_at, updated_at
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO NOTHING
+    `,
+    )
+    .run(
+      'agent.talk',
+      'Claude',
+      'provider.anthropic',
+      modelId,
       toolPermissions,
       'assistant',
       null,
@@ -199,6 +250,16 @@ function seedDefaultSettings(database: Database.Database): void {
     `,
     )
     .run('system.mainAgentId', 'agent.main', now);
+
+  database
+    .prepare(
+      `
+      INSERT INTO settings_kv (key, value, updated_at, updated_by)
+      VALUES (?, ?, ?, NULL)
+      ON CONFLICT(key) DO NOTHING
+    `,
+    )
+    .run('system.defaultTalkAgentId', 'agent.talk', now);
 }
 
 function createClawrocketSchema(database: Database.Database): void {
@@ -968,6 +1029,7 @@ function createClawrocketSchema(database: Database.Database): void {
   seedBuiltinLlmProvider(database);
   seedAnthropicProvider(database);
   seedMainAgent(database);
+  seedDefaultTalkAgent(database);
   seedSystemUsers(database);
   seedDefaultSettings(database);
 }
@@ -2482,16 +2544,6 @@ function migrateMainAgentToAnthropic(database: Database.Database): void {
 
   if (!row || row.provider_id !== 'builtin.mock') return;
 
-  // Read the user's saved default model, or fall back to sonnet
-  const savedModel =
-    (
-      database
-        .prepare(
-          `SELECT value FROM settings_kv WHERE key = 'executor.defaultClaudeModel'`,
-        )
-        .get() as { value: string } | undefined
-    )?.value || 'claude-sonnet-4-6';
-
   database
     .prepare(
       `UPDATE registered_agents
@@ -2500,7 +2552,7 @@ function migrateMainAgentToAnthropic(database: Database.Database): void {
            updated_at = ?
        WHERE id = 'agent.main'`,
     )
-    .run(savedModel, new Date().toISOString());
+    .run(getSeedClaudeModel(database), new Date().toISOString());
 }
 
 export function initClawrocketSchema(): void {

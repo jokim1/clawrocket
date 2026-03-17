@@ -439,6 +439,81 @@ describe('talk routes', () => {
       },
     });
     expect(detail.status).toBe(200);
+
+    const assignment = getDb()
+      .prepare(
+        `SELECT registered_agent_id FROM talk_agents WHERE talk_id = ? ORDER BY sort_order ASC LIMIT 1`,
+      )
+      .get(talkId) as { registered_agent_id: string } | undefined;
+    expect(assignment?.registered_agent_id).toBe('agent.talk');
+  });
+
+  it('heals legacy talks that only have the seeded main agent on hosts without a registered main group', async () => {
+    upsertTalk({
+      id: 'talk-legacy-main-only',
+      ownerId: 'owner-1',
+      topicTitle: 'Legacy Main Only',
+    });
+    getDb()
+      .prepare(
+        `
+      INSERT INTO talk_threads (id, talk_id, title, is_default, created_at, updated_at)
+      VALUES (?, ?, ?, 1, datetime('now'), datetime('now'))
+    `,
+      )
+      .run(
+        'thread-talk-legacy-main-only',
+        'talk-legacy-main-only',
+        'Default Thread',
+      );
+    getDb()
+      .prepare(
+        `
+      INSERT INTO talk_agents (id, talk_id, registered_agent_id, nickname, is_primary, sort_order, created_at, updated_at)
+      VALUES (?, ?, ?, ?, 1, 0, datetime('now'), datetime('now'))
+    `,
+      )
+      .run(
+        'ta-talk-legacy-main-only',
+        'talk-legacy-main-only',
+        'agent.main',
+        'Nanoclaw',
+      );
+
+    const detailRes = await server.request(
+      '/api/v1/talks/talk-legacy-main-only',
+      {
+        headers: {
+          Authorization: 'Bearer owner-token',
+        },
+      },
+    );
+
+    expect(detailRes.status).toBe(200);
+    const detailBody = (await detailRes.json()) as any;
+    expect(detailBody.data.talk.agents).toEqual(['Agent']);
+
+    const assignment = getDb()
+      .prepare(
+        `SELECT registered_agent_id FROM talk_agents WHERE talk_id = ? ORDER BY sort_order ASC LIMIT 1`,
+      )
+      .get('talk-legacy-main-only') as
+      | { registered_agent_id: string }
+      | undefined;
+    expect(assignment?.registered_agent_id).toBe('agent.talk');
+
+    const agentsRes = await server.request(
+      '/api/v1/talks/talk-legacy-main-only/agents',
+      {
+        headers: {
+          Authorization: 'Bearer owner-token',
+        },
+      },
+    );
+    expect(agentsRes.status).toBe(200);
+    const agentsBody = (await agentsRes.json()) as any;
+    expect(agentsBody.data.agents).toHaveLength(1);
+    expect(agentsBody.data.agents[0].id).toBe('agent.talk');
   });
 
   it('requires csrf for cookie-authenticated create talk', async () => {
