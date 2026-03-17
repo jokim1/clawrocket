@@ -3052,7 +3052,7 @@ function buildApp(opts: WebServerOptions): Hono {
       const title =
         typeof body.title === 'string' ? body.title.trim() || null : null;
       const thread = createTalkThread({ talkId, title });
-      return c.json({ ok: true, data: thread }, 201);
+      return c.json({ ok: true, data: { thread } }, 201);
     } catch (err) {
       return c.json(
         { ok: false, error: { code: 'internal_error', message: String(err) } },

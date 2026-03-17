@@ -15,6 +15,11 @@ import {
   IDLE_TIMEOUT,
   TIMEZONE,
 } from './config.js';
+import {
+  getExecutionTargetFolder,
+  getExecutionTargetName,
+  type ContainerExecutionTarget,
+} from './container-execution-target.js';
 import { resolveGroupFolderPath, resolveGroupIpcPath } from './group-folder.js';
 import { logger } from './logger.js';
 import {
@@ -23,7 +28,7 @@ import {
   stopContainer,
 } from './container-runtime.js';
 import { validateAdditionalMounts } from './mount-security.js';
-import { RegisteredGroup } from './types.js';
+import type { RegisteredGroup } from './types.js';
 
 // Sentinel markers for robust output parsing (must match agent-runner)
 const OUTPUT_START_MARKER = '---NANOCLAW_OUTPUT_START---';
@@ -110,6 +115,8 @@ const PROJECT_SENSITIVE_FILES = [
   '.netrc',
 ];
 
+const CLAUDE_HOME_PATH = '/home/node/.claude';
+
 function addShadowedProjectMount(
   mounts: VolumeMount[],
   hostPath: string,
@@ -132,55 +139,112 @@ function addShadowedProjectMount(
   }
 }
 
-function buildVolumeMounts(
-  group: RegisteredGroup,
-  isMain: boolean,
-  syncAgentRunnerSource = false,
-  toolProfile: ContainerInput['toolProfile'] = 'default',
+function syncSkillsIntoClaudeHome(claudeHomeDir: string): void {
+  const skillsSrc = path.join(process.cwd(), 'container', 'skills');
+  const skillsDst = path.join(claudeHomeDir, 'skills');
+  if (!fs.existsSync(skillsSrc)) return;
+
+  for (const skillDir of fs.readdirSync(skillsSrc)) {
+    const srcDir = path.join(skillsSrc, skillDir);
+    if (!fs.statSync(srcDir).isDirectory()) continue;
+    const dstDir = path.join(skillsDst, skillDir);
+    fs.cpSync(srcDir, dstDir, { recursive: true, force: true });
+  }
+}
+
+function ensureClaudeHome(
+  claudeHomeDir: string,
+  disableAutoMemory: boolean,
+): void {
+  fs.mkdirSync(claudeHomeDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(claudeHomeDir, 'settings.json'),
+    JSON.stringify(
+      {
+        env: {
+          CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: '1',
+          CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD: '1',
+          CLAUDE_CODE_DISABLE_AUTO_MEMORY: disableAutoMemory ? '1' : '0',
+        },
+      },
+      null,
+      2,
+    ) + '\n',
+  );
+  syncSkillsIntoClaudeHome(claudeHomeDir);
+}
+
+function buildTalkMainVolumeMounts(
+  projectRoot: string,
   ephemeralContextDir?: string,
   projectMountHostPath?: string | null,
+): VolumeMount[] {
+  if (!ephemeralContextDir || !fs.existsSync(ephemeralContextDir)) {
+    throw new Error(
+      'talk_main container execution requires an ephemeral context directory.',
+    );
+  }
+
+  const mounts: VolumeMount[] = [
+    {
+      hostPath: ephemeralContextDir,
+      containerPath: TALK_MAIN_RUN_DIR,
+      readonly: false,
+    },
+  ];
+
+  if (projectMountHostPath && fs.existsSync(projectMountHostPath)) {
+    addShadowedProjectMount(mounts, projectMountHostPath, PROJECT_MOUNT_PATH);
+  }
+
+  const claudeHomeDir = path.join(ephemeralContextDir, 'claude-home');
+  ensureClaudeHome(claudeHomeDir, true);
+  mounts.push({
+    hostPath: claudeHomeDir,
+    containerPath: CLAUDE_HOME_PATH,
+    readonly: false,
+  });
+
+  const agentRunnerSrc = path.join(projectRoot, 'container', 'agent-runner', 'src');
+  if (fs.existsSync(agentRunnerSrc)) {
+    const runAgentRunnerDir = path.join(ephemeralContextDir, 'agent-runner-src');
+    fs.cpSync(agentRunnerSrc, runAgentRunnerDir, {
+      recursive: true,
+      force: true,
+    });
+    mounts.push({
+      hostPath: runAgentRunnerDir,
+      containerPath: '/app/src',
+      readonly: false,
+    });
+  }
+
+  return mounts;
+}
+
+function buildLegacyVolumeMounts(
+  group: RegisteredGroup,
+  isMain: boolean,
+  syncAgentRunnerSource: boolean,
 ): VolumeMount[] {
   const mounts: VolumeMount[] = [];
   const projectRoot = process.cwd();
   const groupDir = resolveGroupFolderPath(group.folder);
-  const useTalkMainProfile = toolProfile === 'talk_main';
 
-  if (useTalkMainProfile) {
-    if (ephemeralContextDir && fs.existsSync(ephemeralContextDir)) {
-      mounts.push({
-        hostPath: ephemeralContextDir,
-        containerPath: TALK_MAIN_RUN_DIR,
-        readonly: false,
-      });
-    }
-
-    if (projectMountHostPath && fs.existsSync(projectMountHostPath)) {
-      addShadowedProjectMount(mounts, projectMountHostPath, PROJECT_MOUNT_PATH);
-    }
-  } else if (isMain) {
-    // Main gets the project root read-only. Writable paths the agent needs
-    // (group folder, IPC, .claude/) are mounted separately below.
-    // Read-only prevents the agent from modifying host application code
-    // (src/, dist/, package.json, etc.) which would bypass the sandbox
-    // entirely on next restart.
+  if (isMain) {
     addShadowedProjectMount(mounts, projectRoot, PROJECT_MOUNT_PATH);
-
-    // Main also gets its group folder as the working directory
     mounts.push({
       hostPath: groupDir,
       containerPath: '/workspace/group',
       readonly: false,
     });
   } else {
-    // Other groups only get their own folder
     mounts.push({
       hostPath: groupDir,
       containerPath: '/workspace/group',
       readonly: false,
     });
 
-    // Global memory directory (read-only for non-main)
-    // Only directory mounts are supported, not file mounts
     const globalDir = path.join(GROUPS_DIR, 'global');
     if (fs.existsSync(globalDir)) {
       mounts.push({
@@ -191,58 +255,14 @@ function buildVolumeMounts(
     }
   }
 
-  // Per-group Claude sessions directory (isolated from other groups)
-  // Each group gets their own .claude/ to prevent cross-group session access
-  const groupSessionsDir = path.join(
-    DATA_DIR,
-    'sessions',
-    group.folder,
-    '.claude',
-  );
-  fs.mkdirSync(groupSessionsDir, { recursive: true });
-  const settingsFile = path.join(groupSessionsDir, 'settings.json');
-  if (!fs.existsSync(settingsFile)) {
-    fs.writeFileSync(
-      settingsFile,
-      JSON.stringify(
-        {
-          env: {
-            // Enable agent swarms (subagent orchestration)
-            // https://code.claude.com/docs/en/agent-teams#orchestrate-teams-of-claude-code-sessions
-            CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: '1',
-            // Load CLAUDE.md from additional mounted directories
-            // https://code.claude.com/docs/en/memory#load-memory-from-additional-directories
-            CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD: '1',
-            // Enable Claude's memory feature (persists user preferences between sessions)
-            // https://code.claude.com/docs/en/memory#manage-auto-memory
-            CLAUDE_CODE_DISABLE_AUTO_MEMORY: '0',
-          },
-        },
-        null,
-        2,
-      ) + '\n',
-    );
-  }
-
-  // Sync skills from container/skills/ into each group's .claude/skills/
-  const skillsSrc = path.join(process.cwd(), 'container', 'skills');
-  const skillsDst = path.join(groupSessionsDir, 'skills');
-  if (fs.existsSync(skillsSrc)) {
-    for (const skillDir of fs.readdirSync(skillsSrc)) {
-      const srcDir = path.join(skillsSrc, skillDir);
-      if (!fs.statSync(srcDir).isDirectory()) continue;
-      const dstDir = path.join(skillsDst, skillDir);
-      fs.cpSync(srcDir, dstDir, { recursive: true });
-    }
-  }
+  const groupSessionsDir = path.join(DATA_DIR, 'sessions', group.folder, '.claude');
+  ensureClaudeHome(groupSessionsDir, false);
   mounts.push({
     hostPath: groupSessionsDir,
-    containerPath: '/home/node/.claude',
+    containerPath: CLAUDE_HOME_PATH,
     readonly: false,
   });
 
-  // Per-group IPC namespace: each group gets its own IPC directory
-  // This prevents cross-group privilege escalation via IPC
   const groupIpcDir = resolveGroupIpcPath(group.folder);
   fs.mkdirSync(path.join(groupIpcDir, 'messages'), { recursive: true });
   fs.mkdirSync(path.join(groupIpcDir, 'tasks'), { recursive: true });
@@ -253,21 +273,8 @@ function buildVolumeMounts(
     readonly: false,
   });
 
-  // Copy agent-runner source into a per-group writable location so agents
-  // can customize it (add tools, change behavior) without affecting other
-  // groups. Recompiled on container startup via entrypoint.sh.
-  const agentRunnerSrc = path.join(
-    projectRoot,
-    'container',
-    'agent-runner',
-    'src',
-  );
-  const groupAgentRunnerDir = path.join(
-    DATA_DIR,
-    'sessions',
-    group.folder,
-    'agent-runner-src',
-  );
+  const agentRunnerSrc = path.join(projectRoot, 'container', 'agent-runner', 'src');
+  const groupAgentRunnerDir = path.join(DATA_DIR, 'sessions', group.folder, 'agent-runner-src');
   if (
     fs.existsSync(agentRunnerSrc) &&
     (syncAgentRunnerSource || !fs.existsSync(groupAgentRunnerDir))
@@ -283,8 +290,7 @@ function buildVolumeMounts(
     readonly: false,
   });
 
-  // Additional mounts validated against external allowlist (tamper-proof from containers)
-  if (!useTalkMainProfile && group.containerConfig?.additionalMounts) {
+  if (group.containerConfig?.additionalMounts) {
     const validatedMounts = validateAdditionalMounts(
       group.containerConfig.additionalMounts,
       group.name,
@@ -294,6 +300,36 @@ function buildVolumeMounts(
   }
 
   return mounts;
+}
+
+function buildVolumeMounts(
+  target: ContainerExecutionTarget,
+  isMain: boolean,
+  syncAgentRunnerSource = false,
+  toolProfile: ContainerInput['toolProfile'] = 'default',
+  ephemeralContextDir?: string,
+  projectMountHostPath?: string | null,
+): VolumeMount[] {
+  const projectRoot = process.cwd();
+  if (toolProfile === 'talk_main') {
+    return buildTalkMainVolumeMounts(
+      projectRoot,
+      ephemeralContextDir,
+      projectMountHostPath,
+    );
+  }
+
+  if (target.kind !== 'legacy_group') {
+    throw new Error(
+      `Execution target ${target.kind} does not support legacy container profiles.`,
+    );
+  }
+
+  return buildLegacyVolumeMounts(
+    target.group,
+    isMain,
+    syncAgentRunnerSource,
+  );
 }
 
 /**
@@ -337,31 +373,36 @@ function buildContainerArgs(
 }
 
 export async function runContainerAgent(
-  group: RegisteredGroup,
+  target: ContainerExecutionTarget,
   input: ContainerInput,
   onProcess: (proc: ChildProcess, containerName: string) => void,
   onOutput?: (output: ContainerOutput) => Promise<void>,
 ): Promise<ContainerOutput> {
   const startTime = Date.now();
-
-  const groupDir = resolveGroupFolderPath(group.folder);
-  fs.mkdirSync(groupDir, { recursive: true });
+  const targetFolder = getExecutionTargetFolder(target);
+  const targetName = getExecutionTargetName(target);
+  const logsDir =
+    target.kind === 'legacy_group'
+      ? path.join(resolveGroupFolderPath(target.group.folder), 'logs')
+      : target.logsDir;
+  const containerConfig =
+    target.kind === 'legacy_group' ? target.group.containerConfig : undefined;
 
   const mounts = buildVolumeMounts(
-    group,
+    target,
     input.isMain,
     input.toolProfile === 'web_talk' || input.toolProfile === 'talk_main',
     input.toolProfile,
     input.ephemeralContextDir,
     input.projectMountHostPath,
   );
-  const safeName = group.folder.replace(/[^a-zA-Z0-9-]/g, '-');
+  const safeName = targetFolder.replace(/[^a-zA-Z0-9-]/g, '-');
   const containerName = `nanoclaw-${safeName}-${Date.now()}`;
   const containerArgs = buildContainerArgs(mounts, containerName);
 
   logger.debug(
     {
-      group: group.name,
+      group: targetName,
       containerName,
       mounts: mounts.map(
         (m) =>
@@ -374,7 +415,7 @@ export async function runContainerAgent(
 
   logger.info(
     {
-      group: group.name,
+      group: targetName,
       containerName,
       mountCount: mounts.length,
       isMain: input.isMain,
@@ -382,7 +423,6 @@ export async function runContainerAgent(
     'Spawning container agent',
   );
 
-  const logsDir = path.join(groupDir, 'logs');
   fs.mkdirSync(logsDir, { recursive: true });
 
   return new Promise((resolve) => {
@@ -422,7 +462,7 @@ export async function runContainerAgent(
           stdout += chunk.slice(0, remaining);
           stdoutTruncated = true;
           logger.warn(
-            { group: group.name, size: stdout.length },
+            { group: targetName, size: stdout.length },
             'Container stdout truncated due to size limit',
           );
         } else {
@@ -456,7 +496,7 @@ export async function runContainerAgent(
             outputChain = outputChain.then(() => onOutput(parsed));
           } catch (err) {
             logger.warn(
-              { group: group.name, error: err },
+              { group: targetName, error: err },
               'Failed to parse streamed output chunk',
             );
           }
@@ -468,7 +508,7 @@ export async function runContainerAgent(
       const chunk = data.toString();
       const lines = chunk.trim().split('\n');
       for (const line of lines) {
-        if (line) logger.debug({ container: group.folder }, line);
+        if (line) logger.debug({ container: targetFolder }, line);
       }
       // Don't reset timeout on stderr — SDK writes debug logs continuously.
       // Timeout only resets on actual output (OUTPUT_MARKER in stdout).
@@ -478,7 +518,7 @@ export async function runContainerAgent(
         stderr += chunk.slice(0, remaining);
         stderrTruncated = true;
         logger.warn(
-          { group: group.name, size: stderr.length },
+          { group: targetName, size: stderr.length },
           'Container stderr truncated due to size limit',
         );
       } else {
@@ -488,7 +528,7 @@ export async function runContainerAgent(
 
     let timedOut = false;
     let hadStreamingOutput = false;
-    const configTimeout = group.containerConfig?.timeout || CONTAINER_TIMEOUT;
+    const configTimeout = containerConfig?.timeout || CONTAINER_TIMEOUT;
     // Grace period: hard timeout must be at least IDLE_TIMEOUT + 30s so the
     // graceful _close sentinel has time to trigger before the hard kill fires.
     const timeoutMs = Math.max(configTimeout, IDLE_TIMEOUT + 30_000);
@@ -496,13 +536,13 @@ export async function runContainerAgent(
     const killOnTimeout = () => {
       timedOut = true;
       logger.error(
-        { group: group.name, containerName },
+        { group: targetName, containerName },
         'Container timeout, stopping gracefully',
       );
       exec(stopContainer(containerName), { timeout: 15000 }, (err) => {
         if (err) {
           logger.warn(
-            { group: group.name, containerName, err },
+            { group: targetName, containerName, err },
             'Graceful stop failed, force killing',
           );
           container.kill('SIGKILL');
@@ -530,7 +570,7 @@ export async function runContainerAgent(
           [
             `=== Container Run Log (TIMEOUT) ===`,
             `Timestamp: ${new Date().toISOString()}`,
-            `Group: ${group.name}`,
+            `Group: ${targetName}`,
             `Container: ${containerName}`,
             `Duration: ${duration}ms`,
             `Exit Code: ${code}`,
@@ -543,7 +583,7 @@ export async function runContainerAgent(
         // container being reaped after the idle period expired.
         if (hadStreamingOutput) {
           logger.info(
-            { group: group.name, containerName, duration, code },
+            { group: targetName, containerName, duration, code },
             'Container timed out after output (idle cleanup)',
           );
           outputChain.then(() => {
@@ -557,7 +597,7 @@ export async function runContainerAgent(
         }
 
         logger.error(
-          { group: group.name, containerName, duration, code },
+          { group: targetName, containerName, duration, code },
           'Container timed out with no output',
         );
 
@@ -577,7 +617,7 @@ export async function runContainerAgent(
       const logLines = [
         `=== Container Run Log ===`,
         `Timestamp: ${new Date().toISOString()}`,
-        `Group: ${group.name}`,
+        `Group: ${targetName}`,
         `IsMain: ${input.isMain}`,
         `Duration: ${duration}ms`,
         `Exit Code: ${code}`,
@@ -630,7 +670,7 @@ export async function runContainerAgent(
       if (code !== 0) {
         logger.error(
           {
-            group: group.name,
+            group: targetName,
             code,
             duration,
             stderr,
@@ -652,7 +692,7 @@ export async function runContainerAgent(
       if (onOutput) {
         outputChain.then(() => {
           logger.info(
-            { group: group.name, duration, newSessionId },
+            { group: targetName, duration, newSessionId },
             'Container completed (streaming mode)',
           );
           resolve({
@@ -685,7 +725,7 @@ export async function runContainerAgent(
 
         logger.info(
           {
-            group: group.name,
+            group: targetName,
             duration,
             status: output.status,
             hasResult: !!output.result,
@@ -697,7 +737,7 @@ export async function runContainerAgent(
       } catch (err) {
         logger.error(
           {
-            group: group.name,
+            group: targetName,
             stdout,
             stderr,
             error: err,
@@ -716,7 +756,7 @@ export async function runContainerAgent(
     container.on('error', (err) => {
       clearTimeout(timeout);
       logger.error(
-        { group: group.name, containerName, error: err },
+        { group: targetName, containerName, error: err },
         'Container spawn error',
       );
       resolve({

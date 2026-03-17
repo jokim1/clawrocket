@@ -8,7 +8,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import { getAllRegisteredGroups, getDb } from '../../db.js';
+import { getDb } from '../../db.js';
 import {
   createRegisteredAgent,
   deleteRegisteredAgent,
@@ -63,10 +63,6 @@ export function getDefaultTalkAgentId(): string {
     return candidate;
   }
   return getMainAgentId();
-}
-
-export function hasRegisteredMainGroup(): boolean {
-  return Object.values(getAllRegisteredGroups()).some((group) => group.isMain);
 }
 
 /**
@@ -376,19 +372,10 @@ export function getTalkAgentRows(talkId: string): TalkAgentRow[] {
 }
 
 /**
- * Self-heal legacy bootstrap Talks on installs that do not have a registered
- * main NanoClaw runtime group yet.
- *
- * The original bootstrap path assigned the seeded container-capable main agent
- * to every new Talk. On hosts without a registered main group, that made fresh
- * Talks fail out of the box. We only rewrite the narrow legacy case:
- * - no registered main group exists
- * - the Talk has zero agents, or exactly one assigned agent
- * - that lone agent is the seeded main agent
+ * Ensure a Talk always has at least one assigned agent. Existing assignments
+ * are preserved as-is; only broken zero-agent Talks are healed.
  */
 export function ensureTalkUsesUsableDefaultAgent(talkId: string): void {
-  if (hasRegisteredMainGroup()) return;
-
   const defaultTalkAgentId = getDefaultTalkAgentId();
   const defaultTalkAgent = getRegisteredAgent(defaultTalkAgentId);
   if (!defaultTalkAgent || defaultTalkAgent.enabled !== 1) {
@@ -412,33 +399,6 @@ export function ensureTalkUsesUsableDefaultAgent(talkId: string): void {
     ]);
     return;
   }
-
-  if (rows.length !== 1) return;
-
-  const seededMainAgentId = getMainAgentId();
-  const onlyAgent = rows[0]!;
-  if (
-    defaultTalkAgentId === seededMainAgentId ||
-    onlyAgent.registeredAgentId !== seededMainAgentId
-  ) {
-    return;
-  }
-
-  const preserveCustomNickname = onlyAgent.nicknameMode === 'custom';
-
-  setTalkAgents(talkId, [
-    {
-      id: defaultTalkAgentId,
-      sourceKind: onlyAgent.sourceKind,
-      providerId: onlyAgent.providerId,
-      modelId: onlyAgent.modelId || 'default',
-      nickname: preserveCustomNickname ? onlyAgent.nickname : null,
-      nicknameMode: preserveCustomNickname ? 'custom' : 'auto',
-      personaRole: onlyAgent.personaRole || 'assistant',
-      isPrimary: true,
-      sortOrder: 0,
-    },
-  ]);
 }
 
 // ---------------------------------------------------------------------------

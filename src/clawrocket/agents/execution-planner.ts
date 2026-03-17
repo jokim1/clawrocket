@@ -1,4 +1,4 @@
-import { getAllRegisteredGroups, getDb } from '../../db.js';
+import { getDb } from '../../db.js';
 import {
   getEffectiveToolsForAgent,
   type EffectiveToolAccess,
@@ -51,7 +51,6 @@ export class ExecutionPlannerError extends Error {
     public readonly code:
       | 'CONTAINER_BROWSER_REQUIRES_SHELL'
       | 'CONTAINER_PROVIDER_INCOMPATIBLE'
-      | 'CONTAINER_BACKEND_UNAVAILABLE'
       | 'CONTAINER_CREDENTIAL_MISSING'
       | 'DIRECT_EXECUTION_UNAVAILABLE',
     public readonly details?: Record<string, unknown>,
@@ -77,10 +76,6 @@ function getProviderRecord(providerId: string): LlmProviderRecord | undefined {
   return getDb()
     .prepare(`SELECT * FROM llm_providers WHERE id = ? LIMIT 1`)
     .get(providerId) as LlmProviderRecord | undefined;
-}
-
-function hasContainerBackend(): boolean {
-  return Object.values(getAllRegisteredGroups()).some((group) => group.isMain);
 }
 
 function getAnthropicApiKeyFromDb(): string | null {
@@ -267,13 +262,6 @@ export function planExecution(
         },
       );
     }
-  }
-
-  if (!hasContainerBackend()) {
-    throw new ExecutionPlannerError(
-      'Container execution is unavailable because no main NanoClaw group is registered.',
-      'CONTAINER_BACKEND_UNAVAILABLE',
-    );
   }
 
   const provider = getProviderRecord(agent.provider_id);

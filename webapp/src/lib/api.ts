@@ -932,6 +932,9 @@ export async function createTalkThread(input: {
     includeJson: true,
     body: JSON.stringify({ title: input.title ?? null }),
   });
+  if (!envelope.thread || typeof envelope.thread.id !== 'string') {
+    throw new Error('Invalid thread response');
+  }
   return {
     id: envelope.thread.id,
     talkId: envelope.thread.talk_id,

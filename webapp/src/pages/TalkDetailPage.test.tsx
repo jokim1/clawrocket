@@ -152,6 +152,23 @@ describe('TalkDetailPage', () => {
     expect(screen.queryByLabelText('Response mode')).toBeNull();
   });
 
+  it('creates and selects a new thread from the Talk thread rail', async () => {
+    const user = userEvent.setup();
+    installTalkDetailFetch();
+
+    renderDetailPage('/app/talks/talk-1');
+
+    await screen.findByPlaceholderText('Send a message to this thread');
+
+    const threadRail = screen.getByLabelText('Talk threads');
+    await user.click(within(threadRail).getByRole('button', { name: 'New' }));
+
+    expect(
+      await screen.findByRole('heading', { name: 'Thread thread-2' }),
+    ).toBeTruthy();
+    expect(screen.getByPlaceholderText('Send a message to this thread')).toBeTruthy();
+  });
+
   it('lets owners manage the read-only project mount from the Agents tab', async () => {
     const user = userEvent.setup();
     installTalkDetailFetch();
