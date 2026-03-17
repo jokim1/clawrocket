@@ -19,6 +19,10 @@ import {
   type SubscriptionHostStatusView,
 } from '../../talks/executor-subscription-host-auth.js';
 import { TALK_EXECUTOR_ANTHROPIC_BASE_URL } from '../../config.js';
+import {
+  decryptProviderSecret,
+  encryptProviderSecret,
+} from '../../llm/provider-secret-store.js';
 
 export type ExecutorAuthMode =
   | 'subscription'
@@ -179,10 +183,7 @@ function getAnthropicApiKey(): string | null {
   const row = getAnthropicSecretRow();
   if (!row?.ciphertext) return null;
   try {
-    const parsed = JSON.parse(row.ciphertext) as { apiKey?: unknown };
-    return typeof parsed.apiKey === 'string' && parsed.apiKey.trim()
-      ? parsed.apiKey.trim()
-      : null;
+    return decryptProviderSecret(row.ciphertext).apiKey.trim();
   } catch {
     return null;
   }
@@ -500,7 +501,7 @@ function saveAnthropicApiKey(apiKey: string, userId: string): void {
        ON CONFLICT(provider_id) DO UPDATE SET ciphertext = excluded.ciphertext,
          updated_at = excluded.updated_at, updated_by = excluded.updated_by`,
     )
-    .run(JSON.stringify({ apiKey }), now, userId);
+    .run(encryptProviderSecret({ apiKey }), now, userId);
   upsertSettingValue({
     key: 'executor.updatedAt',
     value: now,

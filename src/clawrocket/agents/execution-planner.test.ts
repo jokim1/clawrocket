@@ -6,6 +6,7 @@ import {
   upsertSettingValue,
   upsertUser,
 } from '../db/index.js';
+import { encryptProviderSecret } from '../llm/provider-secret-store.js';
 import {
   buildDefaultTalkToolPermissions,
   createRegisteredAgent,
@@ -26,7 +27,7 @@ function seedAnthropicSecret(apiKey = 'sk-ant-test'): void {
        ON CONFLICT(provider_id) DO UPDATE SET ciphertext = excluded.ciphertext,
          updated_at = excluded.updated_at, updated_by = excluded.updated_by`,
     )
-    .run(JSON.stringify({ apiKey }), now, 'owner-1');
+    .run(encryptProviderSecret({ apiKey }), now, 'owner-1');
 }
 
 describe('execution-planner', () => {

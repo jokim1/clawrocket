@@ -710,8 +710,11 @@ describe('TalkDetailPage', () => {
     await screen.findByPlaceholderText('Send a message to this thread');
 
     const targetGroup = screen.getByRole('group', { name: 'Selected agents' });
+    const refreshedTargetGroup = screen.getByRole('group', {
+      name: 'Selected agents',
+    });
     await user.click(
-      within(targetGroup).getByRole('button', {
+      within(refreshedTargetGroup).getByRole('button', {
         name: /GPT-5 Mini \(Critic\)/i,
       }),
     );
@@ -1253,6 +1256,89 @@ describe('TalkDetailPage', () => {
     expect(
       screen.getByPlaceholderText('Send a message to this thread'),
     ).toHaveAttribute('disabled');
+  });
+
+  it('warns and blocks send before a multi-agent Talk turn includes a container-only agent', async () => {
+    const user = userEvent.setup();
+    const sendBodies: Array<{ content: string; targetAgentIds: string[] }> = [];
+
+    installTalkDetailFetch({
+      registeredAgents: [
+        buildRegisteredAgent({
+          id: 'agent-claude',
+          name: 'Claude Sonnet 4.6',
+          providerId: 'provider.anthropic',
+          modelId: 'claude-sonnet-4-6',
+          executionPreview: {
+            surface: 'main',
+            backend: 'container',
+            authPath: 'subscription',
+            routeReason: 'subscription_fallback',
+            ready: true,
+            message:
+              'Main will use Claude subscription via container fallback because no Anthropic API key is configured.',
+          },
+        }),
+        buildRegisteredAgent({
+          id: 'agent-openai',
+          name: 'GPT-5 Mini',
+          providerId: 'provider.openai',
+          modelId: 'gpt-5-mini',
+        }),
+      ],
+      onSendMessage: (body) => {
+        sendBodies.push(body);
+        return {
+          talkId: 'talk-1',
+          message: buildMessage({
+            id: 'msg-posted',
+            role: 'user',
+            content: body.content,
+            createdAt: '2026-03-06T00:00:05.000Z',
+          }),
+          runs: body.targetAgentIds.map((agentId, index) =>
+            buildRun({
+              id: `run-${index + 1}`,
+              threadId: body.threadId ?? DEFAULT_THREAD_ID,
+              status: 'queued',
+              createdAt: `2026-03-06T00:00:0${index + 6}.000Z`,
+              triggerMessageId: 'msg-posted',
+              targetAgentId: agentId,
+              targetAgentNickname:
+                agentId === 'agent-claude' ? 'Claude Sonnet 4.6' : 'GPT-5 Mini',
+            }),
+          ),
+        };
+      },
+    });
+
+    renderDetailPage('/app/talks/talk-1');
+    const composer = await screen.findByPlaceholderText(
+      'Send a message to this thread',
+    );
+    const sendButton = screen.getByRole('button', { name: 'Send' });
+
+    const statusPills = screen.getByRole('list', { name: 'Talk agent status' });
+    expect(within(statusPills).getByText('Single-agent only')).toBeTruthy();
+
+    await user.type(composer, 'Which team has the edge?');
+    expect(sendButton).not.toHaveAttribute('disabled');
+
+    const targetGroup = screen.getByRole('group', { name: 'Selected agents' });
+    const openAiChip = within(targetGroup).getByRole('button', {
+      name: /GPT-5 Mini \(Critic\)/i,
+    });
+    await user.click(openAiChip);
+
+    expect(
+      await screen.findByText(
+        /can only run as the sole selected agent in Talk right now/i,
+      ),
+    ).toBeTruthy();
+    expect(sendButton).toHaveAttribute('disabled');
+
+    await user.keyboard('{Enter}');
+    await waitFor(() => expect(sendBodies).toHaveLength(0));
   });
 
   it('submits on Enter and keeps Shift+Enter for a newline in the composer', async () => {

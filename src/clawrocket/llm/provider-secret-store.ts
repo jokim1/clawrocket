@@ -38,6 +38,21 @@ function deriveKey(): Buffer {
   );
 }
 
+function validateProviderSecretPayload(
+  payload: ProviderSecretPayload,
+): ProviderSecretPayload {
+  if (!payload.apiKey || typeof payload.apiKey !== 'string') {
+    throw new Error('Provider secret payload missing apiKey');
+  }
+  if (
+    payload.organizationId !== undefined &&
+    typeof payload.organizationId !== 'string'
+  ) {
+    throw new Error('Provider secret payload organizationId must be a string');
+  }
+  return payload;
+}
+
 export function encryptProviderSecret(payload: ProviderSecretPayload): string {
   const iv = crypto.randomBytes(12);
   const key = deriveKey();
@@ -83,14 +98,5 @@ export function decryptProviderSecret(
     decipher.final(),
   ]).toString('utf8');
   const payload = JSON.parse(plaintext) as ProviderSecretPayload;
-  if (!payload.apiKey || typeof payload.apiKey !== 'string') {
-    throw new Error('Provider secret payload missing apiKey');
-  }
-  if (
-    payload.organizationId !== undefined &&
-    typeof payload.organizationId !== 'string'
-  ) {
-    throw new Error('Provider secret payload organizationId must be a string');
-  }
-  return payload;
+  return validateProviderSecretPayload(payload);
 }

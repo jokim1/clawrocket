@@ -32,6 +32,7 @@
 
 import { getDb } from '../../db.js';
 import type { RegisteredAgentRecord } from '../db/agent-accessors.js';
+import { decryptProviderSecret } from '../llm/provider-secret-store.js';
 import type { LlmProviderConfig, LlmSecret } from './llm-client.js';
 import {
   TALK_EXECUTOR_ANTHROPIC_API_KEY,
@@ -159,7 +160,7 @@ function resolveSecret(
 
   if (secretRecord) {
     try {
-      return JSON.parse(secretRecord.ciphertext);
+      return decryptProviderSecret(secretRecord.ciphertext);
     } catch {
       throw new ExecutionResolverError(
         `Failed to decrypt provider secret for ${agent.provider_id}`,

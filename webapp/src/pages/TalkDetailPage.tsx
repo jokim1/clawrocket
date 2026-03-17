@@ -1475,6 +1475,59 @@ function buildTargetSelection(
   return primary ? [primary.id] : agents[0] ? [agents[0].id] : [];
 }
 
+type TalkAgentExecutionGuardrail = {
+  kind: 'direct_safe' | 'single_agent_only' | 'unavailable';
+  badgeLabel: string | null;
+  message: string | null;
+};
+
+function summarizeAgentLabels(labels: string[]): string {
+  if (labels.length === 0) return 'One or more selected agents';
+  if (labels.length === 1) return labels[0]!;
+  if (labels.length === 2) return `${labels[0]} and ${labels[1]}`;
+  return `${labels.slice(0, -1).join(', ')}, and ${labels.at(-1)}`;
+}
+
+function buildTalkAgentExecutionGuardrail(
+  agent: TalkAgent,
+  registeredAgent: RegisteredAgent | undefined,
+): TalkAgentExecutionGuardrail {
+  if (!registeredAgent) {
+    return {
+      kind: 'direct_safe',
+      badgeLabel: null,
+      message: null,
+    };
+  }
+
+  const preview = registeredAgent.executionPreview;
+  if (!preview.ready) {
+    return {
+      kind: 'unavailable',
+      badgeLabel: 'Unavailable',
+      message: preview.message,
+    };
+  }
+
+  // Talk currently reuses the Main execution preview as a conservative routing
+  // hint. Any agent that needs the container backend on Main also cannot join
+  // current multi-agent Talk rounds, even though it can still run alone.
+  if (preview.backend === 'container') {
+    return {
+      kind: 'single_agent_only',
+      badgeLabel: 'Single-agent only',
+      message:
+        'Requires container execution. In Talk, target this agent alone until mixed multi-agent container rounds are supported.',
+    };
+  }
+
+  return {
+    kind: 'direct_safe',
+    badgeLabel: null,
+    message: null,
+  };
+}
+
 function serializeTalkAgentForDraftCompare(agent: TalkAgent): string {
   return JSON.stringify({
     id: agent.id,
@@ -2363,6 +2416,27 @@ export function TalkDetailPage({
       buildTargetSelection(effectiveAgents, current),
     );
   }, [effectiveAgents]);
+  const registeredAgentsById = useMemo(
+    () =>
+      new Map(
+        registeredAgentsCatalog.map((agent) => [agent.id, agent] as const),
+      ),
+    [registeredAgentsCatalog],
+  );
+  const talkAgentExecutionGuardrailsById = useMemo(
+    () =>
+      effectiveAgents.reduce<Record<string, TalkAgentExecutionGuardrail>>(
+        (acc, agent) => {
+          acc[agent.id] = buildTalkAgentExecutionGuardrail(
+            agent,
+            registeredAgentsById.get(agent.id),
+          );
+          return acc;
+        },
+        {},
+      ),
+    [effectiveAgents, registeredAgentsById],
+  );
   const agentLabelById = useMemo(
     () =>
       effectiveAgents.reduce<Record<string, string>>((acc, agent) => {
@@ -2384,6 +2458,65 @@ export function TalkDetailPage({
     () => effectiveAgents.filter((agent) => targetAgentIds.includes(agent.id)),
     [effectiveAgents, targetAgentIds],
   );
+  const selectedUnavailableAgents = useMemo(
+    () =>
+      selectedTargetAgents.filter(
+        (agent) =>
+          talkAgentExecutionGuardrailsById[agent.id]?.kind === 'unavailable',
+      ),
+    [selectedTargetAgents, talkAgentExecutionGuardrailsById],
+  );
+  const selectedSingleAgentOnlyAgents = useMemo(
+    () =>
+      selectedTargetAgents.length > 1
+        ? selectedTargetAgents.filter(
+            (agent) =>
+              talkAgentExecutionGuardrailsById[agent.id]?.kind ===
+              'single_agent_only',
+          )
+        : [],
+    [selectedTargetAgents, talkAgentExecutionGuardrailsById],
+  );
+  const composerGuardrailMessage = useMemo(() => {
+    if (selectedUnavailableAgents.length > 0) {
+      const labels = selectedUnavailableAgents.map((agent) =>
+        buildAgentLabel(agent),
+      );
+      if (labels.length === 1) {
+        const status =
+          talkAgentExecutionGuardrailsById[selectedUnavailableAgents[0]!.id];
+        return `${labels[0]} does not have a valid execution path right now. ${
+          status?.message || 'Adjust the selected agents before sending.'
+        }`;
+      }
+      return `${summarizeAgentLabels(labels)} do not currently have a valid execution path. Adjust the selected agents before sending.`;
+    }
+
+    if (selectedSingleAgentOnlyAgents.length > 0) {
+      const labels = selectedSingleAgentOnlyAgents.map((agent) =>
+        buildAgentLabel(agent),
+      );
+      if (labels.length === 1) {
+        return `${labels[0]} can only run as the sole selected agent in Talk right now because it requires container execution. Target that agent alone, or use a direct-safe agent set.`;
+      }
+      return `${summarizeAgentLabels(labels)} require container execution and can only run as sole selected agents in Talk right now. Target those agents alone, or use a direct-safe agent set.`;
+    }
+
+    return null;
+  }, [
+    selectedSingleAgentOnlyAgents,
+    selectedUnavailableAgents,
+    talkAgentExecutionGuardrailsById,
+  ]);
+  const selectedGuardrailAgentIds = useMemo(
+    () =>
+      new Set([
+        ...selectedUnavailableAgents.map((agent) => agent.id),
+        ...selectedSingleAgentOnlyAgents.map((agent) => agent.id),
+      ]),
+    [selectedSingleAgentOnlyAgents, selectedUnavailableAgents],
+  );
+  const sendBlockedByGuardrail = Boolean(composerGuardrailMessage);
   const composerTargetHelp = useMemo(() => {
     if (selectedTargetAgents.length <= 1) {
       return 'Only the selected agent will respond.';
@@ -3811,6 +3944,9 @@ export function TalkDetailPage({
       }
       return [...current, agentId];
     });
+    if (state.kind === 'ready' && state.sendState.status === 'error') {
+      dispatch({ type: 'SEND_CLEARED' });
+    }
   };
 
   const submitDraft = async () => {
@@ -3851,6 +3987,14 @@ export function TalkDetailPage({
       dispatch({
         type: 'SEND_FAILED',
         message: 'Save agent changes before sending a message.',
+        lastDraft: content,
+      });
+      return;
+    }
+    if (composerGuardrailMessage) {
+      dispatch({
+        type: 'SEND_FAILED',
+        message: composerGuardrailMessage,
         lastDraft: content,
       });
       return;
@@ -4857,22 +5001,34 @@ export function TalkDetailPage({
                   role="list"
                   aria-label="Talk agent status"
                 >
-                  {effectiveAgents.map((agent) => (
-                    <span
-                      key={agent.id}
-                      className={`talk-status-pill talk-status-pill-${agent.health}`}
-                      role="listitem"
-                    >
+                  {effectiveAgents.map((agent) => {
+                    const guardrail =
+                      talkAgentExecutionGuardrailsById[agent.id];
+                    return (
                       <span
-                        className={`talk-status-dot talk-status-dot-${agent.health}`}
-                        aria-hidden="true"
-                      />
-                      <span>{buildAgentLabel(agent)}</span>
-                      {agent.isPrimary ? (
-                        <span className="talk-status-primary">Primary</span>
-                      ) : null}
-                    </span>
-                  ))}
+                        key={agent.id}
+                        className={`talk-status-pill talk-status-pill-${agent.health}`}
+                        role="listitem"
+                        title={guardrail?.message || undefined}
+                      >
+                        <span
+                          className={`talk-status-dot talk-status-dot-${agent.health}`}
+                          aria-hidden="true"
+                        />
+                        <span>{buildAgentLabel(agent)}</span>
+                        {guardrail?.badgeLabel ? (
+                          <span
+                            className={`talk-status-constraint talk-status-constraint-${guardrail.kind}`}
+                          >
+                            {guardrail.badgeLabel}
+                          </span>
+                        ) : null}
+                        {agent.isPrimary ? (
+                          <span className="talk-status-primary">Primary</span>
+                        ) : null}
+                      </span>
+                    );
+                  })}
                 </div>
               ) : null}
               <div className="talk-tabs-row">
@@ -7584,22 +7740,38 @@ export function TalkDetailPage({
                   >
                     {effectiveAgents.map((agent) => {
                       const selected = targetAgentIds.includes(agent.id);
+                      const guardrail =
+                        talkAgentExecutionGuardrailsById[agent.id];
+                      const hasGuardrailViolation =
+                        selectedGuardrailAgentIds.has(agent.id);
                       return (
                         <button
                           key={agent.id}
                           type="button"
                           className={`composer-target-chip${
                             selected ? ' composer-target-chip-selected' : ''
+                          }${
+                            hasGuardrailViolation
+                              ? ' composer-target-chip-warning'
+                              : ''
                           }`}
                           onClick={() => handleToggleTarget(agent.id)}
                           disabled={state.sendState.status === 'posting'}
                           aria-pressed={selected}
+                          title={guardrail?.message || undefined}
                         >
                           <span
                             className={`talk-status-dot talk-status-dot-${agent.health}`}
                             aria-hidden="true"
                           />
                           <span>{buildAgentLabel(agent)}</span>
+                          {guardrail?.badgeLabel ? (
+                            <span
+                              className={`talk-status-constraint talk-status-constraint-${guardrail.kind}`}
+                            >
+                              {guardrail.badgeLabel}
+                            </span>
+                          ) : null}
                           {agent.isPrimary ? (
                             <span className="talk-status-primary">Primary</span>
                           ) : null}
@@ -7608,6 +7780,14 @@ export function TalkDetailPage({
                     })}
                   </div>
                   <p className="composer-target-help">{composerTargetHelp}</p>
+                  {composerGuardrailMessage ? (
+                    <div
+                      className="inline-banner inline-banner-warning"
+                      role="status"
+                    >
+                      {composerGuardrailMessage}
+                    </div>
+                  ) : null}
 
                   <textarea
                     ref={textareaRef}
@@ -7690,7 +7870,8 @@ export function TalkDetailPage({
                         state.sendState.status === 'posting' ||
                         activeRound ||
                         hasUnsavedAgentChanges ||
-                        !activeThreadId
+                        !activeThreadId ||
+                        sendBlockedByGuardrail
                       }
                     >
                       {state.sendState.status === 'posting'

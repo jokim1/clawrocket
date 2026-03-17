@@ -104,6 +104,41 @@ describe('clawrocket schema init', () => {
     ]);
   });
 
+  it('seeds builtin additional providers for direct-http agents', () => {
+    _initTestDatabase();
+    const db = getDb();
+
+    const providers = db
+      .prepare(
+        `SELECT id, name
+         FROM llm_providers
+         WHERE id IN ('provider.openai', 'provider.gemini', 'provider.nvidia')
+         ORDER BY id`,
+      )
+      .all() as Array<{ id: string; name: string }>;
+
+    expect(providers).toEqual([
+      { id: 'provider.gemini', name: 'Google / Gemini' },
+      { id: 'provider.nvidia', name: 'NVIDIA Kimi2.5' },
+      { id: 'provider.openai', name: 'OpenAI' },
+    ]);
+
+    const models = db
+      .prepare(
+        `SELECT provider_id, model_id
+         FROM llm_provider_models
+         WHERE provider_id IN ('provider.openai', 'provider.gemini', 'provider.nvidia')
+         ORDER BY provider_id, model_id`,
+      )
+      .all() as Array<{ provider_id: string; model_id: string }>;
+
+    expect(models).toEqual([
+      { provider_id: 'provider.gemini', model_id: 'gemini-2.5-flash' },
+      { provider_id: 'provider.nvidia', model_id: 'moonshotai/kimi-k2.5' },
+      { provider_id: 'provider.openai', model_id: 'gpt-5-mini' },
+    ]);
+  });
+
   it('seeds separate main and default Talk agents', () => {
     _initTestDatabase();
     const db = getDb();
