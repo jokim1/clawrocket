@@ -1,19 +1,24 @@
 import type { TalkRunConnectorRecord } from '../db/connector-accessors.js';
 
 import { decryptConnectorSecret } from './connector-secret-store.js';
+import { MAX_GOOGLE_DOCS_BATCH_REQUESTS } from './google-docs-constants.js';
 import {
+  batchUpdateGoogleDoc,
   ConnectorHttpError,
+  fetchGoogleDoc,
   fetchGoogleSheetRange,
   fetchGoogleSheetsMetadata,
   runPostHogQuery,
 } from './http.js';
 import {
   parseConnectorToolName,
+  parseGoogleDocsConnectorConfig,
   parseGoogleSheetsConnectorConfig,
   parsePostHogConnectorConfig,
 } from './runtime.js';
 
 const GOOGLE_SHEETS_TIMEOUT_MS = 10_000;
+const GOOGLE_DOCS_TIMEOUT_MS = 10_000;
 const POSTHOG_TIMEOUT_MS = 15_000;
 const MAX_TOOL_RESULT_BYTES = 512 * 1024;
 const MAX_TOOL_RESULT_CHARS = 16_000;
@@ -135,6 +140,33 @@ function validateSheetRange(value: unknown): string {
     throw new Error('Google Sheets ranges must be 200 characters or fewer.');
   }
   return range;
+}
+
+function validateGoogleDocsBatchUpdateInput(value: unknown): {
+  requests: JsonMap[];
+  writeControl: JsonMap | null;
+} {
+  const input = parseObjectInput(value);
+  const rawRequests = Array.isArray(input?.requests) ? input.requests : [];
+  const requests = rawRequests.map((request) => parseObjectInput(request));
+  if (requests.some((request) => !request)) {
+    throw new Error('Google Docs batchUpdate requests must be JSON objects.');
+  }
+  if (requests.length === 0) {
+    throw new Error(
+      'Google Docs batchUpdate requires a non-empty requests array.',
+    );
+  }
+  if (requests.length > MAX_GOOGLE_DOCS_BATCH_REQUESTS) {
+    throw new Error(
+      `Google Docs batchUpdate supports at most ${MAX_GOOGLE_DOCS_BATCH_REQUESTS} requests per call.`,
+    );
+  }
+
+  return {
+    requests: requests as JsonMap[],
+    writeControl: parseObjectInput(input?.writeControl),
+  };
 }
 
 function serializeToolResult(value: unknown): string {
@@ -290,6 +322,92 @@ async function executeReadRange(
   }
 }
 
+async function executeReadDocument(
+  context: ToolExecutionContext,
+): Promise<ToolExecutionResult> {
+  const config = parseGoogleDocsConnectorConfig(context.connector.config);
+  if (!config) {
+    return {
+      content: 'Google Docs connector is missing documentId.',
+      isError: true,
+      displaySummary: `Read document (${context.connector.name}) failed`,
+    };
+  }
+
+  const secret = decryptConnectorSecret(context.connector.ciphertext);
+  if (secret.kind !== 'google_docs') {
+    return {
+      content: 'Connector credential is not a Google Docs OAuth credential.',
+      isError: true,
+      displaySummary: `Read document (${context.connector.name}) failed`,
+    };
+  }
+
+  const timed = createTimedSignal(context.signal, GOOGLE_DOCS_TIMEOUT_MS);
+  try {
+    const document = await fetchGoogleDoc({
+      connectorId: context.connector.id,
+      secret,
+      documentId: config.documentId,
+      fetchImpl: context.fetchImpl,
+      signal: timed.signal,
+    });
+
+    return {
+      content: serializeToolResult(document),
+      isError: false,
+      displaySummary: `Read Google Doc via ${context.connector.name}`,
+    };
+  } finally {
+    timed.dispose();
+  }
+}
+
+async function executeBatchUpdateDocument(
+  toolInput: unknown,
+  context: ToolExecutionContext,
+): Promise<ToolExecutionResult> {
+  const config = parseGoogleDocsConnectorConfig(context.connector.config);
+  if (!config) {
+    return {
+      content: 'Google Docs connector is missing documentId.',
+      isError: true,
+      displaySummary: `Batch update (${context.connector.name}) failed`,
+    };
+  }
+
+  const secret = decryptConnectorSecret(context.connector.ciphertext);
+  if (secret.kind !== 'google_docs') {
+    return {
+      content: 'Connector credential is not a Google Docs OAuth credential.',
+      isError: true,
+      displaySummary: `Batch update (${context.connector.name}) failed`,
+    };
+  }
+
+  const input = validateGoogleDocsBatchUpdateInput(toolInput);
+  const timed = createTimedSignal(context.signal, GOOGLE_DOCS_TIMEOUT_MS);
+  try {
+    const result = await batchUpdateGoogleDoc({
+      connectorId: context.connector.id,
+      secret,
+      documentId: config.documentId,
+      requests: input.requests,
+      writeControl: input.writeControl,
+      fetchImpl: context.fetchImpl,
+      signal: timed.signal,
+    });
+
+    return {
+      content: serializeToolResult(result),
+      isError: false,
+      displaySummary: `Updated Google Doc via ${context.connector.name}`,
+    };
+  } finally {
+    timed.dispose();
+  }
+}
+
 export async function executeConnectorTool(
   toolName: string,
   toolInput: unknown,
@@ -312,6 +430,10 @@ export async function executeConnectorTool(
         return await executeListSheets(context);
       case 'read_range':
         return await executeReadRange(toolInput, context);
+      case 'read_document':
+        return await executeReadDocument(context);
+      case 'batch_update':
+        return await executeBatchUpdateDocument(toolInput, context);
       default:
         return {
           content: `Unsupported connector tool: ${parsed.operation}`,

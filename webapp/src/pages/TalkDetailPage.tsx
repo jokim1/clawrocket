@@ -6026,12 +6026,13 @@ export function TalkDetailPage({
           {currentTab === 'channels' ? (
             <section className="talk-tab-panel" aria-label="Talk channels">
               <div className="agents-panel-header">
-                <h2>Channels</h2>
+                <h2>Channel Bindings</h2>
               </div>
               <p className="policy-muted">
-                Bind this talk to external channels so inbound Telegram messages
-                can create Talk turns and completed replies can be delivered
-                back out.
+                Bind this talk to external channels so inbound Telegram
+                messages can create Talk turns and completed replies can be
+                delivered back out. Data Connectors are separate and only power
+                query tools during execution.
               </p>
 
               {channelStatus.status === 'error' ? (
@@ -6855,7 +6856,9 @@ export function TalkDetailPage({
               </div>
               <p className="policy-muted">
                 Attach org-level data sources to this talk. Attached connectors
-                are available as query tools during talk execution.
+                are available as query and document tools during talk
+                execution. Channel Bindings are configured separately for
+                external message delivery.
               </p>
 
               {canManageTalkConnectors ? (

@@ -416,23 +416,24 @@ Execution: Standard
 
 The historical implementation-order checklist above is no longer the right roadmap. The current state is:
 
-- Phase 1 through **Phase 6** are shipped in practical terms, including:
+- Phase 1 through **Phase 7** are shipped in practical terms, including:
   - direct executor tool loop
   - Talk agent persistence and UI
   - Main executor web tools
   - ordered/panel multi-agent Talk orchestration
   - stateless per-agent container routing for Main + supported single-agent Talk turns
   - Rules elevation and structured Talk State
-- The next practical milestone is **Phase 7**:
-  - complete the product split between Data Connectors and Channel Bindings
-  - make existing binding policies fully editable
-  - add Google Docs as a real connector/tool surface
-- After that comes **Phase 8**:
+  - explicit separation between Channel Bindings and Data Connectors in the Talk UI
+  - fully editable channel binding policies
+  - Google Docs as a real data connector/tool surface
+- The next practical milestone is **Phase 8**:
   - per-run context inspection
   - lightweight role-aware context hints
   - lightweight retrieval on top of the standardized context package
-- Post-phase work remains:
+- Separate near-term polish after Phase 8:
   - mixed direct/container multi-agent backend parity
+  - pre-send guardrails for unsupported heavy-tool agent mixes in multi-agent Talks
+- Post-phase work remains:
   - Main → Talk migration when channel sync needs it
   - Outputs, Jobs, and a fuller execution planner
   - eventual Talk → Workspace rename once the model materially converges

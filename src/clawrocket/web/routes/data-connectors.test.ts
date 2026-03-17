@@ -323,6 +323,93 @@ describe('data connector routes', () => {
     expect(clearBody.data.connector.verificationStatus).toBe('missing');
   });
 
+  it('stores Google Docs connector credentials from the linked Google account', async () => {
+    const createGoogleRes = await server.request('/api/v1/data-connectors', {
+      method: 'POST',
+      headers: {
+        Authorization: 'Bearer owner-token',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        name: 'Season Preview Doc',
+        connectorKind: 'google_docs',
+        config: {
+          documentId: 'doc-1',
+        },
+      }),
+    });
+    expect(createGoogleRes.status).toBe(201);
+    const googleBody = (await createGoogleRes.json()) as any;
+    const googleConnectorId = googleBody.data.connector.id as string;
+
+    upsertUserGoogleCredential({
+      userId: 'owner-1',
+      googleSubject: 'google-subject-1',
+      email: 'owner@example.com',
+      scopes: ['spreadsheets.readonly'],
+      ciphertext: encryptGoogleToolCredential({
+        kind: 'google_tools',
+        accessToken: 'google-access-token',
+        refreshToken: 'google-refresh-token',
+        expiryDate: new Date(Date.now() + 300_000).toISOString(),
+        scopes: ['spreadsheets.readonly'],
+        tokenType: 'Bearer',
+      }),
+      accessExpiresAt: new Date(Date.now() + 300_000).toISOString(),
+    });
+
+    const missingScopeRes = await server.request(
+      `/api/v1/data-connectors/${encodeURIComponent(googleConnectorId)}/credential`,
+      {
+        method: 'PUT',
+        headers: {
+          Authorization: 'Bearer owner-token',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          useGoogleAccount: true,
+        }),
+      },
+    );
+    expect(missingScopeRes.status).toBe(400);
+    const missingScopeBody = (await missingScopeRes.json()) as any;
+    expect(missingScopeBody.error.code).toBe('google_scopes_missing');
+
+    upsertUserGoogleCredential({
+      userId: 'owner-1',
+      googleSubject: 'google-subject-1',
+      email: 'owner@example.com',
+      scopes: ['documents'],
+      ciphertext: encryptGoogleToolCredential({
+        kind: 'google_tools',
+        accessToken: 'google-access-token',
+        refreshToken: 'google-refresh-token',
+        expiryDate: new Date(Date.now() + 300_000).toISOString(),
+        scopes: ['documents'],
+        tokenType: 'Bearer',
+      }),
+      accessExpiresAt: new Date(Date.now() + 300_000).toISOString(),
+    });
+
+    const saveRes = await server.request(
+      `/api/v1/data-connectors/${encodeURIComponent(googleConnectorId)}/credential`,
+      {
+        method: 'PUT',
+        headers: {
+          Authorization: 'Bearer owner-token',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          useGoogleAccount: true,
+        }),
+      },
+    );
+    expect(saveRes.status).toBe(200);
+    const saveBody = (await saveRes.json()) as any;
+    expect(saveBody.data.connector.hasCredential).toBe(true);
+    expect(saveBody.data.connector.verificationStatus).toBe('not_verified');
+  });
+
   it('rejects empty talk attachment ids', async () => {
     const attachRes = await server.request(
       '/api/v1/talks/talk-owner/data-connectors',

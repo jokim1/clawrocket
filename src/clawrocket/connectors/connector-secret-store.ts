@@ -116,5 +116,34 @@ export function decryptConnectorSecret(
     return payload;
   }
 
+  if (payload.kind === 'google_docs') {
+    if (!payload.accessToken || typeof payload.accessToken !== 'string') {
+      throw new Error(
+        'Connector secret payload missing Google Docs accessToken',
+      );
+    }
+    if (
+      payload.refreshToken !== undefined &&
+      typeof payload.refreshToken !== 'string'
+    ) {
+      throw new Error('Connector secret payload refreshToken must be a string');
+    }
+    if (
+      payload.expiryDate !== undefined &&
+      payload.expiryDate !== null &&
+      typeof payload.expiryDate !== 'string'
+    ) {
+      throw new Error('Connector secret payload expiryDate must be a string');
+    }
+    if (
+      payload.scopes !== undefined &&
+      (!Array.isArray(payload.scopes) ||
+        payload.scopes.some((scope) => typeof scope !== 'string'))
+    ) {
+      throw new Error('Connector secret payload scopes must be a string array');
+    }
+    return payload;
+  }
+
   throw new Error('Unknown connector secret payload kind');
 }

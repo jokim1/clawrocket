@@ -12,11 +12,16 @@ import {
 import type { ConnectorSecretPayload } from './types.js';
 
 const GOOGLE_TOKEN_ENDPOINT = 'https://oauth2.googleapis.com/token';
+const GOOGLE_DOCS_BASE_URL = 'https://docs.googleapis.com';
 const DEFAULT_MAX_RESPONSE_BYTES = 512 * 1024;
 const GOOGLE_REFRESH_SKEW_MS = 60_000;
 const DEFAULT_ABORT_MESSAGE = 'Connector request aborted.';
 
 type JsonMap = Record<string, unknown>;
+type GoogleDocsSecret = Extract<
+  ConnectorSecretPayload,
+  { kind: 'google_docs' }
+>;
 type GoogleSheetsSecret = Extract<
   ConnectorSecretPayload,
   { kind: 'google_sheets' }
@@ -29,6 +34,7 @@ const googleSheetsRefreshInFlight = new Map<
   string,
   Promise<GoogleSheetsSecret>
 >();
+const googleDocsRefreshInFlight = new Map<string, Promise<GoogleDocsSecret>>();
 
 export class ConnectorHttpError extends Error {
   readonly code: string;
@@ -178,7 +184,7 @@ function buildPostHogAuthHeaders(apiKey: string): Record<string, string> {
 }
 
 function isGoogleSecretExpired(
-  secret: Extract<ConnectorSecretPayload, { kind: 'google_sheets' }>,
+  secret: GoogleSheetsSecret | GoogleDocsSecret,
 ): boolean {
   if (!secret.expiryDate) return false;
   const expiresAt = Date.parse(secret.expiryDate);
@@ -299,6 +305,118 @@ async function getGoogleSheetsSecret(input: {
   return refreshGoogleSheetsSecret(input);
 }
 
+async function performGoogleDocsSecretRefresh(input: {
+  connectorId: string;
+  secret: GoogleDocsSecret;
+  fetchImpl: typeof fetch;
+}): Promise<GoogleDocsSecret> {
+  if (!input.secret.refreshToken) {
+    throw new ConnectorHttpError(
+      'google_docs_refresh_unavailable',
+      'Google Docs access token expired and no refresh token is available.',
+    );
+  }
+  if (!GOOGLE_OAUTH_CLIENT_ID || !GOOGLE_OAUTH_CLIENT_SECRET) {
+    throw new ConnectorHttpError(
+      'google_docs_refresh_unavailable',
+      'Google OAuth client credentials are not configured for Docs token refresh.',
+    );
+  }
+
+  const body = new URLSearchParams({
+    client_id: GOOGLE_OAUTH_CLIENT_ID,
+    client_secret: GOOGLE_OAUTH_CLIENT_SECRET,
+    grant_type: 'refresh_token',
+    refresh_token: input.secret.refreshToken,
+  });
+
+  const response = await input.fetchImpl(GOOGLE_TOKEN_ENDPOINT, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/x-www-form-urlencoded',
+      accept: 'application/json',
+    },
+    body: body.toString(),
+  });
+
+  if (!response.ok) {
+    throw new ConnectorHttpError(
+      'google_docs_refresh_failed',
+      `Google Docs token refresh failed with HTTP ${response.status}.`,
+      response.status,
+    );
+  }
+
+  const payload = await readJsonResponse(response, 64 * 1024);
+  const accessToken =
+    typeof payload.access_token === 'string' ? payload.access_token : null;
+  const expiresIn =
+    typeof payload.expires_in === 'number' &&
+    Number.isFinite(payload.expires_in)
+      ? payload.expires_in
+      : 3600;
+
+  if (!accessToken) {
+    throw new ConnectorHttpError(
+      'google_docs_refresh_failed',
+      'Google Docs token refresh did not return an access token.',
+    );
+  }
+
+  const refreshed: GoogleDocsSecret = {
+    ...input.secret,
+    accessToken,
+    refreshToken:
+      typeof payload.refresh_token === 'string'
+        ? payload.refresh_token
+        : input.secret.refreshToken,
+    expiryDate: new Date(Date.now() + expiresIn * 1000).toISOString(),
+  };
+
+  replaceDataConnectorCredentialCiphertext({
+    connectorId: input.connectorId,
+    ciphertext: encryptConnectorSecret(refreshed),
+  });
+
+  return refreshed;
+}
+
+async function refreshGoogleDocsSecret(input: {
+  connectorId: string;
+  secret: GoogleDocsSecret;
+  fetchImpl: typeof fetch;
+  signal: AbortSignal;
+}): Promise<GoogleDocsSecret> {
+  const existing = googleDocsRefreshInFlight.get(input.connectorId);
+  if (existing) {
+    return waitForPromiseWithSignal(existing, input.signal);
+  }
+
+  const refreshPromise = performGoogleDocsSecretRefresh({
+    connectorId: input.connectorId,
+    secret: input.secret,
+    fetchImpl: input.fetchImpl,
+  }).finally(() => {
+    googleDocsRefreshInFlight.delete(input.connectorId);
+  });
+
+  googleDocsRefreshInFlight.set(input.connectorId, refreshPromise);
+  return waitForPromiseWithSignal(refreshPromise, input.signal);
+}
+
+async function getGoogleDocsSecret(input: {
+  connectorId: string;
+  secret: GoogleDocsSecret;
+  fetchImpl: typeof fetch;
+  signal: AbortSignal;
+}): Promise<GoogleDocsSecret> {
+  if (!isGoogleSecretExpired(input.secret)) {
+    return input.secret;
+  }
+
+  return refreshGoogleDocsSecret(input);
+}
+
 async function fetchGoogleSheetsJson(input: {
   connectorId: string;
   secret: Extract<ConnectorSecretPayload, { kind: 'google_sheets' }>;
@@ -347,6 +465,66 @@ async function fetchGoogleSheetsJson(input: {
   throw new ConnectorHttpError(
     'google_sheets_request_failed',
     'Google Sheets request failed.',
+  );
+}
+
+async function fetchGoogleDocsJson(input: {
+  connectorId: string;
+  secret: GoogleDocsSecret;
+  url: string;
+  method?: 'GET' | 'POST';
+  body?: string;
+  fetchImpl: typeof fetch;
+  signal: AbortSignal;
+  maxBytes?: number;
+}): Promise<JsonMap> {
+  let activeSecret = await getGoogleDocsSecret({
+    connectorId: input.connectorId,
+    secret: input.secret,
+    fetchImpl: input.fetchImpl,
+    signal: input.signal,
+  });
+
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const response = await input.fetchImpl(input.url, {
+      method: input.method || 'GET',
+      headers: {
+        authorization: `Bearer ${activeSecret.accessToken}`,
+        accept: 'application/json',
+        ...(input.body ? { 'content-type': 'application/json' } : {}),
+      },
+      ...(input.body ? { body: input.body } : {}),
+      signal: input.signal,
+    });
+
+    if (response.ok) {
+      return readJsonResponse(response, input.maxBytes);
+    }
+
+    if (
+      attempt === 0 &&
+      (response.status === 401 || response.status === 403) &&
+      activeSecret.refreshToken
+    ) {
+      activeSecret = await refreshGoogleDocsSecret({
+        connectorId: input.connectorId,
+        secret: activeSecret,
+        fetchImpl: input.fetchImpl,
+        signal: input.signal,
+      });
+      continue;
+    }
+
+    throw new ConnectorHttpError(
+      'google_docs_request_failed',
+      `Google Docs request failed with HTTP ${response.status}.`,
+      response.status,
+    );
+  }
+
+  throw new ConnectorHttpError(
+    'google_docs_request_failed',
+    'Google Docs request failed.',
   );
 }
 
@@ -420,6 +598,128 @@ export async function fetchGoogleSheetRange(input: {
     fetchImpl: input.fetchImpl || fetch,
     signal: input.signal,
     maxBytes: input.maxBytes,
+  });
+}
+
+function readGoogleDocParagraphText(paragraph: JsonMap): string {
+  const elements = Array.isArray(paragraph.elements) ? paragraph.elements : [];
+  return elements
+    .map((element) => {
+      const map = parseJsonMap(element);
+      const textRun = parseJsonMap(map?.textRun);
+      return typeof textRun?.content === 'string' ? textRun.content : '';
+    })
+    .join('')
+    .trimEnd();
+}
+
+function extractGoogleDocText(elements: unknown[]): string {
+  const blocks: string[] = [];
+
+  for (const element of elements) {
+    const map = parseJsonMap(element);
+    if (!map) continue;
+
+    const paragraph = parseJsonMap(map.paragraph);
+    if (paragraph) {
+      const text = readGoogleDocParagraphText(paragraph).trim();
+      if (text) blocks.push(text);
+      continue;
+    }
+
+    const table = parseJsonMap(map.table);
+    if (table) {
+      const rows = Array.isArray(table.tableRows) ? table.tableRows : [];
+      for (const row of rows) {
+        const rowMap = parseJsonMap(row);
+        if (!rowMap) continue;
+        const cells = Array.isArray(rowMap.tableCells) ? rowMap.tableCells : [];
+        const cellTexts = cells
+          .map((cell) => {
+            const cellMap = parseJsonMap(cell);
+            if (!cellMap) return '';
+            const content = Array.isArray(cellMap.content)
+              ? cellMap.content
+              : [];
+            return extractGoogleDocText(content).trim();
+          })
+          .filter(Boolean);
+        if (cellTexts.length > 0) {
+          blocks.push(cellTexts.join(' | '));
+        }
+      }
+      continue;
+    }
+
+    const tableOfContents = parseJsonMap(map.tableOfContents);
+    if (tableOfContents) {
+      const content = Array.isArray(tableOfContents.content)
+        ? tableOfContents.content
+        : [];
+      const text = extractGoogleDocText(content).trim();
+      if (text) blocks.push(text);
+    }
+  }
+
+  return blocks.join('\n\n');
+}
+
+export async function fetchGoogleDoc(input: {
+  connectorId: string;
+  secret: GoogleDocsSecret;
+  documentId: string;
+  fetchImpl?: typeof fetch;
+  signal: AbortSignal;
+}): Promise<{ title: string; text: string }> {
+  const payload = await fetchGoogleDocsJson({
+    connectorId: input.connectorId,
+    secret: input.secret,
+    url: joinUrl(
+      GOOGLE_DOCS_BASE_URL,
+      `/v1/documents/${encodeURIComponent(input.documentId)}`,
+    ),
+    fetchImpl: input.fetchImpl || fetch,
+    signal: input.signal,
+    maxBytes: DEFAULT_MAX_RESPONSE_BYTES,
+  });
+
+  const title =
+    typeof payload.title === 'string' && payload.title.trim()
+      ? payload.title.trim()
+      : input.documentId;
+  const body = parseJsonMap(payload.body);
+  const content = Array.isArray(body?.content) ? body.content : [];
+
+  return {
+    title,
+    text: extractGoogleDocText(content),
+  };
+}
+
+export async function batchUpdateGoogleDoc(input: {
+  connectorId: string;
+  secret: GoogleDocsSecret;
+  documentId: string;
+  requests: JsonMap[];
+  writeControl?: JsonMap | null;
+  fetchImpl?: typeof fetch;
+  signal: AbortSignal;
+}): Promise<JsonMap> {
+  return fetchGoogleDocsJson({
+    connectorId: input.connectorId,
+    secret: input.secret,
+    url: joinUrl(
+      GOOGLE_DOCS_BASE_URL,
+      `/v1/documents/${encodeURIComponent(input.documentId)}:batchUpdate`,
+    ),
+    method: 'POST',
+    body: JSON.stringify({
+      requests: input.requests,
+      ...(input.writeControl ? { writeControl: input.writeControl } : {}),
+    }),
+    fetchImpl: input.fetchImpl || fetch,
+    signal: input.signal,
+    maxBytes: DEFAULT_MAX_RESPONSE_BYTES,
   });
 }
 

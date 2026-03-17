@@ -494,7 +494,7 @@ function createClawrocketSchema(database: Database.Database): void {
       id TEXT PRIMARY KEY,
       name TEXT NOT NULL,
       connector_kind TEXT NOT NULL
-        CHECK(connector_kind IN ('google_sheets', 'posthog')),
+        CHECK(connector_kind IN ('google_docs', 'google_sheets', 'posthog')),
       config_json TEXT,
       discovered_json TEXT,
       enabled INTEGER NOT NULL DEFAULT 1,
@@ -1047,6 +1047,7 @@ function createClawrocketSchema(database: Database.Database): void {
   migrateTalkContextRulesTable(database);
   migrateChannelIngressQueueTable(database);
   migrateChannelDeliveryOutboxTable(database);
+  migrateDataConnectorsTable(database);
   migrateDeadLetterQueueTable(database);
   migrateTalkChannelPoliciesTable(database);
   migrateTalkChannelBindingsTable(database);
@@ -2015,6 +2016,66 @@ function migrateDeadLetterQueueTable(database: Database.Database): void {
     FROM dead_letter_queue_mig;
 
     DROP TABLE dead_letter_queue_mig;
+  `);
+}
+
+function migrateDataConnectorsTable(database: Database.Database): void {
+  const columns = database
+    .prepare(`PRAGMA table_info(data_connectors)`)
+    .all() as Array<{
+    name: string;
+    type: string;
+    notnull: number;
+    dflt_value: string | null;
+    pk: number;
+  }>;
+  if (columns.length === 0) return;
+
+  const createSqlRow = database
+    .prepare(
+      `
+      SELECT sql
+      FROM sqlite_master
+      WHERE type = 'table' AND name = 'data_connectors'
+      LIMIT 1
+    `,
+    )
+    .get() as { sql?: string | null } | undefined;
+  const createSql = createSqlRow?.sql || '';
+  if (createSql.includes("'google_docs'")) {
+    return;
+  }
+
+  database.exec(`
+    CREATE TABLE data_connectors_mig AS SELECT * FROM data_connectors;
+    DROP TABLE data_connectors;
+
+    CREATE TABLE data_connectors (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      connector_kind TEXT NOT NULL
+        CHECK(connector_kind IN ('google_docs', 'google_sheets', 'posthog')),
+      config_json TEXT,
+      discovered_json TEXT,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL,
+      created_by TEXT REFERENCES users(id),
+      updated_at TEXT NOT NULL,
+      updated_by TEXT REFERENCES users(id)
+    );
+    CREATE INDEX idx_data_connectors_kind_enabled
+      ON data_connectors(connector_kind, enabled);
+
+    INSERT INTO data_connectors (
+      id, name, connector_kind, config_json, discovered_json, enabled,
+      created_at, created_by, updated_at, updated_by
+    )
+    SELECT
+      id, name, connector_kind, config_json, discovered_json, enabled,
+      created_at, created_by, updated_at, updated_by
+    FROM data_connectors_mig;
+
+    DROP TABLE data_connectors_mig;
   `);
 }
 

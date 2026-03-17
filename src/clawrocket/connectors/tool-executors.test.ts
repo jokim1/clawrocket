@@ -61,6 +61,35 @@ function createGoogleSheetsConnector(): TalkRunConnectorRecord {
   };
 }
 
+function createGoogleDocsConnector(): TalkRunConnectorRecord {
+  return {
+    id: 'connector-docs',
+    name: 'Season Preview Doc',
+    connectorKind: 'google_docs',
+    config: {
+      documentId: 'doc-123',
+      documentUrl: 'https://docs.google.com/document/d/doc-123/edit',
+    },
+    discovered: {
+      title: 'Season Preview',
+    },
+    enabled: true,
+    hasCredential: true,
+    verificationStatus: 'verified',
+    lastVerifiedAt: '2024-01-01T00:00:00.000Z',
+    lastVerificationError: null,
+    attachedTalkCount: 1,
+    createdAt: '2024-01-01T00:00:00.000Z',
+    updatedAt: '2024-01-01T00:00:00.000Z',
+    ciphertext: encryptConnectorSecret({
+      kind: 'google_docs',
+      accessToken: 'ya29.docs',
+      refreshToken: 'refresh-docs',
+      expiryDate: new Date(Date.now() + 10 * 60_000).toISOString(),
+    }),
+  };
+}
+
 describe('executeConnectorTool', () => {
   it('rejects PostHog queries that exceed the bounded date window', async () => {
     const fetchImpl = vi.fn(async () => {
@@ -148,6 +177,71 @@ describe('executeConnectorTool', () => {
 
     expect(result.isError).toBe(true);
     expect(result.content).toContain('A1-style range');
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('reads a Google Doc through the connector runtime', async () => {
+    const fetchImpl = vi.fn(async (url: string | URL | Request) => {
+      const targetUrl = String(url);
+      expect(targetUrl).toContain('/v1/documents/doc-123');
+      return new Response(
+        JSON.stringify({
+          title: 'Season Preview',
+          body: {
+            content: [
+              {
+                paragraph: {
+                  elements: [
+                    {
+                      textRun: {
+                        content: 'Cal should win seven games.\n',
+                      },
+                    },
+                  ],
+                },
+              },
+            ],
+          },
+        }),
+        {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        },
+      );
+    });
+
+    const result = await executeConnectorTool(
+      'connector_connector-docs__read_document',
+      {},
+      {
+        connector: createGoogleDocsConnector(),
+        signal: new AbortController().signal,
+        fetchImpl,
+      },
+    );
+
+    expect(result.isError).toBe(false);
+    expect(result.content).toContain('Season Preview');
+    expect(result.content).toContain('Cal should win seven games.');
+  });
+
+  it('validates Google Docs batch update requests', async () => {
+    const fetchImpl = vi.fn(async () => {
+      throw new Error('fetch should not be called');
+    });
+
+    const result = await executeConnectorTool(
+      'connector_connector-docs__batch_update',
+      {},
+      {
+        connector: createGoogleDocsConnector(),
+        signal: new AbortController().signal,
+        fetchImpl,
+      },
+    );
+
+    expect(result.isError).toBe(true);
+    expect(result.content).toContain('non-empty requests array');
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 });
