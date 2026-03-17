@@ -543,6 +543,7 @@ export function buildGoogleDriveContextTools(input: {
               'Drive file id discovered from google_drive_search or google_drive_list_folder.',
           },
         },
+        required: ['bindingRef'],
       },
     });
   }

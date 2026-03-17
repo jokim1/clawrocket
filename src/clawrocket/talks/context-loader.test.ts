@@ -316,6 +316,12 @@ describe('context-loader', () => {
       expect(ctx.contextTools.map((tool) => tool.name)).toContain(
         'google_drive_search',
       );
+      expect(
+        ctx.contextTools.find((tool) => tool.name === 'google_drive_read')
+          ?.inputSchema,
+      ).toMatchObject({
+        required: ['bindingRef'],
+      });
     });
 
     it('includes Google Docs tools when a bound doc, grants, and scopes are present', async () => {
