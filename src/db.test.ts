@@ -42,6 +42,7 @@ import {
   getOutboxEventsForTopics,
   getQueuedTalkRuns,
   getRunningTalkRun,
+  getSettingValue,
   getTalkById,
   getTalkExecutorSession,
   getTalkForUser,
@@ -59,6 +60,8 @@ import {
   patchTalkMetadata,
   saveIdempotencyCache,
   setTalkRunExecutorProfile,
+  upsertSettingValue,
+  updateTalkProjectPath,
   upsertTalk,
   upsertChannelTarget,
   upsertTalkExecutorSession,
@@ -570,6 +573,7 @@ describe('phase 0 schema and reliability tables', () => {
 
   it('defaults talks to ordered orchestration and allows metadata updates to panel', () => {
     expect(getTalkById('talk-1')?.orchestration_mode).toBe('ordered');
+    expect(getTalkById('talk-1')?.project_path).toBeNull();
 
     patchTalkMetadata({
       talkId: 'talk-1',
@@ -578,6 +582,39 @@ describe('phase 0 schema and reliability tables', () => {
     });
 
     expect(getTalkById('talk-1')?.orchestration_mode).toBe('panel');
+  });
+
+  it('stores a talk project path separately from generic metadata patching', () => {
+    updateTalkProjectPath({
+      talkId: 'talk-1',
+      ownerId: 'owner-1',
+      projectPath: '/tmp/project-one',
+    });
+
+    expect(getTalkById('talk-1')?.project_path).toBe('/tmp/project-one');
+
+    patchTalkMetadata({
+      talkId: 'talk-1',
+      ownerId: 'owner-1',
+      title: 'Renamed Talk',
+    });
+
+    expect(getTalkById('talk-1')?.topic_title).toBe('Renamed Talk');
+    expect(getTalkById('talk-1')?.project_path).toBe('/tmp/project-one');
+  });
+
+  it('reads and writes settings_kv values through accessors', () => {
+    expect(getSettingValue('executor.mainProjectPath')).toBeNull();
+
+    upsertSettingValue({
+      key: 'executor.mainProjectPath',
+      value: '/tmp/main-project',
+      updatedBy: 'owner-1',
+    });
+
+    expect(getSettingValue('executor.mainProjectPath')).toBe(
+      '/tmp/main-project',
+    );
   });
 
   it('backfills legacy null thread ids and rebuilds talk tables with NOT NULL thread columns', () => {

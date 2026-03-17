@@ -3,6 +3,17 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 vi.mock('./agent-router.js', () => ({
   executeWithAgent: vi.fn(),
 }));
+vi.mock('./execution-planner.js', () => ({
+  planExecution: vi.fn(),
+  getContainerAllowedTools: vi.fn(() => ['Bash']),
+  EXECUTOR_MAIN_PROJECT_PATH_KEY: 'executor.mainProjectPath',
+}));
+vi.mock('./container-turn-executor.js', () => ({
+  executeContainerAgentTurn: vi.fn(),
+}));
+vi.mock('./project-mounts.js', () => ({
+  resolveValidatedProjectMountPath: vi.fn(),
+}));
 
 import { getDb } from '../../db.js';
 import { _initTestDatabase, createMessage, upsertUser } from '../db/index.js';
@@ -11,6 +22,9 @@ import {
   type MainExecutionEvent,
 } from './main-executor.js';
 import { executeWithAgent } from './agent-router.js';
+import { planExecution } from './execution-planner.js';
+import { executeContainerAgentTurn } from './container-turn-executor.js';
+import { resolveValidatedProjectMountPath } from './project-mounts.js';
 
 describe('main-executor (pure)', () => {
   beforeEach(() => {
@@ -22,6 +36,27 @@ describe('main-executor (pure)', () => {
       role: 'owner',
     });
     vi.mocked(executeWithAgent).mockReset();
+    vi.mocked(planExecution).mockReset();
+    vi.mocked(executeContainerAgentTurn).mockReset();
+    vi.mocked(resolveValidatedProjectMountPath).mockReset();
+    vi.mocked(resolveValidatedProjectMountPath).mockImplementation((path) =>
+      path ? String(path) : null,
+    );
+    vi.mocked(planExecution).mockReturnValue({
+      backend: 'direct_http',
+      effectiveTools: [],
+      providerId: 'provider.anthropic',
+      modelId: 'claude-sonnet-4-6',
+      binding: {
+        providerConfig: {
+          providerId: 'provider.anthropic',
+          baseUrl: 'https://api.anthropic.com',
+          apiFormat: 'anthropic_messages',
+          authScheme: 'x_api_key',
+        },
+        secret: { apiKey: 'sk-ant-test' },
+      },
+    });
   });
 
   it('returns output without writing to DB', async () => {
@@ -177,6 +212,123 @@ describe('main-executor (pure)', () => {
     expect(types).toContain('main_response_started');
     expect(types).not.toContain('main_response_failed');
     expect(types).not.toContain('main_response_completed');
+  });
+
+  it('routes container-backed main turns through the stateless adapter', async () => {
+    const now = new Date().toISOString();
+    createMessage({
+      id: 'msg-user-container',
+      talkId: null,
+      threadId: 'thread-container',
+      role: 'user',
+      content: 'Inspect the project',
+      createdBy: 'owner-1',
+      createdAt: now,
+    });
+    getDb()
+      .prepare(
+        `
+        UPDATE registered_agents
+        SET system_prompt = ?,
+            provider_id = ?,
+            model_id = ?
+        WHERE id = ?
+      `,
+      )
+      .run(
+        'Keep filesystem changes isolated.',
+        'provider.anthropic',
+        'claude-sonnet-4-6',
+        'agent.main',
+      );
+    getDb()
+      .prepare(
+        `
+        INSERT INTO settings_kv (key, value, updated_at)
+        VALUES (?, ?, ?)
+        ON CONFLICT(key) DO UPDATE SET
+          value = excluded.value,
+          updated_at = excluded.updated_at
+      `,
+      )
+      .run(
+        'executor.mainProjectPath',
+        '/tmp/main-project',
+        new Date().toISOString(),
+      );
+
+    vi.mocked(planExecution).mockReturnValue({
+      backend: 'container',
+      providerId: 'provider.anthropic',
+      modelId: 'claude-sonnet-4-6',
+      effectiveTools: [
+        {
+          toolFamily: 'shell',
+          runtimeTools: ['Bash'],
+          enabled: true,
+          requiresApproval: false,
+        },
+      ],
+      heavyToolFamilies: ['shell'],
+      containerCredential: {
+        authMode: 'api_key',
+        secrets: {
+          ANTHROPIC_API_KEY: 'sk-container-test',
+        },
+      },
+    });
+    vi.mocked(resolveValidatedProjectMountPath).mockReturnValue(
+      '/resolved/main-project',
+    );
+    vi.mocked(executeContainerAgentTurn).mockResolvedValue({
+      content: 'Container main reply',
+    });
+
+    const events: MainExecutionEvent[] = [];
+    const result = await executeMainChannel(
+      {
+        runId: 'run-main-container',
+        threadId: 'thread-container',
+        requestedBy: 'owner-1',
+        triggerMessageId: 'msg-user-container',
+        triggerContent: 'Inspect the project',
+      },
+      new AbortController().signal,
+      (event) => events.push(event),
+    );
+
+    expect(resolveValidatedProjectMountPath).toHaveBeenCalledWith(
+      '/tmp/main-project',
+      true,
+    );
+    expect(executeContainerAgentTurn).toHaveBeenCalledTimes(1);
+    expect(executeContainerAgentTurn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        runId: 'run-main-container',
+        userId: 'owner-1',
+        promptLabel: 'main',
+        userMessage: 'Inspect the project',
+        allowedTools: ['Bash'],
+        projectMountHostPath: '/resolved/main-project',
+        context: {
+          systemPrompt: 'Keep filesystem changes isolated.',
+          history: [{ role: 'user', content: 'Inspect the project' }],
+        },
+      }),
+    );
+
+    expect(result).toMatchObject({
+      content: 'Container main reply',
+      agentId: 'agent.main',
+      agentName: 'Nanoclaw',
+      providerId: 'provider.anthropic',
+      modelId: 'claude-sonnet-4-6',
+      threadId: 'thread-container',
+    });
+    expect(result.usage).toBeUndefined();
+    expect(events.map((event) => event.type)).toEqual([
+      'main_response_started',
+    ]);
   });
 
   it('throws when no agent is available', async () => {

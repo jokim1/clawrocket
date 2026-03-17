@@ -22,17 +22,17 @@ The container is a stateless compute unit that receives compiled context and ret
 
 The structured context adapter compiles `ExecutionContext` → container workspace files + input fields. The host (Talk executor or Main executor) decides what context the container sees. The container executes and returns.
 
-This means: the direct executor is the default execution path for all agents. Container execution is an escalation for agents that need Tier 5 capabilities (shell, filesystem, browser). The two backends are not peers — direct executor is the standard, container is the specialist.
+This means: the direct executor remains the default execution path for most agents. Container execution is an escalation for agents that need heavy local capabilities, and in 5A it is intentionally scoped to Main and single-agent Talk turns. The two backends are not peers — direct executor is the standard, container is the specialist.
 
-### 3. Multi-agent Talks are panel execution, not free-form agent-to-agent conversation
+### 3. Multi-agent Talks use explicit orchestration, not hidden agent-to-agent conversation
 
-A user turn in a multi-agent Talk enqueues one run per selected target agent. The current queue model (`accessors.ts` line 1770/1823) enqueues all target agents up front, and the worker claims as many queued runs as it has slots (`run-worker.ts` line 167`). This means same-turn agents execute against the same pre-response transcript snapshot.
+A user turn in a multi-agent Talk enqueues one run per selected target agent under an explicit orchestration mode. This is no longer just fan-out panel execution.
 
-**v1: Fan-out panel.** All target agents respond to the same user turn independently. They do NOT see each other's outputs from the current round — they all see the same transcript state. This is still useful: "get three specialist perspectives on my question." Users see parallel responses, each from a different agent's viewpoint.
+**Shipped default: Ordered.** Selected agents execute in `talk_agents.sort_order`. Later phases receive prior-agent outputs as attributed user-context, and the final phase is explicitly marked as synthesis.
 
-**v2 (future): Sequential chaining.** Agent B sees Agent A's output before responding. This requires explicit per-round ordering or dependency semantics in the queue — not just shared transcript. The "researcher analyzes → critic reviews → synthesizer combines" pattern requires this. v1 does not deliver it. The data model is ready: `talk_agents.sort_order` already exists. v2 adds numbered badges to agent chips, drag-to-reorder (writes new `sort_order` values), and queue execution that respects ordering.
+**Quick alternative: Panel.** Selected agents respond independently. This is still useful for fast parallel perspectives, but it is no longer the primary model.
 
-**v1 UI copy:** The "Selected agents will respond" text under agent chips should read "Selected agents will each respond independently" to set the correct fan-out expectation from day one.
+**Targeted subset override.** Explicit agent targeting narrows orchestration scope. If one agent is targeted, only that agent runs. If a subset is targeted, ordered or panel applies only to that subset.
 
 What this is NOT (either version): emergent debate, hidden inter-agent messaging, or agents autonomously deciding to invoke other agents. Those patterns require a different architecture and create unpredictable UX.
 
@@ -44,27 +44,32 @@ The per-agent routing model makes this explicit. Users see execution tier on the
 
 ### 5. Container context for Talk/Main runs is ephemeral per run
 
-When the structured context adapter materializes context files (e.g., `TALK_CONTEXT.md`, source snapshots) for a containerized Talk/Main agent, those files must live in a per-run ephemeral directory — not in the persistent `/workspace/group` mount.
+When the structured context adapter materializes context files for a containerized Talk/Main agent, those files must live in a per-run ephemeral directory — not in the persistent `/workspace/group` mount.
 
 Why: The current container workspace is a persistent writable mount (`container-runner.ts` line 98/130), and the runner uses `/workspace/group` as cwd with auto-loaded extras from `/workspace/extra/*` (`index.ts` line 445). If context files land in this persistent mount and are not cleaned up, they become out-of-band memory that survives across turns — violating Commitment #1.
 
-Implementation: Create a unique temp directory per run (e.g., `/workspace/run-{runId}/`), mount context files there, pass as `additionalDirectories`. Delete after the run completes (success or failure). The persistent `/workspace/group` mount is only for legacy external-chat paths where session resume is intentional.
+Implementation: Create a unique temp directory per run and make it the container cwd. Generate:
+- `CLAUDE.md` for Talk/workspace/run instructions
+- `HISTORY.md` for bounded transcript history
+- `sources/` and `attachments/` file manifests for materialized context
+
+`CLAUDE.md` is rendered first, then `HISTORY.md` is budgeted from the remaining context window. Containers do not read SQLite directly; the host compiles DB state into files. In 5A, optional project mounts are read-only and mounted separately at `/workspace/project`.
 
 ### 6. Execution routing uses effective per-user permissions, not raw agent flags
 
 The per-agent routing decision must evaluate `effectiveToolAccess` (agent capabilities ∩ user grants), not raw `tool_permissions_json`. The user permission layer (`user-settings.ts` line 54, merged in `agent-accessors.ts` line 594) includes per-user allow/deny and `requiresApproval` states.
 
-Why: The container runner is configured with `permissionMode: 'bypassPermissions'` and `allowDangerouslySkipPermissions: true` (`index.ts` line 489). If routing uses raw agent flags, a user who disabled or requires approval for `shell`/`browser` still gets a container run that bypasses all permission checks. This is a security model violation.
+Why: The container runner is configured with `permissionMode: 'bypassPermissions'` and `allowDangerouslySkipPermissions: true` (`index.ts` line 489). If routing uses raw agent flags, a user who disabled heavy tools still gets a container run that bypasses host-side intent. This is a security model violation.
 
-Implementation: Before routing, compute effective permissions. If a Tier 5 tool family is `requiresApproval`, the executor must check approval state before spawning a container. If a Tier 5 family is denied by the user, the agent falls back to the direct executor with reduced capabilities (or the request is rejected with a clear message).
+Implementation: Before routing, compute effective permissions. Routing uses `enabled` as the truth. In 5A, `shell` / `filesystem` are the heavy routing families and `browser` only counts when `shell` is also enabled. If a heavy family is denied by the user, the agent falls back to the direct executor with reduced capabilities (or the request is rejected with a clear message).
 
-**Approval mechanism (decided): reuse `awaiting_confirmation`/`run_confirmations`.** The codebase already has approval-shaped infrastructure: `awaiting_confirmation` run state (`agent-router.ts` line 66) and `run_confirmations` schema (`init.ts` line 625). Container spawn approval for gated Tier 5 tools MUST reuse this same mechanism — one approval model for all gated tools, whether the gate is a direct executor tool with `requiresApproval` or a Tier 5 container spawn. No second approval system.
+**Approval mechanism (decided): mutation-only runtime approvals.** Container spawn itself is not the approval boundary. Runtime approval remains for high-consequence external mutation families such as `gmail_send`, `messaging`, and `google_write`. Read/inspect families like `shell`, `filesystem`, `browser`, `web`, `connectors`, `google_read`, and `gmail_read` do not require per-run approval by default in 5A.
 
 ### What this plan delivers
 
-Main (Nanoclaw) as the best everyday AI surface — fast, tool-capable, always available. Talks as configured workspaces with shared context, connectors, and selected agents. Multi-agent Talks as fan-out panel execution — multiple specialists respond to the same user turn independently, each from their configured perspective. Container Claude agents as premium heavy-tool specialists when bash/filesystem/browser is needed.
+Main (Nanoclaw) as the best everyday AI surface — fast, tool-capable, always available. Talks as configured workspaces with shared context, connectors, and selected agents. Ordered multi-agent Talks as the default synthesis surface, with panel as the quick alternative. Container Claude agents as premium heavy-tool specialists for Main and single-agent Talk turns when shell/filesystem work is needed.
 
-What it does NOT deliver in v1: sequential agent chaining (agent B sees agent A's current-round output), seamless free-form inter-agent conversation, identical behavior across all providers and backends, or real-time streaming from containerized agents (final-result-only).
+What it does NOT deliver in 5A: mixed direct/container multi-agent Talk rounds, seamless free-form inter-agent conversation, identical behavior across all providers and backends, or real-time streaming from containerized agents (final-result-only).
 
 ---
 

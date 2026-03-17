@@ -11,6 +11,7 @@ function buildTalk(): Talk {
     id: 'talk-created',
     ownerId: 'owner-1',
     title: 'Created Talk',
+    projectPath: null,
     orchestrationMode: 'ordered',
     agents: [],
     status: 'active',

@@ -33,7 +33,8 @@ export interface ContainerInput {
   prompt: string;
   sessionId?: string;
   model?: string;
-  toolProfile?: 'default' | 'web_talk';
+  toolProfile?: 'default' | 'web_talk' | 'talk_main';
+  allowedTools?: string[];
   groupFolder: string;
   chatJid: string;
   isMain: boolean;
@@ -41,6 +42,8 @@ export interface ContainerInput {
   assistantName?: string;
   secrets?: Record<string, string>;
   webTalkConnectorBundle?: ContainerWebTalkConnectorBundle;
+  ephemeralContextDir?: string;
+  projectMountHostPath?: string | null;
 }
 
 export interface ContainerOutput {
@@ -95,37 +98,72 @@ interface VolumeMount {
   readonly: boolean;
 }
 
+const TALK_MAIN_RUN_DIR = '/workspace/run';
+const PROJECT_MOUNT_PATH = '/workspace/project';
+const PROJECT_SENSITIVE_FILES = [
+  '.env',
+  '.env.local',
+  '.env.development',
+  '.env.production',
+  '.npmrc',
+  '.pypirc',
+  '.netrc',
+];
+
+function addShadowedProjectMount(
+  mounts: VolumeMount[],
+  hostPath: string,
+  containerPath: string,
+): void {
+  mounts.push({
+    hostPath,
+    containerPath,
+    readonly: true,
+  });
+
+  for (const relativePath of PROJECT_SENSITIVE_FILES) {
+    const hostFile = path.join(hostPath, relativePath);
+    if (!fs.existsSync(hostFile)) continue;
+    mounts.push({
+      hostPath: '/dev/null',
+      containerPath: path.join(containerPath, relativePath),
+      readonly: true,
+    });
+  }
+}
+
 function buildVolumeMounts(
   group: RegisteredGroup,
   isMain: boolean,
   syncAgentRunnerSource = false,
+  toolProfile: ContainerInput['toolProfile'] = 'default',
+  ephemeralContextDir?: string,
+  projectMountHostPath?: string | null,
 ): VolumeMount[] {
   const mounts: VolumeMount[] = [];
   const projectRoot = process.cwd();
   const groupDir = resolveGroupFolderPath(group.folder);
+  const useTalkMainProfile = toolProfile === 'talk_main';
 
-  if (isMain) {
+  if (useTalkMainProfile) {
+    if (ephemeralContextDir && fs.existsSync(ephemeralContextDir)) {
+      mounts.push({
+        hostPath: ephemeralContextDir,
+        containerPath: TALK_MAIN_RUN_DIR,
+        readonly: false,
+      });
+    }
+
+    if (projectMountHostPath && fs.existsSync(projectMountHostPath)) {
+      addShadowedProjectMount(mounts, projectMountHostPath, PROJECT_MOUNT_PATH);
+    }
+  } else if (isMain) {
     // Main gets the project root read-only. Writable paths the agent needs
     // (group folder, IPC, .claude/) are mounted separately below.
     // Read-only prevents the agent from modifying host application code
     // (src/, dist/, package.json, etc.) which would bypass the sandbox
     // entirely on next restart.
-    mounts.push({
-      hostPath: projectRoot,
-      containerPath: '/workspace/project',
-      readonly: true,
-    });
-
-    // Shadow .env so the agent cannot read secrets from the mounted project root.
-    // Secrets are passed via stdin instead (see readSecrets()).
-    const envFile = path.join(projectRoot, '.env');
-    if (fs.existsSync(envFile)) {
-      mounts.push({
-        hostPath: '/dev/null',
-        containerPath: '/workspace/project/.env',
-        readonly: true,
-      });
-    }
+    addShadowedProjectMount(mounts, projectRoot, PROJECT_MOUNT_PATH);
 
     // Main also gets its group folder as the working directory
     mounts.push({
@@ -246,7 +284,7 @@ function buildVolumeMounts(
   });
 
   // Additional mounts validated against external allowlist (tamper-proof from containers)
-  if (group.containerConfig?.additionalMounts) {
+  if (!useTalkMainProfile && group.containerConfig?.additionalMounts) {
     const validatedMounts = validateAdditionalMounts(
       group.containerConfig.additionalMounts,
       group.name,
@@ -312,7 +350,10 @@ export async function runContainerAgent(
   const mounts = buildVolumeMounts(
     group,
     input.isMain,
-    input.toolProfile === 'web_talk',
+    input.toolProfile === 'web_talk' || input.toolProfile === 'talk_main',
+    input.toolProfile,
+    input.ephemeralContextDir,
+    input.projectMountHostPath,
   );
   const safeName = group.folder.replace(/[^a-zA-Z0-9-]/g, '-');
   const containerName = `nanoclaw-${safeName}-${Date.now()}`;
@@ -363,6 +404,8 @@ export async function runContainerAgent(
     // Remove sensitive input so it does not appear in logs on failure.
     delete input.secrets;
     delete input.webTalkConnectorBundle;
+    delete input.ephemeralContextDir;
+    delete input.projectMountHostPath;
 
     // Streaming output: parse OUTPUT_START/END marker pairs as they arrive
     let parseBuffer = '';

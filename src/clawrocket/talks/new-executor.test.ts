@@ -3,6 +3,16 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 vi.mock('../agents/agent-router.js', () => ({
   executeWithAgent: vi.fn(),
 }));
+vi.mock('../agents/execution-planner.js', () => ({
+  planExecution: vi.fn(),
+  getContainerAllowedTools: vi.fn(() => ['Bash']),
+}));
+vi.mock('../agents/container-turn-executor.js', () => ({
+  executeContainerAgentTurn: vi.fn(),
+}));
+vi.mock('../agents/project-mounts.js', () => ({
+  resolveValidatedProjectMountPath: vi.fn(),
+}));
 
 import { getDb } from '../../db.js';
 import {
@@ -13,6 +23,9 @@ import {
   upsertUser,
 } from '../db/index.js';
 import { executeWithAgent } from '../agents/agent-router.js';
+import { planExecution } from '../agents/execution-planner.js';
+import { executeContainerAgentTurn } from '../agents/container-turn-executor.js';
+import { resolveValidatedProjectMountPath } from '../agents/project-mounts.js';
 import { CleanTalkExecutor } from './new-executor.js';
 import type { TalkExecutionEvent } from './executor.js';
 
@@ -62,6 +75,27 @@ describe('CleanTalkExecutor', () => {
       topicTitle: 'Executor Contract Test Talk',
     });
     vi.mocked(executeWithAgent).mockReset();
+    vi.mocked(planExecution).mockReset();
+    vi.mocked(executeContainerAgentTurn).mockReset();
+    vi.mocked(resolveValidatedProjectMountPath).mockReset();
+    vi.mocked(resolveValidatedProjectMountPath).mockImplementation((path) =>
+      path ? String(path) : null,
+    );
+    vi.mocked(planExecution).mockReturnValue({
+      backend: 'direct_http',
+      effectiveTools: [],
+      providerId: 'provider.anthropic',
+      modelId: 'claude-sonnet-4-6',
+      binding: {
+        providerConfig: {
+          providerId: 'provider.anthropic',
+          baseUrl: 'https://api.anthropic.com',
+          apiFormat: 'anthropic_messages',
+          authScheme: 'x_api_key',
+        },
+        secret: { apiKey: 'sk-ant-test' },
+      },
+    });
   });
 
   it('executes context tools but does not persist assistant messages or llm attempts directly', async () => {
@@ -202,6 +236,134 @@ describe('CleanTalkExecutor', () => {
       )
       .get('run-talk-1') as { count: number };
     expect(llmAttempts.count).toBe(0);
+  });
+
+  it('routes container-backed talk turns through the stateless adapter', async () => {
+    createTalkMessage({
+      id: 'msg-user-container',
+      talkId: TALK_ID,
+      threadId: THREAD_ID,
+      role: 'user',
+      content: 'Open the mounted project',
+      createdBy: 'owner-1',
+      createdAt: '2026-03-16T00:00:00.000Z',
+    });
+    getDb()
+      .prepare(
+        `
+        UPDATE talks
+        SET project_path = ?
+        WHERE id = ?
+      `,
+      )
+      .run('/tmp/talk-project', TALK_ID);
+    getDb()
+      .prepare(
+        `
+        UPDATE registered_agents
+        SET system_prompt = ?,
+            provider_id = ?,
+            model_id = ?
+        WHERE id = ?
+      `,
+      )
+      .run(
+        'Follow Talk execution rules.',
+        'provider.anthropic',
+        'claude-sonnet-4-6',
+        'agent.main',
+      );
+
+    vi.mocked(planExecution).mockReturnValue({
+      backend: 'container',
+      providerId: 'provider.anthropic',
+      modelId: 'claude-sonnet-4-6',
+      effectiveTools: [
+        {
+          toolFamily: 'shell',
+          runtimeTools: ['Bash'],
+          enabled: true,
+          requiresApproval: false,
+        },
+      ],
+      heavyToolFamilies: ['shell'],
+      containerCredential: {
+        authMode: 'api_key',
+        secrets: {
+          ANTHROPIC_API_KEY: 'sk-container-test',
+        },
+      },
+    });
+    vi.mocked(resolveValidatedProjectMountPath).mockReturnValue(
+      '/resolved/talk-project',
+    );
+    vi.mocked(executeContainerAgentTurn).mockResolvedValue({
+      content: 'Container talk reply',
+    });
+
+    const events: TalkExecutionEvent[] = [];
+    const executor = new CleanTalkExecutor();
+    const result = await executor.execute(
+      {
+        runId: 'run-talk-container',
+        talkId: TALK_ID,
+        threadId: THREAD_ID,
+        requestedBy: 'owner-1',
+        triggerMessageId: 'msg-user-container',
+        triggerContent: 'Open the mounted project',
+      },
+      new AbortController().signal,
+      (event) => events.push(event),
+    );
+
+    expect(resolveValidatedProjectMountPath).toHaveBeenCalledWith(
+      '/tmp/talk-project',
+      false,
+    );
+    expect(executeContainerAgentTurn).toHaveBeenCalledTimes(1);
+    expect(executeContainerAgentTurn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        runId: 'run-talk-container',
+        userId: 'owner-1',
+        promptLabel: 'talk',
+        userMessage: 'Open the mounted project',
+        allowedTools: ['Bash'],
+        talkId: TALK_ID,
+        threadId: THREAD_ID,
+        triggerMessageId: 'msg-user-container',
+        projectMountHostPath: '/resolved/talk-project',
+      }),
+    );
+
+    const containerInput = vi.mocked(executeContainerAgentTurn).mock
+      .calls[0]![0];
+    expect(containerInput.context.systemPrompt).toContain(
+      'Follow Talk execution rules.',
+    );
+    expect(containerInput.context.history).toEqual([
+      { role: 'user', content: 'Open the mounted project' },
+    ]);
+    expect(containerInput.historyMessageIds).toContain('msg-user-container');
+
+    expect(result).toMatchObject({
+      content: 'Container talk reply',
+      agentId: 'agent.main',
+      agentNickname: 'Nanoclaw',
+      providerId: 'provider.anthropic',
+      modelId: 'claude-sonnet-4-6',
+      responseSequenceInRun: 1,
+    });
+    expect(JSON.parse(result.metadataJson!)).toMatchObject({
+      runId: 'run-talk-container',
+      providerId: 'provider.anthropic',
+      modelId: 'claude-sonnet-4-6',
+      responseGroupId: null,
+      sequenceIndex: null,
+    });
+    expect(events.map((event) => event.type)).toEqual([
+      'talk_response_started',
+      'talk_response_completed',
+    ]);
   });
 
   it('injects prior ordered outputs into later phases as attributed user context', async () => {

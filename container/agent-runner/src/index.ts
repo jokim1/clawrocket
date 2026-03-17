@@ -23,7 +23,8 @@ interface ContainerInput {
   prompt: string;
   sessionId?: string;
   model?: string;
-  toolProfile?: 'default' | 'web_talk';
+  toolProfile?: 'default' | 'web_talk' | 'talk_main';
+  allowedTools?: string[];
   groupFolder: string;
   chatJid: string;
   isMain: boolean;
@@ -399,16 +400,18 @@ async function runQuery(
 ): Promise<{ newSessionId?: string; lastAssistantUuid?: string; closedDuringQuery: boolean }> {
   const stream = new MessageStream();
   stream.push(prompt);
-  const useWebTalkProfile = (containerInput.toolProfile || 'default') === 'web_talk';
+  const toolProfile = containerInput.toolProfile || 'default';
+  const useWebTalkProfile = toolProfile === 'web_talk';
+  const useTalkMainProfile = toolProfile === 'talk_main';
   const hasWebTalkConnectorTools =
-    useWebTalkProfile &&
+    (useWebTalkProfile || useTalkMainProfile) &&
     (containerInput.webTalkConnectorBundle?.toolDefinitions.length || 0) > 0;
 
   // Poll IPC for follow-up messages and _close sentinel during the query.
-  // Web talk profile is single-turn, so close input stream immediately.
-  let ipcPolling = !useWebTalkProfile;
+  // Single-turn profiles close the input stream immediately.
+  let ipcPolling = !useWebTalkProfile && !useTalkMainProfile;
   let closedDuringQuery = false;
-  if (useWebTalkProfile) {
+  if (useWebTalkProfile || useTalkMainProfile) {
     stream.end();
   } else {
     const pollIpcDuringQuery = () => {
@@ -438,7 +441,7 @@ async function runQuery(
   // Load global CLAUDE.md as additional system context (shared across all groups)
   const globalClaudeMdPath = '/workspace/global/CLAUDE.md';
   let globalClaudeMd: string | undefined;
-  if (!containerInput.isMain && fs.existsSync(globalClaudeMdPath)) {
+  if (!containerInput.isMain && !useTalkMainProfile && fs.existsSync(globalClaudeMdPath)) {
     globalClaudeMd = fs.readFileSync(globalClaudeMdPath, 'utf-8');
   }
 
@@ -446,7 +449,7 @@ async function runQuery(
   // These are passed to the SDK so their CLAUDE.md files are loaded automatically
   const extraDirs: string[] = [];
   const extraBase = '/workspace/extra';
-  if (fs.existsSync(extraBase)) {
+  if (!useTalkMainProfile && fs.existsSync(extraBase)) {
     for (const entry of fs.readdirSync(extraBase)) {
       const fullPath = path.join(extraBase, entry);
       if (fs.statSync(fullPath).isDirectory()) {
@@ -462,35 +465,52 @@ async function runQuery(
     containerInput.model && containerInput.model !== 'default'
       ? containerInput.model
       : undefined;
+  const defaultAllowedTools = [
+    'Bash',
+    'Read',
+    'Write',
+    'Edit',
+    'Glob',
+    'Grep',
+    'WebSearch',
+    'WebFetch',
+    'Task',
+    'TaskOutput',
+    'TaskStop',
+    'TeamCreate',
+    'TeamDelete',
+    'SendMessage',
+    'TodoWrite',
+    'ToolSearch',
+    'Skill',
+    'NotebookEdit',
+  ];
+  const allowedTools = [
+    ...(containerInput.allowedTools && containerInput.allowedTools.length > 0
+      ? containerInput.allowedTools
+      : defaultAllowedTools),
+    ...((!useWebTalkProfile && !useTalkMainProfile) || hasWebTalkConnectorTools
+      ? ['mcp__nanoclaw__*']
+      : []),
+  ];
 
   for await (const message of query({
     prompt: stream,
     options: {
-      cwd: '/workspace/group',
+      cwd: useTalkMainProfile ? '/workspace/run' : '/workspace/group',
       model: selectedModel,
       additionalDirectories: extraDirs.length > 0 ? extraDirs : undefined,
-      resume: sessionId,
-      resumeSessionAt: resumeAt,
+      resume: useTalkMainProfile ? undefined : sessionId,
+      resumeSessionAt: useTalkMainProfile ? undefined : resumeAt,
       systemPrompt: globalClaudeMd
         ? { type: 'preset' as const, preset: 'claude_code' as const, append: globalClaudeMd }
         : undefined,
-      allowedTools: [
-        'Bash',
-        'Read', 'Write', 'Edit', 'Glob', 'Grep',
-        'WebSearch', 'WebFetch',
-        'Task', 'TaskOutput', 'TaskStop',
-        'TeamCreate', 'TeamDelete', 'SendMessage',
-        'TodoWrite', 'ToolSearch', 'Skill',
-        'NotebookEdit',
-        ...(!useWebTalkProfile || hasWebTalkConnectorTools
-          ? ['mcp__nanoclaw__*']
-          : [])
-      ],
+      allowedTools,
       env: sdkEnv,
       permissionMode: 'bypassPermissions',
       allowDangerouslySkipPermissions: true,
       settingSources: ['project', 'user'],
-      ...(!useWebTalkProfile || hasWebTalkConnectorTools
+      ...((!useWebTalkProfile && !useTalkMainProfile) || hasWebTalkConnectorTools
         ? {
             mcpServers: {
               nanoclaw: {
@@ -580,7 +600,9 @@ async function main(): Promise<void> {
 
   const __dirname = path.dirname(fileURLToPath(import.meta.url));
   const mcpServerPath = path.join(__dirname, 'ipc-mcp-stdio.js');
-  const isWebTalkProfile = (containerInput.toolProfile || 'default') === 'web_talk';
+  const toolProfile = containerInput.toolProfile || 'default';
+  const isSingleTurnProfile =
+    toolProfile === 'web_talk' || toolProfile === 'talk_main';
 
   let sessionId = containerInput.sessionId;
   fs.mkdirSync(IPC_INPUT_DIR, { recursive: true });
@@ -613,10 +635,10 @@ async function main(): Promise<void> {
         resumeAt = queryResult.lastAssistantUuid;
       }
 
-      // Web talk execution is single-turn: return the answer and exit so the host
-      // can finalize the run immediately instead of waiting on IPC follow-ups.
-      if (isWebTalkProfile) {
-        log('Web talk profile run complete, exiting after single query');
+      // Stateless Talk/Main and web talk execution are single-turn: return the
+      // answer and exit so the host can finalize the run immediately.
+      if (isSingleTurnProfile) {
+        log(`${toolProfile} profile run complete, exiting after single query`);
         break;
       }
 

@@ -470,6 +470,7 @@ export interface TalkRecord {
   folder_id: string | null;
   sort_order: number;
   topic_title: string | null;
+  project_path: string | null;
   orchestration_mode: 'ordered' | 'panel';
   status: 'active' | 'paused' | 'archived';
   version: number;
@@ -527,6 +528,13 @@ export interface TalkSidebarTreeRecord {
   talksByFolderId: Record<string, TalkSidebarTalkRecord[]>;
 }
 
+export interface SettingRecord {
+  key: string;
+  value: string | null;
+  updated_at: string | null;
+  updated_by: string | null;
+}
+
 export function normalizeTalkListPage(input?: {
   limit?: number;
   offset?: number;
@@ -540,6 +548,37 @@ export function normalizeTalkListPage(input?: {
       ? Math.max(0, Math.floor(input.offset))
       : 0;
   return { limit, offset };
+}
+
+export function getSettingValue(key: string): string | null {
+  const row = getDb()
+    .prepare(`SELECT value FROM settings_kv WHERE key = ? LIMIT 1`)
+    .get(key) as { value: string | null } | undefined;
+  return row?.value ?? null;
+}
+
+export function upsertSettingValue(input: {
+  key: string;
+  value: string | null;
+  updatedBy?: string | null;
+}): void {
+  const now = new Date().toISOString();
+  getDb()
+    .prepare(
+      `
+      INSERT INTO settings_kv (key, value, updated_at, updated_by)
+      VALUES (?, ?, ?, ?)
+      ON CONFLICT(key) DO UPDATE SET
+        value = excluded.value,
+        updated_at = excluded.updated_at,
+        updated_by = excluded.updated_by
+    `,
+    )
+    .run(input.key, input.value, now, input.updatedBy ?? null);
+}
+
+export function deleteSettingValue(key: string): void {
+  getDb().prepare(`DELETE FROM settings_kv WHERE key = ?`).run(key);
 }
 
 function bumpRootSortOrders(ownerId: string): void {
@@ -711,10 +750,10 @@ export function createTalk(input: {
       .prepare(
         `
       INSERT INTO talks (
-        id, owner_id, folder_id, sort_order, topic_title, orchestration_mode,
+        id, owner_id, folder_id, sort_order, topic_title, project_path, orchestration_mode,
         status, version, created_at, updated_at
       )
-      VALUES (?, ?, NULL, 0, ?, ?, ?, 1, ?, ?)
+      VALUES (?, ?, NULL, 0, ?, NULL, ?, ?, 1, ?, ?)
     `,
       )
       .run(
@@ -764,7 +803,7 @@ export function listTalksForUser(input: {
       .prepare(
         `
         SELECT t.id, t.owner_id, t.topic_title, t.status, t.version, t.created_at, t.updated_at,
-               t.folder_id, t.sort_order, t.orchestration_mode,
+               t.folder_id, t.sort_order, t.project_path, t.orchestration_mode,
                p.llm_policy,
                CASE WHEN t.owner_id = ? THEN 'owner' ELSE ? END AS access_role
         FROM talks t
@@ -793,6 +832,7 @@ export function listTalksForUser(input: {
         t.owner_id,
         t.folder_id,
         t.sort_order,
+        t.project_path,
         t.orchestration_mode,
         t.topic_title,
         t.status,
@@ -838,7 +878,7 @@ export function getTalkForUser(
       .prepare(
         `
         SELECT t.id, t.owner_id, t.topic_title, t.status, t.version, t.created_at, t.updated_at,
-               t.folder_id, t.sort_order, t.orchestration_mode,
+               t.folder_id, t.sort_order, t.project_path, t.orchestration_mode,
                p.llm_policy,
                CASE WHEN t.owner_id = ? THEN 'owner' ELSE ? END AS access_role
         FROM talks t
@@ -862,6 +902,7 @@ export function getTalkForUser(
         t.owner_id,
         t.folder_id,
         t.sort_order,
+        t.project_path,
         t.orchestration_mode,
         t.topic_title,
         t.status,
@@ -899,12 +940,13 @@ export function upsertTalk(input: {
     .prepare(
       `
     INSERT INTO talks (
-      id, owner_id, folder_id, sort_order, topic_title, orchestration_mode,
+      id, owner_id, folder_id, sort_order, topic_title, project_path, orchestration_mode,
       status, version, created_at, updated_at
     )
-    VALUES (?, ?, NULL, 0, ?, ?, ?, 1, ?, ?)
+    VALUES (?, ?, NULL, 0, ?, NULL, ?, ?, 1, ?, ?)
     ON CONFLICT(id) DO UPDATE SET
       topic_title = excluded.topic_title,
+      project_path = excluded.project_path,
       orchestration_mode = excluded.orchestration_mode,
       status = excluded.status,
       updated_at = excluded.updated_at,
@@ -1091,6 +1133,26 @@ export function patchTalkMetadata(input: {
     return getTalkById(txInput.talkId);
   });
   return tx(input);
+}
+
+export function updateTalkProjectPath(input: {
+  talkId: string;
+  ownerId: string;
+  projectPath: string | null;
+}): TalkRecord | undefined {
+  const now = new Date().toISOString();
+  getDb()
+    .prepare(
+      `
+      UPDATE talks
+      SET project_path = ?,
+          updated_at = ?,
+          version = version + 1
+      WHERE id = ? AND owner_id = ?
+    `,
+    )
+    .run(input.projectPath, now, input.talkId, input.ownerId);
+  return getTalkById(input.talkId);
 }
 
 export function deleteTalkForOwner(input: {

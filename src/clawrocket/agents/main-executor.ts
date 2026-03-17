@@ -18,12 +18,20 @@ import {
   getRegisteredAgent,
   type RegisteredAgentRecord,
 } from '../db/agent-accessors.js';
+import { getSettingValue } from '../db/accessors.js';
 import {
   executeWithAgent,
   type ExecutionContext,
   type ExecutionEvent,
 } from './agent-router.js';
+import {
+  EXECUTOR_MAIN_PROJECT_PATH_KEY,
+  getContainerAllowedTools,
+  planExecution,
+} from './execution-planner.js';
 import { getMainAgent } from './agent-registry.js';
+import { resolveValidatedProjectMountPath } from './project-mounts.js';
+import { executeContainerAgentTurn } from './container-turn-executor.js';
 import {
   executeWebFetch,
   executeWebSearch,
@@ -84,6 +92,23 @@ export type MainExecutionEvent =
       };
     };
 
+function getModelContextWindow(agent: RegisteredAgentRecord): number {
+  const row = getDb()
+    .prepare(
+      `
+      SELECT context_window_tokens
+      FROM llm_provider_models
+      WHERE provider_id = ? AND model_id = ?
+      LIMIT 1
+    `,
+    )
+    .get(agent.provider_id, agent.model_id) as
+    | { context_window_tokens: number }
+    | undefined;
+
+  return row?.context_window_tokens || 128000;
+}
+
 // ============================================================================
 // Main Executor (pure — no DB writes, no terminal events)
 // ============================================================================
@@ -108,6 +133,8 @@ export async function executeMainChannel(
   if (!agent) {
     throw new Error('No agent available for Main channel');
   }
+
+  const plan = planExecution(agent, input.requestedBy);
 
   emitEvent({
     type: 'main_response_started',
@@ -145,6 +172,41 @@ export async function executeMainChannel(
     connectorTools: [], // No connectors for Main channel v1
     history,
   };
+  if (plan.backend === 'container') {
+    const projectMountHostPath = resolveValidatedProjectMountPath(
+      getSettingValue(EXECUTOR_MAIN_PROJECT_PATH_KEY),
+      true,
+    );
+    const result = await executeContainerAgentTurn({
+      runId: input.runId,
+      userId: input.requestedBy,
+      agent,
+      promptLabel: 'main',
+      userMessage: input.triggerContent,
+      signal,
+      allowedTools: getContainerAllowedTools({
+        effectiveTools: plan.effectiveTools,
+      }),
+      context: {
+        systemPrompt: agent.system_prompt?.trim() || '',
+        history,
+      },
+      modelContextWindow: getModelContextWindow(agent),
+      containerCredential: plan.containerCredential,
+      threadId: input.threadId,
+      projectMountHostPath,
+    });
+
+    return {
+      content: result.content,
+      agentId: agent.id,
+      agentName: agent.name,
+      providerId: agent.provider_id,
+      modelId: agent.model_id,
+      threadId: input.threadId,
+      latencyMs: Date.now() - startTime,
+    };
+  }
 
   const result = await executeWithAgent(
     agent.id,
@@ -179,7 +241,6 @@ export async function executeMainChannel(
     },
   );
 
-  // --- Step 4: Return output (no persistence — worker handles that) ---
   return {
     content: result.content,
     agentId: agent.id,
