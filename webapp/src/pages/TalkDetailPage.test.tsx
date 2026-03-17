@@ -195,6 +195,95 @@ describe('TalkDetailPage', () => {
     expect(await screen.findByText('Talk tool grants updated.')).toBeTruthy();
   });
 
+  it('refreshes Talk Tools after popup Google account connect completes', async () => {
+    const user = userEvent.setup();
+    const popup = { closed: false };
+    const openSpy = vi
+      .spyOn(window, 'open')
+      .mockReturnValue(popup as unknown as Window);
+    installTalkDetailFetch();
+
+    renderDetailPage('/app/talks/talk-1/tools');
+
+    await screen.findByRole('heading', { name: 'Tools' });
+    await user.click(screen.getByRole('button', { name: 'Connect Google' }));
+
+    await waitFor(() => expect(openSpy).toHaveBeenCalledTimes(1));
+    act(() => {
+      window.dispatchEvent(
+        new MessageEvent('message', {
+          origin: window.location.origin,
+          data: {
+            type: 'clawrocket:google-account-link',
+            status: 'success',
+          },
+        }),
+      );
+    });
+
+    expect(
+      await screen.findByText('Google account connected for this user.'),
+    ).toBeTruthy();
+    expect(screen.getByText(/Connected as owner@example\.com/i)).toBeTruthy();
+  });
+
+  it('refreshes Talk Tools after popup scope expansion completes', async () => {
+    const user = userEvent.setup();
+    const popup = { closed: false };
+    const openSpy = vi
+      .spyOn(window, 'open')
+      .mockReturnValue(popup as unknown as Window);
+    installTalkDetailFetch({
+      talkTools: {
+        ...buildTalkTools(),
+        googleAccount: {
+          connected: true,
+          email: 'owner@example.com',
+          displayName: 'Owner',
+          scopes: [],
+          accessExpiresAt: null,
+        },
+        grants: [
+          {
+            toolId: 'web_search',
+            enabled: true,
+            updatedAt: '2026-03-06T00:00:00.000Z',
+            updatedBy: 'owner-1',
+          },
+          {
+            toolId: 'gmail_send',
+            enabled: true,
+            updatedAt: '2026-03-06T00:00:00.000Z',
+            updatedBy: 'owner-1',
+          },
+        ],
+      },
+    });
+
+    renderDetailPage('/app/talks/talk-1/tools');
+
+    await screen.findByRole('heading', { name: 'Tools' });
+    await user.click(
+      screen.getByRole('button', { name: 'Grant Google permissions' }),
+    );
+
+    await waitFor(() => expect(openSpy).toHaveBeenCalledTimes(1));
+    act(() => {
+      window.dispatchEvent(
+        new MessageEvent('message', {
+          origin: window.location.origin,
+          data: {
+            type: 'clawrocket:google-account-link',
+            status: 'success',
+          },
+        }),
+      );
+    });
+
+    expect(await screen.findByText('Google permissions updated.')).toBeTruthy();
+    expect(screen.getByText(/gmail\.send/i)).toBeTruthy();
+  });
+
   it('treats awaiting confirmation runs as active rounds on the Talk tab', async () => {
     installTalkDetailFetch({
       runs: [
@@ -2003,7 +2092,7 @@ function installTalkDetailFetch(input?: {
         });
       }
 
-      if (path === '/api/v1/talks/talk-1/tools' && method === 'PUT') {
+      if (path === '/api/v1/talks/talk-1/tools/grants' && method === 'PUT') {
         const body = JSON.parse(String(init?.body || '{}')) as {
           grants?: Array<{ toolId: string; enabled: boolean }>;
         };
@@ -2027,7 +2116,11 @@ function installTalkDetailFetch(input?: {
       if (url.endsWith('/api/v1/me/google-account') && method === 'GET') {
         return jsonResponse(200, {
           ok: true,
-          data: { googleAccount: talkTools.googleAccount },
+          data: {
+            authorizationUrl:
+              'http://127.0.0.1:3210/api/v1/auth/google/callback?state=connect-state&email=owner@example.com&name=Owner',
+            expiresInSec: 600,
+          },
         });
       }
 
@@ -2075,23 +2168,24 @@ function installTalkDetailFetch(input?: {
         };
         return jsonResponse(200, {
           ok: true,
-          data: { googleAccount: talkTools.googleAccount },
+          data: {
+            authorizationUrl:
+              'http://127.0.0.1:3210/api/v1/auth/google/callback?state=scope-state&email=owner@example.com&name=Owner',
+            expiresInSec: 600,
+          },
         });
       }
 
-      if (
-        url.endsWith('/api/v1/talks/talk-1/resources/google-drive') &&
-        method === 'POST'
-      ) {
+      if (url.endsWith('/api/v1/talks/talk-1/resources') && method === 'POST') {
         const body = JSON.parse(String(init?.body || '{}')) as {
-          bindingKind?: TalkTools['bindings'][number]['bindingKind'];
+          kind?: TalkTools['bindings'][number]['kind'];
           externalId?: string;
           displayName?: string;
           metadata?: Record<string, unknown> | null;
         };
         const binding = {
           id: `binding-${talkTools.bindings.length + 1}`,
-          bindingKind: body.bindingKind ?? 'google_drive_folder',
+          kind: body.kind ?? 'google_drive_folder',
           externalId: body.externalId ?? 'resource-id',
           displayName: body.displayName ?? 'Resource',
           metadata: body.metadata ?? null,

@@ -311,7 +311,7 @@ export type TalkToolGrant = {
 
 export type TalkResourceBinding = {
   id: string;
-  bindingKind:
+  kind:
     | 'google_drive_folder'
     | 'google_drive_file'
     | 'data_connector'
@@ -330,6 +330,11 @@ export type UserGoogleAccount = {
   displayName: string | null;
   scopes: string[];
   accessExpiresAt: string | null;
+};
+
+export type GoogleAccountAuthorizationLaunch = {
+  authorizationUrl: string;
+  expiresInSec: number;
 };
 
 export type EffectiveToolAccessState =
@@ -1016,7 +1021,7 @@ export async function updateTalkTools(input: {
   grants: Array<{ toolId: string; enabled: boolean }>;
 }): Promise<TalkTools> {
   return apiMutationRequest<TalkTools>(
-    `/api/v1/talks/${encodeURIComponent(input.talkId)}/tools`,
+    `/api/v1/talks/${encodeURIComponent(input.talkId)}/tools/grants`,
     {
       method: 'PUT',
       includeJson: true,
@@ -1035,18 +1040,18 @@ export async function getTalkResources(input: {
 
 export async function createTalkGoogleDriveResource(input: {
   talkId: string;
-  bindingKind: 'google_drive_folder' | 'google_drive_file';
+  kind: 'google_drive_folder' | 'google_drive_file';
   externalId: string;
   displayName: string;
   metadata?: Record<string, unknown> | null;
 }): Promise<TalkResourceBinding> {
   const envelope = await apiMutationRequest<{ binding: TalkResourceBinding }>(
-    `/api/v1/talks/${encodeURIComponent(input.talkId)}/resources/google-drive`,
+    `/api/v1/talks/${encodeURIComponent(input.talkId)}/resources`,
     {
       method: 'POST',
       includeJson: true,
       body: JSON.stringify({
-        bindingKind: input.bindingKind,
+        kind: input.kind,
         externalId: input.externalId,
         displayName: input.displayName,
         metadata: input.metadata ?? null,
@@ -1075,30 +1080,38 @@ export async function getUserGoogleAccount(): Promise<UserGoogleAccount> {
   return envelope.googleAccount;
 }
 
-export async function connectUserGoogleAccount(): Promise<UserGoogleAccount> {
-  const envelope = await apiMutationRequest<{ googleAccount: UserGoogleAccount }>(
+export async function connectUserGoogleAccount(input?: {
+  returnTo?: string;
+}): Promise<GoogleAccountAuthorizationLaunch> {
+  const envelope = await apiMutationRequest<GoogleAccountAuthorizationLaunch>(
     '/api/v1/me/google-account/connect',
     {
       method: 'POST',
       includeJson: true,
-      body: JSON.stringify({}),
+      body: JSON.stringify({ returnTo: input?.returnTo }),
     },
   );
-  return envelope.googleAccount;
+  return envelope;
 }
 
 export async function expandUserGoogleScopes(
-  scopes: string[],
-): Promise<UserGoogleAccount> {
-  const envelope = await apiMutationRequest<{ googleAccount: UserGoogleAccount }>(
+  input: {
+    scopes: string[];
+    returnTo?: string;
+  },
+): Promise<GoogleAccountAuthorizationLaunch> {
+  const envelope = await apiMutationRequest<GoogleAccountAuthorizationLaunch>(
     '/api/v1/me/google-account/expand-scopes',
     {
       method: 'POST',
       includeJson: true,
-      body: JSON.stringify({ scopes }),
+      body: JSON.stringify({
+        scopes: input.scopes,
+        returnTo: input.returnTo,
+      }),
     },
   );
-  return envelope.googleAccount;
+  return envelope;
 }
 
 export async function getTalkAudit(input: {

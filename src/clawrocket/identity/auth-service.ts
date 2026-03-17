@@ -32,6 +32,10 @@ import {
 } from '../db/index.js';
 import { hashOpaqueToken } from '../security/hash.js';
 import { UserRole } from '../types.js';
+import {
+  expandGoogleScopeAliases,
+  normalizeGoogleScopeAliases,
+} from './google-scopes.js';
 
 export interface SessionMaterial {
   sessionId: string;
@@ -52,6 +56,17 @@ export interface OAuthStartResult {
   state: string;
   authorizationUrl: string;
   expiresInSec: number;
+}
+
+export interface GoogleOAuthIdentity {
+  googleSubject: string;
+  email: string;
+  displayName: string;
+  accessToken: string;
+  refreshToken: string | null;
+  scopes: string[];
+  tokenType: string | null;
+  accessExpiresAt: string | null;
 }
 
 export interface DeviceStartResult {
@@ -84,6 +99,7 @@ const GOOGLE_ISSUERS = new Set([
 
 export function startGoogleOAuth(input?: {
   returnTo?: string;
+  scopes?: string[];
 }): OAuthStartResult {
   const state = randomOpaque(24);
   const nonce = randomOpaque(24);
@@ -127,11 +143,19 @@ export function startGoogleOAuth(input?: {
   }
 
   const challenge = toCodeChallenge(codeVerifier);
+  const requestedScopes = Array.from(
+    new Set([
+      'openid',
+      'email',
+      'profile',
+      ...expandGoogleScopeAliases(input?.scopes || []),
+    ]),
+  );
   const params = new URLSearchParams({
     client_id: GOOGLE_OAUTH_CLIENT_ID,
     redirect_uri: GOOGLE_OAUTH_REDIRECT_URI,
     response_type: 'code',
-    scope: 'openid email profile',
+    scope: requestedScopes.join(' '),
     access_type: 'offline',
     state,
     nonce,
@@ -154,56 +178,17 @@ export async function completeGoogleOAuthCallback(input: {
   ipAddress?: string;
   userAgent?: string;
 }): Promise<LoginResult> {
-  if (!input.state) {
-    throw new AuthError('invalid_state', 'Missing OAuth state', 400);
-  }
-
-  const consumed = consumeOAuthState(input.state);
-  if (!consumed) {
-    throw new AuthError(
-      'invalid_state',
-      'OAuth state is invalid or expired',
-      400,
-    );
-  }
-
-  let email = '';
-  let displayName = '';
-
-  if (input.code) {
-    const identity = await exchangeGoogleCodeForIdentity({
-      code: input.code,
-      consumed,
-    });
-    email = identity.email;
-    displayName = identity.displayName;
-  } else {
-    email = (input.email || '').trim().toLowerCase();
-    if (!email) {
-      if (!AUTH_DEV_MODE) {
-        throw new AuthError(
-          'authorization_code_required',
-          'Missing authorization code',
-          400,
-        );
-      }
-      throw new AuthError(
-        'email_required',
-        'Dev mode callback requires email query parameter',
-        400,
-      );
-    }
-
-    displayName = input.displayName?.trim() || email.split('@')[0] || 'User';
-  }
-
-  const user = resolveUserForLogin({ email, displayName });
+  const completed = await completeGoogleOAuthIdentityCallback(input);
+  const user = resolveUserForLogin({
+    email: completed.identity.email,
+    displayName: completed.identity.displayName,
+  });
   const session = createSessionForUser(user.id, {
     ipAddress: input.ipAddress,
     userAgent: input.userAgent,
   });
 
-  return { user, session, returnTo: consumed.returnTo };
+  return { user, session, returnTo: completed.returnTo };
 }
 
 export function refreshSession(refreshToken: string): LoginResult {
@@ -495,7 +480,7 @@ async function exchangeGoogleCodeForIdentity(input: {
     codeVerifier: string | null;
     redirectUri: string;
   };
-}): Promise<{ email: string; displayName: string }> {
+}): Promise<GoogleOAuthIdentity> {
   if (!GOOGLE_OAUTH_CLIENT_ID || !GOOGLE_OAUTH_CLIENT_SECRET) {
     throw new AuthError(
       'google_oauth_not_configured',
@@ -536,7 +521,12 @@ async function exchangeGoogleCodeForIdentity(input: {
   }
 
   const tokenBody = (await tokenRes.json()) as {
+    access_token?: string;
+    expires_in?: number;
     id_token?: string;
+    refresh_token?: string;
+    scope?: string;
+    token_type?: string;
   };
   const idToken = tokenBody.id_token;
   if (!idToken) {
@@ -634,7 +624,112 @@ async function exchangeGoogleCodeForIdentity(input: {
     'User'
   ).trim();
 
-  return { email, displayName };
+  const googleSubject = readStringClaim(claims, 'sub') || '';
+  if (!googleSubject) {
+    throw new AuthError(
+      'google_id_token_invalid',
+      'Google ID token does not include subject',
+      401,
+    );
+  }
+
+  const accessToken = tokenBody.access_token || '';
+  if (!accessToken) {
+    throw new AuthError(
+      'google_token_exchange_failed',
+      'Google token response did not include access_token',
+      401,
+    );
+  }
+
+  return {
+    googleSubject,
+    email,
+    displayName,
+    accessToken,
+    refreshToken: tokenBody.refresh_token || null,
+    scopes:
+      typeof tokenBody.scope === 'string'
+        ? normalizeGoogleScopeAliases(
+            tokenBody.scope
+              .split(/\s+/)
+              .map((scope) => scope.trim())
+              .filter(Boolean),
+          )
+        : [],
+    tokenType:
+      typeof tokenBody.token_type === 'string' ? tokenBody.token_type : null,
+    accessExpiresAt:
+      typeof tokenBody.expires_in === 'number' &&
+      Number.isFinite(tokenBody.expires_in)
+        ? new Date(Date.now() + tokenBody.expires_in * 1000).toISOString()
+        : null,
+  };
+}
+
+export async function completeGoogleOAuthIdentityCallback(input: {
+  state: string;
+  code?: string;
+  email?: string;
+  displayName?: string;
+  requestedScopes?: string[];
+}): Promise<{ identity: GoogleOAuthIdentity; returnTo?: string | null }> {
+  if (!input.state) {
+    throw new AuthError('invalid_state', 'Missing OAuth state', 400);
+  }
+
+  const consumed = consumeOAuthState(input.state);
+  if (!consumed) {
+    throw new AuthError(
+      'invalid_state',
+      'OAuth state is invalid or expired',
+      400,
+    );
+  }
+
+  if (input.code) {
+    const identity = await exchangeGoogleCodeForIdentity({
+      code: input.code,
+      consumed,
+    });
+    return { identity, returnTo: consumed.returnTo };
+  }
+
+  const email = (input.email || '').trim().toLowerCase();
+  if (!email) {
+    if (!AUTH_DEV_MODE) {
+      throw new AuthError(
+        'authorization_code_required',
+        'Missing authorization code',
+        400,
+      );
+    }
+    throw new AuthError(
+      'email_required',
+      'Dev mode callback requires email query parameter',
+      400,
+    );
+  }
+
+  const displayName =
+    input.displayName?.trim() || email.split('@')[0] || 'User';
+  const requestedScopes = normalizeGoogleScopeAliases(
+    input.requestedScopes || [],
+  );
+
+  return {
+    identity: {
+      googleSubject: email,
+      email,
+      displayName,
+      accessToken: 'dev-google-access-token',
+      refreshToken: 'dev-google-refresh-token',
+      scopes: requestedScopes,
+      tokenType: 'Bearer',
+      accessExpiresAt: new Date(Date.now() + 3600 * 1000).toISOString(),
+    },
+    returnTo: consumed.returnTo,
+  };
 }
 
 function decodeJwtPayload(token: string): Record<string, unknown> {

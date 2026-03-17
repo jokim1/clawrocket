@@ -19,7 +19,7 @@ What exists and works today:
 - **Seeded `provider.anthropic`** row with `claude-sonnet-4-6` default model.
 - **Synthetic Claude card** in frontend reflects API-key-only readiness (but see known gap below re: default-provider bug).
 - **Agent router** (`agent-router.ts`) delegates cleanly to execution-resolver — no inline credential logic.
-- **Container execution** works for WhatsApp/Telegram/scheduled tasks via Docker + Claude Agent SDK. Not yet wired into Talk/Main executors.
+- **Container execution** works for WhatsApp/Telegram/scheduled tasks via Docker + Claude Agent SDK and is now wired into Main + single-agent Talk turns through the Phase 5A execution planner.
 - **Talk executor** streams LLM responses, resolves agents via registered-agents, executes context tools (Tier 1).
 - **Main executor** exists but has no tools and no `executeToolCall` callback.
 - **Connector tool definitions** exist in `runtime.ts` but aren't wired to the context loader or executor.
@@ -152,7 +152,7 @@ What doesn't work:
 
 ### Phase 3 exit criteria
 - Users can talk to Nanoclaw through the web UI with direct-executor tools (Tiers 1-3: context, connectors, web fetch/search)
-- Tier 5 tools (shell, filesystem, browser) are NOT available in Main until Phase 5 ships container routing
+- Tier 5 tools are available in Main and single-agent Talk turns through Phase 5A container routing; multi-agent Talk rounds remain direct-only until later backend parity work
 - Feels like the primary everyday AI surface for knowledge/research/connector tasks
 - Talks still work as configured workspaces
 

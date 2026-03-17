@@ -905,6 +905,7 @@ function formatToolAccessState(state: string): string {
   }
 }
 
+// Keep this mapping in sync with src/clawrocket/web/routes/talk-tools.ts.
 function requiredScopesForTool(toolId: string): string[] {
   switch (toolId) {
     case 'gmail_read':
@@ -926,6 +927,67 @@ function requiredScopesForTool(toolId: string): string[] {
     default:
       return [];
   }
+}
+
+type GoogleAccountPopupEvent = {
+  type: 'clawrocket:google-account-link';
+  status: 'success' | 'error';
+  message?: string | null;
+};
+
+function launchGoogleAccountPopup(authorizationUrl: string): Promise<void> {
+  const popup = window.open(
+    authorizationUrl,
+    'clawrocket-google-account',
+    'popup=yes,width=620,height=760,noopener=no,noreferrer=no',
+  );
+
+  if (!popup) {
+    window.location.assign(authorizationUrl);
+    return Promise.resolve();
+  }
+
+  return new Promise<void>((resolve, reject) => {
+    let settled = false;
+    let pollId = 0;
+
+    const cleanup = () => {
+      if (pollId) {
+        window.clearInterval(pollId);
+      }
+      window.removeEventListener('message', onMessage);
+    };
+
+    const finish = (error?: Error) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      if (error) {
+        reject(error);
+      } else {
+        resolve();
+      }
+    };
+
+    const onMessage = (event: MessageEvent) => {
+      if (event.origin !== window.location.origin) return;
+      const data = event.data as GoogleAccountPopupEvent | null;
+      if (!data || data.type !== 'clawrocket:google-account-link') return;
+      if (data.status === 'error') {
+        finish(
+          new Error(data.message || 'Google authorization did not complete.'),
+        );
+        return;
+      }
+      finish();
+    };
+
+    window.addEventListener('message', onMessage);
+    pollId = window.setInterval(() => {
+      if (!popup.closed) return;
+      finish(new Error('Google authorization was closed before it completed.'));
+    }, 500);
+  });
 }
 
 function formatConnectorKind(kind: DataConnector['connectorKind']): string {
@@ -1287,8 +1349,10 @@ export function TalkDetailPage({
   const navigate = useNavigate();
   const location = useLocation();
   const currentTab = getTabFromPath(location.pathname, talkId);
-  const requestedThreadId =
-    new URLSearchParams(location.search).get('thread')?.trim() || null;
+  const locationParams = new URLSearchParams(location.search);
+  const requestedThreadId = locationParams.get('thread')?.trim() || null;
+  const googleToolsError =
+    locationParams.get('googleToolsError')?.trim() || null;
   const [state, dispatch] = useReducer(
     detailReducer,
     undefined,
@@ -2350,6 +2414,14 @@ export function TalkDetailPage({
       cancelled = true;
     };
   }, [currentTab, handleUnauthorized, state.kind, talkId]);
+
+  useEffect(() => {
+    if (currentTab !== 'tools' || !googleToolsError) return;
+    setToolStatus({
+      status: 'error',
+      message: googleToolsError,
+    });
+  }, [currentTab, googleToolsError]);
 
   useEffect(() => {
     if (state.kind !== 'ready' || currentTab !== 'data-connectors') return;
@@ -3779,7 +3851,10 @@ export function TalkDetailPage({
   const handleConnectGoogleAccount = async () => {
     setToolStatus({ status: 'saving' });
     try {
-      await connectUserGoogleAccount();
+      const launch = await connectUserGoogleAccount({
+        returnTo: toolsTabHref,
+      });
+      await launchGoogleAccountPopup(launch.authorizationUrl);
       await refreshTalkTools();
       setToolStatus({
         status: 'success',
@@ -3815,7 +3890,11 @@ export function TalkDetailPage({
 
     setToolStatus({ status: 'saving' });
     try {
-      await expandUserGoogleScopes(missingScopes);
+      const launch = await expandUserGoogleScopes({
+        scopes: missingScopes,
+        returnTo: toolsTabHref,
+      });
+      await launchGoogleAccountPopup(launch.authorizationUrl);
       await refreshTalkTools();
       setToolStatus({
         status: 'success',
@@ -3853,7 +3932,7 @@ export function TalkDetailPage({
     try {
       await createTalkGoogleDriveResource({
         talkId,
-        bindingKind: driveBindingDraft.bindingKind,
+        kind: driveBindingDraft.bindingKind,
         externalId: driveBindingDraft.externalId.trim(),
         displayName: driveBindingDraft.displayName.trim(),
       });
@@ -5190,11 +5269,11 @@ export function TalkDetailPage({
                                 opacity: 0.6,
                               }}
                             >
-                              {binding.bindingKind === 'google_drive_folder'
+                              {binding.kind === 'google_drive_folder'
                                 ? 'Folder'
-                                : binding.bindingKind === 'google_drive_file'
+                                : binding.kind === 'google_drive_file'
                                   ? 'File'
-                                  : binding.bindingKind}
+                                  : binding.kind}
                             </span>
                             <strong style={{ flex: 1 }}>
                               {binding.displayName}
