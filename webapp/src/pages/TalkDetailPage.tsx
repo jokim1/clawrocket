@@ -2979,8 +2979,12 @@ export function TalkDetailPage({
       setContextRules((prev) =>
         sortRulesByOrder(prev.map((r) => (r.id === updated.id ? updated : r))),
       );
-    } catch {
-      // silent
+    } catch (err) {
+      setContextStatus({
+        status: 'error',
+        message:
+          err instanceof Error ? err.message : 'Failed to update rule state.',
+      });
     }
   };
 
@@ -3031,8 +3035,11 @@ export function TalkDetailPage({
         delete next[ruleId];
         return next;
       });
-    } catch {
-      // silent
+    } catch (err) {
+      setContextStatus({
+        status: 'error',
+        message: err instanceof Error ? err.message : 'Failed to delete rule.',
+      });
     }
   };
 

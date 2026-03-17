@@ -204,6 +204,64 @@ describe('TalkDetailPage', () => {
     ).toBeTruthy();
   });
 
+  it('shows an inline error when toggling a rule fails', async () => {
+    const user = userEvent.setup();
+    installTalkDetailFetch({
+      context: buildTalkContext({
+        rules: [
+          buildContextRule({
+            id: 'rule-1',
+            ruleText: 'Use simple language',
+            isActive: true,
+            sortOrder: 0,
+          }),
+        ],
+      }),
+      rulePatchError: {
+        status: 500,
+        code: 'rule_patch_failed',
+        message: 'Failed to update rule state.',
+      },
+    });
+
+    renderDetailPage('/app/talks/talk-1/rules');
+
+    await screen.findByRole('heading', { name: 'Rules' });
+    await user.click(screen.getByRole('button', { name: 'Pause' }));
+
+    expect(
+      await screen.findByText('Failed to update rule state.'),
+    ).toBeTruthy();
+  });
+
+  it('shows an inline error when deleting a rule fails', async () => {
+    const user = userEvent.setup();
+    installTalkDetailFetch({
+      context: buildTalkContext({
+        rules: [
+          buildContextRule({
+            id: 'rule-1',
+            ruleText: 'Use simple language',
+            isActive: true,
+            sortOrder: 0,
+          }),
+        ],
+      }),
+      ruleDeleteError: {
+        status: 500,
+        code: 'rule_delete_failed',
+        message: 'Failed to delete rule.',
+      },
+    });
+
+    renderDetailPage('/app/talks/talk-1/rules');
+
+    await screen.findByRole('heading', { name: 'Rules' });
+    await user.click(screen.getByRole('button', { name: 'Delete' }));
+
+    expect(await screen.findByText('Failed to delete rule.')).toBeTruthy();
+  });
+
   it('renders read-only Talk state entries from the State tab', async () => {
     installTalkDetailFetch({
       stateEntries: [
@@ -1961,6 +2019,16 @@ function installTalkDetailFetch(input?: {
   registeredAgents?: RegisteredAgent[];
   context?: TalkContext;
   stateEntries?: TalkStateEntry[];
+  rulePatchError?: {
+    status: number;
+    code?: string;
+    message: string;
+  };
+  ruleDeleteError?: {
+    status: number;
+    code?: string;
+    message: string;
+  };
   dataConnectors?: DataConnector[];
   talkDataConnectors?: TalkDataConnector[];
   channelConnections?: ChannelConnection[];
@@ -2366,6 +2434,15 @@ function installTalkDetailFetch(input?: {
         /\/api\/v1\/talks\/talk-1\/context\/rules\/[^/]+$/.test(url) &&
         method === 'PATCH'
       ) {
+        if (input?.rulePatchError) {
+          return jsonResponse(input.rulePatchError.status, {
+            ok: false,
+            error: {
+              code: input.rulePatchError.code,
+              message: input.rulePatchError.message,
+            },
+          });
+        }
         const ruleId = url.split('/api/v1/talks/talk-1/context/rules/')[1];
         const body = JSON.parse(String(init?.body || '{}')) as Partial<
           Pick<ContextRule, 'ruleText' | 'isActive' | 'sortOrder'>
@@ -2401,6 +2478,15 @@ function installTalkDetailFetch(input?: {
         /\/api\/v1\/talks\/talk-1\/context\/rules\/[^/]+$/.test(url) &&
         method === 'DELETE'
       ) {
+        if (input?.ruleDeleteError) {
+          return jsonResponse(input.ruleDeleteError.status, {
+            ok: false,
+            error: {
+              code: input.ruleDeleteError.code,
+              message: input.ruleDeleteError.message,
+            },
+          });
+        }
         const ruleId = url.split('/api/v1/talks/talk-1/context/rules/')[1];
         context = {
           ...context,
