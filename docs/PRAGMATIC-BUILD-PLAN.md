@@ -1,7 +1,7 @@
 # Pragmatic Build Plan
 
 **Status:** Active
-**Date:** 2026-03-14
+**Date:** 2026-03-17
 **Companion document:** [WORKSPACE-REWRITE-PLAN.md](./WORKSPACE-REWRITE-PLAN.md) (north-star architecture)
 **Source of truth for current work:** [ARCHITECTURE-REVIEW.md](./ARCHITECTURE-REVIEW.md) (implementation order + decisions)
 
@@ -11,7 +11,27 @@ The principle: ship what works, scope honestly, extend when real infrastructure 
 
 ---
 
-## Current State (as of 2026-03-14)
+## Current Practical Order (as of 2026-03-17)
+
+What is already shipped:
+
+- Immediate cleanup PRs:
+  - Talk thread creation contract fix + regression coverage
+  - Web Talk/Main container execution decoupled from `registered_groups.is_main`
+- **Phase 5A** backend routing foundation for Talk/Main
+- **Phase 6** Rules elevation + structured Talk State
+
+What is next:
+
+1. **Phase 7** — complete connector/binding product split and add Google Docs
+2. **Phase 8** — context inspection, lightweight role-aware context hints, lightweight retrieval
+3. Post-phase work — mixed direct/container multi-agent parity, Main→Talk migration, Outputs, Jobs, fuller execution planner, eventual Talk→Workspace rename
+
+This changes practical sequencing, not the remaining numbered phase inventory in this document.
+
+---
+
+## Current State (as of 2026-03-17)
 
 What exists and works today:
 
@@ -20,10 +40,10 @@ What exists and works today:
 - **Synthetic Claude card** in frontend reflects API-key-only readiness (but see known gap below re: default-provider bug).
 - **Agent router** (`agent-router.ts`) delegates cleanly to execution-resolver — no inline credential logic.
 - **Container execution** works for WhatsApp/Telegram/scheduled tasks via Docker + Claude Agent SDK and is now wired into Main + single-agent Talk turns through the Phase 5A execution planner.
-- **Talk executor** streams LLM responses, resolves agents via registered-agents, executes context tools (Tier 1).
-- **Main executor** exists but has no tools and no `executeToolCall` callback.
-- **Connector tool definitions** exist in `runtime.ts` but aren't wired to the context loader or executor.
-- **Registered-agent CRUD** exists in backend (`GET/POST/PUT/DELETE /api/v1/registered-agents`). No frontend UI.
+- **Talk executor** supports ordered/panel orchestration, context tools, connector tools, web tools, state writes, and planner-based container routing for supported single-agent turns.
+- **Main executor** supports web tools and planner-based stateless container routing.
+- **Connector tool definitions** are wired through the context loader and executor for verified connectors.
+- **Registered-agent CRUD** ships end-to-end in backend and frontend.
 
 What exists in schema AND is already partially wired:
 
@@ -42,9 +62,6 @@ What doesn't work:
 
 - ~~Multi-step tool loop~~ **DONE** — `agent-router.ts` lines 287-490 implement full tool loop with `MAX_TOOL_ITERATIONS = 10`, Anthropic + OpenAI format handling.
 - ~~Talk agent editing~~ **DONE (Phase 1.4)** — `updateTalkAgentsRoute` now persists via `setTalkAgents()`, `listEffectiveTalkAgents` returns real data from new schema columns.
-- Connector tools (definitions built but never passed to LLM)
-- Main executor tools (zero tools, no callback)
-- Container routing from Talk/Main (container is only used by external chat paths)
 - ~~Registered-agent management UI~~ **DONE** — `RegisteredAgentsPanel.tsx` has full CRUD.
 - User tool permissions UI (backend routes exist, no frontend)
 
