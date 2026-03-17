@@ -5411,7 +5411,7 @@ function serveStaticFile(
   if (isHtml) {
     headers['cache-control'] = 'no-cache';
     headers['content-security-policy'] =
-      "default-src 'self'; script-src 'self' https://apis.google.com; style-src 'self'; img-src 'self' data:; connect-src 'self'; font-src 'self'; frame-src 'self' https://docs.google.com https://drive.google.com; object-src 'none'; base-uri 'self'; frame-ancestors 'none'";
+      "default-src 'self'; script-src 'self' https://apis.google.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: https://*.googleusercontent.com https://*.gstatic.com https://www.google.com; connect-src 'self' https://apis.google.com https://www.googleapis.com https://content.googleapis.com https://docs.google.com; font-src 'self' https://fonts.gstatic.com; frame-src 'self' https://accounts.google.com https://docs.google.com https://drive.google.com https://*.googleusercontent.com; object-src 'none'; base-uri 'self'; frame-ancestors 'none'";
   } else if (requestPath.startsWith('/assets/')) {
     headers['cache-control'] = 'public, max-age=31536000, immutable';
   } else {

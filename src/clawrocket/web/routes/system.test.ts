@@ -105,8 +105,16 @@ describe('system routes', () => {
       const csp = routeRes.headers.get('content-security-policy');
       expect(csp).toContain("default-src 'self'");
       expect(csp).toContain("script-src 'self' https://apis.google.com");
+      expect(csp).toContain("style-src 'self' 'unsafe-inline'");
       expect(csp).toContain(
-        "frame-src 'self' https://docs.google.com https://drive.google.com",
+        "img-src 'self' data: https://*.googleusercontent.com https://*.gstatic.com https://www.google.com",
+      );
+      expect(csp).toContain(
+        "connect-src 'self' https://apis.google.com https://www.googleapis.com https://content.googleapis.com https://docs.google.com",
+      );
+      expect(csp).toContain("font-src 'self' https://fonts.gstatic.com");
+      expect(csp).toContain(
+        "frame-src 'self' https://accounts.google.com https://docs.google.com https://drive.google.com https://*.googleusercontent.com",
       );
 
       const assetRes = await webServer.request('/assets/app-abc123.js');
