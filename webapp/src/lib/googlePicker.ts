@@ -29,6 +29,7 @@ type PickerBuilderInstance = {
   setOAuthToken: (token: string) => PickerBuilderInstance;
   setDeveloperKey: (key: string) => PickerBuilderInstance;
   setAppId: (appId: string) => PickerBuilderInstance;
+  setOrigin: (origin: string) => PickerBuilderInstance;
   setCallback: (
     callback: (data: PickerCallbackData) => void,
   ) => PickerBuilderInstance;
@@ -148,6 +149,7 @@ export async function openGoogleDrivePicker(input: {
       .setOAuthToken(input.session.oauthToken)
       .setDeveloperKey(input.session.developerKey)
       .setAppId(input.session.appId)
+      .setOrigin(window.location.origin)
       .enableFeature(pickerApi.Feature.MULTISELECT_ENABLED)
       .setCallback((data: PickerCallbackData) => {
         if (data.action === pickerApi.Action.CANCEL) {
