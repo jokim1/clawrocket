@@ -23,6 +23,7 @@ import {
   type LlmToolDefinition,
   type LlmMessage,
 } from '../agents/llm-client.js';
+import type { TalkPersonaRole } from '../llm/types.js';
 import { WEB_TOOL_DEFINITIONS } from '../tools/web-tools.js';
 import {
   buildBoundGoogleDrivePromptSection,
@@ -49,6 +50,9 @@ export interface ContextPackage {
   /** Rough token estimate for budgeting (systemPrompt + history) */
   estimatedTokens: number;
 
+  /** Auditable snapshot of the context package actually used for the run */
+  contextSnapshot: TalkRunContextSnapshot;
+
   /** Metadata about the loaded context */
   metadata: {
     talkId: string;
@@ -63,6 +67,69 @@ export interface ContextPackage {
   };
 }
 
+export interface TalkRunContextStateEntrySnapshot {
+  key: string;
+  value: unknown;
+  version: number;
+  updatedAt: string;
+  reason: 'state_snapshot' | 'retrieved';
+}
+
+export interface TalkRunContextSourceManifestItem {
+  ref: string;
+  title: string;
+  sourceType: string;
+  sourceUrl: string | null;
+  fileName: string | null;
+}
+
+export interface TalkRunContextInlineSourceSnapshot {
+  ref: string;
+  text: string;
+}
+
+export interface TalkRunContextRetrievedSourceSnapshot {
+  ref: string;
+  title: string;
+  excerpt: string;
+}
+
+export interface TalkRunContextSnapshot {
+  version: 1;
+  threadId: string | null;
+  personaRole: TalkPersonaRole | null;
+  roleHint: string | null;
+  goalIncluded: boolean;
+  summaryIncluded: boolean;
+  activeRules: string[];
+  stateSnapshot: {
+    totalCount: number;
+    omittedCount: number;
+    included: TalkRunContextStateEntrySnapshot[];
+  };
+  sources: {
+    totalCount: number;
+    manifest: TalkRunContextSourceManifestItem[];
+    inline: TalkRunContextInlineSourceSnapshot[];
+  };
+  retrieval: {
+    query: string | null;
+    queryTerms: string[];
+    roleTerms: string[];
+    state: TalkRunContextStateEntrySnapshot[];
+    sources: TalkRunContextRetrievedSourceSnapshot[];
+  };
+  tools: {
+    contextToolNames: string[];
+    connectorToolNames: string[];
+  };
+  history: {
+    messageIds: string[];
+    turnCount: number;
+  };
+  estimatedTokens: number;
+}
+
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
@@ -70,8 +137,125 @@ export interface ContextPackage {
 const OUTPUT_RESERVE = 4096; // Tokens to reserve for model output
 const TOOL_SCHEMA_RESERVE = 2000; // Tokens to reserve for tool definitions
 const STATE_SNAPSHOT_RESERVE = 2000; // Tokens reserved for bounded Talk state
+const RETRIEVAL_SECTION_RESERVE = 1200; // Tokens reserved for targeted retrieval
 const CHARS_TO_TOKENS = 0.25; // Simple estimation: 1 char ≈ 0.25 tokens
 const SMALL_SOURCE_THRESHOLD = 250; // Max tokens to inline a source
+const MAX_RETRIEVED_STATE_ENTRIES = 3;
+const MAX_RETRIEVED_SOURCE_ITEMS = 3;
+const MAX_RETRIEVED_SOURCE_CHARS = 500;
+
+const STOPWORDS = new Set([
+  'a',
+  'an',
+  'and',
+  'are',
+  'as',
+  'at',
+  'be',
+  'but',
+  'by',
+  'for',
+  'from',
+  'how',
+  'if',
+  'in',
+  'into',
+  'is',
+  'it',
+  'of',
+  'on',
+  'or',
+  'that',
+  'the',
+  'their',
+  'there',
+  'these',
+  'they',
+  'this',
+  'to',
+  'was',
+  'what',
+  'when',
+  'where',
+  'which',
+  'who',
+  'will',
+  'with',
+]);
+
+const ROLE_CONTEXT_PROFILES: Partial<
+  Record<
+    TalkPersonaRole,
+    {
+      focus: string;
+      preferredStateKeywords: string[];
+      preferredSourceKeywords: string[];
+    }
+  >
+> = {
+  analyst: {
+    focus:
+      'Prefer factual evidence, metrics, injuries, schedules, rosters, and trend data.',
+    preferredStateKeywords: [
+      'injury',
+      'roster',
+      'schedule',
+      'depth',
+      'stats',
+      'trend',
+      'performance',
+    ],
+    preferredSourceKeywords: [
+      'injury',
+      'roster',
+      'schedule',
+      'depth',
+      'stats',
+      'preview',
+    ],
+  },
+  critic: {
+    focus:
+      'Prefer downside risks, weaknesses, constraints, and fragile assumptions.',
+    preferredStateKeywords: ['risk', 'weakness', 'constraint', 'issue'],
+    preferredSourceKeywords: ['risk', 'weakness', 'concern', 'problem'],
+  },
+  strategist: {
+    focus:
+      'Prefer goals, priorities, timelines, execution plans, and dependencies.',
+    preferredStateKeywords: ['goal', 'priority', 'timeline', 'plan', 'owner'],
+    preferredSourceKeywords: ['plan', 'roadmap', 'timeline', 'strategy'],
+  },
+  'devils-advocate': {
+    focus:
+      'Prefer blind spots, counterarguments, failure modes, and contradictory evidence.',
+    preferredStateKeywords: [
+      'assumption',
+      'risk',
+      'counter',
+      'failure',
+      'blind',
+    ],
+    preferredSourceKeywords: [
+      'counter',
+      'risk',
+      'failure',
+      'contrary',
+      'concern',
+    ],
+  },
+  synthesizer: {
+    focus:
+      'Prefer summaries, decision points, open questions, and cross-source consensus.',
+    preferredStateKeywords: ['summary', 'decision', 'question', 'consensus'],
+    preferredSourceKeywords: ['summary', 'decision', 'overview', 'consensus'],
+  },
+  editor: {
+    focus: 'Prefer tone, audience, style, structure, and clarity guidance.',
+    preferredStateKeywords: ['tone', 'audience', 'style', 'voice', 'format'],
+    preferredSourceKeywords: ['style', 'voice', 'copy', 'brief'],
+  },
+};
 
 function estimateTokens(text: string): number {
   return Math.ceil(text.length * CHARS_TO_TOKENS);
@@ -107,8 +291,14 @@ export async function loadTalkContext(
   threadId?: string | null,
   historyThroughMessageId?: string | null,
   userId?: string | null,
+  options?: {
+    personaRole?: TalkPersonaRole | null;
+    retrievalQuery?: string | null;
+  },
 ): Promise<ContextPackage> {
   const db = getDb();
+  const personaRole = options?.personaRole ?? null;
+  const roleHint = buildRoleHint(personaRole);
 
   // Step 1: Fetch goal, rules, state, and rolling summary
   const goal = fetchGoal(db, talkId);
@@ -127,6 +317,21 @@ export async function loadTalkContext(
   // Step 2: Build source manifest
   const sources = fetchSources(db, talkId);
   const sourceLines = buildSourceManifest(sources);
+  const retrievedContext = buildRetrievedContext({
+    query: options?.retrievalQuery ?? null,
+    personaRole,
+    stateEntries,
+    sources,
+    excludedStateKeys: new Set(
+      stateSnapshot.includedEntries.map((entry) => entry.key),
+    ),
+    excludedSourceRefs: new Set(
+      sourceLines
+        .filter((source) => source.inlineContent)
+        .map((source) => source.ref),
+    ),
+    budgetTokens: RETRIEVAL_SECTION_RESERVE,
+  });
   const boundGoogleDriveResources = buildBoundGoogleDrivePromptSection(talkId);
 
   // Step 3: Build connector tools (currently empty stub)
@@ -137,7 +342,9 @@ export async function loadTalkContext(
     goal,
     summary,
     rules,
-    stateSnapshot,
+    roleHint,
+    stateSnapshot.promptText,
+    retrievedContext.promptText,
     sourceLines,
     boundGoogleDriveResources,
   );
@@ -185,12 +392,66 @@ export async function loadTalkContext(
     hasSummary: summary !== null,
   };
 
+  const contextSnapshot: TalkRunContextSnapshot = {
+    version: 1,
+    threadId: threadId ?? null,
+    personaRole,
+    roleHint,
+    goalIncluded: Boolean(goal),
+    summaryIncluded: summary !== null,
+    activeRules: rules,
+    stateSnapshot: {
+      totalCount: stateEntries.length,
+      omittedCount: stateSnapshot.omittedCount,
+      included: stateSnapshot.includedEntries.map((entry) => ({
+        ...entry,
+        reason: 'state_snapshot',
+      })),
+    },
+    sources: {
+      totalCount: sourceLines.length,
+      manifest: sourceLines.map((source) => ({
+        ref: source.ref,
+        title: source.title,
+        sourceType: source.sourceType,
+        sourceUrl: source.sourceUrl,
+        fileName: source.fileName,
+      })),
+      inline: sourceLines
+        .filter((source) => source.inlineContent)
+        .map((source) => ({
+          ref: source.ref,
+          text: source.inlineContent!,
+        })),
+    },
+    retrieval: {
+      query: options?.retrievalQuery?.trim() || null,
+      queryTerms: retrievedContext.queryTerms,
+      roleTerms: retrievedContext.roleTerms,
+      state: retrievedContext.stateEntries.map((entry) => ({
+        ...entry,
+        reason: 'retrieved',
+      })),
+      sources: retrievedContext.sourceEntries,
+    },
+    tools: {
+      contextToolNames: contextTools.map((tool) => tool.name),
+      connectorToolNames: connectorTools.map((tool) => tool.name),
+    },
+    history: {
+      messageIds: historySelection.messageIds,
+      turnCount: history.length,
+    },
+    estimatedTokens,
+  };
+
   return {
     systemPrompt,
     connectorTools,
     contextTools,
     history,
     estimatedTokens,
+    contextSnapshot,
     metadata,
   };
 }
@@ -273,6 +534,10 @@ function fetchSources(db: any, talkId: string): SourceRow[] {
 
 function buildSourceManifest(sources: SourceRow[]): Array<{
   ref: string;
+  title: string;
+  sourceType: string;
+  sourceUrl: string | null;
+  fileName: string | null;
   line: string;
   inlineContent: string | null;
 }> {
@@ -300,6 +565,10 @@ function buildSourceManifest(sources: SourceRow[]): Array<{
 
     return {
       ref,
+      title: source.title,
+      sourceType: source.source_type,
+      sourceUrl: source.source_url,
+      fileName: source.file_name,
       line: refLine,
       inlineContent,
     };
@@ -343,9 +612,15 @@ function assembleSystemPrompt(
   goal: string | null,
   summary: string | null,
   rules: string[],
+  roleHint: string | null,
   stateSnapshot: string | null,
+  retrievedContext: string | null,
   sourceLines: Array<{
     ref: string;
+    title: string;
+    sourceType: string;
+    sourceUrl: string | null;
+    fileName: string | null;
     line: string;
     inlineContent: string | null;
   }>,
@@ -366,8 +641,16 @@ function assembleSystemPrompt(
     parts.push(`**Rules:**\n${ruleLines.join('\n')}`);
   }
 
+  if (roleHint) {
+    parts.push(`**Role Context Hint:**\n${roleHint}`);
+  }
+
   if (stateSnapshot) {
     parts.push(stateSnapshot);
+  }
+
+  if (retrievedContext) {
+    parts.push(retrievedContext);
   }
 
   if (sourceLines.length > 0) {
@@ -398,12 +681,31 @@ function buildStateSnapshot(
     updatedAt: string;
   }>,
   budgetTokens: number,
-): string | null {
+): {
+  promptText: string | null;
+  includedEntries: Array<{
+    key: string;
+    value: unknown;
+    version: number;
+    updatedAt: string;
+  }>;
+  omittedCount: number;
+} {
   if (entries.length === 0 || budgetTokens <= 0) {
-    return null;
+    return {
+      promptText: null,
+      includedEntries: [],
+      omittedCount: 0,
+    };
   }
 
   const lines: string[] = [];
+  const includedEntries: Array<{
+    key: string;
+    value: unknown;
+    version: number;
+    updatedAt: string;
+  }> = [];
   let usedTokens = estimateTokens('**State Snapshot:**\n');
   let omitted = 0;
 
@@ -415,13 +717,18 @@ function buildStateSnapshot(
       continue;
     }
     lines.push(line);
+    includedEntries.push(entry);
     usedTokens += lineTokens;
   }
 
   if (lines.length === 0) {
-    return `**State Snapshot:**\n${entries.length} state entr${
-      entries.length === 1 ? 'y' : 'ies'
-    } omitted to stay within context budget.`;
+    return {
+      promptText: `**State Snapshot:**\n${entries.length} state entr${
+        entries.length === 1 ? 'y' : 'ies'
+      } omitted to stay within context budget.`,
+      includedEntries: [],
+      omittedCount: entries.length,
+    };
   }
 
   if (omitted > 0) {
@@ -432,7 +739,11 @@ function buildStateSnapshot(
     );
   }
 
-  return `**State Snapshot:**\n${lines.join('\n')}`;
+  return {
+    promptText: `**State Snapshot:**\n${lines.join('\n')}`,
+    includedEntries,
+    omittedCount: omitted,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -500,6 +811,208 @@ function buildContextTools(
     ...buildGoogleDriveContextTools({ talkId, userId }),
     ...WEB_TOOL_DEFINITIONS,
   ];
+}
+
+function buildRoleHint(personaRole: TalkPersonaRole | null): string | null {
+  if (!personaRole) return null;
+  const profile = ROLE_CONTEXT_PROFILES[personaRole];
+  if (!profile) return null;
+  return `${profile.focus} Preferred state keywords: ${profile.preferredStateKeywords.join(
+    ', ',
+  )}. Preferred source keywords: ${profile.preferredSourceKeywords.join(', ')}.`;
+}
+
+function extractKeywords(text: string | null | undefined): string[] {
+  if (!text) return [];
+  const tokens = text
+    .toLowerCase()
+    .split(/[^a-z0-9]+/g)
+    .map((token) => token.trim())
+    .filter((token) => token.length >= 3 && !STOPWORDS.has(token));
+  return Array.from(new Set(tokens)).slice(0, 12);
+}
+
+function scoreMatch(
+  haystack: string,
+  queryTerms: string[],
+  roleTerms: string[],
+): number {
+  const normalized = haystack.toLowerCase();
+  let score = 0;
+  for (const term of queryTerms) {
+    if (normalized.includes(term)) score += 3;
+  }
+  for (const term of roleTerms) {
+    if (normalized.includes(term)) score += 1;
+  }
+  return score;
+}
+
+function buildExcerpt(
+  text: string,
+  preferredTerms: string[],
+  maxChars: number,
+): string {
+  const normalized = text.replace(/\s+/g, ' ').trim();
+  if (normalized.length <= maxChars) {
+    return normalized;
+  }
+
+  const lower = normalized.toLowerCase();
+  const matchIndex = preferredTerms
+    .map((term) => lower.indexOf(term))
+    .find((index) => index >= 0);
+  if (typeof matchIndex !== 'number' || matchIndex < 0) {
+    return `${normalized.slice(0, maxChars).trim()}…`;
+  }
+
+  const start = Math.max(0, matchIndex - Math.floor(maxChars / 3));
+  const end = Math.min(normalized.length, start + maxChars);
+  const excerpt = normalized.slice(start, end).trim();
+  return `${start > 0 ? '…' : ''}${excerpt}${end < normalized.length ? '…' : ''}`;
+}
+
+function buildRetrievedContext(input: {
+  query: string | null;
+  personaRole: TalkPersonaRole | null;
+  stateEntries: Array<{
+    key: string;
+    value: unknown;
+    version: number;
+    updatedAt: string;
+  }>;
+  sources: SourceRow[];
+  excludedStateKeys: Set<string>;
+  excludedSourceRefs: Set<string>;
+  budgetTokens: number;
+}): {
+  promptText: string | null;
+  queryTerms: string[];
+  roleTerms: string[];
+  stateEntries: Array<{
+    key: string;
+    value: unknown;
+    version: number;
+    updatedAt: string;
+  }>;
+  sourceEntries: TalkRunContextRetrievedSourceSnapshot[];
+} {
+  const queryTerms = extractKeywords(input.query);
+  const profile = input.personaRole
+    ? ROLE_CONTEXT_PROFILES[input.personaRole]
+    : undefined;
+  const roleTerms = Array.from(
+    new Set([
+      ...(profile?.preferredStateKeywords || []),
+      ...(profile?.preferredSourceKeywords || []),
+    ]),
+  );
+
+  if (queryTerms.length === 0 && roleTerms.length === 0) {
+    return {
+      promptText: null,
+      queryTerms,
+      roleTerms,
+      stateEntries: [],
+      sourceEntries: [],
+    };
+  }
+
+  const stateCandidates = input.stateEntries
+    .filter((entry) => !input.excludedStateKeys.has(entry.key))
+    .map((entry) => ({
+      ...entry,
+      score: scoreMatch(
+        `${entry.key} ${JSON.stringify(entry.value)}`,
+        queryTerms,
+        roleTerms,
+      ),
+    }))
+    .filter((entry) => entry.score > 0)
+    .sort((left, right) => right.score - left.score)
+    .slice(0, MAX_RETRIEVED_STATE_ENTRIES);
+
+  const sourceCandidates = input.sources
+    .filter(
+      (source) =>
+        !input.excludedSourceRefs.has(source.source_ref) &&
+        typeof source.extracted_text === 'string' &&
+        source.extracted_text.trim().length > 0,
+    )
+    .map((source) => ({
+      source,
+      score: scoreMatch(
+        [
+          source.title,
+          source.source_url,
+          source.file_name,
+          source.extracted_text,
+        ]
+          .filter(Boolean)
+          .join(' '),
+        queryTerms,
+        roleTerms,
+      ),
+    }))
+    .filter((entry) => entry.score > 0)
+    .sort((left, right) => right.score - left.score)
+    .slice(0, MAX_RETRIEVED_SOURCE_ITEMS)
+    .map(({ source }) => ({
+      ref: source.source_ref,
+      title: source.title,
+      excerpt: buildExcerpt(
+        source.extracted_text!,
+        [...queryTerms, ...roleTerms],
+        MAX_RETRIEVED_SOURCE_CHARS,
+      ),
+    }));
+
+  if (stateCandidates.length === 0 && sourceCandidates.length === 0) {
+    return {
+      promptText: null,
+      queryTerms,
+      roleTerms,
+      stateEntries: [],
+      sourceEntries: [],
+    };
+  }
+
+  const parts: string[] = [];
+  let usedTokens = estimateTokens('**Retrieved Context:**\n');
+  const keptStateEntries: Array<{
+    key: string;
+    value: unknown;
+    version: number;
+    updatedAt: string;
+  }> = [];
+  const keptSourceEntries: TalkRunContextRetrievedSourceSnapshot[] = [];
+
+  for (const entry of stateCandidates) {
+    const line = `- State ${entry.key} (v${entry.version}, updated ${entry.updatedAt}): ${JSON.stringify(entry.value)}`;
+    const lineTokens = estimateTokens(line);
+    if (usedTokens + lineTokens > input.budgetTokens) break;
+    keptStateEntries.push(entry);
+    parts.push(line);
+    usedTokens += lineTokens;
+  }
+
+  for (const source of sourceCandidates) {
+    const block = `- Source [${source.ref}] ${source.title}: ${source.excerpt}`;
+    const blockTokens = estimateTokens(block);
+    if (usedTokens + blockTokens > input.budgetTokens) break;
+    keptSourceEntries.push(source);
+    parts.push(block);
+    usedTokens += blockTokens;
+  }
+
+  return {
+    promptText:
+      parts.length > 0 ? `**Retrieved Context:**\n${parts.join('\n')}` : null,
+    queryTerms,
+    roleTerms,
+    stateEntries: keptStateEntries,
+    sourceEntries: keptSourceEntries,
+  };
 }
 
 // ---------------------------------------------------------------------------

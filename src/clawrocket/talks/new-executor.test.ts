@@ -110,6 +110,27 @@ describe('CleanTalkExecutor', () => {
       createdBy: 'owner-1',
       createdAt: now,
     });
+    createTalkRun({
+      id: 'run-talk-1',
+      talk_id: TALK_ID,
+      thread_id: THREAD_ID,
+      requested_by: 'owner-1',
+      status: 'running',
+      trigger_message_id: 'msg-user-1',
+      target_agent_id: 'agent.main',
+      idempotency_key: null,
+      response_group_id: null,
+      sequence_index: null,
+      executor_alias: null,
+      executor_model: null,
+      source_binding_id: null,
+      source_external_message_id: null,
+      source_thread_key: null,
+      created_at: now,
+      started_at: now,
+      ended_at: null,
+      cancel_reason: null,
+    });
     insertSource({
       id: 'src-1',
       sourceRef: 'S1',
@@ -200,6 +221,27 @@ describe('CleanTalkExecutor', () => {
       modelId: 'claude-sonnet-4-6',
       responseGroupId: null,
       sequenceIndex: null,
+    });
+    const persistedRun = getDb()
+      .prepare(
+        `
+        SELECT metadata_json
+        FROM talk_runs
+        WHERE id = ?
+      `,
+      )
+      .get('run-talk-1') as { metadata_json: string | null } | undefined;
+    expect(persistedRun?.metadata_json).toBeTruthy();
+    expect(JSON.parse(persistedRun!.metadata_json!)).toMatchObject({
+      version: 1,
+      threadId: THREAD_ID,
+      history: {
+        messageIds: ['msg-user-1'],
+        turnCount: 1,
+      },
+      tools: {
+        contextToolNames: expect.arrayContaining(['read_context_source']),
+      },
     });
 
     expect(events.some((event) => event.type === 'talk_response_started')).toBe(

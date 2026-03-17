@@ -27,6 +27,7 @@ import {
 } from '../connectors/tool-executors.js';
 import { parseConnectorToolName } from '../connectors/runtime.js';
 import { upsertTalkStateEntry } from '../db/context-accessors.js';
+import { setTalkRunMetadataJson } from '../db/accessors.js';
 import {
   executeWithAgent,
   type ExecutionContext,
@@ -39,6 +40,7 @@ import {
 import { getMainAgent, resolvePrimaryAgent } from '../agents/agent-registry.js';
 import { resolveValidatedProjectMountPath } from '../agents/project-mounts.js';
 import { executeContainerAgentTurn } from '../agents/container-turn-executor.js';
+import type { TalkPersonaRole } from '../llm/types.js';
 import { executeWebFetch, executeWebSearch } from '../tools/web-tools.js';
 import { loadTalkContext } from './context-loader.js';
 import { executeGoogleDriveTalkTool } from './google-drive-tools.js';
@@ -612,6 +614,14 @@ export class CleanTalkExecutor implements TalkExecutor {
         input.threadId,
         input.triggerMessageId,
         input.requestedBy,
+        {
+          personaRole: resolvedAgent.persona_role as TalkPersonaRole | null,
+          retrievalQuery: input.triggerContent,
+        },
+      );
+      setTalkRunMetadataJson(
+        input.runId,
+        JSON.stringify(contextPackage.contextSnapshot),
       );
 
       const context: ExecutionContext = {

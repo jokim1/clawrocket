@@ -78,6 +78,7 @@ import {
   getTalkPolicyRoute,
   getTalkProjectMountRoute,
   getTalkRoute,
+  getTalkRunContextRoute,
   listTalkAgentsRoute,
   listTalkMessagesRoute,
   listTalkRunsRoute,
@@ -4217,6 +4218,39 @@ function buildApp(opts: WebServerOptions): Hono {
     }
 
     const result = listTalkRunsRoute({ talkId, auth });
+    return new Response(JSON.stringify(result.body), {
+      status: result.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
+  });
+
+  app.get('/api/v1/talks/:talkId/runs/:runId/context', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+
+    const rateResult = checkRateLimit({ userId: auth.userId, bucket: 'read' });
+    if (!rateResult.allowed) {
+      return rateLimitedResponse(c, rateResult);
+    }
+
+    const encodedTalkId = c.req.param('talkId');
+    const talkId = safeDecodePathSegment(encodedTalkId);
+    const encodedRunId = c.req.param('runId');
+    const runId = safeDecodePathSegment(encodedRunId);
+    if (!talkId || !runId) {
+      return c.json(
+        {
+          ok: false,
+          error: {
+            code: 'bad_request',
+            message: 'Talk ID or run ID path segment is not valid URL encoding',
+          },
+        },
+        400,
+      );
+    }
+
+    const result = getTalkRunContextRoute({ talkId, runId, auth });
     return new Response(JSON.stringify(result.body), {
       status: result.statusCode,
       headers: { 'content-type': 'application/json; charset=utf-8' },

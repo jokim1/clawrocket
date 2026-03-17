@@ -2075,6 +2075,60 @@ a {
   font-size: 0.72rem;
 }
 
+.run-context-block {
+  margin-top: 0.65rem;
+}
+
+.message-context-toggle {
+  font-size: 0.8rem;
+}
+
+.run-context-panel {
+  margin-top: 0.55rem;
+  border: 1px solid #d8e0ef;
+  border-radius: 8px;
+  background: #f8fbff;
+  padding: 0.75rem 0.85rem;
+  display: grid;
+  gap: 0.65rem;
+}
+
+.run-context-section {
+  display: grid;
+  gap: 0.3rem;
+}
+
+.run-context-section h4 {
+  margin: 0;
+  font-size: 0.84rem;
+  color: #20304f;
+}
+
+.run-context-section ul {
+  margin: 0;
+  padding-left: 1rem;
+  color: #33415f;
+}
+
+.run-context-section li {
+  margin: 0.1rem 0;
+}
+
+.run-context-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  font-size: 0.78rem;
+  color: #586887;
+}
+
+.run-context-note {
+  margin: 0;
+  font-size: 0.82rem;
+  color: #4a5978;
+  line-height: 1.45;
+}
+
 .inline-banner {
   display: flex;
   gap: 0.55rem;

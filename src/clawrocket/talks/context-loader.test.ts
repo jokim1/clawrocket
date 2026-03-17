@@ -642,6 +642,74 @@ describe('context-loader', () => {
       expect(ctx.metadata.sourceCount).toBe(1);
       expect(ctx.metadata.talkId).toBe(TALK_ID);
     });
+
+    it('captures role-aware retrieval details in the saved context snapshot', async () => {
+      insertTalkSummary(
+        'Cal should stay competitive, but the offense has major downside risk.',
+      );
+      insertStateEntry({
+        key: 'offense_risk',
+        value: {
+          concern: 'line play remains a weakness',
+          likelihood: 'medium',
+        },
+      });
+      insertSource({
+        id: 'src-risk-1',
+        sourceRef: 'S1',
+        sourceType: 'text',
+        title: 'Spring Practice Notes',
+        extractedText:
+          'The offense remains volatile and the rushing attack is still a weakness. '.repeat(
+            20,
+          ),
+      });
+      insertTalkMessage({
+        id: 'msg-risk-1',
+        role: 'user',
+        content: 'What are the main weaknesses for next season?',
+        createdAt: '2026-03-14T00:00:01.000Z',
+        createdBy: 'owner-1',
+      });
+
+      const ctx = await loadTalkContext(
+        TALK_ID,
+        128000,
+        THREAD_ID,
+        null,
+        null,
+        {
+          personaRole: 'critic',
+          retrievalQuery: 'What are the main weaknesses for next season?',
+        },
+      );
+
+      expect(ctx.systemPrompt).toContain('Role Context Hint');
+      expect(ctx.systemPrompt).toContain('weaknesses');
+      expect(ctx.contextSnapshot.personaRole).toBe('critic');
+      expect(ctx.contextSnapshot.roleHint).toMatch(/weaknesses/i);
+      expect(ctx.contextSnapshot.retrieval.query).toBe(
+        'What are the main weaknesses for next season?',
+      );
+      expect(ctx.contextSnapshot.retrieval.roleTerms).toContain('risk');
+      expect(ctx.contextSnapshot.stateSnapshot.included).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            key: 'offense_risk',
+            reason: 'state_snapshot',
+          }),
+        ]),
+      );
+      expect(ctx.contextSnapshot.retrieval.sources).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            ref: 'S1',
+            title: 'Spring Practice Notes',
+          }),
+        ]),
+      );
+      expect(ctx.contextSnapshot.history.messageIds).toEqual(['msg-risk-1']);
+    });
   });
 
   // =========================================================================

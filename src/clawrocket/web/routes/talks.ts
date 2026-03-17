@@ -13,6 +13,7 @@ import {
   enqueueTalkTurnAtomic,
   getTalkById,
   getTalkForUser,
+  getTalkRunById,
   listMessageAttachments,
   resolveThreadIdForTalk,
   listTalkFoldersForOwner,
@@ -33,6 +34,7 @@ import {
   type TalkWithAccessRecord,
 } from '../../db/index.js';
 import type { TalkPersonaRole } from '../../llm/types.js';
+import type { TalkRunContextSnapshot } from '../../talks/context-loader.js';
 import { validateMount } from '../../../mount-security.js';
 import {
   parsePolicyAgentsForExecution,
@@ -165,6 +167,23 @@ export interface TalkRunApiRecord {
   cancelReason: string | null;
   executorAlias: string | null;
   executorModel: string | null;
+}
+
+function parseTalkRunContextSnapshot(
+  metadataJson: string | null | undefined,
+): TalkRunContextSnapshot | null {
+  if (!metadataJson) return null;
+  try {
+    const parsed = JSON.parse(metadataJson) as
+      | TalkRunContextSnapshot
+      | { version?: unknown }
+      | null;
+    return parsed && typeof parsed === 'object' && parsed.version === 1
+      ? (parsed as TalkRunContextSnapshot)
+      : null;
+  } catch {
+    return null;
+  }
 }
 
 const DEFAULT_TALK_AGENTS = ['Claude'];
@@ -2223,6 +2242,59 @@ export function listTalkRunsRoute(input: {
       data: {
         talkId: input.talkId,
         runs: listTalkRunsForTalk(input.talkId, 50).map(toTalkRunApiRecord),
+      },
+    },
+  };
+}
+
+export function getTalkRunContextRoute(input: {
+  talkId: string;
+  runId: string;
+  auth: AuthContext;
+}): {
+  statusCode: number;
+  body: ApiEnvelope<{
+    talkId: string;
+    runId: string;
+    contextSnapshot: TalkRunContextSnapshot | null;
+  }>;
+} {
+  const talk = getTalkForUser(input.talkId, input.auth.userId);
+  if (!talk) {
+    return {
+      statusCode: 404,
+      body: {
+        ok: false,
+        error: {
+          code: 'talk_not_found',
+          message: 'Talk not found',
+        },
+      },
+    };
+  }
+
+  const run = getTalkRunById(input.runId);
+  if (!run || run.talk_id !== input.talkId) {
+    return {
+      statusCode: 404,
+      body: {
+        ok: false,
+        error: {
+          code: 'run_not_found',
+          message: 'Run not found',
+        },
+      },
+    };
+  }
+
+  return {
+    statusCode: 200,
+    body: {
+      ok: true,
+      data: {
+        talkId: input.talkId,
+        runId: input.runId,
+        contextSnapshot: parseTalkRunContextSnapshot(run.metadata_json),
       },
     },
   };
