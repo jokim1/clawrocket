@@ -294,10 +294,45 @@ export function setTalkAgents(talkId: string, agents: TalkAgentInput[]): void {
   })();
 }
 
+function pruneDeletedTalkAgentAssignments(talkId: string): void {
+  const db = getDb();
+  db.transaction(() => {
+    db.prepare(
+      `DELETE FROM talk_agents WHERE talk_id = ? AND registered_agent_id IS NULL`,
+    ).run(talkId);
+
+    const remaining = db
+      .prepare(
+        `
+        SELECT id, is_primary
+        FROM talk_agents
+        WHERE talk_id = ?
+        ORDER BY sort_order ASC, created_at ASC
+      `,
+      )
+      .all(talkId) as Array<{ id: string; is_primary: number }>;
+
+    if (remaining.length === 0) return;
+
+    const primaryCount = remaining.filter((row) => row.is_primary === 1).length;
+    if (primaryCount === 1) return;
+
+    const nextPrimaryId = remaining[0]!.id;
+    db.prepare(
+      `
+        UPDATE talk_agents
+        SET is_primary = CASE WHEN id = ? THEN 1 ELSE 0 END
+        WHERE talk_id = ?
+      `,
+    ).run(nextPrimaryId, talkId);
+  })();
+}
+
 /**
  * Load all talk_agents for a Talk, ordered by sort_order.
  */
 export function getTalkAgentRows(talkId: string): TalkAgentRow[] {
+  pruneDeletedTalkAgentAssignments(talkId);
   const rows = getDb()
     .prepare(
       `

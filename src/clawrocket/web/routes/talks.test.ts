@@ -516,6 +516,77 @@ describe('talk routes', () => {
     expect(agentsBody.data.agents[0].id).toBe('agent.talk');
   });
 
+  it('removes orphaned deleted talk agents on read and promotes a remaining agent to primary', async () => {
+    upsertTalk({
+      id: 'talk-orphaned-agents',
+      ownerId: 'owner-1',
+      topicTitle: 'Orphaned Agents',
+    });
+    getDb()
+      .prepare(
+        `
+      INSERT INTO talk_threads (id, talk_id, title, is_default, created_at, updated_at)
+      VALUES (?, ?, ?, 1, datetime('now'), datetime('now'))
+    `,
+      )
+      .run(
+        'thread-talk-orphaned-agents',
+        'talk-orphaned-agents',
+        'Default Thread',
+      );
+    getDb()
+      .prepare(
+        `
+      INSERT INTO talk_agents (id, talk_id, registered_agent_id, nickname, is_primary, sort_order, created_at, updated_at)
+      VALUES (?, ?, NULL, ?, 1, 0, datetime('now'), datetime('now'))
+    `,
+      )
+      .run('ta-orphaned-primary', 'talk-orphaned-agents', 'Deleted Persona');
+    getDb()
+      .prepare(
+        `
+      INSERT INTO talk_agents (id, talk_id, registered_agent_id, nickname, is_primary, sort_order, created_at, updated_at)
+      VALUES (?, ?, ?, ?, 0, 1, datetime('now'), datetime('now'))
+    `,
+      )
+      .run(
+        'ta-surviving-secondary',
+        'talk-orphaned-agents',
+        'agent.talk',
+        'Claude',
+      );
+
+    const agentsRes = await server.request(
+      '/api/v1/talks/talk-orphaned-agents/agents',
+      {
+        headers: {
+          Authorization: 'Bearer owner-token',
+        },
+      },
+    );
+
+    expect(agentsRes.status).toBe(200);
+    const agentsBody = (await agentsRes.json()) as any;
+    expect(agentsBody.data.agents).toHaveLength(1);
+    expect(agentsBody.data.agents[0].id).toBe('agent.talk');
+    expect(agentsBody.data.agents[0].isPrimary).toBe(true);
+
+    const persistedRows = getDb()
+      .prepare(
+        `SELECT registered_agent_id, is_primary FROM talk_agents WHERE talk_id = ? ORDER BY sort_order ASC, created_at ASC`,
+      )
+      .all('talk-orphaned-agents') as Array<{
+      registered_agent_id: string | null;
+      is_primary: number;
+    }>;
+    expect(persistedRows).toEqual([
+      {
+        registered_agent_id: 'agent.talk',
+        is_primary: 1,
+      },
+    ]);
+  });
+
   it('requires csrf for cookie-authenticated create talk', async () => {
     const res = await server.request('/api/v1/talks', {
       method: 'POST',

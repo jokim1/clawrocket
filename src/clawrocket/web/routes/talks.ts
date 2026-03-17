@@ -571,6 +571,7 @@ function validateAgentInputs(input: unknown): {
 }
 
 function listEffectiveTalkAgents(talkId: string): TalkAgentApiRecord[] {
+  ensureTalkUsesUsableDefaultAgent(talkId);
   const rows = getTalkAgentRows(talkId);
   return rows.map((row) => ({
     // Use registeredAgentId as the canonical id when available.

@@ -73,6 +73,7 @@ import {
 import {
   buildDefaultTalkToolPermissions,
   createRegisteredAgent,
+  deleteRegisteredAgent,
 } from './clawrocket/db/agent-accessors.js';
 
 function enqueueTalkTurnAtomic(input: {
@@ -584,6 +585,32 @@ describe('phase 0 schema and reliability tables', () => {
     expect(JSON.parse(agent.tool_permissions_json)).toEqual(
       buildDefaultTalkToolPermissions(),
     );
+  });
+
+  it('removes talk assignments when a registered agent is deleted', () => {
+    const agent = createRegisteredAgent({
+      name: 'Disposable Persona',
+      providerId: 'provider.anthropic',
+      modelId: 'claude-sonnet-4-6',
+    });
+
+    getDb()
+      .prepare(
+        `
+      INSERT INTO talk_agents (id, talk_id, registered_agent_id, is_primary, sort_order, created_at, updated_at)
+      VALUES (?, ?, ?, 1, 0, datetime('now'), datetime('now'))
+    `,
+      )
+      .run('ta-disposable', 'talk-1', agent.id);
+
+    expect(deleteRegisteredAgent(agent.id)).toBe(true);
+
+    const assignmentCount = getDb()
+      .prepare(
+        `SELECT COUNT(*) as count FROM talk_agents WHERE talk_id = ? AND registered_agent_id = ?`,
+      )
+      .get('talk-1', agent.id) as { count: number };
+    expect(assignmentCount.count).toBe(0);
   });
 
   it('defaults talks to ordered orchestration and allows metadata updates to panel', () => {

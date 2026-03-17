@@ -455,10 +455,17 @@ export function updateRegisteredAgent(
  * Returns true if the agent existed and was deleted.
  */
 export function deleteRegisteredAgent(agentId: string): boolean {
-  const result = getDb()
-    .prepare('DELETE FROM registered_agents WHERE id = ?')
-    .run(agentId);
-  return (result.changes ?? 0) > 0;
+  const db = getDb();
+  const tx = db.transaction((targetAgentId: string): boolean => {
+    db.prepare('DELETE FROM talk_agents WHERE registered_agent_id = ?').run(
+      targetAgentId,
+    );
+    const result = db
+      .prepare('DELETE FROM registered_agents WHERE id = ?')
+      .run(targetAgentId);
+    return (result.changes ?? 0) > 0;
+  });
+  return tx(agentId);
 }
 
 // ---------------------------------------------------------------------------
