@@ -4,6 +4,9 @@ import {
   createTalkRun,
   createTalkResourceBinding,
   createMessage,
+  initializeTalkToolGrants,
+  listTalkToolGrants,
+  replaceTalkToolGrants,
   upsertTalkStateEntry,
   upsertUserGoogleCredential,
   upsertTalk,
@@ -103,6 +106,19 @@ function insertStateEntry(input: {
     expectedVersion: input.expectedVersion ?? 0,
     updatedByUserId: 'owner-1',
     updatedByRunId: input.updatedByRunId ?? null,
+  });
+}
+
+function enableTalkTools(toolIds: string[]) {
+  initializeTalkToolGrants(TALK_ID, 'owner-1');
+  const enabled = new Set(toolIds);
+  replaceTalkToolGrants({
+    talkId: TALK_ID,
+    grants: listTalkToolGrants(TALK_ID).map((grant) => ({
+      toolId: grant.toolId,
+      enabled: enabled.has(grant.toolId),
+    })),
+    updatedBy: 'owner-1',
   });
 }
 
@@ -299,6 +315,94 @@ describe('context-loader', () => {
       );
       expect(ctx.contextTools.map((tool) => tool.name)).toContain(
         'google_drive_search',
+      );
+    });
+
+    it('includes Google Docs tools when a bound doc, grants, and scopes are present', async () => {
+      createTalkResourceBinding({
+        talkId: TALK_ID,
+        bindingKind: 'google_drive_file',
+        externalId: 'google-doc-1',
+        displayName: 'Quarterly Review',
+        metadata: {
+          mimeType: 'application/vnd.google-apps.document',
+          url: 'https://docs.google.com/document/d/google-doc-1/edit',
+        },
+        createdBy: 'owner-1',
+      });
+      enableTalkTools(['google_docs_read', 'google_docs_batch_update']);
+      upsertUserGoogleCredential({
+        userId: 'owner-1',
+        googleSubject: 'google-subject-1',
+        email: 'owner@example.com',
+        scopes: ['documents.readonly', 'documents'],
+        ciphertext: encryptGoogleToolCredential({
+          kind: 'google_tools',
+          accessToken: 'google-access-token',
+          refreshToken: 'google-refresh-token',
+          expiryDate: new Date(Date.now() + 300_000).toISOString(),
+          scopes: ['documents.readonly', 'documents'],
+          tokenType: 'Bearer',
+        }),
+      });
+
+      const ctx = await loadTalkContext(
+        TALK_ID,
+        128000,
+        undefined,
+        undefined,
+        'owner-1',
+      );
+
+      expect(ctx.contextTools.map((tool) => tool.name)).toContain(
+        'google_docs_read',
+      );
+      expect(ctx.contextTools.map((tool) => tool.name)).toContain(
+        'google_docs_batch_update',
+      );
+    });
+
+    it('does not include Google Docs tools for non-doc file bindings', async () => {
+      createTalkResourceBinding({
+        talkId: TALK_ID,
+        bindingKind: 'google_drive_file',
+        externalId: 'sheet-1',
+        displayName: 'Quarterly Model',
+        metadata: {
+          mimeType: 'application/vnd.google-apps.spreadsheet',
+          url: 'https://docs.google.com/spreadsheets/d/sheet-1/edit',
+        },
+        createdBy: 'owner-1',
+      });
+      enableTalkTools(['google_docs_read', 'google_docs_batch_update']);
+      upsertUserGoogleCredential({
+        userId: 'owner-1',
+        googleSubject: 'google-subject-1',
+        email: 'owner@example.com',
+        scopes: ['documents.readonly', 'documents'],
+        ciphertext: encryptGoogleToolCredential({
+          kind: 'google_tools',
+          accessToken: 'google-access-token',
+          refreshToken: 'google-refresh-token',
+          expiryDate: new Date(Date.now() + 300_000).toISOString(),
+          scopes: ['documents.readonly', 'documents'],
+          tokenType: 'Bearer',
+        }),
+      });
+
+      const ctx = await loadTalkContext(
+        TALK_ID,
+        128000,
+        undefined,
+        undefined,
+        'owner-1',
+      );
+
+      expect(ctx.contextTools.map((tool) => tool.name)).not.toContain(
+        'google_docs_read',
+      );
+      expect(ctx.contextTools.map((tool) => tool.name)).not.toContain(
+        'google_docs_batch_update',
       );
     });
   });
@@ -847,6 +951,183 @@ describe('context-loader', () => {
       expect(result.result).toContain(
         'This file explains the refactor foundation.',
       );
+    });
+  });
+
+  describe('buildToolExecutor (google_docs_read)', () => {
+    it('reads a directly bound Google Doc for the requesting user', async () => {
+      createTalkResourceBinding({
+        talkId: TALK_ID,
+        bindingKind: 'google_drive_file',
+        externalId: 'google-doc-1',
+        displayName: 'Quarterly Review',
+        metadata: {
+          mimeType: 'application/vnd.google-apps.document',
+          url: 'https://docs.google.com/document/d/google-doc-1/edit',
+        },
+        createdBy: 'owner-1',
+      });
+      enableTalkTools(['google_docs_read']);
+      upsertUserGoogleCredential({
+        userId: 'owner-1',
+        googleSubject: 'google-subject-1',
+        email: 'owner@example.com',
+        scopes: ['documents.readonly'],
+        ciphertext: encryptGoogleToolCredential({
+          kind: 'google_tools',
+          accessToken: 'google-access-token',
+          refreshToken: 'google-refresh-token',
+          expiryDate: new Date(Date.now() + 300_000).toISOString(),
+          scopes: ['documents.readonly'],
+          tokenType: 'Bearer',
+        }),
+      });
+
+      const fetchMock = vi
+        .spyOn(globalThis, 'fetch')
+        .mockImplementation(async (input) => {
+          const url = String(input);
+          if (url.includes('/documents/google-doc-1')) {
+            return new Response(
+              JSON.stringify({
+                title: 'Quarterly Review',
+                body: {
+                  content: [
+                    {
+                      paragraph: {
+                        elements: [
+                          {
+                            textRun: {
+                              content: 'Q1 beat plan.\n',
+                            },
+                          },
+                        ],
+                      },
+                    },
+                    {
+                      paragraph: {
+                        elements: [
+                          {
+                            textRun: {
+                              content: 'Q2 needs cost control.\n',
+                            },
+                          },
+                        ],
+                      },
+                    },
+                  ],
+                },
+              }),
+              {
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+              },
+            );
+          }
+          throw new Error(`Unexpected fetch: ${url}`);
+        });
+
+      const executor = buildToolExecutor(
+        TALK_ID,
+        'owner-1',
+        'run-test',
+        AbortSignal.timeout(5000),
+      );
+      const result = await executor('google_docs_read', {
+        bindingRef: 'G1',
+      });
+
+      expect(fetchMock).toHaveBeenCalled();
+      expect(result.isError).toBeFalsy();
+      expect(result.result).toContain('# Quarterly Review');
+      expect(result.result).toContain('Q1 beat plan.');
+      expect(result.result).toContain('Q2 needs cost control.');
+    });
+  });
+
+  describe('buildToolExecutor (google_docs_batch_update)', () => {
+    it('applies a batch update to a directly bound Google Doc', async () => {
+      createTalkResourceBinding({
+        talkId: TALK_ID,
+        bindingKind: 'google_drive_file',
+        externalId: 'google-doc-1',
+        displayName: 'Quarterly Review',
+        metadata: {
+          mimeType: 'application/vnd.google-apps.document',
+          url: 'https://docs.google.com/document/d/google-doc-1/edit',
+        },
+        createdBy: 'owner-1',
+      });
+      enableTalkTools(['google_docs_batch_update']);
+      upsertUserGoogleCredential({
+        userId: 'owner-1',
+        googleSubject: 'google-subject-1',
+        email: 'owner@example.com',
+        scopes: ['documents'],
+        ciphertext: encryptGoogleToolCredential({
+          kind: 'google_tools',
+          accessToken: 'google-access-token',
+          refreshToken: 'google-refresh-token',
+          expiryDate: new Date(Date.now() + 300_000).toISOString(),
+          scopes: ['documents'],
+          tokenType: 'Bearer',
+        }),
+      });
+
+      const fetchMock = vi
+        .spyOn(globalThis, 'fetch')
+        .mockImplementation(async (input, init) => {
+          const url = String(input);
+          if (url.includes('/documents/google-doc-1:batchUpdate')) {
+            expect(init?.method).toBe('POST');
+            expect(JSON.parse(String(init?.body))).toMatchObject({
+              requests: [
+                {
+                  replaceAllText: {
+                    containsText: { text: '{{quarter}}' },
+                    replaceText: 'Q2',
+                  },
+                },
+              ],
+            });
+            return new Response(
+              JSON.stringify({
+                documentId: 'google-doc-1',
+                replies: [{}],
+              }),
+              {
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+              },
+            );
+          }
+          throw new Error(`Unexpected fetch: ${url}`);
+        });
+
+      const executor = buildToolExecutor(
+        TALK_ID,
+        'owner-1',
+        'run-test',
+        AbortSignal.timeout(5000),
+      );
+      const result = await executor('google_docs_batch_update', {
+        bindingRef: 'G1',
+        requests: [
+          {
+            replaceAllText: {
+              containsText: { text: '{{quarter}}' },
+              replaceText: 'Q2',
+            },
+          },
+        ],
+      });
+
+      expect(fetchMock).toHaveBeenCalled();
+      expect(result.isError).toBeFalsy();
+      expect(JSON.parse(result.result)).toMatchObject({
+        documentId: 'google-doc-1',
+        replies: [{}],
+      });
     });
   });
 

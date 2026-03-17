@@ -9,12 +9,14 @@ import {
 import { getValidGoogleToolAccessToken } from '../identity/google-tools-service.js';
 
 const GOOGLE_DRIVE_API_BASE = 'https://www.googleapis.com/drive/v3';
+const GOOGLE_DOCS_API_BASE = 'https://docs.googleapis.com/v1';
 const GOOGLE_DRIVE_FOLDER_MIME = 'application/vnd.google-apps.folder';
 const GOOGLE_DOCS_MIME = 'application/vnd.google-apps.document';
 const GOOGLE_SHEETS_MIME = 'application/vnd.google-apps.spreadsheet';
 const MAX_TEXT_RESPONSE_BYTES = 512 * 1024;
 const DEFAULT_SEARCH_RESULTS = 10;
 const DEFAULT_FOLDER_RESULTS = 25;
+const MAX_GOOGLE_DOCS_BATCH_REQUESTS = 50;
 
 type JsonMap = Record<string, unknown>;
 
@@ -125,10 +127,13 @@ function coercePositiveInt(
   return Math.max(1, Math.min(max, Math.trunc(value)));
 }
 
-async function getDriveAccessToken(userId: string): Promise<string> {
+async function getGoogleAccessToken(
+  userId: string,
+  requiredScopes: string[],
+): Promise<string> {
   const token = await getValidGoogleToolAccessToken({
     userId,
-    requiredScopes: ['drive.readonly'],
+    requiredScopes,
   });
   return token.accessToken;
 }
@@ -139,6 +144,19 @@ async function readTextResponse(response: Response): Promise<string> {
     throw new Error('Google Drive response exceeded the maximum allowed size.');
   }
   return text;
+}
+
+async function readJsonMapResponse(
+  response: Response,
+  errorPrefix: string,
+): Promise<JsonMap> {
+  const text = await readTextResponse(response);
+  const parsed = JSON.parse(text) as unknown;
+  const map = parseJsonMap(parsed);
+  if (!map) {
+    throw new Error(`${errorPrefix} response was not a JSON object.`);
+  }
+  return map;
 }
 
 async function fetchDriveJson(
@@ -282,6 +300,167 @@ async function exportGoogleDocText(input: {
   return readTextResponse(response);
 }
 
+function readGoogleDocParagraphText(paragraph: JsonMap): string {
+  const elements = Array.isArray(paragraph.elements) ? paragraph.elements : [];
+  return elements
+    .map((element) => {
+      const map = parseJsonMap(element);
+      const textRun = parseJsonMap(map?.textRun);
+      return typeof textRun?.content === 'string' ? textRun.content : '';
+    })
+    .join('')
+    .trimEnd();
+}
+
+function extractGoogleDocText(elements: unknown[]): string {
+  const blocks: string[] = [];
+
+  for (const element of elements) {
+    const map = parseJsonMap(element);
+    if (!map) continue;
+
+    const paragraph = parseJsonMap(map.paragraph);
+    if (paragraph) {
+      const text = readGoogleDocParagraphText(paragraph).trim();
+      if (text) blocks.push(text);
+      continue;
+    }
+
+    const table = parseJsonMap(map.table);
+    if (table) {
+      const rows = Array.isArray(table.tableRows) ? table.tableRows : [];
+      for (const row of rows) {
+        const rowMap = parseJsonMap(row);
+        if (!rowMap) continue;
+        const cells = Array.isArray(rowMap.tableCells) ? rowMap.tableCells : [];
+        const cellTexts = cells
+          .map((cell) => {
+            const cellMap = parseJsonMap(cell);
+            if (!cellMap) return '';
+            const content = Array.isArray(cellMap.content)
+              ? cellMap.content
+              : [];
+            return extractGoogleDocText(content).trim();
+          })
+          .filter(Boolean);
+        if (cellTexts.length > 0) {
+          blocks.push(cellTexts.join(' | '));
+        }
+      }
+      continue;
+    }
+
+    const tableOfContents = parseJsonMap(map.tableOfContents);
+    if (tableOfContents) {
+      const content = Array.isArray(tableOfContents.content)
+        ? tableOfContents.content
+        : [];
+      const text = extractGoogleDocText(content).trim();
+      if (text) blocks.push(text);
+    }
+  }
+
+  return blocks.join('\n\n');
+}
+
+async function fetchGoogleDoc(input: {
+  fileId: string;
+  accessToken: string;
+  signal: AbortSignal;
+}): Promise<{ title: string; text: string }> {
+  const response = await fetch(
+    `${GOOGLE_DOCS_API_BASE}/documents/${encodeURIComponent(input.fileId)}`,
+    {
+      headers: {
+        accept: 'application/json',
+        authorization: `Bearer ${input.accessToken}`,
+      },
+      signal: input.signal,
+    },
+  );
+  if (!response.ok) {
+    throw new Error(`Google Docs read failed with HTTP ${response.status}.`);
+  }
+
+  const payload = await readJsonMapResponse(response, 'Google Docs');
+  const title =
+    typeof payload.title === 'string' && payload.title.trim()
+      ? payload.title.trim()
+      : input.fileId;
+  const body = parseJsonMap(payload.body);
+  const content = Array.isArray(body?.content) ? body.content : [];
+
+  return {
+    title,
+    text: extractGoogleDocText(content),
+  };
+}
+
+function validateGoogleDocsBatchUpdateInput(args: Record<string, unknown>): {
+  bindingRef: string;
+  requests: JsonMap[];
+  writeControl: JsonMap | null;
+} {
+  const bindingRef =
+    typeof args.bindingRef === 'string' ? args.bindingRef.trim() : '';
+  if (!bindingRef) {
+    throw new Error('google_docs_batch_update requires bindingRef.');
+  }
+
+  const rawRequests = Array.isArray(args.requests) ? args.requests : [];
+  const requests = rawRequests.map((request) => parseJsonMap(request));
+  if (requests.some((request) => !request)) {
+    throw new Error('google_docs_batch_update requests must be JSON objects.');
+  }
+  if (requests.length === 0) {
+    throw new Error(
+      'google_docs_batch_update requires a non-empty requests array.',
+    );
+  }
+  if (requests.length > MAX_GOOGLE_DOCS_BATCH_REQUESTS) {
+    throw new Error(
+      `google_docs_batch_update supports at most ${MAX_GOOGLE_DOCS_BATCH_REQUESTS} requests per call.`,
+    );
+  }
+
+  return {
+    bindingRef,
+    requests: requests as JsonMap[],
+    writeControl: parseJsonMap(args.writeControl),
+  };
+}
+
+async function batchUpdateGoogleDoc(input: {
+  fileId: string;
+  accessToken: string;
+  signal: AbortSignal;
+  requests: JsonMap[];
+  writeControl: JsonMap | null;
+}): Promise<JsonMap> {
+  const response = await fetch(
+    `${GOOGLE_DOCS_API_BASE}/documents/${encodeURIComponent(input.fileId)}:batchUpdate`,
+    {
+      method: 'POST',
+      headers: {
+        accept: 'application/json',
+        authorization: `Bearer ${input.accessToken}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        requests: input.requests,
+        ...(input.writeControl ? { writeControl: input.writeControl } : {}),
+      }),
+      signal: input.signal,
+    },
+  );
+  if (!response.ok) {
+    throw new Error(
+      `Google Docs batch update failed with HTTP ${response.status}.`,
+    );
+  }
+  return readJsonMapResponse(response, 'Google Docs batch update');
+}
+
 export function buildBoundGoogleDrivePromptSection(
   talkId: string,
 ): string | null {
@@ -306,12 +485,21 @@ export function buildGoogleDriveContextTools(input: {
   userId?: string | null;
 }): LlmToolDefinition[] {
   if (!input.userId) return [];
-  if (normalizeGoogleDriveBindings(input.talkId).length === 0) return [];
-  if (!hasGoogleScope(input.userId, 'drive.readonly')) return [];
+  const resources = normalizeGoogleDriveBindings(input.talkId);
+  if (resources.length === 0) return [];
+
+  const hasBoundDocFile = resources.some(
+    (resource) =>
+      resource.bindingKind === 'google_drive_file' &&
+      (!resource.mimeType || resource.mimeType === GOOGLE_DOCS_MIME),
+  );
 
   const tools: LlmToolDefinition[] = [];
 
-  if (hasTalkToolGrant(input.talkId, 'google_drive_search')) {
+  if (
+    hasTalkToolGrant(input.talkId, 'google_drive_search') &&
+    hasGoogleScope(input.userId, 'drive.readonly')
+  ) {
     tools.push({
       name: 'google_drive_search',
       description:
@@ -333,7 +521,10 @@ export function buildGoogleDriveContextTools(input: {
     });
   }
 
-  if (hasTalkToolGrant(input.talkId, 'google_drive_read')) {
+  if (
+    hasTalkToolGrant(input.talkId, 'google_drive_read') &&
+    hasGoogleScope(input.userId, 'drive.readonly')
+  ) {
     tools.push({
       name: 'google_drive_read',
       description:
@@ -356,7 +547,10 @@ export function buildGoogleDriveContextTools(input: {
     });
   }
 
-  if (hasTalkToolGrant(input.talkId, 'google_drive_list_folder')) {
+  if (
+    hasTalkToolGrant(input.talkId, 'google_drive_list_folder') &&
+    hasGoogleScope(input.userId, 'drive.readonly')
+  ) {
     tools.push({
       name: 'google_drive_list_folder',
       description:
@@ -374,6 +568,67 @@ export function buildGoogleDriveContextTools(input: {
           },
         },
         required: ['bindingRef'],
+      },
+    });
+  }
+
+  if (
+    hasBoundDocFile &&
+    hasTalkToolGrant(input.talkId, 'google_docs_read') &&
+    hasGoogleScope(input.userId, 'documents.readonly')
+  ) {
+    tools.push({
+      name: 'google_docs_read',
+      description:
+        'Read a directly bound Google Doc by bindingRef (for example G1). Bind the file directly before using this tool.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          bindingRef: {
+            type: 'string',
+            description:
+              'Bound file ref like G1 for a directly bound Google Doc.',
+          },
+        },
+        required: ['bindingRef'],
+      },
+    });
+  }
+
+  if (
+    hasBoundDocFile &&
+    hasTalkToolGrant(input.talkId, 'google_docs_batch_update') &&
+    hasGoogleScope(input.userId, 'documents')
+  ) {
+    tools.push({
+      name: 'google_docs_batch_update',
+      description:
+        'Apply Google Docs API batchUpdate requests to a directly bound Google Doc by bindingRef. Bind the document file directly before using this tool.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          bindingRef: {
+            type: 'string',
+            description:
+              'Bound file ref like G1 for a directly bound Google Doc.',
+          },
+          requests: {
+            type: 'array',
+            description:
+              'Array of Google Docs API batchUpdate request objects such as insertText or replaceAllText.',
+            items: {
+              type: 'object',
+              additionalProperties: true,
+            },
+          },
+          writeControl: {
+            type: 'object',
+            description:
+              'Optional Google Docs writeControl object, for example requiredRevisionId.',
+            additionalProperties: true,
+          },
+        },
+        required: ['bindingRef', 'requests'],
       },
     });
   }
@@ -402,8 +657,6 @@ export async function executeGoogleDriveTalkTool(input: {
   if (resources.length === 0) {
     return errorResult('No Google Drive resources are bound to this Talk.');
   }
-
-  const accessToken = await getDriveAccessToken(input.userId);
   const resourceByRef = new Map(
     resources.map((resource) => [resource.ref, resource]),
   );
@@ -415,6 +668,9 @@ export async function executeGoogleDriveTalkTool(input: {
   const metadataCache = new Map<string, GoogleDriveFileMetadata>();
 
   if (input.toolName === 'google_drive_list_folder') {
+    const accessToken = await getGoogleAccessToken(input.userId, [
+      'drive.readonly',
+    ]);
     const bindingRef =
       typeof input.args.bindingRef === 'string'
         ? input.args.bindingRef.trim()
@@ -476,6 +732,9 @@ export async function executeGoogleDriveTalkTool(input: {
   }
 
   if (input.toolName === 'google_drive_search') {
+    const accessToken = await getGoogleAccessToken(input.userId, [
+      'drive.readonly',
+    ]);
     const query =
       typeof input.args.query === 'string' ? input.args.query.trim() : '';
     if (!query) {
@@ -593,6 +852,9 @@ export async function executeGoogleDriveTalkTool(input: {
   }
 
   if (input.toolName === 'google_drive_read') {
+    const accessToken = await getGoogleAccessToken(input.userId, [
+      'drive.readonly',
+    ]);
     const bindingRef =
       typeof input.args.bindingRef === 'string'
         ? input.args.bindingRef.trim()
@@ -683,6 +945,85 @@ export async function executeGoogleDriveTalkTool(input: {
     return okResult(
       [`# ${displayName || metadata.name}`, '', content].join('\n'),
     );
+  }
+
+  if (input.toolName === 'google_docs_read') {
+    const accessToken = await getGoogleAccessToken(input.userId, [
+      'documents.readonly',
+    ]);
+    const bindingRef =
+      typeof input.args.bindingRef === 'string'
+        ? input.args.bindingRef.trim()
+        : '';
+    if (!bindingRef) {
+      return errorResult('google_docs_read requires bindingRef.');
+    }
+
+    const resource = resourceByRef.get(bindingRef);
+    if (!resource) {
+      return errorResult(
+        `Bound resource ${bindingRef} was not found. Use a file ref like G1 from the bound resource manifest.`,
+      );
+    }
+    if (resource.bindingKind !== 'google_drive_file') {
+      return errorResult(
+        `${bindingRef} is a folder. Bind a Google Doc file directly before using google_docs_read.`,
+      );
+    }
+    if (resource.mimeType && resource.mimeType !== GOOGLE_DOCS_MIME) {
+      return errorResult(
+        `${bindingRef} is not a Google Doc. Bind a Google Doc file before using google_docs_read.`,
+      );
+    }
+
+    const document = await fetchGoogleDoc({
+      fileId: resource.externalId,
+      accessToken,
+      signal: input.signal,
+    });
+
+    return okResult(
+      [`# ${resource.displayName || document.title}`, '', document.text].join(
+        '\n',
+      ),
+    );
+  }
+
+  if (input.toolName === 'google_docs_batch_update') {
+    const accessToken = await getGoogleAccessToken(input.userId, ['documents']);
+    try {
+      const { bindingRef, requests, writeControl } =
+        validateGoogleDocsBatchUpdateInput(input.args);
+      const resource = resourceByRef.get(bindingRef);
+      if (!resource) {
+        return errorResult(
+          `Bound resource ${bindingRef} was not found. Use a file ref like G1 from the bound resource manifest.`,
+        );
+      }
+      if (resource.bindingKind !== 'google_drive_file') {
+        return errorResult(
+          `${bindingRef} is a folder. Bind a Google Doc file directly before using google_docs_batch_update.`,
+        );
+      }
+      if (resource.mimeType && resource.mimeType !== GOOGLE_DOCS_MIME) {
+        return errorResult(
+          `${bindingRef} is not a Google Doc. Bind a Google Doc file before using google_docs_batch_update.`,
+        );
+      }
+
+      const response = await batchUpdateGoogleDoc({
+        fileId: resource.externalId,
+        accessToken,
+        signal: input.signal,
+        requests,
+        writeControl,
+      });
+      return okResult(response);
+    } catch (error) {
+      return errorResult(
+        error instanceof Error ? error.message : String(error),
+      );
+    }
   }
 
   return errorResult(

@@ -205,9 +205,17 @@ function buildTalkMainVolumeMounts(
     readonly: false,
   });
 
-  const agentRunnerSrc = path.join(projectRoot, 'container', 'agent-runner', 'src');
+  const agentRunnerSrc = path.join(
+    projectRoot,
+    'container',
+    'agent-runner',
+    'src',
+  );
   if (fs.existsSync(agentRunnerSrc)) {
-    const runAgentRunnerDir = path.join(ephemeralContextDir, 'agent-runner-src');
+    const runAgentRunnerDir = path.join(
+      ephemeralContextDir,
+      'agent-runner-src',
+    );
     fs.cpSync(agentRunnerSrc, runAgentRunnerDir, {
       recursive: true,
       force: true,
@@ -255,7 +263,12 @@ function buildLegacyVolumeMounts(
     }
   }
 
-  const groupSessionsDir = path.join(DATA_DIR, 'sessions', group.folder, '.claude');
+  const groupSessionsDir = path.join(
+    DATA_DIR,
+    'sessions',
+    group.folder,
+    '.claude',
+  );
   ensureClaudeHome(groupSessionsDir, false);
   mounts.push({
     hostPath: groupSessionsDir,
@@ -273,8 +286,18 @@ function buildLegacyVolumeMounts(
     readonly: false,
   });
 
-  const agentRunnerSrc = path.join(projectRoot, 'container', 'agent-runner', 'src');
-  const groupAgentRunnerDir = path.join(DATA_DIR, 'sessions', group.folder, 'agent-runner-src');
+  const agentRunnerSrc = path.join(
+    projectRoot,
+    'container',
+    'agent-runner',
+    'src',
+  );
+  const groupAgentRunnerDir = path.join(
+    DATA_DIR,
+    'sessions',
+    group.folder,
+    'agent-runner-src',
+  );
   if (
     fs.existsSync(agentRunnerSrc) &&
     (syncAgentRunnerSource || !fs.existsSync(groupAgentRunnerDir))
@@ -325,11 +348,7 @@ function buildVolumeMounts(
     );
   }
 
-  return buildLegacyVolumeMounts(
-    target.group,
-    isMain,
-    syncAgentRunnerSource,
-  );
+  return buildLegacyVolumeMounts(target.group, isMain, syncAgentRunnerSource);
 }
 
 /**
