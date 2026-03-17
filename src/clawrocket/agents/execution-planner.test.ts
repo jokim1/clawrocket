@@ -7,6 +7,7 @@ import {
   upsertUser,
 } from '../db/index.js';
 import {
+  buildDefaultTalkToolPermissions,
   createRegisteredAgent,
   upsertUserToolPermission,
 } from '../db/agent-accessors.js';
@@ -53,6 +54,22 @@ describe('execution-planner', () => {
     if (plan.backend === 'direct_http') {
       expect(plan.binding.providerConfig.providerId).toBe('provider.anthropic');
     }
+  });
+
+  it('defaults new agents to the Talk-safe direct profile when tool permissions are omitted', () => {
+    seedAnthropicSecret();
+    const agent = createRegisteredAgent({
+      name: 'Claude Persona',
+      providerId: 'provider.anthropic',
+      modelId: 'claude-opus-4-6',
+    });
+
+    expect(JSON.parse(agent.tool_permissions_json)).toEqual(
+      buildDefaultTalkToolPermissions(),
+    );
+
+    const plan = planExecution(agent, 'owner-1');
+    expect(plan.backend).toBe('direct_http');
   });
 
   it('returns container for heavy Claude-compatible agents and ignores requiresApproval for routing', () => {

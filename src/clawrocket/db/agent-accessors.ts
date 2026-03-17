@@ -42,6 +42,18 @@ export const TOOL_FAMILY_MAP: Record<string, string[]> = {
   messaging: ['DiscordSend', 'SlackSend'],
 };
 
+export function buildDefaultTalkToolPermissions(): Record<string, boolean> {
+  return {
+    web: true,
+    connectors: true,
+    google_read: true,
+    google_write: true,
+    gmail_read: true,
+    gmail_send: true,
+    messaging: true,
+  };
+}
+
 /**
  * Hard dependency rules enforced at write time and reflected in UI.
  * Turning ON the left side auto-enables the right side.
@@ -294,7 +306,7 @@ export function listEnabledAgents(): RegisteredAgentRecord[] {
 /**
  * Create a new registered agent.
  * Validates tool_permissions_json and applies auto-implied dependencies.
- * Defaults to all-true if not provided.
+ * Defaults to the direct-safe Talk profile if not provided.
  */
 export function createRegisteredAgent(params: {
   name: string;
@@ -307,14 +319,11 @@ export function createRegisteredAgent(params: {
   const now = new Date().toISOString();
   const agentId = randomUUID();
 
-  // Default to all tool families enabled
+  // Default to the same Talk-safe tool profile as the seeded Claude agent:
+  // web/google/connectors on, heavy container tools off.
   let toolPermissionsJson = params.toolPermissionsJson;
   if (!toolPermissionsJson) {
-    const defaults: Record<string, boolean> = {};
-    for (const key of Object.keys(TOOL_FAMILY_MAP)) {
-      defaults[key] = true;
-    }
-    toolPermissionsJson = JSON.stringify(defaults);
+    toolPermissionsJson = JSON.stringify(buildDefaultTalkToolPermissions());
   }
 
   // Validate

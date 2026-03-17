@@ -30,6 +30,19 @@ type AgentDraft = {
   enabled: boolean;
 };
 
+function buildDefaultRegisteredAgentToolPermissions(): Record<string, boolean> {
+  // Keep in sync with the backend default in agent-accessors.ts.
+  return {
+    web: true,
+    connectors: true,
+    google_read: true,
+    google_write: true,
+    gmail_read: true,
+    gmail_send: true,
+    messaging: true,
+  };
+}
+
 const TOOL_FAMILY_GROUPS = {
   'Heavy tools (container, Claude only)': ['shell', 'filesystem', 'browser'],
   'Web tools': ['web'],
@@ -123,7 +136,7 @@ export function RegisteredAgentsPanel(props: Props): JSX.Element {
       modelId: defaultModelId,
       personaRole: '',
       systemPrompt: '',
-      toolPermissions: {},
+      toolPermissions: buildDefaultRegisteredAgentToolPermissions(),
       enabled: true,
     });
   }
