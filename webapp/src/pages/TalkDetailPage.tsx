@@ -2239,6 +2239,7 @@ export function TalkDetailPage({
     () => !haveSameTalkAgentDraftState(agents, agentDrafts),
     [agentDrafts, agents],
   );
+  const hasPendingFooterAgentSelection = newAgentDraft.modelId.trim().length > 0;
   const effectiveAgents = hasUnsavedAgentChanges ? agentDrafts : agents;
   useEffect(() => {
     setTargetAgentIds((current) =>
@@ -4424,17 +4425,49 @@ export function TalkDetailPage({
     setAgentState({ status: 'idle' });
   };
 
-  const handleAddAgent = () => {
-    // newAgentDraft.modelId is overloaded to store the registered agent ID
-    // (set by the "Agent" dropdown in the add-agent footer).
+  const materializePendingFooterAgent = (
+    currentDrafts: TalkAgent[],
+  ): {
+    nextAgents: TalkAgent[];
+    nextDraft: AgentCreationDraft;
+    added: boolean;
+    error: string | null;
+  } => {
+    const selectedAgentId = newAgentDraft.modelId.trim();
+    if (!selectedAgentId) {
+      return {
+        nextAgents: currentDrafts,
+        nextDraft: newAgentDraft,
+        added: false,
+        error: null,
+      };
+    }
+
     const regAgent = registeredAgentsCatalog.find(
-      (ra) => ra.id === newAgentDraft.modelId,
+      (ra) => ra.id === selectedAgentId && ra.enabled,
     );
-    if (!regAgent) return;
-    setAgentDrafts((current) => {
-      const nickname = buildUniqueNickname(regAgent.name, current);
-      return [
-        ...current,
+    if (!regAgent) {
+      return {
+        nextAgents: currentDrafts,
+        nextDraft: newAgentDraft,
+        added: false,
+        error: 'Selected registered agent is no longer available. Refresh and try again.',
+      };
+    }
+
+    if (currentDrafts.some((agent) => agent.id === regAgent.id)) {
+      return {
+        nextAgents: currentDrafts,
+        nextDraft: newAgentDraft,
+        added: false,
+        error: 'Selected registered agent is already assigned to this talk.',
+      };
+    }
+
+    const nickname = buildUniqueNickname(regAgent.name, currentDrafts);
+    return {
+      nextAgents: [
+        ...currentDrafts,
         {
           id: regAgent.id,
           nickname,
@@ -4442,27 +4475,51 @@ export function TalkDetailPage({
           sourceKind: 'provider',
           role: newAgentDraft.role,
           isPrimary: false,
-          displayOrder: current.length,
+          displayOrder: currentDrafts.length,
           health: 'ready',
           providerId: regAgent.providerId,
           modelId: regAgent.modelId,
           modelDisplayName: null,
         },
-      ];
-    });
-    // Reset the draft so the dropdown goes back to placeholder
-    // (the just-added agent is now filtered out of the options).
-    setNewAgentDraft((current) => ({ ...current, modelId: '' }));
+      ],
+      nextDraft: {
+        ...newAgentDraft,
+        modelId: '',
+        providerId: null,
+      },
+      added: true,
+      error: null,
+    };
+  };
+
+  const handleAddAgent = () => {
+    const materialized = materializePendingFooterAgent(agentDrafts);
+    if (materialized.error) {
+      setAgentState({ status: 'error', message: materialized.error });
+      return;
+    }
+    if (!materialized.added) return;
+    setAgentDrafts(materialized.nextAgents);
+    setNewAgentDraft(materialized.nextDraft);
     setAgentState({ status: 'idle' });
   };
 
   const handleSaveAgents = async () => {
     if (state.kind !== 'ready' || !state.talk || !canEditAgents) return;
+    const materialized = materializePendingFooterAgent(agentDrafts);
+    if (materialized.error) {
+      setAgentState({ status: 'error', message: materialized.error });
+      return;
+    }
+    if (materialized.added) {
+      setAgentDrafts(materialized.nextAgents);
+      setNewAgentDraft(materialized.nextDraft);
+    }
     setAgentState({ status: 'saving' });
     try {
       const saved = await updateTalkAgents({
         talkId: state.talk.id,
-        agents: agentDrafts.map((agent, index) => ({
+        agents: materialized.nextAgents.map((agent, index) => ({
           id: agent.id,
           nickname: agent.nickname.trim(),
           nicknameMode: agent.nicknameMode,
@@ -4478,6 +4535,7 @@ export function TalkDetailPage({
       });
       setAgents(saved);
       setAgentDrafts(saved);
+      setNewAgentDraft(materialized.nextDraft);
       setTargetAgentIds((current) => buildTargetSelection(saved, current));
       setAgentState({ status: 'success', message: 'Talk agents updated.' });
     } catch (err) {
@@ -5017,7 +5075,11 @@ export function TalkDetailPage({
                   onClick={handleSaveAgents}
                   disabled={!canEditAgents || agentState.status === 'saving'}
                 >
-                  {agentState.status === 'saving' ? 'Saving…' : 'Save Agents'}
+                  {agentState.status === 'saving'
+                    ? 'Saving…'
+                    : hasPendingFooterAgentSelection
+                      ? 'Add + Save Agents'
+                      : 'Save Agents'}
                 </button>
               </div>
               {agentsCatalogError ? (

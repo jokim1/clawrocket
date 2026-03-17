@@ -7,6 +7,7 @@ import { AiAgentsPage } from './AiAgentsPage';
 import type {
   AiAgentsPageData,
   ExecutorSettings,
+  RegisteredAgent,
   ExecutorStatus,
 } from '../lib/api';
 
@@ -162,7 +163,7 @@ describe('AiAgentsPage', () => {
     await screen.findByRole('heading', { name: 'AI Agents' });
     expect(
       await screen.findByText(
-        /Automatic host import is unavailable for this Claude login/i,
+        /current authenticated state could not be imported automatically/i,
       ),
     ).toBeTruthy();
     expect(screen.queryByText(/^claude login$/)).toBeNull();
@@ -190,7 +191,7 @@ describe('AiAgentsPage', () => {
       screen.getByRole('button', { name: 'Save and verify Claude' }),
     ).toBeTruthy();
     expect(
-      screen.queryByRole('button', { name: 'Verify stored credential' }),
+      screen.queryByRole('button', { name: 'Verify subscription runtime' }),
     ).toBeNull();
 
     await user.click(
@@ -205,12 +206,49 @@ describe('AiAgentsPage', () => {
       await screen.findByText('Verified', {}, { timeout: 4_000 }),
     ).toBeTruthy();
   });
+
+  it('shows Main execution preview and blocks impossible main agent selections', async () => {
+    const user = userEvent.setup();
+    installAiAgentsFetch();
+
+    render(
+      <MemoryRouter initialEntries={['/app/agents']}>
+        <AiAgentsPage onUnauthorized={vi.fn()} userRole="owner" />
+      </MemoryRouter>,
+    );
+
+    const mainSectionHeading = await screen.findByRole('heading', {
+      name: 'Main Agent',
+    });
+    const mainSection = mainSectionHeading.closest('section');
+    expect(mainSection).toBeTruthy();
+    expect(
+      within(mainSection as HTMLElement).getByText(
+        'Main will use Claude subscription via the container runtime.',
+      ),
+    ).toBeTruthy();
+
+    await user.selectOptions(
+      screen.getByLabelText('Select main agent'),
+      'agent-claude-light-broken',
+    );
+    expect(
+      within(mainSection as HTMLElement).getByText(
+        'No valid Main execution path is currently configured for this agent.',
+      ),
+    ).toBeTruthy();
+    expect(
+      screen.getByRole('button', { name: 'Set as Main Agent' }),
+    ).toBeDisabled();
+  });
 });
 
 function installAiAgentsFetch() {
   let snapshot = buildAiAgentsData();
   let settings = buildExecutorSettings();
   let status = buildExecutorStatus();
+  let registeredAgents = buildRegisteredAgents();
+  let mainAgent: RegisteredAgent | null = registeredAgents[0] ?? null;
   let nvidiaVerificationStage: 'idle' | 'verifying' | 'complete' = 'idle';
   let executorVerificationPending = false;
   let executorVerifyCalls = 0;
@@ -254,6 +292,36 @@ function installAiAgentsFetch() {
 
       if (url.endsWith('/api/v1/settings/executor') && method === 'GET') {
         return jsonResponse(200, { ok: true, data: settings });
+      }
+
+      if (url.endsWith('/api/v1/registered-agents') && method === 'GET') {
+        return jsonResponse(200, { ok: true, data: registeredAgents });
+      }
+
+      if (url.endsWith('/api/v1/registered-agents/main') && method === 'GET') {
+        if (!mainAgent) {
+          return jsonResponse(404, {
+            ok: false,
+            error: { code: 'not_found', message: 'No main agent' },
+          });
+        }
+        return jsonResponse(200, { ok: true, data: mainAgent });
+      }
+
+      if (url.endsWith('/api/v1/registered-agents/main') && method === 'PUT') {
+        const body = JSON.parse(String(init?.body || '{}')) as {
+          agentId?: string;
+        };
+        const nextMainAgent =
+          registeredAgents.find((agent) => agent.id === body.agentId) ?? null;
+        if (!nextMainAgent) {
+          return jsonResponse(404, {
+            ok: false,
+            error: { code: 'not_found', message: 'No main agent' },
+          });
+        }
+        mainAgent = nextMainAgent;
+        return jsonResponse(200, { ok: true, data: mainAgent });
       }
 
       if (
@@ -543,6 +611,52 @@ function buildExecutorStatus(): ExecutorStatus {
     bootId: 'boot-test',
     configErrors: [],
   };
+}
+
+function buildRegisteredAgents(): RegisteredAgent[] {
+  return [
+    {
+      id: 'agent-main-ready',
+      name: 'Claude Main',
+      providerId: 'provider.anthropic',
+      modelId: 'claude-sonnet-4-6',
+      toolPermissions: { shell: true, web: true },
+      personaRole: 'assistant',
+      systemPrompt: null,
+      enabled: true,
+      createdAt: '2026-03-06T00:00:00.000Z',
+      updatedAt: '2026-03-06T00:00:00.000Z',
+      executionPreview: {
+        surface: 'main',
+        backend: 'container',
+        authPath: 'subscription',
+        routeReason: 'normal',
+        ready: true,
+        message: 'Main will use Claude subscription via the container runtime.',
+      },
+    },
+    {
+      id: 'agent-claude-light-broken',
+      name: 'Claude Broken',
+      providerId: 'provider.anthropic',
+      modelId: 'claude-sonnet-4-6',
+      toolPermissions: { web: true },
+      personaRole: 'assistant',
+      systemPrompt: null,
+      enabled: true,
+      createdAt: '2026-03-06T00:00:00.000Z',
+      updatedAt: '2026-03-06T00:00:00.000Z',
+      executionPreview: {
+        surface: 'main',
+        backend: null,
+        authPath: null,
+        routeReason: 'no_valid_path',
+        ready: false,
+        message:
+          'No valid Main execution path is currently configured for this agent.',
+      },
+    },
+  ];
 }
 
 function jsonResponse(status: number, body: unknown): Response {

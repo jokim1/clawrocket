@@ -104,6 +104,14 @@ import {
   updateMainAgentRoute,
 } from './routes/agent-management.js';
 import {
+  getExecutorSettingsRoute,
+  getExecutorStatusRoute,
+  getExecutorSubscriptionHostStatusRoute,
+  importExecutorSubscriptionRoute,
+  putExecutorSettingsRoute,
+  verifyExecutorRoute,
+} from './routes/executor-settings.js';
+import {
   listUserToolPermissionsRoute,
   updateUserToolPermissionRoute,
   getEffectiveToolsRoute,
@@ -985,137 +993,31 @@ function buildApp(opts: WebServerOptions): Hono {
   app.get('/api/v1/settings/executor', async (c) => {
     const auth = requireAuth(c);
     if (!auth) return unauthorized(c);
-
-    const db = getDb();
-
-    const getSetting = (key: string): string | null =>
-      (
-        db.prepare(`SELECT value FROM settings_kv WHERE key = ?`).get(key) as
-          | { value: string }
-          | undefined
-      )?.value || null;
-
-    const hasApiKey = !!db
-      .prepare(
-        `SELECT 1 FROM llm_provider_secrets
-         WHERE provider_id = 'provider.anthropic' LIMIT 1`,
-      )
-      .get();
-
-    const hasOauth = !!getSetting('executor.claudeOauthToken');
-
-    const mode =
-      getSetting('executor.authMode') ||
-      (hasApiKey ? 'api_key' : hasOauth ? 'subscription' : 'none');
-    const hasCredential =
-      (mode === 'api_key' && hasApiKey) ||
-      (mode === 'subscription' && hasOauth);
-
-    const storedVerification = getSetting('executor.verificationStatus');
-    const verificationStatus =
-      storedVerification || (hasCredential ? 'not_verified' : 'missing');
-
-    return c.json(
-      {
-        ok: true,
-        data: {
-          configuredAliasMap: {},
-          effectiveAliasMap: {},
-          defaultAlias: 'claude-sonnet-4-6',
-          executorAuthMode: mode,
-          hasApiKey,
-          hasOauthToken: hasOauth,
-          hasAuthToken: false,
-          apiKeyHint: hasApiKey ? 'sk-ant-***' : null,
-          oauthTokenHint: hasOauth ? '***oauth***' : null,
-          authTokenHint: null,
-          activeCredentialConfigured: hasCredential,
-          verificationStatus,
-          lastVerifiedAt: getSetting('executor.lastVerifiedAt'),
-          lastVerificationError: getSetting('executor.lastVerificationError'),
-          anthropicBaseUrl: 'https://api.anthropic.com',
-          isConfigured: hasCredential,
-          configVersion: 1,
-          lastUpdatedAt: null,
-          lastUpdatedBy: null,
-          configErrors: [],
-        },
-      },
-      200,
-    );
+    const result = getExecutorSettingsRoute(auth);
+    return new Response(JSON.stringify(result.body), {
+      status: result.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
   });
 
   app.get('/api/v1/settings/executor-status', async (c) => {
     const auth = requireAuth(c);
     if (!auth) return unauthorized(c);
-
-    const db = getDb();
-    const getSetting = (key: string): string | null =>
-      (
-        db.prepare(`SELECT value FROM settings_kv WHERE key = ?`).get(key) as
-          | { value: string }
-          | undefined
-      )?.value || null;
-
-    const hasApiKey = !!db
-      .prepare(
-        `SELECT 1 FROM llm_provider_secrets
-         WHERE provider_id = 'provider.anthropic' LIMIT 1`,
-      )
-      .get();
-    const hasOauth = !!getSetting('executor.claudeOauthToken');
-    const mode =
-      getSetting('executor.authMode') ||
-      (hasApiKey ? 'api_key' : hasOauth ? 'subscription' : 'none');
-    const hasCredential =
-      (mode === 'api_key' && hasApiKey) ||
-      (mode === 'subscription' && hasOauth);
-
-    const storedVerification = getSetting('executor.verificationStatus');
-    const verificationStatus =
-      storedVerification || (hasCredential ? 'not_verified' : 'missing');
-
-    return c.json(
-      {
-        ok: true,
-        data: {
-          mode: 'real',
-          restartSupported: false,
-          pendingRestartReasons: [],
-          activeRunCount: 0,
-          executorAuthMode: mode,
-          activeCredentialConfigured: hasCredential,
-          verificationStatus,
-          lastVerifiedAt: getSetting('executor.lastVerifiedAt'),
-        },
-      },
-      200,
-    );
+    const result = getExecutorStatusRoute(auth);
+    return new Response(JSON.stringify(result.body), {
+      status: result.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
   });
 
   app.get('/api/v1/settings/executor/subscription-host-status', async (c) => {
     const auth = requireAuth(c);
     if (!auth) return unauthorized(c);
-
-    return c.json(
-      {
-        ok: true,
-        data: {
-          serviceUser: null,
-          serviceUid: null,
-          serviceHomePath: '/home/nanoclaw',
-          runtimeContext: 'systemd' as const,
-          claudeCliInstalled: false,
-          hostLoginDetected: false,
-          serviceEnvOauthPresent: false,
-          importAvailable: false,
-          hostCredentialFingerprint: null,
-          message: 'Subscription host detection is not yet implemented.',
-          recommendedCommands: [],
-        },
-      },
-      200,
-    );
+    const result = await getExecutorSubscriptionHostStatusRoute(auth);
+    return new Response(JSON.stringify(result.body), {
+      status: result.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
   });
 
   // ── PUT /api/v1/settings/executor ─ save credentials + auth mode ──────
@@ -1123,127 +1025,12 @@ function buildApp(opts: WebServerOptions): Hono {
   app.put('/api/v1/settings/executor', async (c) => {
     const auth = requireAuth(c);
     if (!auth) return unauthorized(c);
-
-    const body = await c.req.json<{
-      executorAuthMode?: string;
-      anthropicApiKey?: string | null;
-      claudeOauthToken?: string | null;
-      anthropicAuthToken?: string | null;
-      anthropicBaseUrl?: string | null;
-      aliasModelMap?: Record<string, string>;
-      defaultAlias?: string;
-    }>();
-
-    const db = getDb();
-    const now = new Date().toISOString();
-    const userId = auth.userId;
-
-    const upsertSetting = db.prepare(
-      `INSERT INTO settings_kv (key, value, updated_at, updated_by)
-       VALUES (?, ?, ?, ?)
-       ON CONFLICT(key) DO UPDATE SET value = excluded.value,
-         updated_at = excluded.updated_at, updated_by = excluded.updated_by`,
-    );
-
-    // Persist auth mode
-    if (body.executorAuthMode) {
-      upsertSetting.run(
-        'executor.authMode',
-        body.executorAuthMode,
-        now,
-        userId,
-      );
-    }
-
-    // Persist API key → llm_provider_secrets
-    if (body.anthropicApiKey) {
-      const ciphertext = JSON.stringify({ apiKey: body.anthropicApiKey });
-      db.prepare(
-        `INSERT INTO llm_provider_secrets (provider_id, ciphertext, updated_at, updated_by)
-         VALUES ('provider.anthropic', ?, ?, ?)
-         ON CONFLICT(provider_id) DO UPDATE SET ciphertext = excluded.ciphertext,
-           updated_at = excluded.updated_at, updated_by = excluded.updated_by`,
-      ).run(ciphertext, now, userId);
-    }
-
-    // Persist OAuth token → settings_kv
-    if (body.claudeOauthToken) {
-      upsertSetting.run(
-        'executor.claudeOauthToken',
-        body.claudeOauthToken,
-        now,
-        userId,
-      );
-    }
-
-    // Persist auth token → settings_kv
-    if (body.anthropicAuthToken) {
-      upsertSetting.run(
-        'executor.anthropicAuthToken',
-        body.anthropicAuthToken,
-        now,
-        userId,
-      );
-    }
-
-    // Determine current credential state
-    const hasApiKey = !!(
-      body.anthropicApiKey ||
-      db
-        .prepare(
-          `SELECT 1 FROM llm_provider_secrets
-           WHERE provider_id = 'provider.anthropic' LIMIT 1`,
-        )
-        .get()
-    );
-    const mode = body.executorAuthMode || 'none';
-    const hasOauth = !!(
-      body.claudeOauthToken ||
-      (
-        db
-          .prepare(
-            `SELECT value FROM settings_kv WHERE key = 'executor.claudeOauthToken'`,
-          )
-          .get() as { value: string } | undefined
-      )?.value
-    );
-
-    return c.json(
-      {
-        ok: true,
-        data: {
-          configuredAliasMap: {},
-          effectiveAliasMap: {},
-          defaultAlias: 'claude-sonnet-4-6',
-          executorAuthMode: mode,
-          hasApiKey,
-          hasOauthToken: hasOauth,
-          hasAuthToken: false,
-          apiKeyHint: hasApiKey ? 'sk-ant-***' : null,
-          oauthTokenHint: hasOauth ? '***oauth***' : null,
-          authTokenHint: null,
-          activeCredentialConfigured:
-            (mode === 'api_key' && hasApiKey) ||
-            (mode === 'subscription' && hasOauth),
-          verificationStatus:
-            (mode === 'api_key' && hasApiKey) ||
-            (mode === 'subscription' && hasOauth)
-              ? 'not_verified'
-              : 'missing',
-          lastVerifiedAt: null,
-          lastVerificationError: null,
-          anthropicBaseUrl: 'https://api.anthropic.com',
-          isConfigured:
-            (mode === 'api_key' && hasApiKey) ||
-            (mode === 'subscription' && hasOauth),
-          configVersion: 1,
-          lastUpdatedAt: now,
-          lastUpdatedBy: { type: 'user', userId },
-          configErrors: [],
-        },
-      },
-      200,
-    );
+    const body = await c.req.json();
+    const result = putExecutorSettingsRoute(auth, body);
+    return new Response(JSON.stringify(result.body), {
+      status: result.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
   });
 
   // ── PUT /api/v1/agents/default-claude ─ update default model ──────────
@@ -1305,163 +1092,22 @@ function buildApp(opts: WebServerOptions): Hono {
   app.post('/api/v1/settings/executor/verify', async (c) => {
     const auth = requireAuth(c);
     if (!auth) return unauthorized(c);
+    const result = await verifyExecutorRoute(auth);
+    return new Response(JSON.stringify(result.body), {
+      status: result.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
+  });
 
-    const db = getDb();
-    const now = new Date().toISOString();
-
-    const upsertSetting = db.prepare(
-      `INSERT INTO settings_kv (key, value, updated_at, updated_by)
-       VALUES (?, ?, ?, ?)
-       ON CONFLICT(key) DO UPDATE SET value = excluded.value,
-         updated_at = excluded.updated_at, updated_by = excluded.updated_by`,
-    );
-
-    // Get the stored API key
-    const secretRow = db
-      .prepare(
-        `SELECT ciphertext FROM llm_provider_secrets
-         WHERE provider_id = 'provider.anthropic' LIMIT 1`,
-      )
-      .get() as { ciphertext: string } | undefined;
-
-    if (!secretRow) {
-      upsertSetting.run(
-        'executor.verificationStatus',
-        'missing',
-        now,
-        auth.userId,
-      );
-      return c.json(
-        {
-          ok: true,
-          data: {
-            scheduled: false,
-            code: 'no_credential',
-            message: 'No Anthropic API key stored. Save one first.',
-          },
-        },
-        200,
-      );
-    }
-
-    let apiKey: string;
-    try {
-      const parsed = JSON.parse(secretRow.ciphertext);
-      apiKey = parsed.apiKey;
-    } catch {
-      upsertSetting.run(
-        'executor.verificationStatus',
-        'invalid',
-        now,
-        auth.userId,
-      );
-      return c.json(
-        {
-          ok: true,
-          data: {
-            scheduled: false,
-            code: 'invalid_credential',
-            message: 'Stored credential is corrupted.',
-          },
-        },
-        200,
-      );
-    }
-
-    // Call the Anthropic Messages API with a minimal request to verify the key
-    try {
-      const resp = await fetch('https://api.anthropic.com/v1/messages', {
-        method: 'POST',
-        headers: {
-          'x-api-key': apiKey,
-          'anthropic-version': '2023-06-01',
-          'content-type': 'application/json',
-        },
-        body: JSON.stringify({
-          model: 'claude-sonnet-4-6',
-          max_tokens: 1,
-          messages: [{ role: 'user', content: 'hi' }],
-        }),
-      });
-
-      if (resp.ok || resp.status === 200) {
-        upsertSetting.run(
-          'executor.verificationStatus',
-          'verified',
-          now,
-          auth.userId,
-        );
-        upsertSetting.run('executor.lastVerifiedAt', now, now, auth.userId);
-        upsertSetting.run(
-          'executor.lastVerificationError',
-          '',
-          now,
-          auth.userId,
-        );
-        return c.json(
-          {
-            ok: true,
-            data: {
-              scheduled: false,
-              code: 'verified',
-              message: 'API key verified successfully.',
-            },
-          },
-          200,
-        );
-      }
-
-      // Non-200 response
-      const errorBody = await resp.text().catch(() => 'unknown error');
-      upsertSetting.run(
-        'executor.verificationStatus',
-        'invalid',
-        now,
-        auth.userId,
-      );
-      upsertSetting.run(
-        'executor.lastVerificationError',
-        errorBody,
-        now,
-        auth.userId,
-      );
-      return c.json(
-        {
-          ok: true,
-          data: {
-            scheduled: false,
-            code: 'invalid',
-            message: `Anthropic API returned ${resp.status}: ${errorBody.slice(0, 200)}`,
-          },
-        },
-        200,
-      );
-    } catch (err) {
-      const errMsg = err instanceof Error ? err.message : String(err);
-      upsertSetting.run(
-        'executor.verificationStatus',
-        'invalid',
-        now,
-        auth.userId,
-      );
-      upsertSetting.run(
-        'executor.lastVerificationError',
-        errMsg,
-        now,
-        auth.userId,
-      );
-      return c.json(
-        {
-          ok: true,
-          data: {
-            scheduled: false,
-            code: 'network_error',
-            message: `Failed to reach Anthropic API: ${errMsg}`,
-          },
-        },
-        200,
-      );
-    }
+  app.post('/api/v1/settings/executor/subscription/import', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+    const body = await c.req.json();
+    const result = await importExecutorSubscriptionRoute(auth, body);
+    return new Response(JSON.stringify(result.body), {
+      status: result.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
   });
 
   // =========================================================================

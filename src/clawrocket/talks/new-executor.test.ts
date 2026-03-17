@@ -83,6 +83,7 @@ describe('CleanTalkExecutor', () => {
     );
     vi.mocked(planExecution).mockReturnValue({
       backend: 'direct_http',
+      routeReason: 'normal',
       effectiveTools: [],
       providerId: 'provider.anthropic',
       modelId: 'claude-sonnet-4-6',
@@ -276,6 +277,7 @@ describe('CleanTalkExecutor', () => {
 
     vi.mocked(planExecution).mockReturnValue({
       backend: 'container',
+      routeReason: 'normal',
       providerId: 'provider.anthropic',
       modelId: 'claude-sonnet-4-6',
       effectiveTools: [

@@ -629,7 +629,11 @@ export class CleanTalkExecutor implements TalkExecutor {
         sequenceIndex: input.sequenceIndex,
       });
 
-      const plan = planExecution(resolvedAgent, input.requestedBy);
+      const plan = planExecution(
+        resolvedAgent,
+        input.requestedBy,
+        'talk_single',
+      );
 
       if (plan.backend === 'container') {
         const talk = getTalkById(input.talkId);

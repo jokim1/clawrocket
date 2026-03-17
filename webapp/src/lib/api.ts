@@ -499,7 +499,8 @@ export type AgentProviderCard = {
     | 'verifying'
     | 'verified'
     | 'invalid'
-    | 'unavailable';
+    | 'unavailable'
+    | 'rate_limited';
   lastVerifiedAt: string | null;
   lastVerificationError: string | null;
   modelSuggestions: Array<{
@@ -605,7 +606,8 @@ export type ExecutorSettings = {
     | 'verifying'
     | 'verified'
     | 'invalid'
-    | 'unavailable';
+    | 'unavailable'
+    | 'rate_limited';
   lastVerifiedAt: string | null;
   lastVerificationError: string | null;
   anthropicBaseUrl: string;
@@ -639,7 +641,8 @@ export type ExecutorStatus = {
     | 'verifying'
     | 'verified'
     | 'invalid'
-    | 'unavailable';
+    | 'unavailable'
+    | 'rate_limited';
   lastVerifiedAt: string | null;
   lastVerificationError: string | null;
   hasProviderAuth: boolean;
@@ -1253,6 +1256,14 @@ export type RegisteredAgent = {
   enabled: boolean;
   createdAt: string;
   updatedAt: string;
+  executionPreview: {
+    surface: 'main';
+    backend: 'direct_http' | 'container' | null;
+    authPath: 'api_key' | 'subscription' | null;
+    routeReason: 'normal' | 'subscription_fallback' | 'no_valid_path';
+    ready: boolean;
+    message: string;
+  };
 };
 
 export async function listRegisteredAgents(): Promise<RegisteredAgent[]> {

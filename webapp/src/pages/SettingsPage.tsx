@@ -79,6 +79,8 @@ function formatVerificationStatus(
       return 'Invalid';
     case 'unavailable':
       return 'Unavailable';
+    case 'rate_limited':
+      return 'Rate limited';
     default:
       return status;
   }
@@ -352,7 +354,7 @@ export function SettingsPage({ onUnauthorized, userRole }: Props) {
         );
       } else if (nextSettings.executorAuthMode === 'subscription') {
         setNotice(
-          'Subscription mode is now active. Use Check host Claude login for guided setup, or Verify subscription to confirm the current environment can execute with the selected subscription credential.',
+          'Subscription mode is now active. Use Check host Claude login for guided setup, or Verify subscription runtime to confirm the current environment can execute with the selected subscription credential.',
         );
       } else {
         setNotice(
@@ -418,14 +420,16 @@ export function SettingsPage({ onUnauthorized, userRole }: Props) {
         subscriptionHostStatus.hostCredentialFingerprint,
       );
       applySettingsDrafts(result.settings);
+      const verifyResult = await verifyExecutorCredentials();
       const nextStatus = await getExecutorStatus();
       setStatus(nextStatus);
       const latestHostStatus = await getExecutorSubscriptionHostStatus();
       setSubscriptionHostStatus(latestHostStatus);
       setNotice(
-        result.status === 'no_change'
-          ? 'The host subscription credential is already imported into settings.'
-          : 'Subscription credential imported from the service host. Use Verify subscription to confirm this environment can execute with it.',
+        verifyResult.message ||
+          (result.status === 'no_change'
+            ? 'The host subscription credential is already imported into settings.'
+            : 'Subscription credential imported from the service host.'),
       );
     } catch (err) {
       handleApiFailure(err, 'Failed to import subscription credential from host.');
@@ -529,7 +533,9 @@ export function SettingsPage({ onUnauthorized, userRole }: Props) {
   const showBaseUrl =
     authModeDraft === 'api_key' || authModeDraft === 'advanced_bearer';
   const verifyButtonLabel =
-    authModeDraft === 'subscription' ? 'Verify subscription' : 'Re-verify';
+    authModeDraft === 'subscription'
+      ? 'Verify subscription runtime'
+      : 'Verify API key';
   const showSubscriptionImportButton = Boolean(
     subscriptionHostStatus?.importAvailable &&
       subscriptionHostStatus.hostCredentialFingerprint,
@@ -537,7 +543,7 @@ export function SettingsPage({ onUnauthorized, userRole }: Props) {
   const selectedModeCredentialState =
     authModeDraft === 'subscription'
       ? fieldDraftState({
-          stored: settings.hasOauthToken,
+          stored: settings.hasOauthToken || settings.hasAuthToken,
           cleared: clearOauth,
           draftValue: oauthDraft,
         })

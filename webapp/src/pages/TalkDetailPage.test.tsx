@@ -801,6 +801,129 @@ describe('TalkDetailPage', () => {
     });
   });
 
+  it('auto-adds a pending footer agent when saving talk agents', async () => {
+    const user = userEvent.setup();
+    let savedRequest: SavedTalkAgentRequest | undefined;
+
+    installTalkDetailFetch({
+      messages: [],
+      runs: [],
+      talkAgents: [
+        buildTalkAgent({
+          id: 'agent-claude',
+          nickname: 'Claude Sonnet 4.6',
+          sourceKind: 'claude_default',
+          role: 'assistant',
+          isPrimary: true,
+          displayOrder: 0,
+          health: 'ready',
+          providerId: null,
+          modelId: 'claude-sonnet-4-6',
+          modelDisplayName: 'Claude Sonnet 4.6',
+        }),
+      ],
+      onPutAgents: (body) => {
+        savedRequest = body;
+        return body.agents.map((agent, index) => ({
+          ...agent,
+          displayOrder: index,
+          health:
+            agent.sourceKind === 'claude_default'
+              ? 'ready'
+              : agent.providerId === 'provider.openai'
+                ? 'invalid'
+                : 'unknown',
+        }));
+      },
+    });
+
+    renderDetailPage('/app/talks/talk-1/agents');
+    await screen.findByRole('heading', { name: 'Agents' });
+
+    await user.selectOptions(screen.getByLabelText('Agent'), 'agent-openai');
+    await user.selectOptions(screen.getAllByLabelText('Role')[1], 'critic');
+    expect(
+      screen.getByRole('button', { name: 'Add + Save Agents' }),
+    ).toBeTruthy();
+
+    await user.click(screen.getByRole('button', { name: 'Add + Save Agents' }));
+
+    expect(await screen.findByText('Talk agents updated.')).toBeTruthy();
+    if (!savedRequest) {
+      throw new Error('Expected talk agents save payload');
+    }
+
+    expect(savedRequest.agents).toHaveLength(2);
+    expect(savedRequest.agents[1]).toMatchObject({
+      id: 'agent-openai',
+      nickname: 'GPT-5 Mini',
+      role: 'critic',
+      isPrimary: false,
+    });
+
+    const rowAgentSelects = screen.getAllByLabelText('Registered Agent');
+    expect(rowAgentSelects).toHaveLength(2);
+    expect((rowAgentSelects[1] as HTMLSelectElement).value).toBe(
+      'agent-openai',
+    );
+    expect((screen.getByLabelText('Agent') as HTMLSelectElement).value).toBe('');
+
+    const tabs = within(
+      screen.getByRole('navigation', { name: 'Talk sections' }),
+    );
+    await user.click(tabs.getByRole('link', { name: 'Talk' }));
+    await screen.findByLabelText('Talk timeline');
+
+    const statusPills = screen.getByRole('list', { name: 'Talk agent status' });
+    expect(within(statusPills).getByText('GPT-5 Mini (Critic)')).toBeTruthy();
+  });
+
+  it('shows an inline error when a pending footer agent becomes invalid before save', async () => {
+    const user = userEvent.setup();
+    let putCalled = false;
+
+    installTalkDetailFetch({
+      messages: [],
+      runs: [],
+      talkAgents: [
+        buildTalkAgent({
+          id: 'agent-claude',
+          nickname: 'Claude Sonnet 4.6',
+          sourceKind: 'claude_default',
+          role: 'assistant',
+          isPrimary: true,
+          displayOrder: 0,
+          health: 'ready',
+          providerId: null,
+          modelId: 'claude-sonnet-4-6',
+          modelDisplayName: 'Claude Sonnet 4.6',
+        }),
+      ],
+      onPutAgents: (body) => {
+        putCalled = true;
+        return body.agents;
+      },
+    });
+
+    renderDetailPage('/app/talks/talk-1/agents');
+    await screen.findByRole('heading', { name: 'Agents' });
+
+    await user.selectOptions(screen.getByLabelText('Agent'), 'agent-openai');
+    await user.selectOptions(
+      screen.getByLabelText('Registered Agent'),
+      'agent-openai',
+    );
+
+    await user.click(screen.getByRole('button', { name: 'Add + Save Agents' }));
+
+    expect(
+      await screen.findByText(
+        'Selected registered agent is already assigned to this talk.',
+      ),
+    ).toBeTruthy();
+    expect(putCalled).toBe(false);
+  });
+
   it('shows source failures and refreshes URL source status after retry', async () => {
     const user = userEvent.setup();
     let currentContext = buildTalkContext({
@@ -1684,6 +1807,14 @@ function buildRegisteredAgent(
     enabled: input.enabled ?? true,
     createdAt: input.createdAt ?? '2026-03-06T00:00:00.000Z',
     updatedAt: input.updatedAt ?? '2026-03-06T00:00:00.000Z',
+    executionPreview: input.executionPreview ?? {
+      surface: 'main',
+      backend: 'direct_http',
+      authPath: input.providerId === 'provider.anthropic' ? 'api_key' : null,
+      routeReason: 'normal',
+      ready: true,
+      message: 'Main will use direct HTTP.',
+    },
   };
 }
 

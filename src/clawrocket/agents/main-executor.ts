@@ -134,7 +134,7 @@ export async function executeMainChannel(
     throw new Error('No agent available for Main channel');
   }
 
-  const plan = planExecution(agent, input.requestedBy);
+  const plan = planExecution(agent, input.requestedBy, 'main');
 
   emitEvent({
     type: 'main_response_started',
