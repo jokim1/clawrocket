@@ -865,6 +865,20 @@ describe('phase 0 schema and reliability tables', () => {
     const talk = getTalkById('talk-2');
     expect(talk?.topic_title).toBe('Shared');
 
+    const defaultThreads = getDb()
+      .prepare(
+        `
+            SELECT id, is_default
+            FROM talk_threads
+            WHERE talk_id = ?
+            ORDER BY created_at ASC
+          `,
+      )
+      .all('talk-2') as Array<{ id: string; is_default: number }>;
+    expect(defaultThreads).toHaveLength(1);
+    expect(defaultThreads[0]?.id).toMatch(/^thread_/);
+    expect(defaultThreads[0]?.is_default).toBe(1);
+
     const ownerView = getTalkForUser('talk-2', 'owner-1');
     expect(ownerView?.access_role).toBe('owner');
 

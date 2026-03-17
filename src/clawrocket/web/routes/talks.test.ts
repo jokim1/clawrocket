@@ -284,6 +284,34 @@ describe('talk routes', () => {
     expect(ownerBody.data.talks).toHaveLength(3);
   });
 
+  it('heals threadless talks when listing threads', async () => {
+    upsertTalk({
+      id: 'talk-threadless',
+      ownerId: 'owner-1',
+      topicTitle: 'Threadless Talk',
+    });
+
+    const res = await server.request('/api/v1/talks/talk-threadless/threads', {
+      headers: {
+        Authorization: 'Bearer owner-token',
+      },
+    });
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as any;
+    expect(body.ok).toBe(true);
+    expect(body.data.threads).toHaveLength(1);
+    expect(body.data.threads[0].id).toMatch(/^thread_/);
+    expect(body.data.threads[0].is_default).toBe(1);
+
+    const persisted = getDb()
+      .prepare(
+        `SELECT COUNT(*) AS count FROM talk_threads WHERE talk_id = ? AND is_default = 1`,
+      )
+      .get('talk-threadless') as { count: number };
+    expect(persisted.count).toBe(1);
+  });
+
   it('parses supported llm_policy shapes and caps agent badges', async () => {
     upsertTalk({
       id: 'talk-models-array',
