@@ -6,6 +6,7 @@ import {
   createRegisteredAgent,
   updateRegisteredAgent,
   deleteRegisteredAgent,
+  type ExecutorSettings,
   type RegisteredAgent,
   type AgentProviderCard,
   UnauthorizedError,
@@ -13,6 +14,7 @@ import {
 
 type Props = {
   providers: AgentProviderCard[];
+  executorSettings: ExecutorSettings;
   onUnauthorized: () => void;
   canManage: boolean;
   /** Called after any CRUD operation so parent can refresh its own agent list. */
@@ -68,8 +70,109 @@ function generateDraftId(): string {
   return 'draft-' + Math.random().toString(36).substring(2, 11);
 }
 
+function hasHeavyTools(toolPermissions: Record<string, boolean>): boolean {
+  return Boolean(
+    toolPermissions.shell ||
+      toolPermissions.filesystem ||
+      toolPermissions.browser,
+  );
+}
+
+function buildDraftExecutionPreview(input: {
+  draft: AgentDraft;
+  providers: AgentProviderCard[];
+  executorSettings: ExecutorSettings;
+}): RegisteredAgent['executionPreview'] | null {
+  const provider = input.providers.find((entry) => entry.id === input.draft.providerId);
+  if (!provider || provider.id !== 'provider.anthropic') {
+    return null;
+  }
+
+  const heavyToolsEnabled = hasHeavyTools(input.draft.toolPermissions);
+  const hasSubscriptionCredential =
+    input.executorSettings.hasOauthToken || input.executorSettings.hasAuthToken;
+
+  if (heavyToolsEnabled) {
+    if (
+      input.executorSettings.executorAuthMode === 'subscription' &&
+      hasSubscriptionCredential
+    ) {
+      return {
+        surface: 'main',
+        backend: 'container',
+        authPath: 'subscription',
+        routeReason: 'normal',
+        ready: true,
+        message: 'Main will use Claude subscription via the container runtime.',
+      };
+    }
+    if (
+      input.executorSettings.executorAuthMode === 'api_key' &&
+      input.executorSettings.hasApiKey
+    ) {
+      return {
+        surface: 'main',
+        backend: 'container',
+        authPath: 'api_key',
+        routeReason: 'normal',
+        ready: true,
+        message:
+          'Main will use the Claude container runtime with an Anthropic API key.',
+      };
+    }
+    return {
+      surface: 'main',
+      backend: null,
+      authPath: null,
+      routeReason: 'no_valid_path',
+      ready: false,
+      message:
+        'Heavy Claude tools require a valid container auth path. Configure subscription mode with a stored Claude credential, or switch to API key mode with an Anthropic API key.',
+    };
+  }
+
+  if (input.executorSettings.hasApiKey) {
+    return {
+      surface: 'main',
+      backend: 'direct_http',
+      authPath: 'api_key',
+      routeReason: 'normal',
+      ready: true,
+      message: 'Main will use Anthropic direct HTTP with an API key.',
+    };
+  }
+
+  if (hasSubscriptionCredential) {
+    return {
+      surface: 'main',
+      backend: 'container',
+      authPath: 'subscription',
+      routeReason: 'subscription_fallback',
+      ready: true,
+      message:
+        'Main will use Claude subscription via container fallback because no Anthropic API key is configured.',
+    };
+  }
+
+  return {
+    surface: 'main',
+    backend: null,
+    authPath: null,
+    routeReason: 'no_valid_path',
+    ready: false,
+    message:
+      'No Anthropic API key or Claude subscription credential is configured for this Claude agent.',
+  };
+}
+
 export function RegisteredAgentsPanel(props: Props): JSX.Element {
-  const { providers, onUnauthorized, canManage, onAgentsChanged } = props;
+  const {
+    providers,
+    executorSettings,
+    onUnauthorized,
+    canManage,
+    onAgentsChanged,
+  } = props;
 
   const [agents, setAgents] = useState<RegisteredAgent[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -255,23 +358,20 @@ export function RegisteredAgentsPanel(props: Props): JSX.Element {
     }
   }
 
-  const agentProvider = createDraft || editDraft
-    ? providers.find(p => p.id === (createDraft?.providerId || editDraft?.providerId))
+  const createPreview = createDraft
+    ? buildDraftExecutionPreview({
+        draft: createDraft,
+        providers,
+        executorSettings,
+      })
     : null;
-
-  const hasHeavyTools = !!(
-    createDraft?.toolPermissions?.shell ||
-    createDraft?.toolPermissions?.filesystem ||
-    createDraft?.toolPermissions?.browser ||
-    editDraft?.toolPermissions?.shell ||
-    editDraft?.toolPermissions?.filesystem ||
-    editDraft?.toolPermissions?.browser
-  );
-
-  const heavyToolsProvider = createDraft?.providerId || editDraft?.providerId;
-  const isNonClaudProvider = !!(
-    heavyToolsProvider && providers.find(p => p.id === heavyToolsProvider)?.providerKind !== 'anthropic'
-  );
+  const editPreview = editDraft
+    ? buildDraftExecutionPreview({
+        draft: editDraft,
+        providers,
+        executorSettings,
+      })
+    : null;
 
   return (
     <div className="registered-agents-panel">
@@ -304,8 +404,7 @@ export function RegisteredAgentsPanel(props: Props): JSX.Element {
                   setDraft={setEditDraft}
                   providers={availableProviders()}
                   getProviderModels={getProviderModels}
-                  isNonClaudProvider={isNonClaudProvider}
-                  hasHeavyTools={hasHeavyTools}
+                  executionPreview={editPreview}
                   onSave={handleUpdate}
                   onCancel={cancelEdit}
                   canManage={canManage}
@@ -331,8 +430,7 @@ export function RegisteredAgentsPanel(props: Props): JSX.Element {
             setDraft={setCreateDraft}
             providers={availableProviders()}
             getProviderModels={getProviderModels}
-            isNonClaudProvider={isNonClaudProvider}
-            hasHeavyTools={hasHeavyTools}
+            executionPreview={createPreview}
             onSave={handleCreate}
             onCancel={cancelCreate}
             canManage={canManage}
@@ -348,8 +446,7 @@ type AgentFormProps = {
   setDraft: (draft: AgentDraft) => void;
   providers: AgentProviderCard[];
   getProviderModels: (providerId: string) => Array<{ modelId: string; displayName: string }>;
-  isNonClaudProvider: boolean;
-  hasHeavyTools: boolean;
+  executionPreview: RegisteredAgent['executionPreview'] | null;
   onSave: () => void;
   onCancel: () => void;
   canManage: boolean;
@@ -360,14 +457,17 @@ function AgentForm({
   setDraft,
   providers,
   getProviderModels,
-  isNonClaudProvider,
-  hasHeavyTools,
+  executionPreview,
   onSave,
   onCancel,
   canManage,
 }: AgentFormProps): JSX.Element {
   const models = getProviderModels(draft.providerId);
   const selectedProvider = providers.find(p => p.id === draft.providerId);
+  const heavyToolsEnabled = hasHeavyTools(draft.toolPermissions);
+  const isNonClaudeProvider =
+    selectedProvider?.providerKind !== 'anthropic' && heavyToolsEnabled;
+  const saveDisabled = !canManage || executionPreview?.ready === false;
 
   return (
     <div className="agent-editor-card">
@@ -457,11 +557,24 @@ function AgentForm({
       <div className="agent-form-field-full agent-form-tools-section">
         <span className="agent-form-tools-title">Tool Permissions</span>
 
-        {hasHeavyTools && isNonClaudProvider && (
+        {isNonClaudeProvider && (
           <div className="agent-form-warning">
             ⚠️ Shell, Filesystem, and Browser tools require Claude provider.
           </div>
         )}
+        {executionPreview ? (
+          <div
+            className={
+              executionPreview.ready
+                ? executionPreview.routeReason === 'subscription_fallback'
+                  ? 'agent-form-warning'
+                  : 'talk-llm-meta'
+                : 'agent-form-warning'
+            }
+          >
+            {executionPreview.message}
+          </div>
+        ) : null}
 
         {Object.entries(TOOL_FAMILY_GROUPS).map(([groupLabel, toolNames]) => (
           <div key={groupLabel} className="agent-form-tool-group">
@@ -495,7 +608,7 @@ function AgentForm({
         <button
           onClick={onSave}
           className="registered-agents-button registered-agents-button-primary"
-          disabled={!canManage}
+          disabled={saveDisabled}
         >
           Save
         </button>
@@ -540,6 +653,15 @@ function AgentCardView({
               {agent.personaRole && <span className="registered-agent-role">{agent.personaRole}</span>}
               {!agent.enabled && <span className="registered-agent-disabled">Disabled</span>}
             </div>
+            <p
+              className={
+                agent.executionPreview.ready
+                  ? 'talk-llm-meta'
+                  : 'talk-llm-meta error-text'
+              }
+            >
+              {agent.executionPreview.message}
+            </p>
           </div>
           {canManage && (
             <div className="registered-agent-card-actions">

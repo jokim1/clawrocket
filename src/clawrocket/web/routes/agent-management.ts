@@ -1,7 +1,6 @@
 import {
   listRegisteredAgents,
   getRegisteredAgent,
-  getRegisteredAgentSnapshot,
   createRegisteredAgent,
   updateRegisteredAgent,
   deleteRegisteredAgent,
@@ -10,14 +9,26 @@ import {
   validateToolPermissionsJson,
   toAgentSnapshot,
   type RegisteredAgentSnapshot,
+  type RegisteredAgentRecord,
   type AgentFallbackStep,
 } from '../../db/agent-accessors.js';
-import {
-  getMainAgentId,
-  getMainAgentSnapshot,
-  setMainAgentId,
-} from '../../agents/agent-registry.js';
+import { getMainAgentId, setMainAgentId } from '../../agents/agent-registry.js';
+import { buildMainExecutionPreview } from '../../agents/execution-preview.js';
 import type { AuthContext, ApiEnvelope } from '../types.js';
+
+export type RegisteredAgentApiSnapshot = RegisteredAgentSnapshot & {
+  executionPreview: ReturnType<typeof buildMainExecutionPreview>;
+};
+
+function attachExecutionPreview(
+  record: RegisteredAgentRecord,
+  auth: AuthContext,
+): RegisteredAgentApiSnapshot {
+  return {
+    ...toAgentSnapshot(record),
+    executionPreview: buildMainExecutionPreview(record, auth.userId),
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Auth Checks
@@ -33,11 +44,13 @@ function isAdminLike(role: string): boolean {
 
 export function listAgentsRoute(auth: AuthContext): {
   statusCode: number;
-  body: ApiEnvelope<RegisteredAgentSnapshot[]>;
+  body: ApiEnvelope<RegisteredAgentApiSnapshot[]>;
 } {
   try {
     const agents = listRegisteredAgents();
-    const snapshots = agents.map(toAgentSnapshot);
+    const snapshots = agents.map((agent) =>
+      attachExecutionPreview(agent, auth),
+    );
 
     return {
       statusCode: 200,
@@ -69,11 +82,11 @@ export function getAgentRoute(
   agentId: string,
 ): {
   statusCode: number;
-  body: ApiEnvelope<RegisteredAgentSnapshot>;
+  body: ApiEnvelope<RegisteredAgentApiSnapshot>;
 } {
   try {
-    const snapshot = getRegisteredAgentSnapshot(agentId);
-    if (!snapshot) {
+    const record = getRegisteredAgent(agentId);
+    if (!record) {
       return {
         statusCode: 404,
         body: {
@@ -90,7 +103,7 @@ export function getAgentRoute(
       statusCode: 200,
       body: {
         ok: true,
-        data: snapshot,
+        data: attachExecutionPreview(record, auth),
       },
     };
   } catch (err) {
@@ -125,7 +138,7 @@ export function createAgentRoute(
   body: CreateAgentBody,
 ): {
   statusCode: number;
-  body: ApiEnvelope<RegisteredAgentSnapshot>;
+  body: ApiEnvelope<RegisteredAgentApiSnapshot>;
 } {
   // Auth check
   if (!isAdminLike(auth.role)) {
@@ -234,13 +247,11 @@ export function createAgentRoute(
       systemPrompt,
     });
 
-    const snapshot = toAgentSnapshot(created);
-
     return {
       statusCode: 201,
       body: {
         ok: true,
-        data: snapshot,
+        data: attachExecutionPreview(created, auth),
       },
     };
   } catch (err) {
@@ -277,7 +288,7 @@ export function updateAgentRoute(
   body: UpdateAgentBody,
 ): {
   statusCode: number;
-  body: ApiEnvelope<RegisteredAgentSnapshot>;
+  body: ApiEnvelope<RegisteredAgentApiSnapshot>;
 } {
   // Auth check
   if (!isAdminLike(auth.role)) {
@@ -423,13 +434,11 @@ export function updateAgentRoute(
       };
     }
 
-    const snapshot = toAgentSnapshot(updated);
-
     return {
       statusCode: 200,
       body: {
         ok: true,
-        data: snapshot,
+        data: attachExecutionPreview(updated, auth),
       },
     };
   } catch (err) {
@@ -718,16 +727,19 @@ export function setAgentFallbackRoute(
 
 export function getMainAgentRoute(auth: AuthContext): {
   statusCode: number;
-  body: ApiEnvelope<RegisteredAgentSnapshot>;
+  body: ApiEnvelope<RegisteredAgentApiSnapshot>;
 } {
   try {
-    const snapshot = getMainAgentSnapshot();
+    const record = getRegisteredAgent(getMainAgentId());
+    if (!record) {
+      throw new Error('Main agent is not configured.');
+    }
 
     return {
       statusCode: 200,
       body: {
         ok: true,
-        data: snapshot,
+        data: attachExecutionPreview(record, auth),
       },
     };
   } catch (err) {
@@ -755,7 +767,7 @@ export function updateMainAgentRoute(
   body: unknown,
 ): {
   statusCode: number;
-  body: ApiEnvelope<RegisteredAgentSnapshot>;
+  body: ApiEnvelope<RegisteredAgentApiSnapshot>;
 } {
   if (!isAdminLike(auth.role)) {
     return {
@@ -788,13 +800,40 @@ export function updateMainAgentRoute(
   }
 
   try {
+    const record = getRegisteredAgent(agentId);
+    if (!record || record.enabled !== 1) {
+      return {
+        statusCode: 404,
+        body: {
+          ok: false,
+          error: {
+            code: 'agent_not_found',
+            message: 'Selected main agent was not found or is disabled.',
+          },
+        },
+      };
+    }
+
+    const preview = buildMainExecutionPreview(record, auth.userId);
+    if (!preview.ready) {
+      return {
+        statusCode: 400,
+        body: {
+          ok: false,
+          error: {
+            code: 'invalid_main_agent',
+            message: preview.message,
+          },
+        },
+      };
+    }
+
     setMainAgentId(agentId);
-    const snapshot = getMainAgentSnapshot();
     return {
       statusCode: 200,
       body: {
         ok: true,
-        data: snapshot,
+        data: attachExecutionPreview(record, auth),
       },
     };
   } catch (err) {

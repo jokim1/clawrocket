@@ -20,6 +20,8 @@ import {
 export const EXECUTOR_MAIN_PROJECT_PATH_KEY = 'executor.mainProjectPath';
 
 export type ExecutionBackend = 'direct_http' | 'container';
+export type ExecutionSurface = 'main' | 'talk_single' | 'talk_multi';
+export type ExecutionRouteReason = 'normal' | 'subscription_fallback';
 
 export interface ContainerCredentialConfig {
   authMode: 'api_key' | 'subscription';
@@ -28,6 +30,7 @@ export interface ContainerCredentialConfig {
 
 export interface DirectHttpExecutionPlan {
   backend: 'direct_http';
+  routeReason: 'normal';
   effectiveTools: EffectiveToolAccess[];
   providerId: string;
   modelId: string;
@@ -36,6 +39,7 @@ export interface DirectHttpExecutionPlan {
 
 export interface ContainerExecutionPlan {
   backend: 'container';
+  routeReason: ExecutionRouteReason;
   effectiveTools: EffectiveToolAccess[];
   providerId: string;
   modelId: string;
@@ -52,6 +56,7 @@ export class ExecutionPlannerError extends Error {
       | 'CONTAINER_BROWSER_REQUIRES_SHELL'
       | 'CONTAINER_PROVIDER_INCOMPATIBLE'
       | 'CONTAINER_CREDENTIAL_MISSING'
+      | 'CONTAINER_SURFACE_UNSUPPORTED'
       | 'DIRECT_EXECUTION_UNAVAILABLE',
     public readonly details?: Record<string, unknown>,
   ) {
@@ -98,7 +103,9 @@ function getAnthropicApiKeyFromDb(): string | null {
   }
 }
 
-function resolveContainerCredential(): ContainerCredentialConfig {
+export function resolveContainerCredential(input?: {
+  preferredAuthMode?: 'api_key' | 'subscription';
+}): ContainerCredentialConfig {
   const configuredAuthMode =
     getSettingValue('executor.authMode')?.trim() || undefined;
   const dbOauth = getSettingValue('executor.claudeOauthToken')?.trim() || null;
@@ -109,6 +116,7 @@ function resolveContainerCredential(): ContainerCredentialConfig {
   const normalizedApiKey = apiKey?.trim() || null;
 
   const inferredAuthMode =
+    input?.preferredAuthMode ||
     configuredAuthMode ||
     (normalizedApiKey
       ? 'api_key'
@@ -235,15 +243,18 @@ export function getContainerAllowedTools(input: {
 export function planExecution(
   agent: RegisteredAgentRecord,
   userId: string,
+  surface: ExecutionSurface = 'main',
 ): ExecutionPlan {
   const effectiveTools = getEffectiveToolsForAgent(agent.id, userId);
   const heavyToolFamilies = resolveHeavyToolFamilies(effectiveTools);
+  const provider = getProviderRecord(agent.provider_id);
 
   if (heavyToolFamilies.length === 0) {
     try {
       const binding = resolveExecution(agent);
       return {
         backend: 'direct_http',
+        routeReason: 'normal',
         effectiveTools,
         providerId: agent.provider_id,
         modelId: agent.model_id,
@@ -251,6 +262,43 @@ export function planExecution(
       };
     } catch (error) {
       const resolverError = error as ExecutionResolverError;
+      if (
+        resolverError?.code === 'ANTHROPIC_REQUIRES_API_KEY' &&
+        isContainerCompatibleProvider(provider)
+      ) {
+        let containerCredential: ContainerCredentialConfig | null = null;
+        try {
+          containerCredential = resolveContainerCredential({
+            preferredAuthMode: 'subscription',
+          });
+        } catch {
+          containerCredential = null;
+        }
+
+        if (containerCredential) {
+          if (surface === 'talk_multi') {
+            throw new ExecutionPlannerError(
+              `Agent ${agent.name} would require Claude subscription container fallback, which is not supported for multi-agent Talk rounds.`,
+              'CONTAINER_SURFACE_UNSUPPORTED',
+              {
+                requestedFallback: 'subscription_container',
+                surface,
+              },
+            );
+          }
+
+          return {
+            backend: 'container',
+            routeReason: 'subscription_fallback',
+            effectiveTools,
+            providerId: agent.provider_id,
+            modelId: agent.model_id,
+            heavyToolFamilies: [],
+            containerCredential,
+          };
+        }
+      }
+
       throw new ExecutionPlannerError(
         resolverError.message || 'Direct execution is unavailable.',
         'DIRECT_EXECUTION_UNAVAILABLE',
@@ -264,7 +312,6 @@ export function planExecution(
     }
   }
 
-  const provider = getProviderRecord(agent.provider_id);
   if (!isContainerCompatibleProvider(provider)) {
     throw new ExecutionPlannerError(
       `Agent ${agent.name} requires heavy tools, but provider ${agent.provider_id} is not compatible with the Claude container runtime.`,
@@ -281,6 +328,7 @@ export function planExecution(
 
   return {
     backend: 'container',
+    routeReason: 'normal',
     effectiveTools,
     providerId: agent.provider_id,
     modelId: agent.model_id,

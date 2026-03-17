@@ -443,7 +443,7 @@ function getUnsupportedMultiAgentContainerNames(input: {
     }
 
     try {
-      const plan = planExecution(agent, input.userId);
+      const plan = planExecution(agent, input.userId, 'talk_multi');
       if (plan.backend === 'container') {
         blockingNames.add(selectedAgent.name);
       }

@@ -499,7 +499,8 @@ export type AgentProviderCard = {
     | 'verifying'
     | 'verified'
     | 'invalid'
-    | 'unavailable';
+    | 'unavailable'
+    | 'rate_limited';
   lastVerifiedAt: string | null;
   lastVerificationError: string | null;
   modelSuggestions: Array<{
@@ -605,7 +606,8 @@ export type ExecutorSettings = {
     | 'verifying'
     | 'verified'
     | 'invalid'
-    | 'unavailable';
+    | 'unavailable'
+    | 'rate_limited';
   lastVerifiedAt: string | null;
   lastVerificationError: string | null;
   anthropicBaseUrl: string;
@@ -639,7 +641,8 @@ export type ExecutorStatus = {
     | 'verifying'
     | 'verified'
     | 'invalid'
-    | 'unavailable';
+    | 'unavailable'
+    | 'rate_limited';
   lastVerifiedAt: string | null;
   lastVerificationError: string | null;
   hasProviderAuth: boolean;
@@ -1129,13 +1132,17 @@ export async function getUserGoogleAccount(): Promise<UserGoogleAccount> {
 
 export async function connectUserGoogleAccount(input?: {
   returnTo?: string;
+  scopes?: string[];
 }): Promise<GoogleAccountAuthorizationLaunch> {
   const envelope = await apiMutationRequest<GoogleAccountAuthorizationLaunch>(
     '/api/v1/me/google-account/connect',
     {
       method: 'POST',
       includeJson: true,
-      body: JSON.stringify({ returnTo: input?.returnTo }),
+      body: JSON.stringify({
+        returnTo: input?.returnTo,
+        scopes: input?.scopes,
+      }),
     },
   );
   return envelope;
@@ -1249,6 +1256,14 @@ export type RegisteredAgent = {
   enabled: boolean;
   createdAt: string;
   updatedAt: string;
+  executionPreview: {
+    surface: 'main';
+    backend: 'direct_http' | 'container' | null;
+    authPath: 'api_key' | 'subscription' | null;
+    routeReason: 'normal' | 'subscription_fallback' | 'no_valid_path';
+    ready: boolean;
+    message: string;
+  };
 };
 
 export async function listRegisteredAgents(): Promise<RegisteredAgent[]> {
@@ -1379,6 +1394,8 @@ export async function deleteDataConnector(connectorId: string): Promise<void> {
 export async function setDataConnectorCredential(input: {
   connectorId: string;
   apiKey?: string | null;
+  useGoogleAccount?: boolean;
+  clearCredential?: boolean;
 }): Promise<DataConnector> {
   const envelope = await apiMutationRequest<{ connector: DataConnector }>(
     `/api/v1/data-connectors/${encodeURIComponent(input.connectorId)}/credential`,
@@ -1387,6 +1404,8 @@ export async function setDataConnectorCredential(input: {
       includeJson: true,
       body: JSON.stringify({
         apiKey: input.apiKey ?? null,
+        useGoogleAccount: input.useGoogleAccount ?? false,
+        clearCredential: input.clearCredential ?? false,
       }),
     },
   );

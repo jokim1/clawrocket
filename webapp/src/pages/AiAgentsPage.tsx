@@ -111,6 +111,8 @@ function formatVerificationStatus(
       return 'Invalid';
     case 'unavailable':
       return 'Unavailable';
+    case 'rate_limited':
+      return 'Rate limited';
     default:
       return status;
   }
@@ -127,6 +129,7 @@ function verificationStatusClass(
     case 'invalid':
       return 'talk-agent-chip talk-agent-chip-error';
     case 'unavailable':
+    case 'rate_limited':
       return 'talk-agent-chip talk-agent-chip-warning';
     default:
       return 'talk-agent-chip';
@@ -153,7 +156,7 @@ function currentClaudeHint(
   mode: ClaudeAuthMode,
 ): string | null {
   return mode === 'subscription'
-    ? settings.oauthTokenHint
+    ? settings.oauthTokenHint || settings.authTokenHint
     : settings.apiKeyHint;
 }
 
@@ -161,7 +164,9 @@ function currentClaudeStored(
   settings: ExecutorSettings,
   mode: ClaudeAuthMode,
 ): boolean {
-  return mode === 'subscription' ? settings.hasOauthToken : settings.hasApiKey;
+  return mode === 'subscription'
+    ? settings.hasOauthToken || settings.hasAuthToken
+    : settings.hasApiKey;
 }
 
 function formatProviderVerificationSummary(
@@ -176,6 +181,8 @@ function formatProviderVerificationSummary(
       return 'Invalid';
     case 'unavailable':
       return 'Unavailable';
+    case 'rate_limited':
+      return 'Rate limited';
     case 'not_verified':
       return 'Needs verification';
     case 'missing':
@@ -193,10 +200,25 @@ function formatProviderSaveNotice(provider: AgentProviderCard): string {
       return `${provider.name} credential saved and verified.`;
     case 'invalid':
     case 'unavailable':
+    case 'rate_limited':
       return `${provider.name} credential saved. Verification status: ${provider.verificationStatus}.`;
     default:
       return `${provider.name} credential saved.`;
   }
+}
+
+function formatExecutionPreview(agent: RegisteredAgent | null): string {
+  if (!agent) return 'Choose an agent to see how Main will run it.';
+  return agent.executionPreview.message;
+}
+
+function executionPreviewTone(agent: RegisteredAgent | null): string {
+  if (!agent) return 'talk-llm-meta';
+  if (!agent.executionPreview.ready) return 'talk-llm-meta error-text';
+  if (agent.executionPreview.routeReason === 'subscription_fallback') {
+    return 'talk-llm-meta warning-text';
+  }
+  return 'talk-llm-meta';
 }
 
 function delay(ms: number): Promise<void> {
@@ -242,24 +264,10 @@ export function AiAgentsPage({ onUnauthorized, userRole }: Props): JSX.Element {
 
   // Build a complete providers list for the registered-agents panel,
   // including Claude (which AiAgentsPageData treats separately).
-  //
-  // v1 scope: Registered agents using provider.anthropic can ONLY execute
-  // via direct HTTP with an Anthropic API key (x-api-key auth).
-  // Subscription/OAuth credentials are NOT compatible with this path —
-  // they require container execution, which is a separate flow.
-  //
-  // The synthetic card must honestly show Claude as "ready" only when
-  // an API key is configured.  In subscription/OAuth mode, the card is
-  // still shown (agents may exist that reference it) but marked as not
-  // having a usable credential for direct execution.
   const allProvidersForPanel = useMemo((): AgentProviderCard[] => {
     if (!data || !settings) return [];
-    const isApiKeyMode = settings.executorAuthMode === 'api_key';
-    // Only API key mode is compatible with direct HTTP execution.
-    // Subscription/OAuth users see Claude as "no credential" for agent
-    // creation — their Claude access works through container execution,
-    // not through the registered-agents direct path.
-    const claudeDirectHttpReady = isApiKeyMode && settings.hasApiKey;
+    const claudeCredentialAvailable =
+      settings.hasApiKey || settings.hasOauthToken || settings.hasAuthToken;
     const claudeCard: AgentProviderCard = {
       id: 'provider.anthropic',
       name: 'Claude (Anthropic)',
@@ -268,13 +276,16 @@ export function AiAgentsPage({ onUnauthorized, userRole }: Props): JSX.Element {
       baseUrl: settings.anthropicBaseUrl || 'https://api.anthropic.com',
       authScheme: 'x_api_key',
       enabled: true,
-      hasCredential: claudeDirectHttpReady,
-      credentialHint: claudeDirectHttpReady ? settings.apiKeyHint : null,
-      verificationStatus: claudeDirectHttpReady
+      hasCredential: claudeCredentialAvailable,
+      credentialHint:
+        settings.apiKeyHint ||
+        settings.oauthTokenHint ||
+        settings.authTokenHint,
+      verificationStatus: claudeCredentialAvailable
         ? settings.verificationStatus
         : 'missing',
-      lastVerifiedAt: claudeDirectHttpReady ? settings.lastVerifiedAt : null,
-      lastVerificationError: claudeDirectHttpReady
+      lastVerifiedAt: claudeCredentialAvailable ? settings.lastVerifiedAt : null,
+      lastVerificationError: claudeCredentialAvailable
         ? settings.lastVerificationError
         : null,
       modelSuggestions: data.claudeModelSuggestions,
@@ -325,6 +336,9 @@ export function AiAgentsPage({ onUnauthorized, userRole }: Props): JSX.Element {
       if (mainAgent) {
         setMainAgentId(mainAgent.id);
         setMainAgentDraft(mainAgent.id);
+      } else {
+        setMainAgentId(null);
+        setMainAgentDraft('');
       }
       setError(null);
     } catch (err) {
@@ -542,7 +556,14 @@ export function AiAgentsPage({ onUnauthorized, userRole }: Props): JSX.Element {
           ? updateDefaultClaudeModel(claudeModelDraft)
           : Promise.resolve(data),
       ]);
+      const [agents, mainAgent] = await Promise.all([
+        listRegisteredAgents(),
+        getMainRegisteredAgent().catch(() => null),
+      ]);
       syncDrafts(nextAgents, nextSettings);
+      setRegisteredAgents(agents);
+      setMainAgentId(mainAgent?.id ?? null);
+      setMainAgentDraft(mainAgent?.id ?? '');
       let verifyMessage: string | null = null;
       if (shouldAutoVerify) {
         const result = await verifyExecutorCredentials();
@@ -588,16 +609,26 @@ export function AiAgentsPage({ onUnauthorized, userRole }: Props): JSX.Element {
       const result = await importExecutorSubscriptionFromHost(
         subscriptionHostStatus.hostCredentialFingerprint,
       );
-      const [nextAgents, nextStatus] = await Promise.all([
-        getAiAgents(),
-        getExecutorStatus(),
-      ]);
+      const verifyResult = await verifyExecutorCredentials();
+      const [nextAgents, nextStatus, latestHostStatus, agents, mainAgent] =
+        await Promise.all([
+          getAiAgents(),
+          getExecutorStatus(),
+          getExecutorSubscriptionHostStatus(),
+          listRegisteredAgents(),
+          getMainRegisteredAgent().catch(() => null),
+        ]);
       syncDrafts(nextAgents, result.settings);
       setStatus(nextStatus);
+      setSubscriptionHostStatus(latestHostStatus);
+      setRegisteredAgents(agents);
+      setMainAgentId(mainAgent?.id ?? null);
+      setMainAgentDraft(mainAgent?.id ?? '');
       setNotice(
-        result.status === 'no_change'
-          ? 'Claude subscription was already imported.'
-          : 'Claude subscription imported from the service host.',
+        verifyResult.message ||
+          (result.status === 'no_change'
+            ? 'Claude subscription was already imported.'
+            : 'Claude subscription imported from the service host.'),
       );
     } catch (err) {
       handleApiFailure(err, 'Failed to import Claude subscription.');
@@ -696,6 +727,15 @@ export function AiAgentsPage({ onUnauthorized, userRole }: Props): JSX.Element {
     }
     return formatVerificationStatus(status.verificationStatus);
   }, [claudeModeDraft, selectedClaudeStored, settings, status]);
+  const selectedMainAgent = registeredAgents.find(
+    (agent) => agent.id === mainAgentDraft,
+  );
+  const canSaveMainAgent =
+    canManage &&
+    busyKey !== 'main-agent-save' &&
+    !!mainAgentDraft &&
+    mainAgentDraft !== mainAgentId &&
+    !!selectedMainAgent?.executionPreview.ready;
 
   if (loading) {
     return <section className="page-state">Loading AI agents…</section>;
@@ -834,11 +874,12 @@ export function AiAgentsPage({ onUnauthorized, userRole }: Props): JSX.Element {
                   </p>
                 )}
                 <p className="talk-llm-meta">
-                  Run <code>claude setup-token</code> in your terminal and
-                  paste the token below.
+                  Subscription credentials power Claude through the container
+                  runtime. Direct Anthropic HTTP still requires an API key.
                 </p>
                 <p className="talk-llm-meta">
-                  Saving a new token stores and verifies it immediately.
+                  Run <code>claude setup-token</code> in your terminal and
+                  paste the token below, or import a detected host login.
                 </p>
                 <div className="talk-llm-inline-actions">
                   {subscriptionHostStatus?.importAvailable ? (
@@ -983,7 +1024,9 @@ export function AiAgentsPage({ onUnauthorized, userRole }: Props): JSX.Element {
               >
                 {busyKey === 'claude-verify'
                   ? 'Verifying…'
-                  : 'Verify stored credential'}
+                  : claudeModeDraft === 'subscription'
+                    ? 'Verify subscription runtime'
+                    : 'Verify API key'}
               </button>
             ) : null}
             <button
@@ -1155,6 +1198,7 @@ export function AiAgentsPage({ onUnauthorized, userRole }: Props): JSX.Element {
 
       <RegisteredAgentsPanel
         providers={allProvidersForPanel}
+        executorSettings={settings}
         onUnauthorized={onUnauthorized}
         canManage={canManage}
         onAgentsChanged={setRegisteredAgents}
@@ -1168,6 +1212,9 @@ export function AiAgentsPage({ onUnauthorized, userRole }: Props): JSX.Element {
               <p className="talk-llm-meta">
                 The main agent is used for the home channel and as the default
                 when no Talk-specific agent is assigned.
+              </p>
+              <p className={executionPreviewTone(selectedMainAgent || null)}>
+                {formatExecutionPreview(selectedMainAgent || null)}
               </p>
             </div>
           </div>
@@ -1187,7 +1234,16 @@ export function AiAgentsPage({ onUnauthorized, userRole }: Props): JSX.Element {
                     .filter((a) => a.enabled)
                     .map((agent) => (
                       <option key={agent.id} value={agent.id}>
-                        {agent.name} ({agent.modelId})
+                        {agent.name} ({agent.modelId}
+                        {agent.executionPreview.ready
+                          ? agent.executionPreview.routeReason ===
+                            'subscription_fallback'
+                            ? ' · subscription container'
+                            : agent.executionPreview.backend === 'container'
+                              ? ' · container'
+                              : ' · direct'
+                          : ' · unavailable'}
+                        )
                       </option>
                     ))}
                 </select>
@@ -1198,10 +1254,7 @@ export function AiAgentsPage({ onUnauthorized, userRole }: Props): JSX.Element {
                   className="primary-btn"
                   onClick={() => void handleSaveMainAgent()}
                   disabled={
-                    !canManage ||
-                    busyKey === 'main-agent-save' ||
-                    !mainAgentDraft ||
-                    mainAgentDraft === mainAgentId
+                    !canSaveMainAgent
                   }
                 >
                   {busyKey === 'main-agent-save'

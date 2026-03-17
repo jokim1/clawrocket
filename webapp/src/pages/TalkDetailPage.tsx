@@ -99,6 +99,7 @@ import {
 } from '../lib/api';
 import { TalkHistoryEditor } from '../components/TalkHistoryEditor';
 import { stripInternalAssistantText } from '../lib/assistantText';
+import { launchGoogleAccountPopup } from '../lib/googleAccountPopup';
 import { openGoogleDrivePicker } from '../lib/googlePicker';
 import { openTalkStream } from '../lib/talkStream';
 import type {
@@ -963,67 +964,6 @@ function requiredScopesForTool(toolId: string): string[] {
     default:
       return [];
   }
-}
-
-type GoogleAccountPopupEvent = {
-  type: 'clawrocket:google-account-link';
-  status: 'success' | 'error';
-  message?: string | null;
-};
-
-function launchGoogleAccountPopup(authorizationUrl: string): Promise<void> {
-  const popup = window.open(
-    authorizationUrl,
-    'clawrocket-google-account',
-    'popup=yes,width=620,height=760,noopener=no,noreferrer=no',
-  );
-
-  if (!popup) {
-    window.location.assign(authorizationUrl);
-    return Promise.resolve();
-  }
-
-  return new Promise<void>((resolve, reject) => {
-    let settled = false;
-    let pollId = 0;
-
-    const cleanup = () => {
-      if (pollId) {
-        window.clearInterval(pollId);
-      }
-      window.removeEventListener('message', onMessage);
-    };
-
-    const finish = (error?: Error) => {
-      if (settled) return;
-      settled = true;
-      cleanup();
-      if (error) {
-        reject(error);
-      } else {
-        resolve();
-      }
-    };
-
-    const onMessage = (event: MessageEvent) => {
-      if (event.origin !== window.location.origin) return;
-      const data = event.data as GoogleAccountPopupEvent | null;
-      if (!data || data.type !== 'clawrocket:google-account-link') return;
-      if (data.status === 'error') {
-        finish(
-          new Error(data.message || 'Google authorization did not complete.'),
-        );
-        return;
-      }
-      finish();
-    };
-
-    window.addEventListener('message', onMessage);
-    pollId = window.setInterval(() => {
-      if (!popup.closed) return;
-      finish(new Error('Google authorization was closed before it completed.'));
-    }, 500);
-  });
 }
 
 function formatConnectorKind(kind: DataConnector['connectorKind']): string {
@@ -2299,6 +2239,7 @@ export function TalkDetailPage({
     () => !haveSameTalkAgentDraftState(agents, agentDrafts),
     [agentDrafts, agents],
   );
+  const hasPendingFooterAgentSelection = newAgentDraft.modelId.trim().length > 0;
   const effectiveAgents = hasUnsavedAgentChanges ? agentDrafts : agents;
   useEffect(() => {
     setTargetAgentIds((current) =>
@@ -4484,17 +4425,49 @@ export function TalkDetailPage({
     setAgentState({ status: 'idle' });
   };
 
-  const handleAddAgent = () => {
-    // newAgentDraft.modelId is overloaded to store the registered agent ID
-    // (set by the "Agent" dropdown in the add-agent footer).
+  const materializePendingFooterAgent = (
+    currentDrafts: TalkAgent[],
+  ): {
+    nextAgents: TalkAgent[];
+    nextDraft: AgentCreationDraft;
+    added: boolean;
+    error: string | null;
+  } => {
+    const selectedAgentId = newAgentDraft.modelId.trim();
+    if (!selectedAgentId) {
+      return {
+        nextAgents: currentDrafts,
+        nextDraft: newAgentDraft,
+        added: false,
+        error: null,
+      };
+    }
+
     const regAgent = registeredAgentsCatalog.find(
-      (ra) => ra.id === newAgentDraft.modelId,
+      (ra) => ra.id === selectedAgentId && ra.enabled,
     );
-    if (!regAgent) return;
-    setAgentDrafts((current) => {
-      const nickname = buildUniqueNickname(regAgent.name, current);
-      return [
-        ...current,
+    if (!regAgent) {
+      return {
+        nextAgents: currentDrafts,
+        nextDraft: newAgentDraft,
+        added: false,
+        error: 'Selected registered agent is no longer available. Refresh and try again.',
+      };
+    }
+
+    if (currentDrafts.some((agent) => agent.id === regAgent.id)) {
+      return {
+        nextAgents: currentDrafts,
+        nextDraft: newAgentDraft,
+        added: false,
+        error: 'Selected registered agent is already assigned to this talk.',
+      };
+    }
+
+    const nickname = buildUniqueNickname(regAgent.name, currentDrafts);
+    return {
+      nextAgents: [
+        ...currentDrafts,
         {
           id: regAgent.id,
           nickname,
@@ -4502,27 +4475,51 @@ export function TalkDetailPage({
           sourceKind: 'provider',
           role: newAgentDraft.role,
           isPrimary: false,
-          displayOrder: current.length,
+          displayOrder: currentDrafts.length,
           health: 'ready',
           providerId: regAgent.providerId,
           modelId: regAgent.modelId,
           modelDisplayName: null,
         },
-      ];
-    });
-    // Reset the draft so the dropdown goes back to placeholder
-    // (the just-added agent is now filtered out of the options).
-    setNewAgentDraft((current) => ({ ...current, modelId: '' }));
+      ],
+      nextDraft: {
+        ...newAgentDraft,
+        modelId: '',
+        providerId: null,
+      },
+      added: true,
+      error: null,
+    };
+  };
+
+  const handleAddAgent = () => {
+    const materialized = materializePendingFooterAgent(agentDrafts);
+    if (materialized.error) {
+      setAgentState({ status: 'error', message: materialized.error });
+      return;
+    }
+    if (!materialized.added) return;
+    setAgentDrafts(materialized.nextAgents);
+    setNewAgentDraft(materialized.nextDraft);
     setAgentState({ status: 'idle' });
   };
 
   const handleSaveAgents = async () => {
     if (state.kind !== 'ready' || !state.talk || !canEditAgents) return;
+    const materialized = materializePendingFooterAgent(agentDrafts);
+    if (materialized.error) {
+      setAgentState({ status: 'error', message: materialized.error });
+      return;
+    }
+    if (materialized.added) {
+      setAgentDrafts(materialized.nextAgents);
+      setNewAgentDraft(materialized.nextDraft);
+    }
     setAgentState({ status: 'saving' });
     try {
       const saved = await updateTalkAgents({
         talkId: state.talk.id,
-        agents: agentDrafts.map((agent, index) => ({
+        agents: materialized.nextAgents.map((agent, index) => ({
           id: agent.id,
           nickname: agent.nickname.trim(),
           nicknameMode: agent.nicknameMode,
@@ -4538,6 +4535,7 @@ export function TalkDetailPage({
       });
       setAgents(saved);
       setAgentDrafts(saved);
+      setNewAgentDraft(materialized.nextDraft);
       setTargetAgentIds((current) => buildTargetSelection(saved, current));
       setAgentState({ status: 'success', message: 'Talk agents updated.' });
     } catch (err) {
@@ -5077,7 +5075,11 @@ export function TalkDetailPage({
                   onClick={handleSaveAgents}
                   disabled={!canEditAgents || agentState.status === 'saving'}
                 >
-                  {agentState.status === 'saving' ? 'Saving…' : 'Save Agents'}
+                  {agentState.status === 'saving'
+                    ? 'Saving…'
+                    : hasPendingFooterAgentSelection
+                      ? 'Add + Save Agents'
+                      : 'Save Agents'}
                 </button>
               </div>
               {agentsCatalogError ? (

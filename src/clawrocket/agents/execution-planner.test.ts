@@ -178,6 +178,64 @@ describe('execution-planner', () => {
     }
   });
 
+  it('falls back light Claude agents to subscription container execution on Main', () => {
+    upsertSettingValue({
+      key: 'executor.claudeOauthToken',
+      value: 'oauth-token-123',
+      updatedBy: 'owner-1',
+    });
+    const agent = createRegisteredAgent({
+      name: 'Claude Light',
+      providerId: 'provider.anthropic',
+      modelId: 'claude-sonnet-4-6',
+      toolPermissionsJson: JSON.stringify({ web: true }),
+    });
+
+    const plan = planExecution(agent, 'owner-1', 'main');
+    expect(plan.backend).toBe('container');
+    expect(plan.routeReason).toBe('subscription_fallback');
+    if (plan.backend === 'container') {
+      expect(plan.containerCredential.authMode).toBe('subscription');
+      expect(plan.heavyToolFamilies).toEqual([]);
+    }
+  });
+
+  it('applies the same subscription fallback for single-agent Talk turns', () => {
+    upsertSettingValue({
+      key: 'executor.claudeOauthToken',
+      value: 'oauth-token-123',
+      updatedBy: 'owner-1',
+    });
+    const agent = createRegisteredAgent({
+      name: 'Claude Light',
+      providerId: 'provider.anthropic',
+      modelId: 'claude-sonnet-4-6',
+      toolPermissionsJson: JSON.stringify({ web: true }),
+    });
+
+    const plan = planExecution(agent, 'owner-1', 'talk_single');
+    expect(plan.backend).toBe('container');
+    expect(plan.routeReason).toBe('subscription_fallback');
+  });
+
+  it('rejects subscription fallback for multi-agent Talk rounds', () => {
+    upsertSettingValue({
+      key: 'executor.claudeOauthToken',
+      value: 'oauth-token-123',
+      updatedBy: 'owner-1',
+    });
+    const agent = createRegisteredAgent({
+      name: 'Claude Light',
+      providerId: 'provider.anthropic',
+      modelId: 'claude-sonnet-4-6',
+      toolPermissionsJson: JSON.stringify({ web: true }),
+    });
+
+    expect(() => planExecution(agent, 'owner-1', 'talk_multi')).toThrowError(
+      /not supported for multi-agent Talk rounds/i,
+    );
+  });
+
   it('maps effective tools into the talk/main container profile', () => {
     const allowedTools = getContainerAllowedTools({
       effectiveTools: [

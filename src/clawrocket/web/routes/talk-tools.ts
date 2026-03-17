@@ -599,6 +599,7 @@ export function getUserGoogleAccountRoute(input: { auth: AuthContext }): {
 
 export function startUserGoogleAccountConnectRoute(input: {
   auth: AuthContext;
+  scopes?: string[];
   returnTo?: string | null;
 }): {
   statusCode: number;
@@ -608,14 +609,17 @@ export function startUserGoogleAccountConnectRoute(input: {
   if (!user || user.is_active !== 1) {
     return notFoundResponse('User not found.');
   }
+  const scopes = Array.from(
+    new Set((input.scopes || []).map((scope) => scope.trim()).filter(Boolean)),
+  );
   const start = startGoogleOAuth({
     returnTo: input.returnTo || '/app/talks',
-    scopes: [],
+    scopes,
   });
   createGoogleOAuthLinkRequest({
     stateHash: hashOpaqueToken(start.state),
     userId: input.auth.userId,
-    scopes: [],
+    scopes,
   });
   return {
     statusCode: 200,
