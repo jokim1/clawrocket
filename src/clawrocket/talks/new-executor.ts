@@ -40,6 +40,7 @@ import { resolveValidatedProjectMountPath } from '../agents/project-mounts.js';
 import { executeContainerAgentTurn } from '../agents/container-turn-executor.js';
 import { executeWebFetch, executeWebSearch } from '../tools/web-tools.js';
 import { loadTalkContext } from './context-loader.js';
+import { executeGoogleDriveTalkTool } from './google-drive-tools.js';
 import {
   TalkExecutorError,
   type TalkExecutionEvent,
@@ -125,7 +126,11 @@ function mapExecutionEvent(
 }
 
 /** @internal Exported for integration testing only. */
-export function buildToolExecutor(talkId: string, signal: AbortSignal) {
+export function buildToolExecutor(
+  talkId: string,
+  userId: string,
+  signal: AbortSignal,
+) {
   let connectorCache: Map<string, TalkRunConnectorRecord> | null = null;
 
   function loadConnectors(): Map<string, TalkRunConnectorRecord> {
@@ -234,6 +239,19 @@ export function buildToolExecutor(talkId: string, signal: AbortSignal) {
     }
     if (toolName === 'web_search') {
       return executeWebSearch(args, signal);
+    }
+    if (
+      toolName === 'google_drive_search' ||
+      toolName === 'google_drive_read' ||
+      toolName === 'google_drive_list_folder'
+    ) {
+      return executeGoogleDriveTalkTool({
+        talkId,
+        userId,
+        toolName,
+        args,
+        signal,
+      });
     }
 
     return {
@@ -539,6 +557,7 @@ export class CleanTalkExecutor implements TalkExecutor {
         modelContextWindow,
         input.threadId,
         input.triggerMessageId,
+        input.requestedBy,
       );
 
       const context: ExecutionContext = {
@@ -638,7 +657,11 @@ export class CleanTalkExecutor implements TalkExecutor {
         };
       }
 
-      const toolExecutor = buildToolExecutor(input.talkId, signal);
+      const toolExecutor = buildToolExecutor(
+        input.talkId,
+        input.requestedBy,
+        signal,
+      );
       const result = await executeWithAgent(
         resolvedAgent.id,
         context,

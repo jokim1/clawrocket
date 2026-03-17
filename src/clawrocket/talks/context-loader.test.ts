@@ -1,13 +1,16 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   _initTestDatabase,
+  createTalkResourceBinding,
   createMessage,
+  upsertUserGoogleCredential,
   upsertTalk,
   upsertUser,
 } from '../db/index.js';
 import { loadTalkContext } from './context-loader.js';
 import { buildToolExecutor } from './new-executor.js';
 import { getDb } from '../../db.js';
+import { encryptGoogleToolCredential } from '../identity/google-tools-credential-store.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -105,6 +108,10 @@ describe('context-loader', () => {
     });
   });
 
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   // =========================================================================
   // Source manifest: stable refs from DB
   // =========================================================================
@@ -190,6 +197,51 @@ describe('context-loader', () => {
       );
       expect(readSourceTool!.description).toMatch(/S\d/);
       expect(readSourceTool!.description).not.toContain('src-1');
+    });
+
+    it('includes bound Google Drive resources and tools when the user has access', async () => {
+      createTalkResourceBinding({
+        talkId: TALK_ID,
+        bindingKind: 'google_drive_file',
+        externalId: 'drive-file-1',
+        displayName: 'refactor-v1-foundation',
+        metadata: {
+          mimeType: 'text/plain',
+          url: 'https://drive.google.com/file/d/drive-file-1/view',
+        },
+        createdBy: 'owner-1',
+      });
+      upsertUserGoogleCredential({
+        userId: 'owner-1',
+        googleSubject: 'google-subject-1',
+        email: 'owner@example.com',
+        scopes: ['drive.readonly'],
+        ciphertext: encryptGoogleToolCredential({
+          kind: 'google_tools',
+          accessToken: 'google-access-token',
+          refreshToken: 'google-refresh-token',
+          expiryDate: new Date(Date.now() + 300_000).toISOString(),
+          scopes: ['drive.readonly'],
+          tokenType: 'Bearer',
+        }),
+      });
+
+      const ctx = await loadTalkContext(
+        TALK_ID,
+        128000,
+        undefined,
+        undefined,
+        'owner-1',
+      );
+
+      expect(ctx.systemPrompt).toContain('**Bound Google Drive Resources:**');
+      expect(ctx.systemPrompt).toContain('[G1] FILE refactor-v1-foundation');
+      expect(ctx.contextTools.map((tool) => tool.name)).toContain(
+        'google_drive_read',
+      );
+      expect(ctx.contextTools.map((tool) => tool.name)).toContain(
+        'google_drive_search',
+      );
     });
   });
 
@@ -432,7 +484,11 @@ describe('context-loader', () => {
         extractedText: 'We discussed Q4 targets.',
       });
 
-      const executor = buildToolExecutor(TALK_ID, AbortSignal.timeout(5000));
+      const executor = buildToolExecutor(
+        TALK_ID,
+        'owner-1',
+        AbortSignal.timeout(5000),
+      );
       const result = await executor('read_context_source', { sourceRef: 'S1' });
 
       expect(result.isError).toBeFalsy();
@@ -450,7 +506,11 @@ describe('context-loader', () => {
       });
 
       // The SQL uses (id = ? OR source_ref = ?), so passing the row ID works
-      const executor = buildToolExecutor(TALK_ID, AbortSignal.timeout(5000));
+      const executor = buildToolExecutor(
+        TALK_ID,
+        'owner-1',
+        AbortSignal.timeout(5000),
+      );
       const result = await executor('read_context_source', {
         sourceRef: 'src-uuid-2',
       });
@@ -460,7 +520,11 @@ describe('context-loader', () => {
     });
 
     it('returns error when sourceRef is missing', async () => {
-      const executor = buildToolExecutor(TALK_ID, AbortSignal.timeout(5000));
+      const executor = buildToolExecutor(
+        TALK_ID,
+        'owner-1',
+        AbortSignal.timeout(5000),
+      );
       const result = await executor('read_context_source', {});
 
       expect(result.isError).toBe(true);
@@ -468,7 +532,11 @@ describe('context-loader', () => {
     });
 
     it('returns error for non-existent source ref', async () => {
-      const executor = buildToolExecutor(TALK_ID, AbortSignal.timeout(5000));
+      const executor = buildToolExecutor(
+        TALK_ID,
+        'owner-1',
+        AbortSignal.timeout(5000),
+      );
       const result = await executor('read_context_source', {
         sourceRef: 'S99',
       });
@@ -487,7 +555,11 @@ describe('context-loader', () => {
         extractedText: null,
       });
 
-      const executor = buildToolExecutor(TALK_ID, AbortSignal.timeout(5000));
+      const executor = buildToolExecutor(
+        TALK_ID,
+        'owner-1',
+        AbortSignal.timeout(5000),
+      );
       const result = await executor('read_context_source', { sourceRef: 'S3' });
 
       expect(result.isError).toBeFalsy();
@@ -504,7 +576,11 @@ describe('context-loader', () => {
       });
 
       // Simulate what a model would send if it used the old parameter name
-      const executor = buildToolExecutor(TALK_ID, AbortSignal.timeout(5000));
+      const executor = buildToolExecutor(
+        TALK_ID,
+        'owner-1',
+        AbortSignal.timeout(5000),
+      );
       const result = await executor('read_context_source', { ref: 'S4' });
 
       // Should fail because the executor reads args.sourceRef, not args.ref
@@ -543,7 +619,11 @@ describe('context-loader', () => {
           now,
         );
 
-      const executor = buildToolExecutor(TALK_ID, AbortSignal.timeout(5000));
+      const executor = buildToolExecutor(
+        TALK_ID,
+        'owner-1',
+        AbortSignal.timeout(5000),
+      );
       const result = await executor('read_attachment', {
         attachmentId: 'att-1',
       });
@@ -553,7 +633,11 @@ describe('context-loader', () => {
     });
 
     it('returns error for non-existent attachment', async () => {
-      const executor = buildToolExecutor(TALK_ID, AbortSignal.timeout(5000));
+      const executor = buildToolExecutor(
+        TALK_ID,
+        'owner-1',
+        AbortSignal.timeout(5000),
+      );
       const result = await executor('read_attachment', {
         attachmentId: 'no-such',
       });
@@ -563,13 +647,92 @@ describe('context-loader', () => {
     });
   });
 
+  describe('buildToolExecutor (google_drive_read)', () => {
+    it('reads a directly bound Google Drive file for the requesting user', async () => {
+      createTalkResourceBinding({
+        talkId: TALK_ID,
+        bindingKind: 'google_drive_file',
+        externalId: 'drive-file-1',
+        displayName: 'refactor-v1-foundation',
+        metadata: {
+          mimeType: 'text/plain',
+          url: 'https://drive.google.com/file/d/drive-file-1/view',
+        },
+        createdBy: 'owner-1',
+      });
+      upsertUserGoogleCredential({
+        userId: 'owner-1',
+        googleSubject: 'google-subject-1',
+        email: 'owner@example.com',
+        scopes: ['drive.readonly'],
+        ciphertext: encryptGoogleToolCredential({
+          kind: 'google_tools',
+          accessToken: 'google-access-token',
+          refreshToken: 'google-refresh-token',
+          expiryDate: new Date(Date.now() + 300_000).toISOString(),
+          scopes: ['drive.readonly'],
+          tokenType: 'Bearer',
+        }),
+      });
+
+      const fetchMock = vi
+        .spyOn(globalThis, 'fetch')
+        .mockImplementation(async (input) => {
+          const url = String(input);
+          if (url.includes('/drive/v3/files/drive-file-1?fields=')) {
+            return new Response(
+              JSON.stringify({
+                id: 'drive-file-1',
+                name: 'refactor-v1-foundation',
+                mimeType: 'text/plain',
+                parents: [],
+                webViewLink:
+                  'https://drive.google.com/file/d/drive-file-1/view',
+              }),
+              {
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+              },
+            );
+          }
+          if (url.includes('/drive/v3/files/drive-file-1?alt=media')) {
+            return new Response('This file explains the refactor foundation.', {
+              status: 200,
+              headers: { 'content-type': 'text/plain' },
+            });
+          }
+          throw new Error(`Unexpected fetch: ${url}`);
+        });
+
+      const executor = buildToolExecutor(
+        TALK_ID,
+        'owner-1',
+        AbortSignal.timeout(5000),
+      );
+      const result = await executor('google_drive_read', {
+        bindingRef: 'G1',
+      });
+
+      expect(fetchMock).toHaveBeenCalled();
+      expect(result.isError).toBeFalsy();
+      expect(result.result).toContain('# refactor-v1-foundation');
+      expect(result.result).toContain(
+        'This file explains the refactor foundation.',
+      );
+    });
+  });
+
   // =========================================================================
   // Executor tool path: unknown tools
   // =========================================================================
 
   describe('buildToolExecutor (unknown tools)', () => {
     it('returns error for unknown tool names', async () => {
-      const executor = buildToolExecutor(TALK_ID, AbortSignal.timeout(5000));
+      const executor = buildToolExecutor(
+        TALK_ID,
+        'owner-1',
+        AbortSignal.timeout(5000),
+      );
       const result = await executor('some_random_tool', {});
 
       expect(result.isError).toBe(true);

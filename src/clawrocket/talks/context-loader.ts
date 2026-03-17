@@ -23,16 +23,20 @@ import {
   type LlmMessage,
 } from '../agents/llm-client.js';
 import { WEB_TOOL_DEFINITIONS } from '../tools/web-tools.js';
+import {
+  buildBoundGoogleDrivePromptSection,
+  buildGoogleDriveContextTools,
+} from './google-drive-tools.js';
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
 export interface ContextPackage {
-  /** System prompt: goal + summary (if exists) + rules + source manifest */
+  /** System prompt: goal + summary (if exists) + sources + bound Drive resources + rules */
   systemPrompt: string;
 
-  /** Tool definitions for reading context sources and attachments */
+  /** Tool definitions for reading context sources, attachments, and bound Drive resources */
   contextTools: LlmToolDefinition[];
 
   /** Tool definitions from bound data connectors */
@@ -78,10 +82,11 @@ const SMALL_SOURCE_THRESHOLD = 250; // Max tokens to inline a source
  *   2. Rolling summary (talk_context_summary) — disabled for threaded runs
  *      because a single talk-level summary injected into every thread leaks
  *      cross-thread context. Per-thread summaries are a future concern.
- *   3. Rules (talk_context_rules, active only)
- *   4. Source manifest (talk_context_sources, inline small sources)
- *   5. Connector tools (verified connectors only)
- *   6. Message history (thread-scoped when threadId provided, with token budgeting)
+ *   3. Source manifest (talk_context_sources, inline small sources)
+ *   4. Bound Google Drive resources manifest (talk_resource_bindings)
+ *   5. Rules (talk_context_rules, active only)
+ *   6. Connector tools (verified connectors only)
+ *   7. Message history (thread-scoped when threadId provided, with token budgeting)
  *
  * @param talkId - The Talk to load context for
  * @param modelContextWindow - The model's context window in tokens
@@ -93,6 +98,7 @@ export async function loadTalkContext(
   modelContextWindow: number,
   threadId?: string | null,
   historyThroughMessageId?: string | null,
+  userId?: string | null,
 ): Promise<ContextPackage> {
   const db = getDb();
 
@@ -108,16 +114,23 @@ export async function loadTalkContext(
   // Step 2: Build source manifest
   const sources = fetchSources(db, talkId);
   const sourceLines = buildSourceManifest(sources);
+  const boundGoogleDriveResources = buildBoundGoogleDrivePromptSection(talkId);
 
   // Step 3: Build connector tools (currently empty stub)
   const connectorTools = buildConnectorTools(db, talkId);
 
   // Step 4: Assemble system prompt
-  const systemPrompt = assembleSystemPrompt(goal, summary, rules, sourceLines);
+  const systemPrompt = assembleSystemPrompt(
+    goal,
+    summary,
+    rules,
+    sourceLines,
+    boundGoogleDriveResources,
+  );
   const systemPromptTokens = Math.ceil(systemPrompt.length * CHARS_TO_TOKENS);
 
   // Step 5: Build context tools (always included)
-  const contextTools = buildContextTools();
+  const contextTools = buildContextTools(talkId, userId);
 
   // Step 6: Load message history with token budgeting (thread-scoped if threadId provided)
   const availableBudget =
@@ -320,6 +333,7 @@ function assembleSystemPrompt(
     line: string;
     inlineContent: string | null;
   }>,
+  boundGoogleDriveResources: string | null,
 ): string {
   const parts: string[] = [];
 
@@ -331,7 +345,6 @@ function assembleSystemPrompt(
     parts.push(`**Summary:**\n${summary}`);
   }
 
-  // Build source manifest section
   if (sourceLines.length > 0) {
     const manifestLines = sourceLines.map((s) => s.line);
     parts.push(`**Sources:**\n${manifestLines.join('\n')}`);
@@ -345,7 +358,10 @@ function assembleSystemPrompt(
     }
   }
 
-  // Add rules section
+  if (boundGoogleDriveResources) {
+    parts.push(boundGoogleDriveResources);
+  }
+
   if (rules.length > 0) {
     const ruleLines = rules.map((r, i) => `${i + 1}. ${r}`);
     parts.push(`**Rules:**\n${ruleLines.join('\n')}`);
@@ -358,7 +374,10 @@ function assembleSystemPrompt(
 // Step 5: Build Context Tools
 // ---------------------------------------------------------------------------
 
-function buildContextTools(): LlmToolDefinition[] {
+function buildContextTools(
+  talkId: string,
+  userId?: string | null,
+): LlmToolDefinition[] {
   return [
     {
       name: 'read_context_source',
@@ -389,6 +408,7 @@ function buildContextTools(): LlmToolDefinition[] {
         required: ['attachmentId'],
       },
     },
+    ...buildGoogleDriveContextTools({ talkId, userId }),
     ...WEB_TOOL_DEFINITIONS,
   ];
 }

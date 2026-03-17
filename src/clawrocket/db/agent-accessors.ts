@@ -22,10 +22,23 @@ export const TOOL_FAMILY_MAP: Record<string, string[]> = {
   web: ['web_fetch', 'web_search'],
   browser: ['BrowserAction', 'BrowserScreenshot'],
   connectors: [], // matched dynamically: any tool starting with 'connector_'
-  google_read: ['GoogleDriveRead', 'GoogleDocsRead'],
-  google_write: ['GoogleDriveWrite', 'GoogleDocsWrite'],
-  gmail_read: ['GmailRead', 'GmailSearch'],
-  gmail_send: ['GmailSend'], // also triggers approval gate
+  google_read: [
+    'GoogleDriveRead',
+    'GoogleDocsRead',
+    'google_drive_search',
+    'google_drive_read',
+    'google_drive_list_folder',
+    'google_docs_read',
+    'google_sheets_read_range',
+  ],
+  google_write: [
+    'GoogleDriveWrite',
+    'GoogleDocsWrite',
+    'google_docs_batch_update',
+    'google_sheets_batch_update',
+  ],
+  gmail_read: ['GmailRead', 'GmailSearch', 'gmail_read'],
+  gmail_send: ['GmailSend', 'gmail_send'], // also triggers approval gate
   messaging: ['DiscordSend', 'SlackSend'],
 };
 
