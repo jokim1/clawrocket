@@ -87,7 +87,8 @@ The execution backend is chosen per-agent based on **effective permissions** (pe
 
 - **Agent's effective permissions include heavy tools** (`shell`, `filesystem`, `browser` enabled AND allowed by user): Route to container execution. These tools require sandboxing that only the container provides. Currently Claude-only (Claude Agent SDK).
 - **Agent needs only API tools** (connectors, web fetch, web search, Google Docs): Route to direct executor. These are HTTP API calls — no sandboxing needed. Works with any LLM provider.
-- **Agent has heavy tools in `tool_permissions_json` but user has denied/requires-approval**: Do NOT route to container. Either fall back to direct executor with reduced capabilities, or require user approval before spawning container.
+- **Agent has heavy tools in `tool_permissions_json` but user has denied them**: Do NOT route to container. Either fall back to the direct executor with reduced capabilities or reject clearly.
+- **Agent has heavy tools that are enabled but marked `requiresApproval` at the user layer**: This does not block container routing in 5A by itself. Runtime approval is reserved for high-consequence external mutation families, not container spawn.
 
 **This means a single Talk can have mixed agents.** A Claude agent with `shell: true` gets container execution with full Bash/filesystem/web power. A GPT-4 or Gemini agent in the same Talk gets the direct executor with connectors + web tools. The Talk is the conversation container; the execution backend is per-agent.
 
@@ -101,8 +102,6 @@ effective permissions include shell/filesystem/browser?
   → container execution (runContainerAgent) — stream results back to Talk/Main SSE
   → must be Claude provider (container requires Claude Agent SDK)
   → context files in ephemeral per-run directory (Commitment #5)
-effective permissions have shell/filesystem/browser as requiresApproval?
-  → check approval state; prompt user if needed before container spawn
 else
   → direct executor (executeWithAgent) — HTTP API tools only
   → any LLM provider

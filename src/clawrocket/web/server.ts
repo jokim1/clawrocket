@@ -18,8 +18,10 @@ import {
 import {
   canUserAccessTalk,
   countRunningTalkRuns,
+  deleteGoogleOAuthLinkRequest,
   getOutboxEventsForTopics,
   getOutboxMinEventIdForTopics,
+  getGoogleOAuthLinkRequest,
   resolveThreadIdForTalk,
   TalkThreadValidationError,
   getUserById,
@@ -29,6 +31,7 @@ import { getDb } from '../../db.js';
 import {
   completeDeviceAuthFlow,
   completeGoogleOAuthCallback,
+  completeGoogleOAuthIdentityCallback,
   createInvite,
   AuthError,
   logoutSession,
@@ -44,6 +47,7 @@ import {
 import { KeychainBridge, noopKeychainBridge } from '../secrets/keychain.js';
 import type { TalkRunWorkerControl } from '../talks/run-worker.js';
 import type { MainRunWorkerControl } from '../agents/main-run-worker.js';
+import { hashOpaqueToken } from '../security/hash.js';
 import { validateCsrfToken } from './middleware/csrf.js';
 import {
   idempotencyPrecheck,
@@ -120,6 +124,16 @@ import {
   setDataConnectorCredentialRoute,
 } from './routes/data-connectors.js';
 import {
+  createTalkResourceRoute,
+  deleteTalkResourceRoute,
+  getTalkToolsRoute,
+  getUserGoogleAccountRoute,
+  listTalkResourcesRoute,
+  startUserGoogleAccountConnectRoute,
+  startUserGoogleScopeExpansionRoute,
+  updateTalkToolGrantsRoute,
+} from './routes/talk-tools.js';
+import {
   createTalkContextRuleRoute,
   createTalkContextSourceRoute,
   deleteTalkContextRuleRoute,
@@ -156,6 +170,7 @@ import { authenticateRequest } from './middleware/auth.js';
 import { canEditTalk } from './middleware/acl.js';
 import { AuthContext } from './types.js';
 import { DataConnectorVerifier } from '../connectors/connector-verifier.js';
+import { persistGoogleOAuthIdentity } from '../identity/google-tools-service.js';
 import { logger } from '../../logger.js';
 
 const MAX_REQUEST_BODY_BYTES = 10 * 1024 * 1024; // 10 MB
@@ -396,6 +411,57 @@ function buildApp(opts: WebServerOptions): Hono {
       const code = c.req.query('code') || undefined;
       const email = c.req.query('email') || undefined;
       const displayName = c.req.query('name') || undefined;
+      const stateHash = state ? hashOpaqueToken(state) : '';
+      const linkRequest = stateHash
+        ? getGoogleOAuthLinkRequest(stateHash)
+        : undefined;
+      const accept = (c.req.header('accept') || '').toLowerCase();
+
+      if (linkRequest) {
+        try {
+          const result = await completeGoogleOAuthIdentityCallback({
+            state,
+            code,
+            email,
+            displayName,
+            requestedScopes: linkRequest.scopes,
+          });
+          persistGoogleOAuthIdentity(linkRequest.userId, result.identity);
+          deleteGoogleOAuthLinkRequest(stateHash);
+          const returnTo =
+            normalizeReturnToPath(result.returnTo) || '/app/talks';
+          if (accept.includes('text/html')) {
+            return renderGoogleAccountCallbackHtml({
+              status: 'success',
+              returnTo,
+            });
+          }
+          return c.json(
+            {
+              ok: true,
+              data: {
+                linked: true,
+                returnTo,
+              },
+            },
+            200,
+          );
+        } catch (err) {
+          deleteGoogleOAuthLinkRequest(stateHash);
+          if (accept.includes('text/html')) {
+            return renderGoogleAccountCallbackHtml({
+              status: 'error',
+              returnTo: '/app/talks',
+              message:
+                err instanceof Error
+                  ? err.message
+                  : 'Failed to connect Google account.',
+            });
+          }
+          return authErrorResponse(c, err);
+        }
+      }
+
       const result = await completeGoogleOAuthCallback({
         state,
         code,
@@ -405,7 +471,6 @@ function buildApp(opts: WebServerOptions): Hono {
         userAgent: c.req.header('user-agent'),
       });
       setSessionCookies(c, result.session);
-      const accept = (c.req.header('accept') || '').toLowerCase();
       if (accept.includes('text/html')) {
         c.header('cache-control', 'no-store');
         return c.redirect(
@@ -427,6 +492,127 @@ function buildApp(opts: WebServerOptions): Hono {
     } catch (err) {
       return authErrorResponse(c, err);
     }
+  });
+
+  app.get('/api/v1/me/google-account', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+
+    const rateResult = checkRateLimit({
+      principalId: auth.userId,
+      bucket: 'read',
+    });
+    if (!rateResult.allowed) {
+      return rateLimitedResponse(c, rateResult);
+    }
+
+    const result = getUserGoogleAccountRoute({ auth });
+    return new Response(JSON.stringify(result.body), {
+      status: result.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
+  });
+
+  app.post('/api/v1/me/google-account/connect', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+
+    const rateResult = checkRateLimit({
+      principalId: auth.userId,
+      bucket: 'write',
+    });
+    if (!rateResult.allowed) {
+      return rateLimitedResponse(c, rateResult);
+    }
+
+    const csrf = validateCsrfToken({
+      method: c.req.method,
+      authType: auth.authType,
+      cookieHeader: c.req.header('cookie'),
+      csrfHeader: c.req.header('x-csrf-token'),
+    });
+    if (!csrf.ok) {
+      return c.json(
+        { ok: false, error: { code: 'csrf_failed', message: csrf.reason } },
+        403,
+      );
+    }
+
+    const bodyText = await c.req.text();
+    const payload = parseJsonPayload<{ returnTo?: unknown }>(bodyText);
+    if (!payload.ok) {
+      return c.json(
+        { ok: false, error: { code: 'invalid_json', message: payload.error } },
+        400,
+      );
+    }
+
+    const result = startUserGoogleAccountConnectRoute({
+      auth,
+      returnTo:
+        typeof payload.data.returnTo === 'string'
+          ? normalizeReturnToPath(payload.data.returnTo)
+          : null,
+    });
+    return new Response(JSON.stringify(result.body), {
+      status: result.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
+  });
+
+  app.post('/api/v1/me/google-account/expand-scopes', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+
+    const rateResult = checkRateLimit({
+      principalId: auth.userId,
+      bucket: 'write',
+    });
+    if (!rateResult.allowed) {
+      return rateLimitedResponse(c, rateResult);
+    }
+
+    const csrf = validateCsrfToken({
+      method: c.req.method,
+      authType: auth.authType,
+      cookieHeader: c.req.header('cookie'),
+      csrfHeader: c.req.header('x-csrf-token'),
+    });
+    if (!csrf.ok) {
+      return c.json(
+        { ok: false, error: { code: 'csrf_failed', message: csrf.reason } },
+        403,
+      );
+    }
+
+    const bodyText = await c.req.text();
+    const payload = parseJsonPayload<{ scopes?: unknown; returnTo?: unknown }>(
+      bodyText,
+    );
+    if (!payload.ok) {
+      return c.json(
+        { ok: false, error: { code: 'invalid_json', message: payload.error } },
+        400,
+      );
+    }
+
+    const scopes = Array.isArray(payload.data.scopes)
+      ? payload.data.scopes.filter(
+          (scope): scope is string => typeof scope === 'string',
+        )
+      : [];
+    const result = startUserGoogleScopeExpansionRoute({
+      auth,
+      scopes,
+      returnTo:
+        typeof payload.data.returnTo === 'string'
+          ? normalizeReturnToPath(payload.data.returnTo)
+          : null,
+    });
+    return new Response(JSON.stringify(result.body), {
+      status: result.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
   });
 
   app.post('/api/v1/auth/refresh', async (c) => {
@@ -3284,6 +3470,276 @@ function buildApp(opts: WebServerOptions): Hono {
     },
   );
 
+  app.get('/api/v1/talks/:talkId/tools', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+
+    const rateResult = checkRateLimit({ userId: auth.userId, bucket: 'read' });
+    if (!rateResult.allowed) {
+      return rateLimitedResponse(c, rateResult);
+    }
+
+    const talkId = safeDecodePathSegment(c.req.param('talkId'));
+    if (!talkId) {
+      return c.json(
+        {
+          ok: false,
+          error: {
+            code: 'invalid_talk_id',
+            message: 'Talk ID path segment is not valid URL encoding',
+          },
+        },
+        400,
+      );
+    }
+
+    const result = getTalkToolsRoute({ auth, talkId });
+    return new Response(JSON.stringify(result.body), {
+      status: result.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
+  });
+
+  app.put('/api/v1/talks/:talkId/tools/grants', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+
+    const rateResult = checkRateLimit({
+      principalId: auth.userId,
+      bucket: 'write',
+    });
+    if (!rateResult.allowed) {
+      return rateLimitedResponse(c, rateResult);
+    }
+
+    const csrf = validateCsrfToken({
+      method: c.req.method,
+      authType: auth.authType,
+      cookieHeader: c.req.header('cookie'),
+      csrfHeader: c.req.header('x-csrf-token'),
+    });
+    if (!csrf.ok) {
+      return c.json(
+        { ok: false, error: { code: 'csrf_failed', message: csrf.reason } },
+        403,
+      );
+    }
+
+    const talkId = safeDecodePathSegment(c.req.param('talkId'));
+    if (!talkId) {
+      return c.json(
+        {
+          ok: false,
+          error: {
+            code: 'invalid_talk_id',
+            message: 'Talk ID path segment is not valid URL encoding',
+          },
+        },
+        400,
+      );
+    }
+
+    const bodyText = await c.req.text();
+    const payload = parseJsonPayload<{
+      grants?: Array<{ toolId?: unknown; enabled?: unknown }>;
+    }>(bodyText);
+    if (!payload.ok) {
+      return c.json(
+        { ok: false, error: { code: 'invalid_json', message: payload.error } },
+        400,
+      );
+    }
+
+    const grants = Array.isArray(payload.data.grants)
+      ? payload.data.grants
+          .filter(
+            (grant): grant is { toolId: string; enabled: boolean } =>
+              typeof grant?.toolId === 'string' &&
+              typeof grant?.enabled === 'boolean',
+          )
+          .map((grant) => ({
+            toolId: grant.toolId,
+            enabled: grant.enabled,
+          }))
+      : [];
+
+    const result = updateTalkToolGrantsRoute({
+      auth,
+      talkId,
+      grants,
+    });
+    return new Response(JSON.stringify(result.body), {
+      status: result.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
+  });
+
+  app.get('/api/v1/talks/:talkId/resources', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+
+    const rateResult = checkRateLimit({ userId: auth.userId, bucket: 'read' });
+    if (!rateResult.allowed) {
+      return rateLimitedResponse(c, rateResult);
+    }
+
+    const talkId = safeDecodePathSegment(c.req.param('talkId'));
+    if (!talkId) {
+      return c.json(
+        {
+          ok: false,
+          error: {
+            code: 'invalid_talk_id',
+            message: 'Talk ID path segment is not valid URL encoding',
+          },
+        },
+        400,
+      );
+    }
+
+    const result = listTalkResourcesRoute({ auth, talkId });
+    return new Response(JSON.stringify(result.body), {
+      status: result.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
+  });
+
+  app.post('/api/v1/talks/:talkId/resources', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+
+    const rateResult = checkRateLimit({
+      principalId: auth.userId,
+      bucket: 'write',
+    });
+    if (!rateResult.allowed) {
+      return rateLimitedResponse(c, rateResult);
+    }
+
+    const csrf = validateCsrfToken({
+      method: c.req.method,
+      authType: auth.authType,
+      cookieHeader: c.req.header('cookie'),
+      csrfHeader: c.req.header('x-csrf-token'),
+    });
+    if (!csrf.ok) {
+      return c.json(
+        { ok: false, error: { code: 'csrf_failed', message: csrf.reason } },
+        403,
+      );
+    }
+
+    const talkId = safeDecodePathSegment(c.req.param('talkId'));
+    if (!talkId) {
+      return c.json(
+        {
+          ok: false,
+          error: {
+            code: 'invalid_talk_id',
+            message: 'Talk ID path segment is not valid URL encoding',
+          },
+        },
+        400,
+      );
+    }
+
+    const bodyText = await c.req.text();
+    const payload = parseJsonPayload<{
+      kind?: unknown;
+      externalId?: unknown;
+      displayName?: unknown;
+      metadata?: unknown;
+    }>(bodyText);
+    if (!payload.ok) {
+      return c.json(
+        { ok: false, error: { code: 'invalid_json', message: payload.error } },
+        400,
+      );
+    }
+
+    const result = createTalkResourceRoute({
+      auth,
+      talkId,
+      kind:
+        typeof payload.data.kind === 'string'
+          ? (payload.data.kind as
+              | 'google_drive_folder'
+              | 'google_drive_file'
+              | 'data_connector'
+              | 'saved_source'
+              | 'message_attachment')
+          : ('saved_source' as const),
+      externalId:
+        typeof payload.data.externalId === 'string'
+          ? payload.data.externalId
+          : '',
+      displayName:
+        typeof payload.data.displayName === 'string'
+          ? payload.data.displayName
+          : '',
+      metadata:
+        payload.data.metadata &&
+        typeof payload.data.metadata === 'object' &&
+        !Array.isArray(payload.data.metadata)
+          ? (payload.data.metadata as Record<string, unknown>)
+          : null,
+    });
+    return new Response(JSON.stringify(result.body), {
+      status: result.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
+  });
+
+  app.delete('/api/v1/talks/:talkId/resources/:resourceId', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+
+    const rateResult = checkRateLimit({
+      principalId: auth.userId,
+      bucket: 'write',
+    });
+    if (!rateResult.allowed) {
+      return rateLimitedResponse(c, rateResult);
+    }
+
+    const csrf = validateCsrfToken({
+      method: c.req.method,
+      authType: auth.authType,
+      cookieHeader: c.req.header('cookie'),
+      csrfHeader: c.req.header('x-csrf-token'),
+    });
+    if (!csrf.ok) {
+      return c.json(
+        { ok: false, error: { code: 'csrf_failed', message: csrf.reason } },
+        403,
+      );
+    }
+
+    const talkId = safeDecodePathSegment(c.req.param('talkId'));
+    if (!talkId) {
+      return c.json(
+        {
+          ok: false,
+          error: {
+            code: 'invalid_talk_id',
+            message: 'Talk ID path segment is not valid URL encoding',
+          },
+        },
+        400,
+      );
+    }
+
+    const result = deleteTalkResourceRoute({
+      auth,
+      talkId,
+      resourceId: c.req.param('resourceId'),
+    });
+    return new Response(JSON.stringify(result.body), {
+      status: result.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
+  });
+
   app.get('/api/v1/talks/:talkId/data-connectors', async (c) => {
     const auth = requireAuth(c);
     if (!auth) return unauthorized(c);
@@ -5014,6 +5470,58 @@ function normalizeReturnToPath(value: unknown): string | null {
   if (!isSafeRelativeRedirectTarget(decoded)) return null;
 
   return candidate;
+}
+
+function appendQueryParam(
+  pathValue: string,
+  key: string,
+  value: string,
+): string {
+  const separator = pathValue.includes('?') ? '&' : '?';
+  return `${pathValue}${separator}${encodeURIComponent(key)}=${encodeURIComponent(value)}`;
+}
+
+function renderGoogleAccountCallbackHtml(input: {
+  status: 'success' | 'error';
+  returnTo: string;
+  message?: string;
+}): Response {
+  const payload = JSON.stringify({
+    type: 'clawrocket:google-account-link',
+    status: input.status,
+    message: input.message ?? null,
+  });
+  const fallbackTarget =
+    input.status === 'error' && input.message
+      ? appendQueryParam(input.returnTo, 'googleToolsError', input.message)
+      : input.returnTo;
+  const html = `<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Google Account</title>
+  </head>
+  <body>
+    <script>
+      (function() {
+        var payload = ${payload};
+        if (window.opener && !window.opener.closed) {
+          window.opener.postMessage(payload, window.location.origin);
+          window.close();
+          return;
+        }
+        window.location.replace(${JSON.stringify(fallbackTarget)});
+      })();
+    </script>
+  </body>
+</html>`;
+  return new Response(html, {
+    status: 200,
+    headers: {
+      'cache-control': 'no-store',
+      'content-type': 'text/html; charset=utf-8',
+    },
+  });
 }
 
 function isSafeRelativeRedirectTarget(pathValue: string): boolean {

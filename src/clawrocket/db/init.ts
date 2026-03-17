@@ -293,7 +293,17 @@ function createClawrocketSchema(database: Database.Database): void {
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
-    CREATE INDEX IF NOT EXISTS idx_user_google_credentials_user_id ON user_google_credentials(user_id);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_user_google_credentials_user_id_unique
+      ON user_google_credentials(user_id);
+
+    CREATE TABLE IF NOT EXISTS google_oauth_link_requests (
+      state_hash TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      scopes_json TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_google_oauth_link_requests_user_id
+      ON google_oauth_link_requests(user_id, created_at);
 
     CREATE TABLE IF NOT EXISTS llm_providers (
       id TEXT PRIMARY KEY,
@@ -527,6 +537,33 @@ function createClawrocketSchema(database: Database.Database): void {
     );
     CREATE INDEX IF NOT EXISTS idx_talk_threads_talk_id
       ON talk_threads(talk_id);
+
+    CREATE TABLE IF NOT EXISTS talk_tool_grants (
+      talk_id TEXT NOT NULL REFERENCES talks(id) ON DELETE CASCADE,
+      tool_id TEXT NOT NULL,
+      enabled INTEGER NOT NULL DEFAULT 0,
+      updated_at TEXT NOT NULL,
+      updated_by TEXT REFERENCES users(id),
+      PRIMARY KEY (talk_id, tool_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_talk_tool_grants_talk_id
+      ON talk_tool_grants(talk_id);
+
+    CREATE TABLE IF NOT EXISTS talk_resource_bindings (
+      id TEXT PRIMARY KEY,
+      talk_id TEXT NOT NULL REFERENCES talks(id) ON DELETE CASCADE,
+      binding_kind TEXT NOT NULL
+        CHECK(binding_kind IN ('google_drive_folder', 'google_drive_file', 'data_connector', 'saved_source', 'message_attachment')),
+      external_id TEXT NOT NULL,
+      display_name TEXT NOT NULL,
+      metadata_json TEXT,
+      created_at TEXT NOT NULL,
+      created_by TEXT REFERENCES users(id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_talk_resource_bindings_talk_id
+      ON talk_resource_bindings(talk_id, created_at, id);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_talk_resource_bindings_unique_scope
+      ON talk_resource_bindings(talk_id, binding_kind, external_id);
 
     CREATE TABLE IF NOT EXISTS talk_message_attachments (
       id TEXT PRIMARY KEY,
@@ -924,6 +961,7 @@ function createClawrocketSchema(database: Database.Database): void {
   // ---------------------------------------------------------------------------
   migrateBackfillThreads(database);
   migrateEnforceThreadIdsNotNull(database);
+  migrateGoogleToolingTables(database);
 
   migrateMainAgentToAnthropic(database);
 
@@ -2327,6 +2365,103 @@ function migrateEnforceThreadIdsNotNull(database: Database.Database): void {
       database.pragma('foreign_keys = ON');
     }
   }
+}
+
+function migrateGoogleToolingTables(database: Database.Database): void {
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS google_oauth_link_requests (
+      state_hash TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      scopes_json TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_google_oauth_link_requests_user_id
+      ON google_oauth_link_requests(user_id, created_at);
+
+    CREATE TABLE IF NOT EXISTS talk_tool_grants (
+      talk_id TEXT NOT NULL REFERENCES talks(id) ON DELETE CASCADE,
+      tool_id TEXT NOT NULL,
+      enabled INTEGER NOT NULL DEFAULT 0,
+      updated_at TEXT NOT NULL,
+      updated_by TEXT REFERENCES users(id),
+      PRIMARY KEY (talk_id, tool_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_talk_tool_grants_talk_id
+      ON talk_tool_grants(talk_id);
+
+    CREATE TABLE IF NOT EXISTS talk_resource_bindings (
+      id TEXT PRIMARY KEY,
+      talk_id TEXT NOT NULL REFERENCES talks(id) ON DELETE CASCADE,
+      binding_kind TEXT NOT NULL
+        CHECK(binding_kind IN ('google_drive_folder', 'google_drive_file', 'data_connector', 'saved_source', 'message_attachment')),
+      external_id TEXT NOT NULL,
+      display_name TEXT NOT NULL,
+      metadata_json TEXT,
+      created_at TEXT NOT NULL,
+      created_by TEXT REFERENCES users(id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_talk_resource_bindings_talk_id
+      ON talk_resource_bindings(talk_id, created_at, id);
+  `);
+
+  const duplicateUserCredentialIds = database
+    .prepare(
+      `
+      SELECT c1.id
+      FROM user_google_credentials c1
+      JOIN user_google_credentials c2
+        ON c1.user_id = c2.user_id
+       AND (
+         c1.updated_at < c2.updated_at
+         OR (c1.updated_at = c2.updated_at AND c1.id < c2.id)
+       )
+    `,
+    )
+    .all() as Array<{ id: string }>;
+
+  if (duplicateUserCredentialIds.length > 0) {
+    const deleteStmt = database.prepare(
+      `DELETE FROM user_google_credentials WHERE id = ?`,
+    );
+    const tx = database.transaction((rows: Array<{ id: string }>) => {
+      rows.forEach((row) => deleteStmt.run(row.id));
+    });
+    tx(duplicateUserCredentialIds);
+  }
+
+  const duplicateBindingIds = database
+    .prepare(
+      `
+      SELECT b1.id
+      FROM talk_resource_bindings b1
+      JOIN talk_resource_bindings b2
+        ON b1.talk_id = b2.talk_id
+       AND b1.binding_kind = b2.binding_kind
+       AND b1.external_id = b2.external_id
+       AND (
+         b1.created_at > b2.created_at
+         OR (b1.created_at = b2.created_at AND b1.id > b2.id)
+       )
+    `,
+    )
+    .all() as Array<{ id: string }>;
+
+  if (duplicateBindingIds.length > 0) {
+    const deleteStmt = database.prepare(
+      `DELETE FROM talk_resource_bindings WHERE id = ?`,
+    );
+    const tx = database.transaction((rows: Array<{ id: string }>) => {
+      rows.forEach((row) => deleteStmt.run(row.id));
+    });
+    tx(duplicateBindingIds);
+  }
+
+  database.exec(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_user_google_credentials_user_id_unique
+      ON user_google_credentials(user_id);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_talk_resource_bindings_unique_scope
+      ON talk_resource_bindings(talk_id, binding_kind, external_id);
+  `);
 }
 
 /**
