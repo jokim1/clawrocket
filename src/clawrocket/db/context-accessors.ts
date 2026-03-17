@@ -52,6 +52,17 @@ export interface TalkContextSourceRecord {
   created_by: string | null;
 }
 
+export interface TalkStateEntryRecord {
+  id: string;
+  talk_id: string;
+  key: string;
+  value_json: string;
+  version: number;
+  updated_at: string;
+  updated_by_user_id: string | null;
+  updated_by_run_id: string | null;
+}
+
 // ---------------------------------------------------------------------------
 // Snapshot types (API-facing, camelCase)
 // ---------------------------------------------------------------------------
@@ -104,6 +115,26 @@ export interface TalkContextSnapshot {
   sources: ContextSourceSnapshot[];
 }
 
+export interface TalkStateEntrySnapshot {
+  id: string;
+  key: string;
+  value: unknown;
+  version: number;
+  updatedAt: string;
+  updatedByUserId: string | null;
+  updatedByRunId: string | null;
+}
+
+export type TalkStateWriteResult =
+  | {
+      ok: true;
+      entry: TalkStateEntrySnapshot;
+    }
+  | {
+      ok: false;
+      current: TalkStateEntrySnapshot;
+    };
+
 // ---------------------------------------------------------------------------
 // Conversions
 // ---------------------------------------------------------------------------
@@ -150,6 +181,26 @@ function toSourceWithContent(
   return {
     ...toSourceSnapshot(row),
     extractedText: row.extracted_text,
+  };
+}
+
+function parseStateValue(valueJson: string): unknown {
+  try {
+    return JSON.parse(valueJson);
+  } catch {
+    return valueJson;
+  }
+}
+
+function toStateSnapshot(row: TalkStateEntryRecord): TalkStateEntrySnapshot {
+  return {
+    id: row.id,
+    key: row.key,
+    value: parseStateValue(row.value_json),
+    version: row.version,
+    updatedAt: row.updated_at,
+    updatedByUserId: row.updated_by_user_id,
+    updatedByRunId: row.updated_by_run_id,
   };
 }
 
@@ -330,6 +381,133 @@ export function deleteTalkContextRule(ruleId: string, talkId: string): boolean {
     .prepare(`DELETE FROM talk_context_rules WHERE id = ? AND talk_id = ?`)
     .run(ruleId, talkId);
   return result.changes > 0;
+}
+
+// ---------------------------------------------------------------------------
+// State accessors
+// ---------------------------------------------------------------------------
+
+export function listTalkStateEntries(talkId: string): TalkStateEntrySnapshot[] {
+  const rows = getDb()
+    .prepare(
+      `
+      SELECT * FROM talk_state_entries
+      WHERE talk_id = ?
+      ORDER BY updated_at DESC, key ASC
+    `,
+    )
+    .all(talkId) as TalkStateEntryRecord[];
+  return rows.map(toStateSnapshot);
+}
+
+export function getTalkStateEntry(
+  talkId: string,
+  key: string,
+): TalkStateEntrySnapshot | undefined {
+  const row = getDb()
+    .prepare(
+      `
+      SELECT * FROM talk_state_entries
+      WHERE talk_id = ? AND key = ?
+      LIMIT 1
+    `,
+    )
+    .get(talkId, key) as TalkStateEntryRecord | undefined;
+  return row ? toStateSnapshot(row) : undefined;
+}
+
+export function upsertTalkStateEntry(input: {
+  talkId: string;
+  key: string;
+  value: unknown;
+  expectedVersion: number;
+  updatedByUserId?: string | null;
+  updatedByRunId?: string | null;
+}): TalkStateWriteResult {
+  const key = input.key.trim();
+  if (!key) {
+    throw new Error('State key is required');
+  }
+  if (!Number.isInteger(input.expectedVersion) || input.expectedVersion < 0) {
+    throw new Error('expectedVersion must be a non-negative integer');
+  }
+
+  const existingRow = getDb()
+    .prepare(
+      `
+      SELECT * FROM talk_state_entries
+      WHERE talk_id = ? AND key = ?
+      LIMIT 1
+    `,
+    )
+    .get(input.talkId, key) as TalkStateEntryRecord | undefined;
+
+  const valueJson = JSON.stringify(input.value ?? null);
+  const now = new Date().toISOString();
+
+  if (!existingRow) {
+    if (input.expectedVersion !== 0) {
+      throw new Error(
+        `State entry "${key}" does not exist. Create it with expectedVersion 0.`,
+      );
+    }
+
+    const id = randomUUID();
+    getDb()
+      .prepare(
+        `
+        INSERT INTO talk_state_entries (
+          id, talk_id, key, value_json, version, updated_at,
+          updated_by_user_id, updated_by_run_id
+        )
+        VALUES (?, ?, ?, ?, 1, ?, ?, ?)
+      `,
+      )
+      .run(
+        id,
+        input.talkId,
+        key,
+        valueJson,
+        now,
+        input.updatedByUserId ?? null,
+        input.updatedByRunId ?? null,
+      );
+
+    const created = getDb()
+      .prepare(`SELECT * FROM talk_state_entries WHERE id = ?`)
+      .get(id) as TalkStateEntryRecord;
+    return { ok: true, entry: toStateSnapshot(created) };
+  }
+
+  if (existingRow.version !== input.expectedVersion) {
+    return { ok: false, current: toStateSnapshot(existingRow) };
+  }
+
+  getDb()
+    .prepare(
+      `
+      UPDATE talk_state_entries
+      SET value_json = ?,
+          version = version + 1,
+          updated_at = ?,
+          updated_by_user_id = ?,
+          updated_by_run_id = ?
+      WHERE id = ? AND version = ?
+    `,
+    )
+    .run(
+      valueJson,
+      now,
+      input.updatedByUserId ?? null,
+      input.updatedByRunId ?? null,
+      existingRow.id,
+      input.expectedVersion,
+    );
+
+  const updated = getDb()
+    .prepare(`SELECT * FROM talk_state_entries WHERE id = ?`)
+    .get(existingRow.id) as TalkStateEntryRecord;
+  return { ok: true, entry: toStateSnapshot(updated) };
 }
 
 // ---------------------------------------------------------------------------

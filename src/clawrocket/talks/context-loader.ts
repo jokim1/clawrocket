@@ -14,6 +14,7 @@
 
 import { getDb } from '../../db.js';
 import { listConnectorsForTalkRun } from '../db/connector-accessors.js';
+import { listTalkStateEntries } from '../db/context-accessors.js';
 import {
   buildConnectorToolDefinitions,
   type ConnectorToolDefinition,
@@ -33,7 +34,7 @@ import {
 // ---------------------------------------------------------------------------
 
 export interface ContextPackage {
-  /** System prompt: goal + summary (if exists) + sources + bound Drive resources + rules */
+  /** System prompt: goal + summary + rules + state + sources + bound Drive resources */
   systemPrompt: string;
 
   /** Tool definitions for reading context sources, attachments, and bound Drive resources */
@@ -57,6 +58,7 @@ export interface ContextPackage {
     historyTurnCount: number;
     historyMessageIds: string[];
     activeRuleCount: number;
+    stateEntryCount: number;
     hasSummary: boolean;
   };
 }
@@ -67,8 +69,13 @@ export interface ContextPackage {
 
 const OUTPUT_RESERVE = 4096; // Tokens to reserve for model output
 const TOOL_SCHEMA_RESERVE = 2000; // Tokens to reserve for tool definitions
+const STATE_SNAPSHOT_RESERVE = 2000; // Tokens reserved for bounded Talk state
 const CHARS_TO_TOKENS = 0.25; // Simple estimation: 1 char ≈ 0.25 tokens
 const SMALL_SOURCE_THRESHOLD = 250; // Max tokens to inline a source
+
+function estimateTokens(text: string): number {
+  return Math.ceil(text.length * CHARS_TO_TOKENS);
+}
 
 // ---------------------------------------------------------------------------
 // Main Context Loader
@@ -82,11 +89,12 @@ const SMALL_SOURCE_THRESHOLD = 250; // Max tokens to inline a source
  *   2. Rolling summary (talk_context_summary) — disabled for threaded runs
  *      because a single talk-level summary injected into every thread leaks
  *      cross-thread context. Per-thread summaries are a future concern.
- *   3. Source manifest (talk_context_sources, inline small sources)
- *   4. Bound Google Drive resources manifest (talk_resource_bindings)
- *   5. Rules (talk_context_rules, active only)
- *   6. Connector tools (verified connectors only)
- *   7. Message history (thread-scoped when threadId provided, with token budgeting)
+ *   3. Rules (talk_context_rules, active only)
+ *   4. State snapshot (talk_state_entries, bounded by dedicated token budget)
+ *   5. Source manifest (talk_context_sources, inline small sources)
+ *   6. Bound Google Drive resources manifest (talk_resource_bindings)
+ *   7. Connector tools (verified connectors only)
+ *   8. Message history (thread-scoped when threadId provided, with token budgeting)
  *
  * @param talkId - The Talk to load context for
  * @param modelContextWindow - The model's context window in tokens
@@ -102,14 +110,19 @@ export async function loadTalkContext(
 ): Promise<ContextPackage> {
   const db = getDb();
 
-  // Step 1: Fetch goal, rules, and rolling summary
+  // Step 1: Fetch goal, rules, state, and rolling summary
   const goal = fetchGoal(db, talkId);
   const rules = fetchRules(db, talkId);
+  const stateEntries = listTalkStateEntries(talkId);
 
   // When loading for a specific thread, skip talk-level summary to avoid
   // leaking cross-thread context. A stale/wrong summary is worse than no
   // summary — the model still has recent thread history.
   const summary = threadId ? null : fetchSummary(db, talkId);
+  const stateSnapshot = buildStateSnapshot(
+    stateEntries,
+    STATE_SNAPSHOT_RESERVE,
+  );
 
   // Step 2: Build source manifest
   const sources = fetchSources(db, talkId);
@@ -124,6 +137,7 @@ export async function loadTalkContext(
     goal,
     summary,
     rules,
+    stateSnapshot,
     sourceLines,
     boundGoogleDriveResources,
   );
@@ -167,6 +181,7 @@ export async function loadTalkContext(
     historyTurnCount: history.length,
     historyMessageIds: historySelection.messageIds,
     activeRuleCount: rules.length,
+    stateEntryCount: stateEntries.length,
     hasSummary: summary !== null,
   };
 
@@ -328,6 +343,7 @@ function assembleSystemPrompt(
   goal: string | null,
   summary: string | null,
   rules: string[],
+  stateSnapshot: string | null,
   sourceLines: Array<{
     ref: string;
     line: string;
@@ -343,6 +359,15 @@ function assembleSystemPrompt(
 
   if (summary) {
     parts.push(`**Summary:**\n${summary}`);
+  }
+
+  if (rules.length > 0) {
+    const ruleLines = rules.map((r, i) => `${i + 1}. ${r}`);
+    parts.push(`**Rules:**\n${ruleLines.join('\n')}`);
+  }
+
+  if (stateSnapshot) {
+    parts.push(stateSnapshot);
   }
 
   if (sourceLines.length > 0) {
@@ -362,12 +387,52 @@ function assembleSystemPrompt(
     parts.push(boundGoogleDriveResources);
   }
 
-  if (rules.length > 0) {
-    const ruleLines = rules.map((r, i) => `${i + 1}. ${r}`);
-    parts.push(`**Rules:**\n${ruleLines.join('\n')}`);
+  return parts.join('\n\n');
+}
+
+function buildStateSnapshot(
+  entries: Array<{
+    key: string;
+    value: unknown;
+    version: number;
+    updatedAt: string;
+  }>,
+  budgetTokens: number,
+): string | null {
+  if (entries.length === 0 || budgetTokens <= 0) {
+    return null;
   }
 
-  return parts.join('\n\n');
+  const lines: string[] = [];
+  let usedTokens = estimateTokens('**State Snapshot:**\n');
+  let omitted = 0;
+
+  for (const entry of entries) {
+    const line = `- ${entry.key} (v${entry.version}, updated ${entry.updatedAt}): ${JSON.stringify(entry.value)}`;
+    const lineTokens = estimateTokens(line);
+    if (usedTokens + lineTokens > budgetTokens) {
+      omitted += 1;
+      continue;
+    }
+    lines.push(line);
+    usedTokens += lineTokens;
+  }
+
+  if (lines.length === 0) {
+    return `**State Snapshot:**\n${entries.length} state entr${
+      entries.length === 1 ? 'y' : 'ies'
+    } omitted to stay within context budget.`;
+  }
+
+  if (omitted > 0) {
+    lines.push(
+      `- ${omitted} additional state entr${
+        omitted === 1 ? 'y' : 'ies'
+      } omitted to stay within context budget.`,
+    );
+  }
+
+  return `**State Snapshot:**\n${lines.join('\n')}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -406,6 +471,30 @@ function buildContextTools(
           },
         },
         required: ['attachmentId'],
+      },
+    },
+    {
+      name: 'update_state',
+      description:
+        'Persist a structured JSON state entry for this Talk using compare-and-swap versioning. Create new keys with expectedVersion 0. Update existing keys with their current version from the state snapshot. On conflict, the tool returns the current stored value as an error so you can retry.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          key: {
+            type: 'string',
+            description: 'State entry key',
+          },
+          value: {
+            description:
+              'JSON value to store for this key. Can be an object, array, string, number, boolean, or null.',
+          },
+          expectedVersion: {
+            type: 'number',
+            description:
+              'Use 0 to create a new key. For updates, use the current version from the state snapshot.',
+          },
+        },
+        required: ['key', 'value', 'expectedVersion'],
       },
     },
     ...buildGoogleDriveContextTools({ talkId, userId }),

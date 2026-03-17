@@ -210,6 +210,16 @@ export type TalkContext = {
   sources: ContextSource[];
 };
 
+export type TalkStateEntry = {
+  id: string;
+  key: string;
+  value: unknown;
+  version: number;
+  updatedAt: string;
+  updatedByUserId: string | null;
+  updatedByRunId: string | null;
+};
+
 export type TalkThread = {
   id: string;
   talkId: string;
@@ -691,7 +701,9 @@ export async function getAuthConfig(): Promise<AuthConfigPayload> {
 }
 
 export async function getSessionMe(): Promise<SessionUser> {
-  const envelope = await apiRequest<{ user: SessionUser }>('/api/v1/session/me');
+  const envelope = await apiRequest<{ user: SessionUser }>(
+    '/api/v1/session/me',
+  );
   return envelope.user;
 }
 
@@ -763,9 +775,16 @@ export async function getTalkSidebar(): Promise<TalkSidebarTree> {
   return apiRequest<TalkSidebarTree>('/api/v1/talks/sidebar');
 }
 
-export async function createTalkFolder(title?: string): Promise<TalkSidebarFolder> {
+export async function createTalkFolder(
+  title?: string,
+): Promise<TalkSidebarFolder> {
   const envelope = await apiMutationRequest<{
-    folder: { id: string; title: string; sortOrder: number; talks: TalkSidebarTalk[] };
+    folder: {
+      id: string;
+      title: string;
+      sortOrder: number;
+      talks: TalkSidebarTalk[];
+    };
   }>('/api/v1/talk-folders', {
     method: 'POST',
     includeJson: true,
@@ -779,7 +798,12 @@ export async function patchTalkFolder(input: {
   title: string;
 }): Promise<TalkSidebarFolder> {
   const envelope = await apiMutationRequest<{
-    folder: { id: string; title: string; sortOrder: number; talks: TalkSidebarTalk[] };
+    folder: {
+      id: string;
+      title: string;
+      sortOrder: number;
+      talks: TalkSidebarTalk[];
+    };
   }>(`/api/v1/talk-folders/${encodeURIComponent(input.folderId)}`, {
     method: 'PATCH',
     includeJson: true,
@@ -844,9 +868,12 @@ export async function clearTalkProjectMount(talkId: string): Promise<Talk> {
 }
 
 export async function deleteTalk(talkId: string): Promise<void> {
-  await apiMutationRequest<{ deleted: true }>(`/api/v1/talks/${encodeURIComponent(talkId)}`, {
-    method: 'DELETE',
-  });
+  await apiMutationRequest<{ deleted: true }>(
+    `/api/v1/talks/${encodeURIComponent(talkId)}`,
+    {
+      method: 'DELETE',
+    },
+  );
 }
 
 export async function reorderTalkSidebar(input: {
@@ -855,11 +882,14 @@ export async function reorderTalkSidebar(input: {
   destinationFolderId: string | null;
   destinationIndex: number;
 }): Promise<void> {
-  await apiMutationRequest<{ reordered: true }>('/api/v1/talks/sidebar/reorder', {
-    method: 'POST',
-    includeJson: true,
-    body: JSON.stringify(input),
-  });
+  await apiMutationRequest<{ reordered: true }>(
+    '/api/v1/talks/sidebar/reorder',
+    {
+      method: 'POST',
+      includeJson: true,
+      body: JSON.stringify(input),
+    },
+  );
 }
 
 export async function getTalk(talkId: string): Promise<Talk> {
@@ -870,7 +900,9 @@ export async function getTalk(talkId: string): Promise<Talk> {
 }
 
 export async function getTalkPolicy(talkId: string): Promise<TalkPolicy> {
-  return apiRequest<TalkPolicy>(`/api/v1/talks/${encodeURIComponent(talkId)}/policy`);
+  return apiRequest<TalkPolicy>(
+    `/api/v1/talks/${encodeURIComponent(talkId)}/policy`,
+  );
 }
 
 export async function updateTalkPolicy(input: {
@@ -990,7 +1022,11 @@ export async function deleteTalkMessages(input: {
   talkId: string;
   messageIds: string[];
   threadId: string;
-}): Promise<{ talkId: string; deletedCount: number; deletedMessageIds: string[] }> {
+}): Promise<{
+  talkId: string;
+  deletedCount: number;
+  deletedMessageIds: string[];
+}> {
   return apiMutationRequest<{
     talkId: string;
     deletedCount: number;
@@ -1022,7 +1058,9 @@ export async function getTalkRuns(talkId: string): Promise<TalkRun[]> {
 }
 
 export async function getTalkTools(talkId: string): Promise<TalkTools> {
-  return apiRequest<TalkTools>(`/api/v1/talks/${encodeURIComponent(talkId)}/tools`);
+  return apiRequest<TalkTools>(
+    `/api/v1/talks/${encodeURIComponent(talkId)}/tools`,
+  );
 }
 
 export async function updateTalkTools(input: {
@@ -1103,12 +1141,10 @@ export async function connectUserGoogleAccount(input?: {
   return envelope;
 }
 
-export async function expandUserGoogleScopes(
-  input: {
-    scopes: string[];
-    returnTo?: string;
-  },
-): Promise<GoogleAccountAuthorizationLaunch> {
+export async function expandUserGoogleScopes(input: {
+  scopes: string[];
+  returnTo?: string;
+}): Promise<GoogleAccountAuthorizationLaunch> {
   const envelope = await apiMutationRequest<GoogleAccountAuthorizationLaunch>(
     '/api/v1/me/google-account/expand-scopes',
     {
@@ -1124,14 +1160,18 @@ export async function expandUserGoogleScopes(
 }
 
 export async function getGooglePickerSession(): Promise<GooglePickerSession> {
-  return apiRequest<GooglePickerSession>('/api/v1/me/google-account/picker-token');
+  return apiRequest<GooglePickerSession>(
+    '/api/v1/me/google-account/picker-token',
+  );
 }
 
 export async function getTalkAudit(input: {
   talkId: string;
   limit?: number;
 }): Promise<{ talkId: string; entries: TalkAuditEntry[] }> {
-  const query = input.limit ? `?limit=${encodeURIComponent(String(input.limit))}` : '';
+  const query = input.limit
+    ? `?limit=${encodeURIComponent(String(input.limit))}`
+    : '';
   return apiRequest<{ talkId: string; entries: TalkAuditEntry[] }>(
     `/api/v1/talks/${encodeURIComponent(input.talkId)}/audit${query}`,
   );
@@ -1230,14 +1270,11 @@ export async function getMainRegisteredAgent(): Promise<RegisteredAgent> {
 export async function updateMainRegisteredAgent(
   agentId: string,
 ): Promise<RegisteredAgent> {
-  return apiMutationRequest<RegisteredAgent>(
-    '/api/v1/registered-agents/main',
-    {
-      method: 'PUT',
-      includeJson: true,
-      body: JSON.stringify({ agentId }),
-    },
-  );
+  return apiMutationRequest<RegisteredAgent>('/api/v1/registered-agents/main', {
+    method: 'PUT',
+    includeJson: true,
+    body: JSON.stringify({ agentId }),
+  });
 }
 
 export async function createRegisteredAgent(input: {
@@ -1276,9 +1313,7 @@ export async function updateRegisteredAgent(input: {
   );
 }
 
-export async function deleteRegisteredAgent(
-  agentId: string,
-): Promise<void> {
+export async function deleteRegisteredAgent(agentId: string): Promise<void> {
   await apiMutationRequest<{ deleted: true }>(
     `/api/v1/registered-agents/${encodeURIComponent(agentId)}`,
     {
@@ -1447,19 +1482,21 @@ type ChannelQueueFailureApiRecord = {
   attempt_count: number;
 };
 
-function parseJsonObject(
-  value: string | null,
-): Record<string, unknown> | null {
+function parseJsonObject(value: string | null): Record<string, unknown> | null {
   if (!value) return null;
   try {
     const parsed = JSON.parse(value) as unknown;
-    return parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : null;
+    return parsed && typeof parsed === 'object'
+      ? (parsed as Record<string, unknown>)
+      : null;
   } catch {
     return null;
   }
 }
 
-function mapChannelConnection(record: ChannelConnectionApiRecord): ChannelConnection {
+function mapChannelConnection(
+  record: ChannelConnectionApiRecord,
+): ChannelConnection {
   return {
     id: record.id,
     platform: record.platform,
@@ -1489,7 +1526,9 @@ function mapChannelTarget(record: ChannelTargetApiRecord): ChannelTarget {
   };
 }
 
-function mapChannelQueueFailure(record: ChannelQueueFailureApiRecord): ChannelQueueFailure {
+function mapChannelQueueFailure(
+  record: ChannelQueueFailureApiRecord,
+): ChannelQueueFailure {
   return {
     id: record.id,
     bindingId: record.binding_id,
@@ -1775,6 +1814,13 @@ export async function deleteTalkContextRule(input: {
   );
 }
 
+export async function getTalkState(talkId: string): Promise<TalkStateEntry[]> {
+  const envelope = await apiRequest<{ entries: TalkStateEntry[] }>(
+    `/api/v1/talks/${encodeURIComponent(talkId)}/state`,
+  );
+  return envelope.entries;
+}
+
 export async function createTalkContextSource(input: {
   talkId: string;
   sourceType: 'url' | 'file' | 'text';
@@ -1986,7 +2032,9 @@ export async function listMainThreads(): Promise<MainThreadSummary[]> {
   return apiRequest<MainThreadSummary[]>('/api/v1/main/threads');
 }
 
-export async function getMainThread(threadId: string): Promise<MainThreadMessage[]> {
+export async function getMainThread(
+  threadId: string,
+): Promise<MainThreadMessage[]> {
   return apiRequest<MainThreadMessage[]>(
     `/api/v1/main/threads/${encodeURIComponent(threadId)}`,
   );
@@ -1996,17 +2044,18 @@ export async function postMainMessage(input: {
   content: string;
   threadId?: string;
 }): Promise<{ messageId: string; threadId: string; runId: string }> {
-  return apiMutationRequest<{ messageId: string; threadId: string; runId: string }>(
-    '/api/v1/main/messages',
-    {
-      method: 'POST',
-      includeJson: true,
-      body: JSON.stringify({
-        content: input.content,
-        ...(input.threadId ? { threadId: input.threadId } : {}),
-      }),
-    },
-  );
+  return apiMutationRequest<{
+    messageId: string;
+    threadId: string;
+    runId: string;
+  }>('/api/v1/main/messages', {
+    method: 'POST',
+    includeJson: true,
+    body: JSON.stringify({
+      content: input.content,
+      ...(input.threadId ? { threadId: input.threadId } : {}),
+    }),
+  });
 }
 
 export async function getHealthStatus(): Promise<boolean> {
@@ -2031,19 +2080,20 @@ export async function sendTalkMessage(input: {
   attachmentIds?: string[];
   threadId?: string | null;
 }): Promise<{ talkId: string; message: TalkMessage; runs: TalkRun[] }> {
-  return apiMutationRequest<{ talkId: string; message: TalkMessage; runs: TalkRun[] }>(
-    `/api/v1/talks/${encodeURIComponent(input.talkId)}/chat`,
-    {
-      method: 'POST',
-      includeJson: true,
-      body: JSON.stringify({
-        content: input.content,
-        targetAgentIds: input.targetAgentIds ?? [],
-        attachmentIds: input.attachmentIds ?? [],
-        threadId: input.threadId ?? null,
-      }),
-    },
-  );
+  return apiMutationRequest<{
+    talkId: string;
+    message: TalkMessage;
+    runs: TalkRun[];
+  }>(`/api/v1/talks/${encodeURIComponent(input.talkId)}/chat`, {
+    method: 'POST',
+    includeJson: true,
+    body: JSON.stringify({
+      content: input.content,
+      targetAgentIds: input.targetAgentIds ?? [],
+      attachmentIds: input.attachmentIds ?? [],
+      threadId: input.threadId ?? null,
+    }),
+  });
 }
 
 export async function uploadTalkAttachment(
@@ -2092,10 +2142,7 @@ export async function logout(): Promise<void> {
   });
 }
 
-async function apiRequest<T>(
-  path: string,
-  init?: RequestInit,
-): Promise<T> {
+async function apiRequest<T>(path: string, init?: RequestInit): Promise<T> {
   return apiRequestWithRefresh<T>(path, init, true);
 }
 
@@ -2238,9 +2285,9 @@ async function ensureRefreshedSession(): Promise<boolean> {
       });
       if (response.status === 401 || !response.ok) return false;
 
-      const payload = (await response.json().catch(() => null)) as
-        | ApiEnvelope<unknown>
-        | null;
+      const payload = (await response
+        .json()
+        .catch(() => null)) as ApiEnvelope<unknown> | null;
       return Boolean(payload?.ok);
     } catch {
       return false;

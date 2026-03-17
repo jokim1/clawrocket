@@ -4,6 +4,7 @@ import {
   deleteTalkContextRule,
   deleteTalkContextSource,
   getTalkContext,
+  listTalkStateEntries,
   getTalkContextSourceById,
   getTalkForUser,
   markTalkContextSourcePending,
@@ -13,6 +14,7 @@ import {
   setTalkGoal,
   type ContextRuleSnapshot,
   type ContextSourceSnapshot,
+  type TalkStateEntrySnapshot,
   type TalkContextSnapshot,
 } from '../../db/index.js';
 import { canEditTalk } from '../middleware/acl.js';
@@ -143,6 +145,26 @@ export function listTalkContextRulesRoute(input: {
   return {
     statusCode: 200,
     body: { ok: true, data: { rules: listTalkContextRules(input.talkId) } },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// GET /talks/:talkId/state
+// ---------------------------------------------------------------------------
+
+export function getTalkStateRoute(input: {
+  auth: AuthContext;
+  talkId: string;
+}): {
+  statusCode: number;
+  body: ApiEnvelope<{ entries: TalkStateEntrySnapshot[] }>;
+} {
+  const talk = talkOrNull(input.talkId, input.auth.userId);
+  if (!talk) return notFoundResponse('Talk not found.');
+
+  return {
+    statusCode: 200,
+    body: { ok: true, data: { entries: listTalkStateEntries(input.talkId) } },
   };
 }
 

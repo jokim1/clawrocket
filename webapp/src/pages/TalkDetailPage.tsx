@@ -1,6 +1,18 @@
 import {
+  DndContext,
+  PointerSensor,
+  closestCenter,
+  useDraggable,
+  useDroppable,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+} from '@dnd-kit/core';
+import { CSS } from '@dnd-kit/utilities';
+import {
   FormEvent,
   KeyboardEvent as ReactKeyboardEvent,
+  type ReactNode,
   useCallback,
   useEffect,
   useMemo,
@@ -44,6 +56,7 @@ import {
   getGooglePickerSession,
   getTalk,
   getTalkAgents,
+  getTalkState,
   getTalkTools,
   getTalkContext,
   getTalkDataConnectors,
@@ -73,6 +86,7 @@ import {
   TalkMessageSearchResult,
   TalkMessageAttachment,
   TalkRun,
+  TalkStateEntry,
   TalkThread,
   uploadTalkAttachment,
   testTalkChannelBinding,
@@ -106,6 +120,8 @@ type TabKey =
   | 'agents'
   | 'tools'
   | 'context'
+  | 'rules'
+  | 'state'
   | 'channels'
   | 'data-connectors'
   | 'runs';
@@ -191,7 +207,12 @@ type DetailAction =
       messages: TalkMessage[];
     }
   | { type: 'THREAD_MESSAGES_FAILED'; threadId: string; message: string }
-  | { type: 'RESET_FROM_RESYNC'; threadId: string; messages: TalkMessage[]; runs: TalkRun[] }
+  | {
+      type: 'RESET_FROM_RESYNC';
+      threadId: string;
+      messages: TalkMessage[];
+      runs: TalkRun[];
+    }
   | {
       type: 'MESSAGE_APPENDED';
       message: TalkMessage;
@@ -382,10 +403,17 @@ function pruneEventRunCache(
     ['queued', 'running', 'awaiting_confirmation'].includes(run.status),
   );
   const overflow = Math.max(0, pinned.length - MAX_EVENT_RUN_CACHE);
-  const retainedPinned = overflow > 0 ? pinned.slice(0, MAX_EVENT_RUN_CACHE) : pinned;
-  const remainingSlots = Math.max(0, MAX_EVENT_RUN_CACHE - retainedPinned.length);
+  const retainedPinned =
+    overflow > 0 ? pinned.slice(0, MAX_EVENT_RUN_CACHE) : pinned;
+  const remainingSlots = Math.max(
+    0,
+    MAX_EVENT_RUN_CACHE - retainedPinned.length,
+  );
   const recentTerminal = entries
-    .filter(([, run]) => !['queued', 'running', 'awaiting_confirmation'].includes(run.status))
+    .filter(
+      ([, run]) =>
+        !['queued', 'running', 'awaiting_confirmation'].includes(run.status),
+    )
     .sort((left, right) => right[1].updatedAt - left[1].updatedAt)
     .slice(0, remainingSlots);
 
@@ -717,7 +745,11 @@ function detailReducer(state: DetailState, action: DetailAction): DetailState {
           updatedAt: Date.now(),
         };
       }
-      return { ...state, liveResponsesByRunId, runsById: pruneEventRunCache(runsById) };
+      return {
+        ...state,
+        liveResponsesByRunId,
+        runsById: pruneEventRunCache(runsById),
+      };
     }
     case 'RESPONSE_STARTED':
       if (state.kind !== 'ready') return state;
@@ -881,6 +913,8 @@ function getTabFromPath(pathname: string, talkId: string): TabKey {
   if (pathname === `${base}/agents`) return 'agents';
   if (pathname === `${base}/tools`) return 'tools';
   if (pathname === `${base}/context`) return 'context';
+  if (pathname === `${base}/rules`) return 'rules';
+  if (pathname === `${base}/state`) return 'state';
   if (pathname === `${base}/channels`) return 'channels';
   if (pathname === `${base}/data-connectors`) return 'data-connectors';
   if (pathname === `${base}/runs`) return 'runs';
@@ -1085,9 +1119,99 @@ function formatThreadLabel(thread: TalkThread): string {
   return `Thread ${thread.id.slice(0, 8)}`;
 }
 
-function buildThreadHref(talkId: string, threadId: string, tab?: TabKey): string {
-  const base = tab && tab !== 'talk' ? `/app/talks/${talkId}/${tab}` : `/app/talks/${talkId}`;
+function buildThreadHref(
+  talkId: string,
+  threadId: string,
+  tab?: TabKey,
+): string {
+  const base =
+    tab && tab !== 'talk'
+      ? `/app/talks/${talkId}/${tab}`
+      : `/app/talks/${talkId}`;
   return `${base}?thread=${encodeURIComponent(threadId)}`;
+}
+
+function sortRulesByOrder(rules: ContextRule[]): ContextRule[] {
+  return [...rules].sort((left, right) => {
+    const delta = left.sortOrder - right.sortOrder;
+    if (delta !== 0) return delta;
+    return left.createdAt.localeCompare(right.createdAt);
+  });
+}
+
+function buildRuleDraftMap(rules: ContextRule[]): Record<string, string> {
+  return rules.reduce<Record<string, string>>((acc, rule) => {
+    acc[rule.id] = rule.ruleText;
+    return acc;
+  }, {});
+}
+
+function reorderRules(
+  rules: ContextRule[],
+  activeId: string,
+  overId: string,
+): ContextRule[] {
+  const ordered = sortRulesByOrder(rules);
+  const fromIndex = ordered.findIndex((rule) => rule.id === activeId);
+  const toIndex = ordered.findIndex((rule) => rule.id === overId);
+  if (fromIndex < 0 || toIndex < 0 || fromIndex === toIndex) {
+    return ordered;
+  }
+
+  const next = [...ordered];
+  const [moved] = next.splice(fromIndex, 1);
+  if (!moved) return ordered;
+  next.splice(toIndex, 0, moved);
+  return next.map((rule, index) => ({ ...rule, sortOrder: index }));
+}
+
+function RuleRow({
+  ruleId,
+  disabled,
+  label,
+  children,
+}: {
+  ruleId: string;
+  disabled: boolean;
+  label: string;
+  children: ReactNode;
+}): JSX.Element {
+  const { attributes, listeners, setNodeRef, transform, isDragging } =
+    useDraggable({
+      id: ruleId,
+      disabled,
+    });
+  const { isOver, setNodeRef: setDropNodeRef } = useDroppable({
+    id: ruleId,
+    disabled,
+  });
+
+  return (
+    <div
+      ref={(node) => {
+        setNodeRef(node);
+        setDropNodeRef(node);
+      }}
+      className={`talk-rule-row${isDragging ? ' talk-rule-row-dragging' : ''}${
+        isOver && !disabled ? ' talk-rule-row-over' : ''
+      }`}
+      style={{
+        transform: transform ? CSS.Translate.toString(transform) : undefined,
+      }}
+    >
+      <button
+        type="button"
+        className="talk-rule-handle"
+        aria-label={`Reorder ${label}`}
+        disabled={disabled}
+        {...attributes}
+        {...listeners}
+      >
+        <span aria-hidden="true">⋮⋮</span>
+      </button>
+      <div className="talk-rule-row-body">{children}</div>
+    </div>
+  );
 }
 
 function buildChannelBindingDraft(
@@ -1463,8 +1587,17 @@ export function TalkDetailPage({
   const [contextRules, setContextRules] = useState<ContextRule[]>([]);
   const [contextSources, setContextSources] = useState<ContextSource[]>([]);
   const [contextLoaded, setContextLoaded] = useState(false);
+  const [ruleDrafts, setRuleDrafts] = useState<Record<string, string>>({});
   const [contextStatus, setContextStatus] = useState<{
     status: 'idle' | 'loading' | 'saving' | 'error' | 'success';
+    message?: string;
+  }>({ status: 'idle' });
+  const [talkStateEntries, setTalkStateEntries] = useState<TalkStateEntry[]>(
+    [],
+  );
+  const [talkStateLoaded, setTalkStateLoaded] = useState(false);
+  const [talkStateStatus, setTalkStateStatus] = useState<{
+    status: 'idle' | 'loading' | 'error';
     message?: string;
   }>({ status: 'idle' });
   const [goalDraft, setGoalDraft] = useState('');
@@ -1509,6 +1642,18 @@ export function TalkDetailPage({
   activeThreadIdRef.current = activeThreadId;
   threadStateRef.current = threadState;
   searchQueryRef.current = searchQuery;
+
+  const ruleSensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
+  );
+  const orderedContextRules = useMemo(
+    () => sortRulesByOrder(contextRules),
+    [contextRules],
+  );
+  const activeRuleCount = useMemo(
+    () => contextRules.filter((rule) => rule.isActive).length,
+    [contextRules],
+  );
 
   const streamBadgeLabel = useMemo(() => {
     switch (state.streamState) {
@@ -1596,13 +1741,19 @@ export function TalkDetailPage({
       if (!threadId) return;
       try {
         const [threads, messages, runs] = await Promise.all([
-          options?.refreshThreads === false ? Promise.resolve(null) : listTalkThreads(talkId),
+          options?.refreshThreads === false
+            ? Promise.resolve(null)
+            : listTalkThreads(talkId),
           listTalkMessages(talkId, { threadId }),
           getTalkRuns(talkId),
         ]);
         if (threadId !== activeThreadIdRef.current) return;
         if (threads) {
-          setThreadState({ threads: sortThreads(threads), loading: false, error: null });
+          setThreadState({
+            threads: sortThreads(threads),
+            loading: false,
+            error: null,
+          });
         }
         dispatch({ type: 'RESET_FROM_RESYNC', threadId, messages, runs });
         autoStickToBottomRef.current = true;
@@ -1625,10 +1776,25 @@ export function TalkDetailPage({
       if (options?.hydrateGoalDraft) {
         setGoalDraft(ctx.goal?.goalText ?? '');
       }
-      setContextRules(ctx.rules);
+      const sortedRules = sortRulesByOrder(ctx.rules);
+      setContextRules(sortedRules);
+      setRuleDrafts(buildRuleDraftMap(sortedRules));
       setContextSources(ctx.sources);
       setContextLoaded(true);
       setContextStatus({ status: 'idle' });
+    },
+    [talkId],
+  );
+
+  const refreshTalkStateEntries = useCallback(
+    async (options?: { showLoading?: boolean }) => {
+      if (options?.showLoading) {
+        setTalkStateStatus({ status: 'loading' });
+      }
+      const entries = await getTalkState(talkId);
+      setTalkStateEntries(entries);
+      setTalkStateLoaded(true);
+      setTalkStateStatus({ status: 'idle' });
     },
     [talkId],
   );
@@ -1677,7 +1843,11 @@ export function TalkDetailPage({
     setContextGoal(null);
     setContextRules([]);
     setContextSources([]);
+    setRuleDrafts({});
     setContextStatus({ status: 'idle' });
+    setTalkStateEntries([]);
+    setTalkStateLoaded(false);
+    setTalkStateStatus({ status: 'idle' });
     setGoalDraft('');
     setNewRuleText('');
     setAddSourceType('text');
@@ -1785,7 +1955,11 @@ export function TalkDetailPage({
     listTalkMessages(talkId, { threadId: activeThreadId })
       .then((messages) => {
         if (cancelled || activeThreadIdRef.current !== activeThreadId) return;
-        dispatch({ type: 'THREAD_MESSAGES_LOADED', threadId: activeThreadId, messages });
+        dispatch({
+          type: 'THREAD_MESSAGES_LOADED',
+          threadId: activeThreadId,
+          messages,
+        });
         requestAnimationFrame(() => {
           if (pendingComposerFocusRef.current) {
             pendingComposerFocusRef.current = false;
@@ -1804,7 +1978,9 @@ export function TalkDetailPage({
           type: 'THREAD_MESSAGES_FAILED',
           threadId: activeThreadId,
           message:
-            err instanceof Error ? err.message : 'Failed to load thread messages.',
+            err instanceof Error
+              ? err.message
+              : 'Failed to load thread messages.',
         });
       });
     return () => {
@@ -2098,8 +2274,7 @@ export function TalkDetailPage({
     accessRole === 'owner' || accessRole === 'admin' || accessRole === 'editor';
   const canManageTalkConnectors =
     accessRole === 'owner' || accessRole === 'admin';
-  const canManageProjectPath =
-    accessRole === 'owner' || accessRole === 'admin';
+  const canManageProjectPath = accessRole === 'owner' || accessRole === 'admin';
   const canEditChannels = canEditAgents;
   const canBrowseChannelConnections = canManageTalkConnectors;
 
@@ -2170,8 +2345,7 @@ export function TalkDetailPage({
     [threadState.threads],
   );
   const activeThread = useMemo(
-    () =>
-      sortedThreads.find((thread) => thread.id === activeThreadId) || null,
+    () => sortedThreads.find((thread) => thread.id === activeThreadId) || null,
     [activeThreadId, sortedThreads],
   );
   const runHistory = useMemo(
@@ -2250,7 +2424,12 @@ export function TalkDetailPage({
       totalSteps: orderedGroupRuns.length,
       label: `Agent ${currentRun.sequenceIndex + 1} of ${orderedGroupRuns.length} · ${label} ${statusText}`,
     };
-  }, [activeThreadId, agentLabelById, state.liveResponsesByRunId, state.runsById]);
+  }, [
+    activeThreadId,
+    agentLabelById,
+    state.liveResponsesByRunId,
+    state.runsById,
+  ]);
   const talkTimeline = useMemo<TalkTimelineEntry[]>(
     () =>
       [
@@ -2361,6 +2540,12 @@ export function TalkDetailPage({
   const contextTabHref = activeThreadId
     ? buildThreadHref(talkId, activeThreadId, 'context')
     : `/app/talks/${talkId}/context`;
+  const rulesTabHref = activeThreadId
+    ? buildThreadHref(talkId, activeThreadId, 'rules')
+    : `/app/talks/${talkId}/rules`;
+  const stateTabHref = activeThreadId
+    ? buildThreadHref(talkId, activeThreadId, 'state')
+    : `/app/talks/${talkId}/state`;
   const channelsTabHref = activeThreadId
     ? buildThreadHref(talkId, activeThreadId, 'channels')
     : `/app/talks/${talkId}/channels`;
@@ -2631,16 +2816,19 @@ export function TalkDetailPage({
     state.kind,
   ]);
 
-  // Load context data when context tab is selected
+  // Load Talk context once so Rules badges and context surfaces stay hydrated.
   useEffect(() => {
-    if (state.kind !== 'ready' || currentTab !== 'context') return;
+    if (state.kind !== 'ready') return;
     if (contextLoaded) return;
 
     let cancelled = false;
 
     const loadContext = async () => {
       try {
-        await refreshContext({ hydrateGoalDraft: true, showLoading: true });
+        await refreshContext({
+          hydrateGoalDraft: true,
+          showLoading: currentTab === 'context' || currentTab === 'rules',
+        });
         if (cancelled) return;
       } catch (err) {
         if (err instanceof UnauthorizedError) {
@@ -2667,6 +2855,44 @@ export function TalkDetailPage({
     handleUnauthorized,
     refreshContext,
     state.kind,
+  ]);
+
+  useEffect(() => {
+    if (state.kind !== 'ready' || currentTab !== 'state' || talkStateLoaded) {
+      return;
+    }
+
+    let cancelled = false;
+
+    const loadState = async () => {
+      try {
+        await refreshTalkStateEntries({ showLoading: true });
+        if (cancelled) return;
+      } catch (err) {
+        if (err instanceof UnauthorizedError) {
+          handleUnauthorized();
+          return;
+        }
+        if (!cancelled) {
+          setTalkStateStatus({
+            status: 'error',
+            message:
+              err instanceof Error ? err.message : 'Failed to load state.',
+          });
+        }
+      }
+    };
+
+    void loadState();
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    currentTab,
+    handleUnauthorized,
+    refreshTalkStateEntries,
+    state.kind,
+    talkStateLoaded,
   ]);
 
   useEffect(() => {
@@ -2731,7 +2957,8 @@ export function TalkDetailPage({
         talkId,
         ruleText: newRuleText.trim(),
       });
-      setContextRules((prev) => [...prev, rule]);
+      setContextRules((prev) => sortRulesByOrder([...prev, rule]));
+      setRuleDrafts((prev) => ({ ...prev, [rule.id]: rule.ruleText }));
       setNewRuleText('');
       setContextStatus({ status: 'idle' });
     } catch (err) {
@@ -2750,10 +2977,48 @@ export function TalkDetailPage({
         isActive: !rule.isActive,
       });
       setContextRules((prev) =>
-        prev.map((r) => (r.id === updated.id ? updated : r)),
+        sortRulesByOrder(prev.map((r) => (r.id === updated.id ? updated : r))),
       );
     } catch {
       // silent
+    }
+  };
+
+  const handleSaveRuleText = async (rule: ContextRule) => {
+    const draft = (ruleDrafts[rule.id] ?? rule.ruleText).trim();
+    if (!draft) {
+      setRuleDrafts((prev) => ({ ...prev, [rule.id]: rule.ruleText }));
+      setContextStatus({
+        status: 'error',
+        message: 'Rule text is required.',
+      });
+      return;
+    }
+    if (draft === rule.ruleText) {
+      return;
+    }
+
+    setContextStatus({ status: 'saving' });
+    try {
+      const updated = await patchTalkContextRule({
+        talkId,
+        ruleId: rule.id,
+        ruleText: draft,
+      });
+      setContextRules((prev) =>
+        sortRulesByOrder(
+          prev.map((current) =>
+            current.id === updated.id ? updated : current,
+          ),
+        ),
+      );
+      setRuleDrafts((prev) => ({ ...prev, [rule.id]: updated.ruleText }));
+      setContextStatus({ status: 'success', message: 'Rule updated.' });
+    } catch (err) {
+      setContextStatus({
+        status: 'error',
+        message: err instanceof Error ? err.message : 'Failed to update rule.',
+      });
     }
   };
 
@@ -2761,8 +3026,57 @@ export function TalkDetailPage({
     try {
       await deleteTalkContextRule({ talkId, ruleId });
       setContextRules((prev) => prev.filter((r) => r.id !== ruleId));
+      setRuleDrafts((prev) => {
+        const next = { ...prev };
+        delete next[ruleId];
+        return next;
+      });
     } catch {
       // silent
+    }
+  };
+
+  const handleRuleReorder = async (event: DragEndEvent) => {
+    const activeId = String(event.active.id);
+    const overId = event.over ? String(event.over.id) : null;
+    if (!overId || activeId === overId) {
+      return;
+    }
+
+    const previousRules = orderedContextRules;
+    const nextRules = reorderRules(previousRules, activeId, overId);
+    if (nextRules === previousRules) {
+      return;
+    }
+
+    const changedRules = nextRules.filter((rule, index) => {
+      const previous = previousRules.find(
+        (candidate) => candidate.id === rule.id,
+      );
+      return previous?.sortOrder !== index;
+    });
+
+    setContextRules(nextRules);
+    setContextStatus({ status: 'saving' });
+
+    try {
+      await Promise.all(
+        changedRules.map((rule, index) =>
+          patchTalkContextRule({
+            talkId,
+            ruleId: rule.id,
+            sortOrder: rule.sortOrder,
+          }),
+        ),
+      );
+      setContextStatus({ status: 'success', message: 'Rule order updated.' });
+    } catch (err) {
+      setContextRules(previousRules);
+      setContextStatus({
+        status: 'error',
+        message:
+          err instanceof Error ? err.message : 'Failed to reorder rules.',
+      });
     }
   };
 
@@ -3643,12 +3957,7 @@ export function TalkDetailPage({
             : 'Failed to update the project mount.',
       });
     }
-  }, [
-    canManageProjectPath,
-    handleUnauthorized,
-    projectPathDraft,
-    state,
-  ]);
+  }, [canManageProjectPath, handleUnauthorized, projectPathDraft, state]);
 
   const handleClearProjectPath = useCallback(async () => {
     if (state.kind !== 'ready' || !state.talk || !canManageProjectPath) return;
@@ -4396,6 +4705,24 @@ export function TalkDetailPage({
                     Context
                   </Link>
                   <Link
+                    to={rulesTabHref}
+                    className={`talk-tab ${currentTab === 'rules' ? 'talk-tab-active' : ''}`}
+                  >
+                    Rules
+                    <span
+                      className="talk-tab-badge"
+                      aria-label={`${activeRuleCount} active rules`}
+                    >
+                      {activeRuleCount}
+                    </span>
+                  </Link>
+                  <Link
+                    to={stateTabHref}
+                    className={`talk-tab ${currentTab === 'state' ? 'talk-tab-active' : ''}`}
+                  >
+                    State
+                  </Link>
+                  <Link
                     to={channelsTabHref}
                     className={`talk-tab ${currentTab === 'channels' ? 'talk-tab-active' : ''}`}
                   >
@@ -4511,10 +4838,15 @@ export function TalkDetailPage({
                   </div>
                   <p className="talk-llm-meta">
                     Current mount:{' '}
-                    {talk.projectPath ? talk.projectPath : 'No project path set'}
+                    {talk.projectPath
+                      ? talk.projectPath
+                      : 'No project path set'}
                   </p>
                   {projectPathState.status === 'error' ? (
-                    <div className="inline-banner inline-banner-error" role="alert">
+                    <div
+                      className="inline-banner inline-banner-error"
+                      role="alert"
+                    >
                       {projectPathState.message}
                     </div>
                   ) : null}
@@ -4529,127 +4861,140 @@ export function TalkDetailPage({
                 </div>
               ) : null}
               {agentDrafts.map((agent) => (
-                  <div key={agent.id} className="agent-editor-card">
-                    <label>
-                      <span>Registered Agent</span>
-                      <select
+                <div key={agent.id} className="agent-editor-card">
+                  <label>
+                    <span>Registered Agent</span>
+                    <select
+                      value={agent.id}
+                      onChange={(event) => {
+                        const regAgent = registeredAgentsCatalog.find(
+                          (ra) => ra.id === event.target.value,
+                        );
+                        if (!regAgent) return;
+                        setAgentDrafts((current) =>
+                          current.map((a) =>
+                            a.id === agent.id
+                              ? {
+                                  ...a,
+                                  id: regAgent.id,
+                                  sourceKind: 'provider',
+                                  providerId: regAgent.providerId,
+                                  modelId: regAgent.modelId,
+                                  modelDisplayName: null,
+                                  nickname:
+                                    a.nicknameMode === 'auto'
+                                      ? regAgent.name
+                                      : a.nickname,
+                                  health: 'ready',
+                                }
+                              : a,
+                          ),
+                        );
+                        setAgentState({ status: 'idle' });
+                      }}
+                      disabled={
+                        !canEditAgents || agentState.status === 'saving'
+                      }
+                    >
+                      <option
                         value={agent.id}
-                        onChange={(event) => {
-                          const regAgent = registeredAgentsCatalog.find(
-                            (ra) => ra.id === event.target.value,
-                          );
-                          if (!regAgent) return;
-                          setAgentDrafts((current) =>
-                            current.map((a) =>
-                              a.id === agent.id
-                                ? {
-                                    ...a,
-                                    id: regAgent.id,
-                                    sourceKind: 'provider',
-                                    providerId: regAgent.providerId,
-                                    modelId: regAgent.modelId,
-                                    modelDisplayName: null,
-                                    nickname:
-                                      a.nicknameMode === 'auto'
-                                        ? regAgent.name
-                                        : a.nickname,
-                                    health: 'ready',
-                                  }
-                                : a,
-                            ),
-                          );
-                          setAgentState({ status: 'idle' });
-                        }}
                         disabled={
-                          !canEditAgents || agentState.status === 'saving'
-                        }
-                      >
-                        <option value={agent.id} disabled={!registeredAgentsCatalog.some((ra) => ra.id === agent.id)}>
-                          {registeredAgentsCatalog.find((ra) => ra.id === agent.id)?.name || agent.nickname || 'Unknown agent'}
-                        </option>
-                        {registeredAgentsCatalog
-                          .filter((ra) => ra.enabled && ra.id !== agent.id && !agentDrafts.some((d) => d.id === ra.id))
-                          .map((ra) => (
-                            <option key={ra.id} value={ra.id}>
-                              {ra.name} ({ra.modelId})
-                            </option>
-                          ))}
-                      </select>
-                    </label>
-                    <label>
-                      <span>Nickname</span>
-                      <input
-                        type="text"
-                        value={agent.nickname}
-                        onChange={(event) =>
-                          handleAgentNicknameChange(
-                            agent.id,
-                            event.target.value,
+                          !registeredAgentsCatalog.some(
+                            (ra) => ra.id === agent.id,
                           )
                         }
+                      >
+                        {registeredAgentsCatalog.find(
+                          (ra) => ra.id === agent.id,
+                        )?.name ||
+                          agent.nickname ||
+                          'Unknown agent'}
+                      </option>
+                      {registeredAgentsCatalog
+                        .filter(
+                          (ra) =>
+                            ra.enabled &&
+                            ra.id !== agent.id &&
+                            !agentDrafts.some((d) => d.id === ra.id),
+                        )
+                        .map((ra) => (
+                          <option key={ra.id} value={ra.id}>
+                            {ra.name} ({ra.modelId})
+                          </option>
+                        ))}
+                    </select>
+                  </label>
+                  <label>
+                    <span>Nickname</span>
+                    <input
+                      type="text"
+                      value={agent.nickname}
+                      onChange={(event) =>
+                        handleAgentNicknameChange(agent.id, event.target.value)
+                      }
+                      disabled={
+                        !canEditAgents || agentState.status === 'saving'
+                      }
+                    />
+                  </label>
+                  <label>
+                    <span>Role</span>
+                    <select
+                      value={agent.role}
+                      onChange={(event) =>
+                        handleAgentRoleChange(
+                          agent.id,
+                          event.target.value as TalkAgent['role'],
+                        )
+                      }
+                      disabled={
+                        !canEditAgents || agentState.status === 'saving'
+                      }
+                    >
+                      {TALK_AGENT_ROLE_OPTIONS.map((role) => (
+                        <option key={role} value={role}>
+                          {formatTalkRole(role)}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <div className="agent-editor-actions">
+                    <label className="policy-primary-toggle">
+                      <input
+                        type="radio"
+                        name="primary-talk-agent"
+                        checked={agent.isPrimary}
+                        onChange={() => handleSetPrimaryAgent(agent.id)}
                         disabled={
                           !canEditAgents || agentState.status === 'saving'
                         }
                       />
+                      <span>Primary Agent</span>
                     </label>
-                    <label>
-                      <span>Role</span>
-                      <select
-                        value={agent.role}
-                        onChange={(event) =>
-                          handleAgentRoleChange(
-                            agent.id,
-                            event.target.value as TalkAgent['role'],
-                          )
-                        }
-                        disabled={
-                          !canEditAgents || agentState.status === 'saving'
-                        }
-                      >
-                        {TALK_AGENT_ROLE_OPTIONS.map((role) => (
-                          <option key={role} value={role}>
-                            {formatTalkRole(role)}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                    <div className="agent-editor-actions">
-                      <label className="policy-primary-toggle">
-                        <input
-                          type="radio"
-                          name="primary-talk-agent"
-                          checked={agent.isPrimary}
-                          onChange={() => handleSetPrimaryAgent(agent.id)}
-                          disabled={
-                            !canEditAgents || agentState.status === 'saving'
-                          }
-                        />
-                        <span>Primary Agent</span>
-                      </label>
-                      <button
-                        type="button"
-                        className="secondary-btn"
-                        onClick={() => handleResetNickname(agent.id)}
-                        disabled={
-                          !canEditAgents || agentState.status === 'saving'
-                        }
-                      >
-                        Reset name
-                      </button>
-                      <button
-                        type="button"
-                        className="secondary-btn"
-                        onClick={() => handleRemoveAgent(agent.id)}
-                        disabled={
-                          !canEditAgents ||
-                          agentState.status === 'saving' ||
-                          agentDrafts.length <= 1
-                        }
-                      >
-                        Remove
-                      </button>
-                    </div>
+                    <button
+                      type="button"
+                      className="secondary-btn"
+                      onClick={() => handleResetNickname(agent.id)}
+                      disabled={
+                        !canEditAgents || agentState.status === 'saving'
+                      }
+                    >
+                      Reset name
+                    </button>
+                    <button
+                      type="button"
+                      className="secondary-btn"
+                      onClick={() => handleRemoveAgent(agent.id)}
+                      disabled={
+                        !canEditAgents ||
+                        agentState.status === 'saving' ||
+                        agentDrafts.length <= 1
+                      }
+                    >
+                      Remove
+                    </button>
                   </div>
+                </div>
               ))}
 
               <div className="agent-editor-footer">
@@ -4666,7 +5011,8 @@ export function TalkDetailPage({
                         sourceKind: 'provider',
                         providerId: ra.providerId,
                         modelId: ra.id,
-                        role: (ra.personaRole as TalkAgent['role']) || 'assistant',
+                        role:
+                          (ra.personaRole as TalkAgent['role']) || 'assistant',
                       });
                     }}
                     disabled={!canEditAgents || agentState.status === 'saving'}
@@ -4675,7 +5021,11 @@ export function TalkDetailPage({
                       Choose a registered agent…
                     </option>
                     {registeredAgentsCatalog
-                      .filter((ra) => ra.enabled && !agentDrafts.some((d) => d.id === ra.id))
+                      .filter(
+                        (ra) =>
+                          ra.enabled &&
+                          !agentDrafts.some((d) => d.id === ra.id),
+                      )
                       .map((ra) => (
                         <option key={ra.id} value={ra.id}>
                           {ra.name} ({ra.modelId})
@@ -4793,104 +5143,6 @@ export function TalkDetailPage({
                         {contextGoal?.goalText || <em>No goal set.</em>}
                       </p>
                     )}
-                  </div>
-
-                  {/* Rules */}
-                  <div className="talk-llm-card">
-                    <div className="connector-card-header">
-                      <div>
-                        <h3>Rules</h3>
-                        <p className="talk-llm-meta">
-                          Instructions agents must follow every turn. Up to 8
-                          active rules.
-                        </p>
-                      </div>
-                    </div>
-                    {contextRules.length > 0 ? (
-                      <ul
-                        className="context-rules-list"
-                        style={{ listStyle: 'none', padding: 0 }}
-                      >
-                        {contextRules.map((rule) => (
-                          <li
-                            key={rule.id}
-                            style={{
-                              display: 'flex',
-                              alignItems: 'center',
-                              gap: '0.5rem',
-                              padding: '0.25rem 0',
-                              opacity: rule.isActive ? 1 : 0.5,
-                            }}
-                          >
-                            {canEditAgents ? (
-                              <button
-                                type="button"
-                                className="secondary-btn"
-                                onClick={() => void handleToggleRule(rule)}
-                                title={
-                                  rule.isActive ? 'Pause rule' : 'Activate rule'
-                                }
-                                style={{
-                                  minWidth: '2rem',
-                                  padding: '0.2rem 0.4rem',
-                                }}
-                              >
-                                {rule.isActive ? '✓' : '—'}
-                              </button>
-                            ) : null}
-                            <span style={{ flex: 1 }}>{rule.ruleText}</span>
-                            {canEditAgents ? (
-                              <button
-                                type="button"
-                                className="secondary-btn"
-                                onClick={() => void handleDeleteRule(rule.id)}
-                                title="Delete rule"
-                                style={{
-                                  minWidth: '2rem',
-                                  padding: '0.2rem 0.4rem',
-                                }}
-                              >
-                                ×
-                              </button>
-                            ) : null}
-                          </li>
-                        ))}
-                      </ul>
-                    ) : (
-                      <p className="page-state">No rules yet.</p>
-                    )}
-                    {canEditAgents ? (
-                      <div
-                        className="connector-attach-row"
-                        style={{ marginTop: '0.5rem' }}
-                      >
-                        <label style={{ flex: 1 }}>
-                          <input
-                            type="text"
-                            maxLength={240}
-                            value={newRuleText}
-                            onChange={(e) => setNewRuleText(e.target.value)}
-                            placeholder="Add a rule…"
-                            disabled={contextStatus.status === 'saving'}
-                            onKeyDown={(e) => {
-                              if (e.key === 'Enter') void handleAddRule();
-                            }}
-                            style={{ width: '100%' }}
-                          />
-                        </label>
-                        <button
-                          type="button"
-                          className="secondary-btn"
-                          onClick={() => void handleAddRule()}
-                          disabled={
-                            contextStatus.status === 'saving' ||
-                            !newRuleText.trim()
-                          }
-                        >
-                          Add Rule
-                        </button>
-                      </div>
-                    ) : null}
                   </div>
 
                   {/* Saved Sources */}
@@ -5110,6 +5362,253 @@ export function TalkDetailPage({
                   contextStatus.message ? (
                     <p className="page-state">{contextStatus.message}</p>
                   ) : null}
+                </>
+              )}
+            </section>
+          ) : null}
+
+          {currentTab === 'rules' ? (
+            <section className="talk-tab-panel" aria-label="Talk rules">
+              {contextStatus.status === 'loading' && !contextLoaded ? (
+                <p className="page-state">Loading rules…</p>
+              ) : contextStatus.status === 'error' && !contextLoaded ? (
+                <p className="page-state error">{contextStatus.message}</p>
+              ) : (
+                <>
+                  <div className="agents-panel-header">
+                    <h2>Rules</h2>
+                  </div>
+                  <p className="policy-muted">
+                    Rules are durable talk-level instructions. Agents see active
+                    rules every turn in order.
+                  </p>
+                  <div className="talk-llm-card">
+                    <div className="connector-card-header">
+                      <div>
+                        <h3>Active Rules</h3>
+                        <p className="talk-llm-meta">
+                          Up to 8 active rules. Drag to reorder. Inactive rules
+                          stay editable without affecting prompt injection.
+                        </p>
+                      </div>
+                    </div>
+                    {orderedContextRules.length > 0 ? (
+                      <DndContext
+                        sensors={ruleSensors}
+                        collisionDetection={closestCenter}
+                        onDragEnd={(event) => void handleRuleReorder(event)}
+                      >
+                        <div className="talk-rule-list">
+                          {orderedContextRules.map((rule) => {
+                            const draft = ruleDrafts[rule.id] ?? rule.ruleText;
+                            const hasTextChange =
+                              draft.trim().length > 0 &&
+                              draft.trim() !== rule.ruleText;
+                            return (
+                              <RuleRow
+                                key={rule.id}
+                                ruleId={rule.id}
+                                disabled={!canEditAgents}
+                                label={rule.ruleText}
+                              >
+                                <div
+                                  className={`talk-rule-card${
+                                    rule.isActive
+                                      ? ''
+                                      : ' talk-rule-card-inactive'
+                                  }`}
+                                >
+                                  <div className="talk-rule-card-top">
+                                    <span className="talk-agent-chip">
+                                      {rule.isActive ? 'Active' : 'Inactive'}
+                                    </span>
+                                    <span className="talk-llm-meta">
+                                      Position {rule.sortOrder + 1}
+                                    </span>
+                                  </div>
+                                  {canEditAgents ? (
+                                    <>
+                                      <label className="talk-rule-edit-field">
+                                        <span className="sr-only">
+                                          Rule text
+                                        </span>
+                                        <input
+                                          type="text"
+                                          maxLength={240}
+                                          value={draft}
+                                          onChange={(event) =>
+                                            setRuleDrafts((prev) => ({
+                                              ...prev,
+                                              [rule.id]: event.target.value,
+                                            }))
+                                          }
+                                          onBlur={() =>
+                                            void handleSaveRuleText(rule)
+                                          }
+                                          onKeyDown={(event) => {
+                                            if (event.key === 'Enter') {
+                                              event.preventDefault();
+                                              void handleSaveRuleText(rule);
+                                            }
+                                          }}
+                                          disabled={
+                                            contextStatus.status === 'saving'
+                                          }
+                                        />
+                                      </label>
+                                      <div className="talk-rule-actions">
+                                        <button
+                                          type="button"
+                                          className="secondary-btn"
+                                          onClick={() =>
+                                            void handleToggleRule(rule)
+                                          }
+                                        >
+                                          {rule.isActive ? 'Pause' : 'Activate'}
+                                        </button>
+                                        <button
+                                          type="button"
+                                          className="secondary-btn"
+                                          onClick={() =>
+                                            void handleSaveRuleText(rule)
+                                          }
+                                          disabled={
+                                            contextStatus.status === 'saving' ||
+                                            !hasTextChange
+                                          }
+                                        >
+                                          Save
+                                        </button>
+                                        <button
+                                          type="button"
+                                          className="secondary-btn"
+                                          onClick={() =>
+                                            void handleDeleteRule(rule.id)
+                                          }
+                                        >
+                                          Delete
+                                        </button>
+                                      </div>
+                                    </>
+                                  ) : (
+                                    <p className="talk-rule-readonly">
+                                      {rule.ruleText}
+                                    </p>
+                                  )}
+                                </div>
+                              </RuleRow>
+                            );
+                          })}
+                        </div>
+                      </DndContext>
+                    ) : (
+                      <p className="page-state">No rules yet.</p>
+                    )}
+                    {canEditAgents ? (
+                      <div className="talk-rule-create-row">
+                        <label style={{ flex: 1 }}>
+                          <span className="sr-only">New rule text</span>
+                          <input
+                            type="text"
+                            maxLength={240}
+                            value={newRuleText}
+                            onChange={(e) => setNewRuleText(e.target.value)}
+                            placeholder="Add a rule…"
+                            disabled={contextStatus.status === 'saving'}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') void handleAddRule();
+                            }}
+                            style={{ width: '100%' }}
+                          />
+                        </label>
+                        <button
+                          type="button"
+                          className="secondary-btn"
+                          onClick={() => void handleAddRule()}
+                          disabled={
+                            contextStatus.status === 'saving' ||
+                            !newRuleText.trim()
+                          }
+                        >
+                          Add Rule
+                        </button>
+                      </div>
+                    ) : null}
+                    {(contextStatus.status === 'success' ||
+                      contextStatus.status === 'error') &&
+                    contextStatus.message ? (
+                      <div
+                        className={`inline-banner ${
+                          contextStatus.status === 'error'
+                            ? 'inline-banner-error'
+                            : 'inline-banner-success'
+                        }`}
+                        role={
+                          contextStatus.status === 'error' ? 'alert' : 'status'
+                        }
+                        style={{ marginTop: '0.75rem' }}
+                      >
+                        {contextStatus.message}
+                      </div>
+                    ) : null}
+                  </div>
+                </>
+              )}
+            </section>
+          ) : null}
+
+          {currentTab === 'state' ? (
+            <section className="talk-tab-panel" aria-label="Talk state">
+              {talkStateStatus.status === 'loading' ? (
+                <p className="page-state">Loading state…</p>
+              ) : talkStateStatus.status === 'error' ? (
+                <p className="page-state error">{talkStateStatus.message}</p>
+              ) : (
+                <>
+                  <div className="agents-panel-header">
+                    <h2>State</h2>
+                  </div>
+                  <p className="policy-muted">
+                    Structured Talk state is written by direct-executor agents
+                    using compare-and-swap updates. This view is read-only in
+                    Phase 6.
+                  </p>
+                  {talkStateEntries.length > 0 ? (
+                    <div className="talk-state-list">
+                      {talkStateEntries.map((entry) => (
+                        <article
+                          key={entry.id}
+                          className="talk-llm-card talk-state-card"
+                        >
+                          <div className="connector-card-header">
+                            <div>
+                              <h3>{entry.key}</h3>
+                              <p className="talk-llm-meta">
+                                Version {entry.version} · Updated{' '}
+                                {formatDateTime(entry.updatedAt)}
+                              </p>
+                            </div>
+                          </div>
+                          {entry.updatedByRunId ? (
+                            <p className="talk-llm-meta">
+                              Updated by run <code>{entry.updatedByRunId}</code>
+                            </p>
+                          ) : null}
+                          {entry.updatedByUserId ? (
+                            <p className="talk-llm-meta">
+                              Updated by user{' '}
+                              <code>{entry.updatedByUserId}</code>
+                            </p>
+                          ) : null}
+                          <pre className="talk-state-json">
+                            {JSON.stringify(entry.value, null, 2)}
+                          </pre>
+                        </article>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="page-state">No state entries yet.</p>
+                  )}
                 </>
               )}
             </section>
@@ -6636,7 +7135,9 @@ export function TalkDetailPage({
                           <span className="talk-thread-item-meta">
                             {thread.messageCount} message
                             {thread.messageCount === 1 ? '' : 's'} ·{' '}
-                            {formatDateTime(thread.lastMessageAt || thread.createdAt)}
+                            {formatDateTime(
+                              thread.lastMessageAt || thread.createdAt,
+                            )}
                           </span>
                         </button>
                       </li>
@@ -6648,7 +7149,11 @@ export function TalkDetailPage({
               <div className="talk-thread-detail">
                 <div className="talk-thread-detail-header">
                   <div>
-                    <h2>{activeThread ? formatThreadLabel(activeThread) : 'Thread'}</h2>
+                    <h2>
+                      {activeThread
+                        ? formatThreadLabel(activeThread)
+                        : 'Thread'}
+                    </h2>
                     <p className="policy-muted">
                       Use <code>/edit</code> or the button here to remove old
                       messages from this thread.
@@ -6697,7 +7202,8 @@ export function TalkDetailPage({
                     talkTimeline.map((entry) => {
                       if (entry.kind === 'message') {
                         const { message } = entry;
-                        const isSynthesis = message.metadata?.isSynthesis === true;
+                        const isSynthesis =
+                          message.metadata?.isSynthesis === true;
                         const agentLabel =
                           (message.agentId &&
                             agentLabelById[message.agentId]) ||
@@ -6761,7 +7267,8 @@ export function TalkDetailPage({
 
                       const { response } = entry;
                       const label =
-                        (response.agentId && agentLabelById[response.agentId]) ||
+                        (response.agentId &&
+                          agentLabelById[response.agentId]) ||
                         response.agentNickname ||
                         'Assistant';
                       return (
@@ -6847,9 +7354,7 @@ export function TalkDetailPage({
                       );
                     })}
                   </div>
-                  <p className="composer-target-help">
-                    {composerTargetHelp}
-                  </p>
+                  <p className="composer-target-help">{composerTargetHelp}</p>
 
                   <textarea
                     ref={textareaRef}
@@ -6935,7 +7440,9 @@ export function TalkDetailPage({
                         !activeThreadId
                       }
                     >
-                      {state.sendState.status === 'posting' ? 'Sending…' : 'Send'}
+                      {state.sendState.status === 'posting'
+                        ? 'Sending…'
+                        : 'Send'}
                     </button>
                     {canEditAgents ? (
                       <button
@@ -6973,7 +7480,10 @@ export function TalkDetailPage({
                   ) : null}
 
                   {state.sendState.status === 'error' ? (
-                    <div className="inline-banner inline-banner-error" role="alert">
+                    <div
+                      className="inline-banner inline-banner-error"
+                      role="alert"
+                    >
                       {state.sendState.error || 'Unable to send message.'}
                     </div>
                   ) : null}
@@ -6988,7 +7498,10 @@ export function TalkDetailPage({
                   ) : null}
 
                   {historyEditState.status === 'error' ? (
-                    <div className="inline-banner inline-banner-error" role="alert">
+                    <div
+                      className="inline-banner inline-banner-error"
+                      role="alert"
+                    >
                       {historyEditState.message}
                     </div>
                   ) : null}
@@ -7003,7 +7516,10 @@ export function TalkDetailPage({
                   ) : null}
 
                   {state.cancelState.status === 'error' ? (
-                    <div className="inline-banner inline-banner-error" role="alert">
+                    <div
+                      className="inline-banner inline-banner-error"
+                      role="alert"
+                    >
                       {state.cancelState.message}
                     </div>
                   ) : null}

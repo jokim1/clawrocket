@@ -695,6 +695,20 @@ function createClawrocketSchema(database: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_talk_context_rules_talk_sort
       ON talk_context_rules(talk_id, sort_order, created_at);
 
+    CREATE TABLE IF NOT EXISTS talk_state_entries (
+      id TEXT PRIMARY KEY,
+      talk_id TEXT NOT NULL REFERENCES talks(id) ON DELETE CASCADE,
+      key TEXT NOT NULL,
+      value_json TEXT NOT NULL,
+      version INTEGER NOT NULL DEFAULT 1,
+      updated_at TEXT NOT NULL,
+      updated_by_user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+      updated_by_run_id TEXT REFERENCES talk_runs(id) ON DELETE SET NULL,
+      UNIQUE(talk_id, key)
+    );
+    CREATE INDEX IF NOT EXISTS idx_talk_state_entries_talk_updated
+      ON talk_state_entries(talk_id, updated_at DESC, key ASC);
+
     CREATE TABLE IF NOT EXISTS talk_context_sources (
       id TEXT PRIMARY KEY,
       talk_id TEXT NOT NULL REFERENCES talks(id) ON DELETE CASCADE,

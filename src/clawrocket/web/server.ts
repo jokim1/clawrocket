@@ -140,6 +140,7 @@ import {
   deleteTalkContextRuleRoute,
   deleteTalkContextSourceRoute,
   getTalkContextRoute,
+  getTalkStateRoute,
   listTalkContextRulesRoute,
   patchTalkContextRuleRoute,
   patchTalkContextSourceRoute,
@@ -3945,6 +3946,20 @@ function buildApp(opts: WebServerOptions): Hono {
     if (!auth) return unauthorized(c);
 
     const result = listTalkContextRulesRoute({
+      auth,
+      talkId: c.req.param('talkId'),
+    });
+    return new Response(JSON.stringify(result.body), {
+      status: result.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
+  });
+
+  app.get('/api/v1/talks/:talkId/state', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+
+    const result = getTalkStateRoute({
       auth,
       talkId: c.req.param('talkId'),
     });
