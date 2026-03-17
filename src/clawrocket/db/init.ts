@@ -116,6 +116,29 @@ function seedAnthropicProvider(database: Database.Database): void {
     `,
     )
     .run(now);
+
+  database
+    .prepare(
+      `
+      INSERT INTO llm_provider_models (
+        provider_id, model_id, display_name, context_window_tokens,
+        default_max_output_tokens, default_ttft_timeout_ms, enabled, updated_at, updated_by
+      )
+      VALUES (
+        'provider.anthropic',
+        'claude-opus-4-6',
+        'Claude Opus 4.6',
+        200000,
+        8192,
+        180000,
+        1,
+        ?,
+        NULL
+      )
+      ON CONFLICT(provider_id, model_id) DO NOTHING
+    `,
+    )
+    .run(now);
 }
 
 function getSeedClaudeModel(database: Database.Database): string {

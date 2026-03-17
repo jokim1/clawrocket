@@ -79,6 +79,31 @@ describe('clawrocket schema init', () => {
     expect(colNames).toContain('tool_permissions_json');
   });
 
+  it('seeds both Sonnet and Opus Anthropic models for AI Agents', () => {
+    _initTestDatabase();
+    const db = getDb();
+
+    const models = db
+      .prepare(
+        `SELECT model_id, display_name
+         FROM llm_provider_models
+         WHERE provider_id = 'provider.anthropic'
+         ORDER BY model_id`,
+      )
+      .all() as Array<{ model_id: string; display_name: string }>;
+
+    expect(models).toEqual([
+      {
+        model_id: 'claude-opus-4-6',
+        display_name: 'Claude Opus 4.6',
+      },
+      {
+        model_id: 'claude-sonnet-4-6',
+        display_name: 'Claude Sonnet 4.6',
+      },
+    ]);
+  });
+
   it('seeds separate main and default Talk agents', () => {
     _initTestDatabase();
     const db = getDb();
