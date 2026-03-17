@@ -70,7 +70,10 @@ import {
   upsertUser,
   upsertWebSession,
 } from './clawrocket/db/index.js';
-import { createRegisteredAgent } from './clawrocket/db/agent-accessors.js';
+import {
+  buildDefaultTalkToolPermissions,
+  createRegisteredAgent,
+} from './clawrocket/db/agent-accessors.js';
 
 function enqueueTalkTurnAtomic(input: {
   talkId: string;
@@ -569,6 +572,18 @@ describe('phase 0 schema and reliability tables', () => {
     const owner = getUserById('owner-1');
     expect(owner?.role).toBe('owner');
     expect(isDatabaseHealthy()).toBe(true);
+  });
+
+  it('defaults newly created agents to the Talk-safe tool profile', () => {
+    const agent = createRegisteredAgent({
+      name: 'Claude Sonnet Persona',
+      providerId: 'provider.anthropic',
+      modelId: 'claude-sonnet-4-6',
+    });
+
+    expect(JSON.parse(agent.tool_permissions_json)).toEqual(
+      buildDefaultTalkToolPermissions(),
+    );
   });
 
   it('defaults talks to ordered orchestration and allows metadata updates to panel', () => {
