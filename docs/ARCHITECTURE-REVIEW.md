@@ -412,29 +412,27 @@ Execution: Standard
 
 ---
 
-## Implementation order
+## Current Practical Order
 
-Priority: registered-agent management → fix shared tool loop → Talk agent rewrite → connector + web tools → per-agent container routing → ship Main frontend → Google Docs → consolidate → wire remaining.
+The historical implementation-order checklist above is no longer the right roadmap. The current state is:
 
-| Order | Issue | Effort | Notes |
-|-------|-------|--------|-------|
-| 1 | **#6 Registered-agent management UI on AI Agents page** | 1-2 days | New surface: list/create/edit/delete agents with tool-permission editing (determines execution tier) + credential consolidation from Settings. The current AI Agents page only imports provider/runtime APIs — registered-agent CRUD is backend-only (`server.ts` line 699). Prerequisite for #1 and #4. |
-| 2 | **#5 Honest connector copy (stopgap)** | 30 min | Stop lying to users immediately |
-| 3 | **#3a Fix shared agent-router tool loop** | 2-3h | `agent-router.ts` line 355 — re-call LLM after tool result + max-iterations guard. Unblocks multi-step tool semantics for direct executor agents. |
-| 4 | **#1 Talk agent model → registered-agent assignments** | 1-2 days | UI rewrite + persistence + JOIN for real data. Depends on #6 (registered-agent UI exists). |
-| 5 | **#5 Wire connector tools for real (Talks)** | 3-5h | Context loader → runtime → tool executor. No credential handling in loader. Depends on #3a (tool loop). |
-| 6 | **#3d Web fetch tool** | 2-3h | HTTP fetch + HTML-to-text. Same tool-executors pattern. Gives direct executor agents web reading. |
-| 7 | **#3e Web search tool** | 3-4h | Requires search API key (Google/Brave). Follows connector pattern. |
-| 8 | **#4 Backend write for main agent selection** | 2-3h | `setMainAgentId` + PUT route + UI selector. Provider-agnostic. Depends on #6. |
-| 9 | **#3c Main executor connector/web tools + callback** | 2-3h | Wire `executeToolCall` callback for Main. Reuse tools from #5/#6/#7. Depends on #3a. |
-| 10 | **#3g Per-agent container routing** | ~2-3 days | Stateless per turn (no session resume for Talk/Main). Structured context adapter with ephemeral per-run directory (Commitment #5). Route on effective permissions, not raw agent flags (Commitment #6). Final-result-only output mapping for v1. |
-| 11 | **#2 Main (Nanoclaw) frontend** | 1-2 days | Sidebar + thread list + chat. New `mainStream.ts` client (same SSE patterns, different endpoint). |
-| 12 | **#7 Talk agent health from provider verification** | 2-3h | After #4. JOIN registered_agents for real health. |
-| 13 | **#14b Agent chip tooltip — capability + effective execution** | 3-4h | Show agent capability vs effective execution for current user (Commitment #6). Depends on #4/#12 for real agent data + effective permission API field. |
-| 14 | **#8 Wire Google Sheets OAuth** | Medium | Unblock Sheets end-to-end |
-| 15 | **#15 Google Docs read/write connector** | ~1 day | New connector type. Same OAuth pattern as Sheets. Enables agents to create/edit Google Docs. |
-| 16 | **#9 Gate connector attach by verification** | 1h | After #14 |
-| 17 | **#10 User tool permissions UI** | 2-3h | Profile page or sidebar destination. Reflects per-agent routing tiers. |
-| 18 | **#11 Archive Talk-LLM settings** | Small | Remove or feature-flag |
-| 19 | **#13 New Talk defaults onboarding copy** | ~1h | Runtime fallback already works. UI copy only. |
-| 20 | **#12 Unified model migration** | Future | Main (Nanoclaw) → real Talk when channel sync is built |
+- Phase 1 through **Phase 6** are shipped in practical terms, including:
+  - direct executor tool loop
+  - Talk agent persistence and UI
+  - Main executor web tools
+  - ordered/panel multi-agent Talk orchestration
+  - stateless per-agent container routing for Main + supported single-agent Talk turns
+  - Rules elevation and structured Talk State
+- The next practical milestone is **Phase 7**:
+  - complete the product split between Data Connectors and Channel Bindings
+  - make existing binding policies fully editable
+  - add Google Docs as a real connector/tool surface
+- After that comes **Phase 8**:
+  - per-run context inspection
+  - lightweight role-aware context hints
+  - lightweight retrieval on top of the standardized context package
+- Post-phase work remains:
+  - mixed direct/container multi-agent backend parity
+  - Main → Talk migration when channel sync needs it
+  - Outputs, Jobs, and a fuller execution planner
+  - eventual Talk → Workspace rename once the model materially converges

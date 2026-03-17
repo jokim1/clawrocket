@@ -90,6 +90,36 @@ describe('execution-planner', () => {
     }
   });
 
+  it('routes from effective user permissions rather than raw heavy tool flags', () => {
+    seedAnthropicSecret();
+    const agent = createRegisteredAgent({
+      name: 'Claude Builder',
+      providerId: 'provider.anthropic',
+      modelId: 'claude-opus-4-6',
+      toolPermissionsJson: JSON.stringify({ shell: true }),
+    });
+
+    upsertUserToolPermission('owner-1', 'Bash', false, false);
+    upsertUserToolPermission('owner-1', 'Read', false, false);
+
+    const plan = planExecution(agent, 'owner-1');
+    expect(plan.backend).toBe('direct_http');
+    expect(
+      plan.effectiveTools.find((tool) => tool.toolFamily === 'shell'),
+    ).toMatchObject({
+      enabled: false,
+      requiresApproval: false,
+      runtimeTools: ['Bash'],
+    });
+    expect(
+      plan.effectiveTools.find((tool) => tool.toolFamily === 'filesystem'),
+    ).toMatchObject({
+      enabled: false,
+      requiresApproval: false,
+      runtimeTools: ['Read', 'Write', 'Edit', 'Glob'],
+    });
+  });
+
   it('requires shell when browser is enabled in 5A', () => {
     seedAnthropicSecret();
     const agent = createRegisteredAgent({
