@@ -9,6 +9,7 @@ import {
   upsertUser,
   upsertWebSession,
 } from '../../db/index.js';
+import * as googleToolsService from '../../identity/google-tools-service.js';
 import { hashSessionToken } from '../../identity/session.js';
 import { _resetRateLimitStateForTests } from '../middleware/rate-limit.js';
 import { createWebServer, type WebServerHandle } from '../server.js';
@@ -228,6 +229,46 @@ describe('talk tools routes', () => {
     const accountBody = (await accountRes.json()) as any;
     expect(accountBody.data.googleAccount.connected).toBe(true);
     expect(accountBody.data.googleAccount.scopes).toContain('drive.readonly');
+  });
+
+  it('returns a no-store picker token only when picker session creation succeeds', async () => {
+    const pickerSpy = vi
+      .spyOn(googleToolsService, 'buildGooglePickerSession')
+      .mockResolvedValue({
+        oauthToken: 'picker-oauth-token',
+        developerKey: 'picker-dev-key',
+        appId: 'picker-app-id',
+      });
+
+    const res = await server.request('/api/v1/me/google-account/picker-token', {
+      headers: { Authorization: 'Bearer owner-token' },
+    });
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get('cache-control')).toBe('no-store');
+    const body = (await res.json()) as any;
+    expect(body.data.oauthToken).toBe('picker-oauth-token');
+    expect(body.data.developerKey).toBe('picker-dev-key');
+    expect(body.data.appId).toBe('picker-app-id');
+    expect(pickerSpy).toHaveBeenCalledWith('owner-1');
+  });
+
+  it('surfaces picker session errors with their route status', async () => {
+    vi.spyOn(googleToolsService, 'buildGooglePickerSession').mockRejectedValue(
+      new googleToolsService.GoogleToolCredentialError(
+        'google_picker_not_configured',
+        'Google Picker is not configured on this server.',
+        503,
+      ),
+    );
+
+    const res = await server.request('/api/v1/me/google-account/picker-token', {
+      headers: { Authorization: 'Bearer owner-token' },
+    });
+
+    expect(res.status).toBe(503);
+    const body = (await res.json()) as any;
+    expect(body.error.code).toBe('google_picker_not_configured');
   });
 
   it('preserves the normal login callback flow when no google link request exists', async () => {

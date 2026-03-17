@@ -22,6 +22,7 @@ import {
 } from '../../db/index.js';
 import { listTalkAgents } from '../../agents/agent-registry.js';
 import { startGoogleOAuth } from '../../identity/auth-service.js';
+import { buildGooglePickerSession } from '../../identity/google-tools-service.js';
 import { hashOpaqueToken } from '../../security/hash.js';
 import type { ApiEnvelope, AuthContext } from '../types.js';
 
@@ -668,4 +669,49 @@ export function startUserGoogleScopeExpansionRoute(input: {
       },
     },
   };
+}
+
+export async function getGooglePickerSessionRoute(input: {
+  auth: AuthContext;
+}): Promise<{
+  statusCode: number;
+  body: ApiEnvelope<{
+    oauthToken: string;
+    developerKey: string;
+    appId: string;
+  }>;
+  noStore?: boolean;
+}> {
+  try {
+    const session = await buildGooglePickerSession(input.auth.userId);
+    return {
+      statusCode: 200,
+      body: { ok: true, data: session },
+      noStore: true,
+    };
+  } catch (error) {
+    if (
+      error &&
+      typeof error === 'object' &&
+      'code' in error &&
+      'status' in error &&
+      typeof (error as { code: unknown }).code === 'string' &&
+      typeof (error as { status: unknown }).status === 'number'
+    ) {
+      return {
+        statusCode: (error as { status: number }).status,
+        body: {
+          ok: false,
+          error: {
+            code: (error as { code: string }).code,
+            message:
+              error instanceof Error
+                ? error.message
+                : 'Failed to create Google Picker session.',
+          },
+        },
+      };
+    }
+    throw error;
+  }
 }
