@@ -6,6 +6,7 @@ import {
   detachDataConnectorFromTalk,
   getDataConnectorById,
   getTalkForUser,
+  getUserGoogleCredential,
   listDataConnectors,
   listTalkDataConnectors,
   patchDataConnector,
@@ -13,12 +14,18 @@ import {
   type DataConnectorSnapshot,
   type TalkDataConnectorSnapshot,
 } from '../../db/index.js';
+import { decryptGoogleToolCredential } from '../../identity/google-tools-credential-store.js';
+import { normalizeGoogleScopeAliases } from '../../identity/google-scopes.js';
 import { DataConnectorVerifier } from '../../connectors/connector-verifier.js';
 import { encryptConnectorSecret } from '../../connectors/connector-secret-store.js';
 import type { ConnectorKind } from '../../connectors/types.js';
 import { ApiEnvelope, AuthContext } from '../types.js';
 
 type JsonMap = Record<string, unknown>;
+const GOOGLE_SHEETS_CONNECTOR_SCOPES = [
+  'spreadsheets.readonly',
+  'spreadsheets',
+];
 
 function canManageDataConnectors(auth: AuthContext): boolean {
   return auth.role === 'owner' || auth.role === 'admin';
@@ -36,6 +43,14 @@ function validateConnectorKind(value: string): ConnectorKind | null {
     return value;
   }
   return null;
+}
+
+function hasAnyGoogleScope(
+  grantedScopes: string[],
+  requiredScopes: string[],
+): boolean {
+  const granted = new Set(normalizeGoogleScopeAliases(grantedScopes));
+  return requiredScopes.some((scope) => granted.has(scope));
 }
 
 function forbiddenResponse(message: string): {
@@ -64,6 +79,25 @@ function notFoundResponse(message: string): {
       ok: false,
       error: {
         code: 'not_found',
+        message,
+      },
+    },
+  };
+}
+
+function invalidResponse(
+  code: string,
+  message: string,
+): {
+  statusCode: number;
+  body: ApiEnvelope<never>;
+} {
+  return {
+    statusCode: 400,
+    body: {
+      ok: false,
+      error: {
+        code,
         message,
       },
     },
@@ -268,6 +302,8 @@ export function setDataConnectorCredentialRoute(input: {
   auth: AuthContext;
   connectorId: string;
   apiKey?: string | null;
+  useGoogleAccount?: boolean;
+  clearCredential?: boolean;
   verifier: DataConnectorVerifier;
 }): Promise<{
   statusCode: number;
@@ -286,9 +322,29 @@ export function setDataConnectorCredentialRoute(input: {
     }
 
     const apiKey = input.apiKey?.trim() || null;
+    const useGoogleAccount = input.useGoogleAccount === true;
+    const clearCredential = input.clearCredential === true;
+    if (useGoogleAccount && clearCredential) {
+      return invalidResponse(
+        'invalid_credential_action',
+        'Choose either linked Google account save or credential clear, not both.',
+      );
+    }
     let updated: DataConnectorSnapshot | undefined;
 
     if (connector.connectorKind === 'posthog') {
+      if (useGoogleAccount || clearCredential) {
+        return {
+          statusCode: 400,
+          body: {
+            ok: false,
+            error: {
+              code: 'unsupported_connector_kind',
+              message: 'PostHog connectors only support API key credentials.',
+            },
+          },
+        };
+      }
       updated = apiKey
         ? setDataConnectorCredential({
             connectorId: input.connectorId,
@@ -300,17 +356,63 @@ export function setDataConnectorCredentialRoute(input: {
           })
         : deleteDataConnectorCredential(input.connectorId, input.auth.userId);
     } else if (connector.connectorKind === 'google_sheets') {
-      return {
-        statusCode: 400,
-        body: {
-          ok: false,
-          error: {
-            code: 'oauth_required',
-            message:
-              'Google Sheets connectors require OAuth. That flow is not wired into this slice yet.',
+      if (clearCredential) {
+        updated = deleteDataConnectorCredential(
+          input.connectorId,
+          input.auth.userId,
+        );
+      } else if (useGoogleAccount) {
+        const googleCredential = getUserGoogleCredential(input.auth.userId);
+        if (!googleCredential) {
+          return invalidResponse(
+            'google_account_not_connected',
+            'Connect a Google account before using it for a Sheets connector.',
+          );
+        }
+
+        let payload;
+        try {
+          payload = decryptGoogleToolCredential(googleCredential.ciphertext);
+        } catch {
+          return invalidResponse(
+            'google_credential_invalid',
+            'Stored Google account credential is invalid. Reconnect your Google account and try again.',
+          );
+        }
+
+        if (
+          !hasAnyGoogleScope(payload.scopes, GOOGLE_SHEETS_CONNECTOR_SCOPES)
+        ) {
+          return invalidResponse(
+            'google_scopes_missing',
+            'Linked Google account is missing Sheets access. Grant Google Sheets permissions and try again.',
+          );
+        }
+
+        updated = setDataConnectorCredential({
+          connectorId: input.connectorId,
+          ciphertext: encryptConnectorSecret({
+            kind: 'google_sheets',
+            accessToken: payload.accessToken,
+            refreshToken: payload.refreshToken,
+            expiryDate: payload.expiryDate,
+            scopes: normalizeGoogleScopeAliases(payload.scopes),
+          }),
+          updatedBy: input.auth.userId,
+        });
+      } else {
+        return {
+          statusCode: 400,
+          body: {
+            ok: false,
+            error: {
+              code: 'oauth_required',
+              message:
+                'Google Sheets connectors require a linked Google account credential.',
+            },
           },
-        },
-      };
+        };
+      }
     } else {
       return {
         statusCode: 400,
@@ -330,7 +432,10 @@ export function setDataConnectorCredentialRoute(input: {
     }
 
     let verified = updated;
-    if (apiKey && updated.verificationStatus === 'not_verified') {
+    if (
+      (apiKey || useGoogleAccount) &&
+      updated.verificationStatus === 'not_verified'
+    ) {
       verified = await input.verifier.verify(updated.id);
     }
 

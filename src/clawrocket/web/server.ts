@@ -541,7 +541,9 @@ function buildApp(opts: WebServerOptions): Hono {
     }
 
     const bodyText = await c.req.text();
-    const payload = parseJsonPayload<{ returnTo?: unknown }>(bodyText);
+    const payload = parseJsonPayload<{ returnTo?: unknown; scopes?: unknown }>(
+      bodyText,
+    );
     if (!payload.ok) {
       return c.json(
         { ok: false, error: { code: 'invalid_json', message: payload.error } },
@@ -549,8 +551,15 @@ function buildApp(opts: WebServerOptions): Hono {
       );
     }
 
+    const scopes = Array.isArray(payload.data.scopes)
+      ? payload.data.scopes.filter(
+          (scope): scope is string => typeof scope === 'string',
+        )
+      : [];
+
     const result = startUserGoogleAccountConnectRoute({
       auth,
+      scopes,
       returnTo:
         typeof payload.data.returnTo === 'string'
           ? normalizeReturnToPath(payload.data.returnTo)
@@ -2062,6 +2071,8 @@ function buildApp(opts: WebServerOptions): Hono {
     const bodyText = await c.req.text();
     const payload = parseJsonPayload<{
       apiKey?: string | null;
+      useGoogleAccount?: unknown;
+      clearCredential?: unknown;
     }>(bodyText);
     if (!payload.ok) {
       return c.json(
@@ -2085,6 +2096,14 @@ function buildApp(opts: WebServerOptions): Hono {
       apiKey:
         typeof payload.data.apiKey === 'string' || payload.data.apiKey === null
           ? payload.data.apiKey
+          : undefined,
+      useGoogleAccount:
+        typeof payload.data.useGoogleAccount === 'boolean'
+          ? payload.data.useGoogleAccount
+          : undefined,
+      clearCredential:
+        typeof payload.data.clearCredential === 'boolean'
+          ? payload.data.clearCredential
           : undefined,
       verifier: opts.dataConnectorVerifier,
     });

@@ -2,14 +2,20 @@ import { useEffect, useMemo, useState } from 'react';
 
 import {
   ApiError,
+  connectUserGoogleAccount,
   createDataConnector,
   DataConnector,
   deleteDataConnector,
+  expandUserGoogleScopes,
   getDataConnectors,
+  getUserGoogleAccount,
   patchDataConnector,
   setDataConnectorCredential,
   UnauthorizedError,
+  type UserGoogleAccount,
 } from '../lib/api';
+import { launchGoogleAccountPopup } from '../lib/googleAccountPopup';
+import { useLocation } from 'react-router-dom';
 
 type Props = {
   onUnauthorized: () => void;
@@ -24,12 +30,34 @@ type ConnectorDraft = {
   spreadsheetId: string;
   spreadsheetUrl: string;
 };
+const GOOGLE_SHEETS_CONNECTOR_SCOPES = [
+  'spreadsheets.readonly',
+  'spreadsheets',
+];
 
 function canManageDataConnectors(userRole: string): boolean {
   return userRole === 'owner' || userRole === 'admin';
 }
 
-function formatVerificationStatus(status: DataConnector['verificationStatus']): string {
+function createEmptyGoogleAccount(): UserGoogleAccount {
+  return {
+    connected: false,
+    email: null,
+    displayName: null,
+    scopes: [],
+    accessExpiresAt: null,
+  };
+}
+
+function hasGoogleSheetsConnectorAccess(account: UserGoogleAccount): boolean {
+  return GOOGLE_SHEETS_CONNECTOR_SCOPES.some((scope) =>
+    account.scopes.includes(scope),
+  );
+}
+
+function formatVerificationStatus(
+  status: DataConnector['verificationStatus'],
+): string {
   switch (status) {
     case 'missing':
       return 'Missing credential';
@@ -48,7 +76,9 @@ function formatVerificationStatus(status: DataConnector['verificationStatus']): 
   }
 }
 
-function verificationStatusClass(status: DataConnector['verificationStatus']): string {
+function verificationStatusClass(
+  status: DataConnector['verificationStatus'],
+): string {
   switch (status) {
     case 'verified':
       return 'talk-agent-chip talk-agent-chip-success';
@@ -92,7 +122,9 @@ function buildConnectorDraft(connector: DataConnector): ConnectorDraft {
   };
 }
 
-function createEmptyDraft(kind: DataConnector['connectorKind']): ConnectorDraft {
+function createEmptyDraft(
+  kind: DataConnector['connectorKind'],
+): ConnectorDraft {
   return {
     name: '',
     enabled: true,
@@ -123,10 +155,17 @@ export function DataConnectorsPage({
   onUnauthorized,
   userRole,
 }: Props): JSX.Element {
+  const location = useLocation();
   const [connectors, setConnectors] = useState<DataConnector[]>([]);
+  const [googleAccount, setGoogleAccount] = useState<UserGoogleAccount>(
+    createEmptyGoogleAccount(),
+  );
   const [drafts, setDrafts] = useState<Record<string, ConnectorDraft>>({});
-  const [credentialDrafts, setCredentialDrafts] = useState<Record<string, string>>({});
-  const [createKind, setCreateKind] = useState<DataConnector['connectorKind']>('posthog');
+  const [credentialDrafts, setCredentialDrafts] = useState<
+    Record<string, string>
+  >({});
+  const [createKind, setCreateKind] =
+    useState<DataConnector['connectorKind']>('posthog');
   const [createDraft, setCreateDraft] = useState<ConnectorDraft>(() =>
     createEmptyDraft('posthog'),
   );
@@ -141,12 +180,19 @@ export function DataConnectorsPage({
     [userRole],
   );
 
+  const refreshGoogleAccount = async (): Promise<UserGoogleAccount> => {
+    const nextGoogleAccount = await getUserGoogleAccount();
+    setGoogleAccount(nextGoogleAccount);
+    return nextGoogleAccount;
+  };
+
   const syncConnectors = (nextConnectors: DataConnector[]) => {
     setConnectors(nextConnectors);
     setDrafts((current) => {
       const nextDrafts: Record<string, ConnectorDraft> = {};
       for (const connector of nextConnectors) {
-        nextDrafts[connector.id] = current[connector.id] || buildConnectorDraft(connector);
+        nextDrafts[connector.id] =
+          current[connector.id] || buildConnectorDraft(connector);
       }
       return nextDrafts;
     });
@@ -163,9 +209,13 @@ export function DataConnectorsPage({
     let cancelled = false;
     const load = async () => {
       try {
-        const nextConnectors = await getDataConnectors();
+        const [nextConnectors, nextGoogleAccount] = await Promise.all([
+          getDataConnectors(),
+          getUserGoogleAccount(),
+        ]);
         if (cancelled) return;
         syncConnectors(nextConnectors);
+        setGoogleAccount(nextGoogleAccount);
         setError(null);
       } catch (err) {
         if (err instanceof UnauthorizedError) {
@@ -199,7 +249,9 @@ export function DataConnectorsPage({
   if (!canManage) {
     return (
       <section className="settings-shell">
-        <p className="page-state">Data connectors are available to owners and admins.</p>
+        <p className="page-state">
+          Data connectors are available to owners and admins.
+        </p>
       </section>
     );
   }
@@ -210,7 +262,9 @@ export function DataConnectorsPage({
       if (!existing) {
         return [connector, ...current];
       }
-      return current.map((item) => (item.id === connector.id ? connector : item));
+      return current.map((item) =>
+        item.id === connector.id ? connector : item,
+      );
     });
     setDrafts((current) => ({
       ...current,
@@ -255,7 +309,9 @@ export function DataConnectorsPage({
         onUnauthorized();
         return;
       }
-      setError(err instanceof ApiError ? err.message : 'Failed to create connector.');
+      setError(
+        err instanceof ApiError ? err.message : 'Failed to create connector.',
+      );
     } finally {
       setBusyKey(null);
     }
@@ -280,7 +336,9 @@ export function DataConnectorsPage({
         onUnauthorized();
         return;
       }
-      setError(err instanceof ApiError ? err.message : 'Failed to update connector.');
+      setError(
+        err instanceof ApiError ? err.message : 'Failed to update connector.',
+      );
     } finally {
       setBusyKey(null);
     }
@@ -305,7 +363,96 @@ export function DataConnectorsPage({
         onUnauthorized();
         return;
       }
-      setError(err instanceof ApiError ? err.message : 'Failed to save credential.');
+      setError(
+        err instanceof ApiError ? err.message : 'Failed to save credential.',
+      );
+    } finally {
+      setBusyKey(null);
+    }
+  };
+
+  const ensureGoogleSheetsConnectorAccess =
+    async (): Promise<UserGoogleAccount> => {
+      let nextGoogleAccount = googleAccount;
+      const returnTo = location.pathname;
+
+      if (!nextGoogleAccount.connected) {
+        const launch = await connectUserGoogleAccount({
+          returnTo,
+          scopes: ['spreadsheets.readonly'],
+        });
+        await launchGoogleAccountPopup(launch.authorizationUrl);
+        nextGoogleAccount = await refreshGoogleAccount();
+      }
+
+      if (!hasGoogleSheetsConnectorAccess(nextGoogleAccount)) {
+        const launch = await expandUserGoogleScopes({
+          scopes: ['spreadsheets.readonly'],
+          returnTo,
+        });
+        await launchGoogleAccountPopup(launch.authorizationUrl);
+        nextGoogleAccount = await refreshGoogleAccount();
+      }
+
+      if (!hasGoogleSheetsConnectorAccess(nextGoogleAccount)) {
+        throw new Error(
+          'Linked Google account is still missing Google Sheets access.',
+        );
+      }
+
+      return nextGoogleAccount;
+    };
+
+  const handleSaveGoogleSheetsCredential = async (connector: DataConnector) => {
+    setBusyKey(`credential:${connector.id}`);
+    try {
+      const account = await ensureGoogleSheetsConnectorAccess();
+      const updated = await setDataConnectorCredential({
+        connectorId: connector.id,
+        useGoogleAccount: true,
+      });
+      upsertConnector(updated);
+      setNotice(
+        account.email
+          ? `${updated.name} credential saved from ${account.email}.`
+          : `${updated.name} credential saved from linked Google account.`,
+      );
+      setError(null);
+    } catch (err) {
+      if (err instanceof UnauthorizedError) {
+        onUnauthorized();
+        return;
+      }
+      setError(
+        err instanceof ApiError || err instanceof Error
+          ? err.message
+          : 'Failed to save Google Sheets credential.',
+      );
+    } finally {
+      setBusyKey(null);
+    }
+  };
+
+  const handleClearGoogleSheetsCredential = async (
+    connector: DataConnector,
+  ) => {
+    setBusyKey(`credential:${connector.id}`);
+    try {
+      const updated = await setDataConnectorCredential({
+        connectorId: connector.id,
+        clearCredential: true,
+      });
+      upsertConnector(updated);
+      setNotice(`${updated.name} credential cleared.`);
+      setError(null);
+    } catch (err) {
+      if (err instanceof UnauthorizedError) {
+        onUnauthorized();
+        return;
+      }
+      setError(
+        err instanceof ApiError ? err.message : 'Failed to clear credential.',
+      );
     } finally {
       setBusyKey(null);
     }
@@ -317,7 +464,9 @@ export function DataConnectorsPage({
     setBusyKey(`delete:${connector.id}`);
     try {
       await deleteDataConnector(connector.id);
-      setConnectors((current) => current.filter((item) => item.id !== connector.id));
+      setConnectors((current) =>
+        current.filter((item) => item.id !== connector.id),
+      );
       setDrafts((current) => {
         const next = { ...current };
         delete next[connector.id];
@@ -335,7 +484,9 @@ export function DataConnectorsPage({
         onUnauthorized();
         return;
       }
-      setError(err instanceof ApiError ? err.message : 'Failed to delete connector.');
+      setError(
+        err instanceof ApiError ? err.message : 'Failed to delete connector.',
+      );
     } finally {
       setBusyKey(null);
     }
@@ -347,8 +498,8 @@ export function DataConnectorsPage({
         <h1>Data Connectors</h1>
         <p className="settings-copy">
           Define org-level data sources and store credentials. Verified
-          connectors can be attached to talks and are available as query
-          tools during execution.
+          connectors can be attached to talks and are available as query tools
+          during execution.
         </p>
         {error ? (
           <div className="settings-banner settings-banner-error" role="alert">
@@ -356,7 +507,10 @@ export function DataConnectorsPage({
           </div>
         ) : null}
         {notice ? (
-          <div className="settings-banner settings-banner-success" role="status">
+          <div
+            className="settings-banner settings-banner-success"
+            role="status"
+          >
             {notice}
           </div>
         ) : null}
@@ -370,7 +524,8 @@ export function DataConnectorsPage({
             <select
               value={createKind}
               onChange={(event) => {
-                const nextKind = event.target.value as DataConnector['connectorKind'];
+                const nextKind = event.target
+                  .value as DataConnector['connectorKind'];
                 setCreateKind(nextKind);
                 setCreateDraft(createEmptyDraft(nextKind));
                 setCreateApiKey('');
@@ -500,21 +655,27 @@ export function DataConnectorsPage({
         ) : (
           <div className="connector-card-list">
             {connectors.map((connector) => {
-              const draft = drafts[connector.id] || buildConnectorDraft(connector);
+              const draft =
+                drafts[connector.id] || buildConnectorDraft(connector);
               const isBusy = busyKey?.endsWith(`:${connector.id}`);
               return (
-                <article key={connector.id} className="talk-llm-card connector-card">
+                <article
+                  key={connector.id}
+                  className="talk-llm-card connector-card"
+                >
                   <div className="connector-card-header">
                     <div>
                       <h3>{connector.name}</h3>
                       <p className="talk-llm-meta">
-                        {formatConnectorKind(connector.connectorKind)} • Attached to{' '}
-                        {connector.attachedTalkCount} talk
+                        {formatConnectorKind(connector.connectorKind)} •
+                        Attached to {connector.attachedTalkCount} talk
                         {connector.attachedTalkCount === 1 ? '' : 's'}
                       </p>
                     </div>
                     <span
-                      className={verificationStatusClass(connector.verificationStatus)}
+                      className={verificationStatusClass(
+                        connector.verificationStatus,
+                      )}
                     >
                       {formatVerificationStatus(connector.verificationStatus)}
                     </span>
@@ -587,7 +748,9 @@ export function DataConnectorsPage({
                           />
                         </label>
                         <label>
-                          <span className="settings-label">Spreadsheet URL</span>
+                          <span className="settings-label">
+                            Spreadsheet URL
+                          </span>
                           <input
                             value={draft.spreadsheetUrl}
                             onChange={(event) =>
@@ -637,7 +800,10 @@ export function DataConnectorsPage({
                   </div>
 
                   {connector.lastVerificationError ? (
-                    <div className="inline-banner inline-banner-warning" role="status">
+                    <div
+                      className="inline-banner inline-banner-warning"
+                      role="status"
+                    >
                       {connector.lastVerificationError}
                     </div>
                   ) : null}
@@ -655,7 +821,9 @@ export function DataConnectorsPage({
                               [connector.id]: event.target.value,
                             }))
                           }
-                          placeholder={connector.hasCredential ? 'Stored key' : 'phx_...'}
+                          placeholder={
+                            connector.hasCredential ? 'Stored key' : 'phx_...'
+                          }
                         />
                       </label>
                       <button
@@ -670,9 +838,52 @@ export function DataConnectorsPage({
                       </button>
                     </div>
                   ) : (
-                    <div className="inline-banner inline-banner-warning" role="status">
-                      Google Sheets OAuth is coming soon. You can create and attach the
-                      connector now — it will be ready when OAuth support ships.
+                    <div className="connector-credential-row">
+                      <div>
+                        <span className="settings-label">
+                          Linked Google account
+                        </span>
+                        <p style={{ margin: '0.25rem 0 0 0' }}>
+                          {googleAccount.connected
+                            ? `Connected as ${googleAccount.email || 'your Google account'}`
+                            : 'Not connected'}
+                        </p>
+                        <p className="talk-llm-meta">
+                          {hasGoogleSheetsConnectorAccess(googleAccount)
+                            ? 'This account can be saved as the connector credential.'
+                            : 'Google Sheets access is required before saving this connector credential.'}
+                        </p>
+                      </div>
+                      <div className="settings-button-row">
+                        <button
+                          type="button"
+                          className="secondary-btn"
+                          onClick={() =>
+                            void handleSaveGoogleSheetsCredential(connector)
+                          }
+                          disabled={busyKey === `credential:${connector.id}`}
+                        >
+                          {busyKey === `credential:${connector.id}`
+                            ? 'Saving…'
+                            : !googleAccount.connected
+                              ? 'Connect Google'
+                              : hasGoogleSheetsConnectorAccess(googleAccount)
+                                ? 'Use Linked Google Account'
+                                : 'Grant Sheets Access'}
+                        </button>
+                        {connector.hasCredential ? (
+                          <button
+                            type="button"
+                            className="secondary-btn"
+                            onClick={() =>
+                              void handleClearGoogleSheetsCredential(connector)
+                            }
+                            disabled={busyKey === `credential:${connector.id}`}
+                          >
+                            Clear Stored OAuth
+                          </button>
+                        ) : null}
+                      </div>
                     </div>
                   )}
 
@@ -683,7 +894,9 @@ export function DataConnectorsPage({
                       onClick={() => void handleSaveConnector(connector)}
                       disabled={busyKey === `save:${connector.id}` || isBusy}
                     >
-                      {busyKey === `save:${connector.id}` ? 'Saving…' : 'Save Details'}
+                      {busyKey === `save:${connector.id}`
+                        ? 'Saving…'
+                        : 'Save Details'}
                     </button>
                     <button
                       type="button"
@@ -691,7 +904,9 @@ export function DataConnectorsPage({
                       onClick={() => void handleDelete(connector)}
                       disabled={busyKey === `delete:${connector.id}` || isBusy}
                     >
-                      {busyKey === `delete:${connector.id}` ? 'Deleting…' : 'Delete'}
+                      {busyKey === `delete:${connector.id}`
+                        ? 'Deleting…'
+                        : 'Delete'}
                     </button>
                   </div>
                 </article>
