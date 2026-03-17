@@ -765,6 +765,7 @@ export function createTalk(input: {
         now,
         now,
       );
+    getOrCreateDefaultThread(txInput.id);
     initializeTalkToolGrants(txInput.id, txInput.ownerId);
   });
   tx(input);
@@ -1977,6 +1978,10 @@ export function listTalkThreads(talkId: string): Array<{
   message_count: number;
   last_message_at: string | null;
 }> {
+  // Talks created before the thread UI rollout, or talks inserted before the
+  // createTalk() default-thread fix, may still have zero thread rows. Heal that
+  // state on read so the UI always has an active thread to select.
+  getOrCreateDefaultThread(talkId);
   return getDb()
     .prepare(
       `
