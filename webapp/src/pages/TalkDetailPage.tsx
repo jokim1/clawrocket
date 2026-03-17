@@ -41,6 +41,7 @@ import {
   expandUserGoogleScopes,
   getAiAgents,
   getDataConnectors,
+  getGooglePickerSession,
   getTalk,
   getTalkAgents,
   getTalkTools,
@@ -84,6 +85,7 @@ import {
 } from '../lib/api';
 import { TalkHistoryEditor } from '../components/TalkHistoryEditor';
 import { stripInternalAssistantText } from '../lib/assistantText';
+import { openGoogleDrivePicker } from '../lib/googlePicker';
 import { openTalkStream } from '../lib/talkStream';
 import type {
   MessageAppendedEvent,
@@ -3959,6 +3961,51 @@ export function TalkDetailPage({
     }
   };
 
+  const handleOpenDrivePicker = async (mode: 'folder' | 'file') => {
+    if (!canEditAgents) return;
+
+    setToolStatus({ status: 'saving' });
+    try {
+      const session = await getGooglePickerSession();
+      const selections = await openGoogleDrivePicker({ session, mode });
+      if (selections.length === 0) {
+        setToolStatus({ status: 'idle' });
+        return;
+      }
+
+      await Promise.all(
+        selections.map((selection) =>
+          createTalkGoogleDriveResource({
+            talkId,
+            kind: selection.kind,
+            externalId: selection.externalId,
+            displayName: selection.displayName,
+            metadata: selection.metadata,
+          }),
+        ),
+      );
+
+      await refreshTalkTools();
+      setToolStatus({
+        status: 'success',
+        message:
+          selections.length === 1
+            ? 'Drive binding added to this Talk.'
+            : `${selections.length} Drive bindings added to this Talk.`,
+      });
+    } catch (err) {
+      if (err instanceof UnauthorizedError) {
+        handleUnauthorized();
+        return;
+      }
+      setToolStatus({
+        status: 'error',
+        message:
+          err instanceof Error ? err.message : 'Failed to open Google Picker.',
+      });
+    }
+  };
+
   const handleDeleteDriveBinding = async (bindingId: string) => {
     if (!canEditAgents) return;
 
@@ -5301,6 +5348,37 @@ export function TalkDetailPage({
                     )}
                     {canEditAgents ? (
                       <div style={{ marginTop: '0.75rem' }}>
+                        <div className="settings-button-row">
+                          <button
+                            type="button"
+                            className="secondary-btn"
+                            onClick={() => void handleOpenDrivePicker('folder')}
+                            disabled={
+                              toolStatus.status === 'saving' ||
+                              !talkTools.googleAccount.connected
+                            }
+                          >
+                            Bind Folders
+                          </button>
+                          <button
+                            type="button"
+                            className="secondary-btn"
+                            onClick={() => void handleOpenDrivePicker('file')}
+                            disabled={
+                              toolStatus.status === 'saving' ||
+                              !talkTools.googleAccount.connected
+                            }
+                          >
+                            Bind Files
+                          </button>
+                        </div>
+                        <p
+                          className="talk-llm-meta"
+                          style={{ marginTop: '0.5rem' }}
+                        >
+                          Use Google Picker for multi-select binding, or enter a
+                          Drive id manually below.
+                        </p>
                         <div className="connector-attach-row">
                           <label>
                             <span className="settings-label">Kind</span>

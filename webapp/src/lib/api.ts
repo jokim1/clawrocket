@@ -337,6 +337,12 @@ export type GoogleAccountAuthorizationLaunch = {
   expiresInSec: number;
 };
 
+export type GooglePickerSession = {
+  oauthToken: string;
+  developerKey: string;
+  appId: string;
+};
+
 export type EffectiveToolAccessState =
   | 'available'
   | 'unavailable_due_to_route'
@@ -1112,6 +1118,10 @@ export async function expandUserGoogleScopes(
     },
   );
   return envelope;
+}
+
+export async function getGooglePickerSession(): Promise<GooglePickerSession> {
+  return apiRequest<GooglePickerSession>('/api/v1/me/google-account/picker-token');
 }
 
 export async function getTalkAudit(input: {

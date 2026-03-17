@@ -126,6 +126,7 @@ import {
 import {
   createTalkResourceRoute,
   deleteTalkResourceRoute,
+  getGooglePickerSessionRoute,
   getTalkToolsRoute,
   getUserGoogleAccountRoute,
   listTalkResourcesRoute,
@@ -613,6 +614,29 @@ function buildApp(opts: WebServerOptions): Hono {
       status: result.statusCode,
       headers: { 'content-type': 'application/json; charset=utf-8' },
     });
+  });
+
+  app.get('/api/v1/me/google-account/picker-token', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+
+    const rateResult = checkRateLimit({
+      principalId: auth.userId,
+      bucket: 'read',
+    });
+    if (!rateResult.allowed) {
+      return rateLimitedResponse(c, rateResult);
+    }
+
+    const result = await getGooglePickerSessionRoute({ auth });
+    const response = new Response(JSON.stringify(result.body), {
+      status: result.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
+    if (result.noStore) {
+      response.headers.set('cache-control', 'no-store');
+    }
+    return response;
   });
 
   app.post('/api/v1/auth/refresh', async (c) => {

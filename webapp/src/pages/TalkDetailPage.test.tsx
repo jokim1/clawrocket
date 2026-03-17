@@ -12,6 +12,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 
 import { TalkDetailPage } from './TalkDetailPage';
+import { openGoogleDrivePicker } from '../lib/googlePicker';
 import { openTalkStream } from '../lib/talkStream';
 import type {
   AiAgentsPageData,
@@ -37,6 +38,10 @@ vi.mock('../lib/talkStream', () => ({
   openTalkStream: vi.fn(),
 }));
 
+vi.mock('../lib/googlePicker', () => ({
+  openGoogleDrivePicker: vi.fn(),
+}));
+
 type StreamCallbacks = Parameters<typeof openTalkStream>[0];
 type SavedTalkAgentRequest = {
   agents: TalkAgent[];
@@ -46,6 +51,7 @@ const DEFAULT_THREAD_ID = 'thread-default';
 
 describe('TalkDetailPage', () => {
   const openTalkStreamMock = vi.mocked(openTalkStream);
+  const openGoogleDrivePickerMock = vi.mocked(openGoogleDrivePicker);
   let streamInput: StreamCallbacks | null = null;
 
   beforeEach(() => {
@@ -61,6 +67,7 @@ describe('TalkDetailPage', () => {
         close: vi.fn(),
       };
     });
+    openGoogleDrivePickerMock.mockReset();
   });
 
   afterEach(() => {
@@ -282,6 +289,141 @@ describe('TalkDetailPage', () => {
 
     expect(await screen.findByText('Google permissions updated.')).toBeTruthy();
     expect(screen.getByText(/gmail\.send/i)).toBeTruthy();
+  });
+
+  it('binds Drive resources from Google Picker selections', async () => {
+    const user = userEvent.setup();
+    openGoogleDrivePickerMock.mockResolvedValue([
+      {
+        kind: 'google_drive_folder',
+        externalId: 'folder-123',
+        displayName: 'Accounting',
+        metadata: { mimeType: 'application/vnd.google-apps.folder', url: null },
+      },
+      {
+        kind: 'google_drive_folder',
+        externalId: 'folder-456',
+        displayName: 'Forecasts',
+        metadata: { mimeType: 'application/vnd.google-apps.folder', url: null },
+      },
+    ]);
+    installTalkDetailFetch({
+      talkTools: {
+        ...buildTalkTools(),
+        googleAccount: {
+          connected: true,
+          email: 'owner@example.com',
+          displayName: 'Owner',
+          scopes: ['drive.readonly'],
+          accessExpiresAt: null,
+        },
+        bindings: [],
+      },
+    });
+
+    renderDetailPage('/app/talks/talk-1/tools');
+
+    await screen.findByRole('heading', { name: 'Tools' });
+    await user.click(screen.getByRole('button', { name: 'Bind Folders' }));
+
+    expect(
+      await screen.findByText('2 Drive bindings added to this Talk.'),
+    ).toBeTruthy();
+    expect(screen.getByText('Accounting')).toBeTruthy();
+    expect(screen.getByText('Forecasts')).toBeTruthy();
+    expect(openGoogleDrivePickerMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('treats picker cancellation as a no-op', async () => {
+    const user = userEvent.setup();
+    openGoogleDrivePickerMock.mockResolvedValue([]);
+    installTalkDetailFetch({
+      talkTools: {
+        ...buildTalkTools(),
+        googleAccount: {
+          connected: true,
+          email: 'owner@example.com',
+          displayName: 'Owner',
+          scopes: ['drive.readonly'],
+          accessExpiresAt: null,
+        },
+        bindings: [],
+      },
+    });
+
+    renderDetailPage('/app/talks/talk-1/tools');
+
+    await screen.findByRole('heading', { name: 'Tools' });
+    await user.click(screen.getByRole('button', { name: 'Bind Files' }));
+
+    await waitFor(() =>
+      expect(openGoogleDrivePickerMock).toHaveBeenCalledTimes(1),
+    );
+    expect(
+      screen.queryByText(/Drive binding added to this Talk/i),
+    ).toBeNull();
+    expect(
+      screen.queryByText(/Drive bindings added to this Talk/i),
+    ).toBeNull();
+  });
+
+  it('shows picker errors inline in the Tools tab', async () => {
+    const user = userEvent.setup();
+    openGoogleDrivePickerMock.mockRejectedValue(
+      new Error('Google Picker is unavailable.'),
+    );
+    installTalkDetailFetch({
+      talkTools: {
+        ...buildTalkTools(),
+        googleAccount: {
+          connected: true,
+          email: 'owner@example.com',
+          displayName: 'Owner',
+          scopes: ['drive.readonly'],
+          accessExpiresAt: null,
+        },
+      },
+    });
+
+    renderDetailPage('/app/talks/talk-1/tools');
+
+    await screen.findByRole('heading', { name: 'Tools' });
+    await user.click(screen.getByRole('button', { name: 'Bind Files' }));
+
+    expect(
+      await screen.findByText('Google Picker is unavailable.'),
+    ).toBeTruthy();
+  });
+
+  it('shows picker-token fetch errors without opening Google Picker', async () => {
+    const user = userEvent.setup();
+    installTalkDetailFetch({
+      pickerTokenError: {
+        status: 503,
+        code: 'google_picker_not_configured',
+        message: 'Google Picker is not configured.',
+      },
+      talkTools: {
+        ...buildTalkTools(),
+        googleAccount: {
+          connected: true,
+          email: 'owner@example.com',
+          displayName: 'Owner',
+          scopes: ['drive.readonly'],
+          accessExpiresAt: null,
+        },
+      },
+    });
+
+    renderDetailPage('/app/talks/talk-1/tools');
+
+    await screen.findByRole('heading', { name: 'Tools' });
+    await user.click(screen.getByRole('button', { name: 'Bind Files' }));
+
+    expect(
+      await screen.findByText('Google Picker is not configured.'),
+    ).toBeTruthy();
+    expect(openGoogleDrivePickerMock).not.toHaveBeenCalled();
   });
 
   it('treats awaiting confirmation runs as active rounds on the Talk tab', async () => {
@@ -1728,6 +1870,11 @@ function installTalkDetailFetch(input?: {
   ingressFailures?: ChannelQueueFailure[];
   deliveryFailures?: ChannelQueueFailure[];
   talkTools?: TalkTools;
+  pickerTokenError?: {
+    status: number;
+    code?: string;
+    message: string;
+  };
   aiAgents?: AiAgentsPageData;
   onPutAgents?: (body: SavedTalkAgentRequest) => TalkAgent[];
   onGetContext?: () => TalkContext;
@@ -2172,6 +2319,29 @@ function installTalkDetailFetch(input?: {
             authorizationUrl:
               'http://127.0.0.1:3210/api/v1/auth/google/callback?state=scope-state&email=owner@example.com&name=Owner',
             expiresInSec: 600,
+          },
+        });
+      }
+
+      if (
+        url.endsWith('/api/v1/me/google-account/picker-token') &&
+        method === 'GET'
+      ) {
+        if (input?.pickerTokenError) {
+          return jsonResponse(input.pickerTokenError.status, {
+            ok: false,
+            error: {
+              code: input.pickerTokenError.code,
+              message: input.pickerTokenError.message,
+            },
+          });
+        }
+        return jsonResponse(200, {
+          ok: true,
+          data: {
+            oauthToken: 'picker-oauth-token',
+            developerKey: 'picker-dev-key',
+            appId: 'picker-app-id',
           },
         });
       }

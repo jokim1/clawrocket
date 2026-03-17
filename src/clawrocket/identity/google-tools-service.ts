@@ -1,4 +1,6 @@
 import {
+  GOOGLE_PICKER_API_KEY,
+  GOOGLE_PICKER_APP_ID,
   GOOGLE_OAUTH_CLIENT_ID,
   GOOGLE_OAUTH_CLIENT_SECRET,
 } from '../config.js';
@@ -279,5 +281,30 @@ export async function getValidGoogleToolAccessToken(input: {
     scopes: normalizeGoogleScopeAliases(payload.scopes),
     email: credential.email,
     displayName: credential.displayName,
+  };
+}
+
+export async function buildGooglePickerSession(userId: string): Promise<{
+  oauthToken: string;
+  developerKey: string;
+  appId: string;
+}> {
+  if (!GOOGLE_PICKER_API_KEY || !GOOGLE_PICKER_APP_ID) {
+    throw new GoogleToolCredentialError(
+      'google_picker_not_configured',
+      'Google Picker is not configured on this server.',
+      503,
+    );
+  }
+
+  const token = await getValidGoogleToolAccessToken({
+    userId,
+    requiredScopes: ['drive.readonly'],
+  });
+
+  return {
+    oauthToken: token.accessToken,
+    developerKey: GOOGLE_PICKER_API_KEY,
+    appId: GOOGLE_PICKER_APP_ID,
   };
 }
