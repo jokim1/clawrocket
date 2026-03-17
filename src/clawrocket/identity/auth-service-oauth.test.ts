@@ -36,6 +36,7 @@ describe('auth service google oauth code flow', () => {
         expect(params.get('grant_type')).toBe('authorization_code');
         expect(params.get('code_verifier')).toBeTruthy();
         return jsonResponse({
+          access_token: 'google-access-token',
           id_token: buildTestIdToken({
             iss: 'https://accounts.google.com',
             aud: 'test-client-id',
@@ -259,9 +260,12 @@ function buildTestIdToken(payload: Record<string, unknown>): string {
       typ: 'JWT',
     }),
   ).toString('base64url');
-  const payloadPart = Buffer.from(JSON.stringify(payload)).toString(
-    'base64url',
-  );
+  const payloadPart = Buffer.from(
+    JSON.stringify({
+      sub: 'google-test-subject',
+      ...payload,
+    }),
+  ).toString('base64url');
   return `${headerPart}.${payloadPart}.signature`;
 }
 
