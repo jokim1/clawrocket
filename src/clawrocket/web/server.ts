@@ -5411,7 +5411,7 @@ function serveStaticFile(
   if (isHtml) {
     headers['cache-control'] = 'no-cache';
     headers['content-security-policy'] =
-      "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; font-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'";
+      "default-src 'self'; script-src 'self' https://apis.google.com; style-src 'self'; img-src 'self' data:; connect-src 'self'; font-src 'self'; frame-src 'self' https://docs.google.com https://drive.google.com; object-src 'none'; base-uri 'self'; frame-ancestors 'none'";
   } else if (requestPath.startsWith('/assets/')) {
     headers['cache-control'] = 'public, max-age=31536000, immutable';
   } else {

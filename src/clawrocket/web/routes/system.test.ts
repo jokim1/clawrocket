@@ -102,8 +102,11 @@ describe('system routes', () => {
       expect(routeRes.status).toBe(200);
       expect(routeRes.headers.get('content-type')).toContain('text/html');
       expect(routeRes.headers.get('cache-control')).toBe('no-cache');
-      expect(routeRes.headers.get('content-security-policy')).toContain(
-        "default-src 'self'",
+      const csp = routeRes.headers.get('content-security-policy');
+      expect(csp).toContain("default-src 'self'");
+      expect(csp).toContain("script-src 'self' https://apis.google.com");
+      expect(csp).toContain(
+        "frame-src 'self' https://docs.google.com https://drive.google.com",
       );
 
       const assetRes = await webServer.request('/assets/app-abc123.js');
