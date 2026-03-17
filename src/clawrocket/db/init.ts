@@ -857,7 +857,8 @@ function createClawrocketSchema(database: Database.Database): void {
       created_at TEXT NOT NULL,
       started_at TEXT,
       ended_at TEXT,
-      cancel_reason TEXT
+      cancel_reason TEXT,
+      metadata_json TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_talk_runs_talk_id_status
       ON talk_runs(talk_id, status, created_at);
@@ -1530,6 +1531,11 @@ function migrateAddMissingColumns(database: Database.Database): void {
       definition: 'TEXT',
     },
     // talk_messages — columns added for agent/run tracking
+    {
+      table: 'talk_runs',
+      column: 'metadata_json',
+      definition: 'TEXT',
+    },
     {
       table: 'talk_messages',
       column: 'agent_id',
@@ -2493,7 +2499,8 @@ function migrateEnforceThreadIdsNotNull(database: Database.Database): void {
         created_at TEXT NOT NULL,
         started_at TEXT,
         ended_at TEXT,
-        cancel_reason TEXT
+        cancel_reason TEXT,
+        metadata_json TEXT
       );
       CREATE INDEX idx_talk_runs_talk_id_status
         ON talk_runs(talk_id, status, created_at);
@@ -2507,14 +2514,14 @@ function migrateEnforceThreadIdsNotNull(database: Database.Database): void {
         agent_id, executor_alias, executor_model, thread_id, idempotency_key,
         response_group_id, sequence_index,
         source_binding_id, source_external_message_id, source_thread_key,
-        created_at, started_at, ended_at, cancel_reason
+        created_at, started_at, ended_at, cancel_reason, metadata_json
       )
       SELECT
         id, talk_id, requested_by, status, trigger_message_id, ${selectOrNull('target_agent_id')},
         ${selectOrNull('agent_id')}, ${selectOrNull('executor_alias')}, ${selectOrNull('executor_model')}, thread_id, ${selectOrNull('idempotency_key')},
         ${selectOrNull('response_group_id')}, ${selectOrNull('sequence_index')},
         ${selectOrNull('source_binding_id')}, ${selectOrNull('source_external_message_id')}, ${selectOrNull('source_thread_key')},
-        created_at, started_at, ended_at, cancel_reason
+        created_at, started_at, ended_at, cancel_reason, ${selectOrNull('metadata_json')}
       FROM talk_runs_thread_backup;
 
       DROP TABLE talk_runs_thread_backup;

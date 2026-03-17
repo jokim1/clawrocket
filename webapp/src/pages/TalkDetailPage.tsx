@@ -59,6 +59,7 @@ import {
   getTalkState,
   getTalkTools,
   getTalkContext,
+  getTalkRunContext,
   getTalkDataConnectors,
   getTalkRuns,
   listTalkThreads,
@@ -86,6 +87,7 @@ import {
   TalkMessageSearchResult,
   TalkMessageAttachment,
   TalkRun,
+  TalkRunContextSnapshot,
   TalkStateEntry,
   TalkThread,
   uploadTalkAttachment,
@@ -144,6 +146,13 @@ type LiveResponseView = {
   errorMessage?: string;
   startedAt: number;
   terminalStatus?: 'failed';
+};
+
+type RunContextPanelState = {
+  open: boolean;
+  status: 'idle' | 'loading' | 'loaded' | 'error';
+  snapshot: TalkRunContextSnapshot | null;
+  message?: string;
 };
 
 type TalkTimelineEntry =
@@ -303,6 +312,107 @@ const TALK_AGENT_ROLE_OPTIONS: TalkAgent['role'][] = [
   'synthesizer',
   'editor',
 ];
+
+function formatPersonaRoleLabel(
+  role: TalkRunContextSnapshot['personaRole'],
+): string {
+  if (!role) return 'Unspecified';
+  return role
+    .split('-')
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' ');
+}
+
+function renderRunContextSnapshot(
+  snapshot: TalkRunContextSnapshot,
+): JSX.Element {
+  return (
+    <div className="run-context-panel">
+      <p className="run-context-meta">
+        Role: <strong>{formatPersonaRoleLabel(snapshot.personaRole)}</strong>
+        {' · '}
+        Estimated context: <code>{snapshot.estimatedTokens}</code> tokens
+        {' · '}
+        History messages: <code>{snapshot.history.turnCount}</code>
+      </p>
+      {snapshot.roleHint ? (
+        <p className="run-context-note">{snapshot.roleHint}</p>
+      ) : null}
+      {snapshot.activeRules.length > 0 ? (
+        <div className="run-context-section">
+          <strong>Rules</strong>
+          <ul>
+            {snapshot.activeRules.map((rule, index) => (
+              <li key={`${index}-${rule}`}>{rule}</li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+      {snapshot.stateSnapshot.included.length > 0 ? (
+        <div className="run-context-section">
+          <strong>State Snapshot</strong>
+          <ul>
+            {snapshot.stateSnapshot.included.map((entry) => (
+              <li key={`${entry.key}-${entry.version}`}>
+                <code>{entry.key}</code> v{entry.version}:{' '}
+                <code>{JSON.stringify(entry.value)}</code>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+      {snapshot.retrieval.state.length > 0 ? (
+        <div className="run-context-section">
+          <strong>Retrieved State</strong>
+          <ul>
+            {snapshot.retrieval.state.map((entry) => (
+              <li key={`${entry.key}-${entry.version}`}>
+                <code>{entry.key}</code> v{entry.version}:{' '}
+                <code>{JSON.stringify(entry.value)}</code>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+      {snapshot.retrieval.sources.length > 0 ? (
+        <div className="run-context-section">
+          <strong>Retrieved Sources</strong>
+          <ul>
+            {snapshot.retrieval.sources.map((source) => (
+              <li key={source.ref}>
+                <span>
+                  [{source.ref}] {source.title}
+                </span>
+                <p>{source.excerpt}</p>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+      {snapshot.sources.manifest.length > 0 ? (
+        <div className="run-context-section">
+          <strong>Source Manifest</strong>
+          <p className="run-context-meta">
+            {snapshot.sources.manifest
+              .map((source) => `[${source.ref}] ${source.title}`)
+              .join(', ')}
+          </p>
+        </div>
+      ) : null}
+      <div className="run-context-section">
+        <strong>Available Tools</strong>
+        <p className="run-context-meta">
+          Context:{' '}
+          <code>{snapshot.tools.contextToolNames.join(', ') || 'none'}</code>
+        </p>
+        <p className="run-context-meta">
+          Connectors:{' '}
+          <code>{snapshot.tools.connectorToolNames.join(', ') || 'none'}</code>
+        </p>
+      </div>
+    </div>
+  );
+}
 
 type AgentCreationDraft = {
   sourceKind: 'claude_default' | 'provider';
@@ -1429,6 +1539,9 @@ export function TalkDetailPage({
     loading: true,
     error: null,
   });
+  const [runContextPanels, setRunContextPanels] = useState<
+    Record<string, RunContextPanelState>
+  >({});
   const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<TalkMessageSearchResult[]>(
@@ -1452,6 +1565,7 @@ export function TalkDetailPage({
   const timelineRef = useRef<HTMLDivElement | null>(null);
   const endRef = useRef<HTMLDivElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const runContextPanelsRef = useRef<Record<string, RunContextPanelState>>({});
   const threadRefreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
     null,
   );
@@ -1582,6 +1696,7 @@ export function TalkDetailPage({
   activeThreadIdRef.current = activeThreadId;
   threadStateRef.current = threadState;
   searchQueryRef.current = searchQuery;
+  runContextPanelsRef.current = runContextPanels;
 
   const ruleSensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
@@ -1779,6 +1894,7 @@ export function TalkDetailPage({
     setHistoryEditorOpen(false);
     setHistoryEditState({ status: 'idle' });
     setOrchestrationState({ status: 'idle' });
+    setRunContextPanels({});
     setContextLoaded(false);
     setContextGoal(null);
     setContextRules([]);
@@ -2239,7 +2355,8 @@ export function TalkDetailPage({
     () => !haveSameTalkAgentDraftState(agents, agentDrafts),
     [agentDrafts, agents],
   );
-  const hasPendingFooterAgentSelection = newAgentDraft.modelId.trim().length > 0;
+  const hasPendingFooterAgentSelection =
+    newAgentDraft.modelId.trim().length > 0;
   const effectiveAgents = hasUnsavedAgentChanges ? agentDrafts : agents;
   useEffect(() => {
     setTargetAgentIds((current) =>
@@ -4451,7 +4568,8 @@ export function TalkDetailPage({
         nextAgents: currentDrafts,
         nextDraft: newAgentDraft,
         added: false,
-        error: 'Selected registered agent is no longer available. Refresh and try again.',
+        error:
+          'Selected registered agent is no longer available. Refresh and try again.',
       };
     }
 
@@ -4550,6 +4668,80 @@ export function TalkDetailPage({
       });
     }
   };
+
+  const handleToggleRunContext = useCallback(
+    async (runId: string) => {
+      const current = runContextPanelsRef.current[runId];
+      if (current?.open) {
+        setRunContextPanels((existing) => ({
+          ...existing,
+          [runId]: {
+            ...(existing[runId] || {
+              open: false,
+              status: 'idle',
+              snapshot: null,
+            }),
+            open: false,
+          },
+        }));
+        return;
+      }
+
+      if (current?.status === 'loaded') {
+        setRunContextPanels((existing) => ({
+          ...existing,
+          [runId]: {
+            ...(existing[runId] || {
+              open: false,
+              status: 'idle',
+              snapshot: null,
+            }),
+            open: true,
+          },
+        }));
+        return;
+      }
+
+      setRunContextPanels((existing) => ({
+        ...existing,
+        [runId]: {
+          open: true,
+          status: 'loading',
+          snapshot: existing[runId]?.snapshot ?? null,
+        },
+      }));
+
+      try {
+        const snapshot = await getTalkRunContext({ talkId, runId });
+        setRunContextPanels((existing) => ({
+          ...existing,
+          [runId]: {
+            open: true,
+            status: 'loaded',
+            snapshot,
+          },
+        }));
+      } catch (err) {
+        if (err instanceof UnauthorizedError) {
+          handleUnauthorized();
+          return;
+        }
+        setRunContextPanels((existing) => ({
+          ...existing,
+          [runId]: {
+            open: true,
+            status: 'error',
+            snapshot: null,
+            message:
+              err instanceof Error
+                ? err.message
+                : 'Failed to load run context.',
+          },
+        }));
+      }
+    },
+    [handleUnauthorized, talkId],
+  );
 
   const jumpToMessage = (messageId: string) => {
     const element = messageElementRefs.current.get(messageId);
@@ -6029,10 +6221,10 @@ export function TalkDetailPage({
                 <h2>Channel Bindings</h2>
               </div>
               <p className="policy-muted">
-                Bind this talk to external channels so inbound Telegram
-                messages can create Talk turns and completed replies can be
-                delivered back out. Data Connectors are separate and only power
-                query tools during execution.
+                Bind this talk to external channels so inbound Telegram messages
+                can create Talk turns and completed replies can be delivered
+                back out. Data Connectors are separate and only power query
+                tools during execution.
               </p>
 
               {channelStatus.status === 'error' ? (
@@ -6856,9 +7048,9 @@ export function TalkDetailPage({
               </div>
               <p className="policy-muted">
                 Attach org-level data sources to this talk. Attached connectors
-                are available as query and document tools during talk
-                execution. Channel Bindings are configured separately for
-                external message delivery.
+                are available as query and document tools during talk execution.
+                Channel Bindings are configured separately for external message
+                delivery.
               </p>
 
               {canManageTalkConnectors ? (
@@ -7221,6 +7413,9 @@ export function TalkDetailPage({
                             agentLabelById[message.agentId]) ||
                           message.agentNickname ||
                           null;
+                        const runContextPanel = message.runId
+                          ? runContextPanels[message.runId]
+                          : null;
                         return (
                           <article
                             key={entry.key}
@@ -7271,6 +7466,52 @@ export function TalkDetailPage({
                                     </span>
                                   </span>
                                 ))}
+                              </div>
+                            ) : null}
+                            {message.role === 'assistant' && message.runId ? (
+                              <div className="run-context-block">
+                                <button
+                                  type="button"
+                                  className="secondary-btn message-context-toggle"
+                                  onClick={() =>
+                                    void handleToggleRunContext(message.runId!)
+                                  }
+                                >
+                                  {runContextPanel?.status === 'loading'
+                                    ? 'Loading context…'
+                                    : runContextPanel?.open
+                                      ? 'Hide context'
+                                      : 'Context used'}
+                                </button>
+                                {runContextPanel?.open ? (
+                                  <section
+                                    className="run-context-panel"
+                                    aria-label="Run context used"
+                                  >
+                                    {runContextPanel.status === 'loading' ? (
+                                      <p className="run-context-note">
+                                        Loading context snapshot…
+                                      </p>
+                                    ) : runContextPanel.status === 'error' ? (
+                                      <p
+                                        className="run-context-note"
+                                        role="alert"
+                                      >
+                                        {runContextPanel.message ||
+                                          'Failed to load run context.'}
+                                      </p>
+                                    ) : runContextPanel.snapshot ? (
+                                      renderRunContextSnapshot(
+                                        runContextPanel.snapshot,
+                                      )
+                                    ) : (
+                                      <p className="run-context-note">
+                                        No saved context snapshot is available
+                                        for this run.
+                                      </p>
+                                    )}
+                                  </section>
+                                ) : null}
                               </div>
                             ) : null}
                           </article>

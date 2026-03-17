@@ -1119,6 +1119,84 @@ describe('talk routes', () => {
     expect(failedRun.targetAgentNickname).toBe(targetAgent.nickname);
   });
 
+  it('returns the saved context snapshot for a talk run', async () => {
+    createTalkRun({
+      id: 'run-context-1',
+      talk_id: 'talk-owner',
+      thread_id: 'thread-talk-owner',
+      requested_by: 'owner-1',
+      status: 'completed',
+      trigger_message_id: null,
+      target_agent_id: null,
+      idempotency_key: null,
+      executor_alias: 'direct_http',
+      executor_model: 'claude-sonnet-4-6',
+      created_at: '2026-03-07T00:10:00.000Z',
+      started_at: '2026-03-07T00:10:00.500Z',
+      ended_at: '2026-03-07T00:10:02.000Z',
+      cancel_reason: null,
+      metadata_json: JSON.stringify({
+        version: 1,
+        threadId: 'thread-talk-owner',
+        personaRole: 'critic',
+        roleHint: 'Focus on weaknesses and downside risk.',
+        goalIncluded: true,
+        summaryIncluded: false,
+        activeRules: ['Lead with risk first'],
+        stateSnapshot: {
+          totalCount: 1,
+          omittedCount: 0,
+          included: [],
+        },
+        sources: {
+          totalCount: 1,
+          manifest: [{ ref: 'S1', title: 'Notes', sourceType: 'text' }],
+          inline: [],
+        },
+        retrieval: {
+          query: 'What could go wrong?',
+          queryTerms: ['wrong'],
+          roleTerms: ['risk'],
+          state: [],
+          sources: [],
+        },
+        tools: {
+          contextToolNames: ['read_context_source'],
+          connectorToolNames: [],
+        },
+        history: {
+          messageIds: ['msg-1'],
+          turnCount: 1,
+        },
+        estimatedTokens: 512,
+      }),
+    });
+
+    const res = await server.request(
+      '/api/v1/talks/talk-owner/runs/run-context-1/context',
+      {
+        headers: {
+          Authorization: 'Bearer owner-token',
+        },
+      },
+    );
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as any;
+    expect(body.ok).toBe(true);
+    expect(body.data).toMatchObject({
+      talkId: 'talk-owner',
+      runId: 'run-context-1',
+      contextSnapshot: {
+        version: 1,
+        personaRole: 'critic',
+        roleHint: 'Focus on weaknesses and downside risk.',
+        activeRules: ['Lead with risk first'],
+        estimatedTokens: 512,
+      },
+    });
+  });
+
   it('returns parsed talk message metadata for runtime messages', async () => {
     createTalkRun({
       id: 'run-runtime-meta',

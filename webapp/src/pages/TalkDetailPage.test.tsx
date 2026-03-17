@@ -30,6 +30,7 @@ import type {
   TalkMessage,
   TalkMessageAttachment,
   TalkRun,
+  TalkRunContextSnapshot,
   TalkStateEntry,
   TalkThread,
   TalkTools,
@@ -171,6 +172,117 @@ describe('TalkDetailPage', () => {
     expect(
       screen.getByPlaceholderText('Send a message to this thread'),
     ).toBeTruthy();
+  });
+
+  it('lazily loads and shows the saved context snapshot for an assistant run', async () => {
+    const user = userEvent.setup();
+    installTalkDetailFetch({
+      messages: [
+        buildMessage({
+          id: 'msg-user-1',
+          role: 'user',
+          content: 'How will Cal do next season?',
+          createdAt: '2026-03-06T00:00:00.000Z',
+        }),
+        buildMessage({
+          id: 'msg-assistant-1',
+          role: 'assistant',
+          content: 'Cal should be bowl eligible again.',
+          createdAt: '2026-03-06T00:00:03.000Z',
+          runId: 'run-1',
+          agentId: 'agent-openai',
+          agentNickname: 'GPT-5 Mini',
+        }),
+      ],
+      runContextSnapshots: {
+        'run-1': {
+          version: 1,
+          threadId: DEFAULT_THREAD_ID,
+          personaRole: 'critic',
+          roleHint:
+            'Focus on weaknesses, failure modes, and overconfidence in the current plan.',
+          goalIncluded: true,
+          summaryIncluded: true,
+          activeRules: ['Lead with concrete recommendations'],
+          stateSnapshot: {
+            totalCount: 1,
+            omittedCount: 0,
+            included: [
+              {
+                key: 'schedule_strength',
+                value: { tier: 'medium' },
+                version: 2,
+                updatedAt: '2026-03-06T00:00:02.000Z',
+                reason: 'state_snapshot',
+              },
+            ],
+          },
+          sources: {
+            totalCount: 1,
+            manifest: [
+              {
+                ref: 'S1',
+                title: '2026 Schedule Notes',
+                sourceType: 'text',
+                sourceUrl: null,
+                fileName: null,
+              },
+            ],
+            inline: [{ ref: 'S1', text: 'Cal returns most of its secondary.' }],
+          },
+          retrieval: {
+            query: 'How will Cal do next season?',
+            queryTerms: ['cal', 'season'],
+            roleTerms: ['risk', 'weakness'],
+            state: [],
+            sources: [
+              {
+                ref: 'S1',
+                title: '2026 Schedule Notes',
+                excerpt: 'Cal returns most of its secondary.',
+              },
+            ],
+          },
+          tools: {
+            contextToolNames: ['read_context_source'],
+            connectorToolNames: ['google_sheets_query'],
+          },
+          history: {
+            messageIds: ['msg-user-1'],
+            turnCount: 1,
+          },
+          estimatedTokens: 812,
+        },
+      },
+    });
+
+    renderDetailPage('/app/talks/talk-1');
+
+    await screen.findByText('Cal should be bowl eligible again.');
+    await user.click(screen.getByRole('button', { name: 'Context used' }));
+
+    const contextPanel = await screen.findByLabelText('Run context used');
+    expect(within(contextPanel).getByText(/Estimated context:/)).toBeTruthy();
+    expect(within(contextPanel).getByText(/History messages:/)).toBeTruthy();
+    expect(
+      screen.getByText(
+        /Focus on weaknesses, failure modes, and overconfidence/i,
+      ),
+    ).toBeTruthy();
+    expect(screen.getByText('Lead with concrete recommendations')).toBeTruthy();
+    expect(screen.getByText(/schedule_strength/i)).toBeTruthy();
+    expect(
+      within(contextPanel).getAllByText(/2026 Schedule Notes/).length,
+    ).toBeGreaterThan(0);
+
+    await user.click(screen.getByRole('button', { name: 'Hide context' }));
+    await waitFor(() => {
+      expect(
+        screen.queryByText(
+          /Focus on weaknesses, failure modes, and overconfidence/i,
+        ),
+      ).toBeNull();
+    });
   });
 
   it('shows the Rules tab badge and persists inline rule edits', async () => {
@@ -687,7 +799,7 @@ describe('TalkDetailPage', () => {
     });
 
     renderDetailPage('/app/talks/talk-1/channels');
-    await screen.findByRole('heading', { name: 'Channels' });
+    await screen.findByRole('heading', { name: 'Channel Bindings' });
 
     expect(screen.getByText('Cal Football Chat')).toBeTruthy();
     expect(
@@ -866,7 +978,9 @@ describe('TalkDetailPage', () => {
     expect((rowAgentSelects[1] as HTMLSelectElement).value).toBe(
       'agent-openai',
     );
-    expect((screen.getByLabelText('Agent') as HTMLSelectElement).value).toBe('');
+    expect((screen.getByLabelText('Agent') as HTMLSelectElement).value).toBe(
+      '',
+    );
 
     const tabs = within(
       screen.getByRole('navigation', { name: 'Talk sections' }),
@@ -1276,7 +1390,7 @@ describe('TalkDetailPage', () => {
     installTalkDetailFetch();
 
     renderDetailPage('/app/talks/talk-1');
-    await screen.findByRole('heading', { name: /Cal Football/i });
+    await screen.findByPlaceholderText('Send a message to this thread');
 
     if (!streamInput) {
       throw new Error('Expected talk stream input');
@@ -2146,6 +2260,7 @@ function installTalkDetailFetch(input?: {
   threads?: TalkThread[];
   messages?: TalkMessage[];
   runs?: TalkRun[];
+  runContextSnapshots?: Record<string, TalkRunContextSnapshot | null>;
   talkAgents?: TalkAgent[];
   registeredAgents?: RegisteredAgent[];
   context?: TalkContext;
@@ -2220,6 +2335,7 @@ function installTalkDetailFetch(input?: {
       targetAgentNickname: 'GPT-5 Mini',
     }),
   ];
+  const runContextSnapshots = input?.runContextSnapshots ?? {};
   const talkAgents = input?.talkAgents ?? [
     buildTalkAgent({
       id: 'agent-claude',
@@ -2510,6 +2626,26 @@ function installTalkDetailFetch(input?: {
           data: {
             talkId: 'talk-1',
             runs,
+          },
+        });
+      }
+
+      const runContextMatch = path.match(
+        /^\/api\/v1\/talks\/talk-1\/runs\/([^/]+)\/context$/,
+      );
+      if (runContextMatch && method === 'GET') {
+        const runId = decodeURIComponent(runContextMatch[1] || '');
+        return jsonResponse(200, {
+          ok: true,
+          data: {
+            talkId: 'talk-1',
+            runId,
+            contextSnapshot: Object.prototype.hasOwnProperty.call(
+              runContextSnapshots,
+              runId,
+            )
+              ? (runContextSnapshots[runId] ?? null)
+              : null,
           },
         });
       }

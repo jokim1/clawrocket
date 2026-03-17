@@ -287,6 +287,77 @@ export type TalkRun = {
   executorModel: string | null;
 };
 
+export type TalkRunContextStateEntrySnapshot = {
+  key: string;
+  value: unknown;
+  version: number;
+  updatedAt: string;
+  reason: 'state_snapshot' | 'retrieved';
+};
+
+export type TalkRunContextSourceManifestItem = {
+  ref: string;
+  title: string;
+  sourceType: string;
+  sourceUrl: string | null;
+  fileName: string | null;
+};
+
+export type TalkRunContextInlineSourceSnapshot = {
+  ref: string;
+  text: string;
+};
+
+export type TalkRunContextRetrievedSourceSnapshot = {
+  ref: string;
+  title: string;
+  excerpt: string;
+};
+
+export type TalkRunContextSnapshot = {
+  version: 1;
+  threadId: string | null;
+  personaRole:
+    | 'assistant'
+    | 'analyst'
+    | 'critic'
+    | 'strategist'
+    | 'devils-advocate'
+    | 'synthesizer'
+    | 'editor'
+    | null;
+  roleHint: string | null;
+  goalIncluded: boolean;
+  summaryIncluded: boolean;
+  activeRules: string[];
+  stateSnapshot: {
+    totalCount: number;
+    omittedCount: number;
+    included: TalkRunContextStateEntrySnapshot[];
+  };
+  sources: {
+    totalCount: number;
+    manifest: TalkRunContextSourceManifestItem[];
+    inline: TalkRunContextInlineSourceSnapshot[];
+  };
+  retrieval: {
+    query: string | null;
+    queryTerms: string[];
+    roleTerms: string[];
+    state: TalkRunContextStateEntrySnapshot[];
+    sources: TalkRunContextRetrievedSourceSnapshot[];
+  };
+  tools: {
+    contextToolNames: string[];
+    connectorToolNames: string[];
+  };
+  history: {
+    messageIds: string[];
+    turnCount: number;
+  };
+  estimatedTokens: number;
+};
+
 export type ToolRegistryEntry = {
   id: string;
   family:
@@ -1058,6 +1129,20 @@ export async function getTalkRuns(talkId: string): Promise<TalkRun[]> {
     runs: TalkRun[];
   }>(`/api/v1/talks/${encodeURIComponent(talkId)}/runs`);
   return envelope.runs;
+}
+
+export async function getTalkRunContext(input: {
+  talkId: string;
+  runId: string;
+}): Promise<TalkRunContextSnapshot | null> {
+  const envelope = await apiRequest<{
+    talkId: string;
+    runId: string;
+    contextSnapshot: TalkRunContextSnapshot | null;
+  }>(
+    `/api/v1/talks/${encodeURIComponent(input.talkId)}/runs/${encodeURIComponent(input.runId)}/context`,
+  );
+  return envelope.contextSnapshot;
 }
 
 export async function getTalkTools(talkId: string): Promise<TalkTools> {

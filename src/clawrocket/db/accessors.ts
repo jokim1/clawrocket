@@ -2570,6 +2570,7 @@ export interface TalkRunRecord {
   started_at: string | null;
   ended_at: string | null;
   cancel_reason: string | null;
+  metadata_json?: string | null;
 }
 
 export function createTalkRun(input: TalkRunRecord): void {
@@ -2580,9 +2581,9 @@ export function createTalkRun(input: TalkRunRecord): void {
       id, talk_id, thread_id, requested_by, status, trigger_message_id, target_agent_id, idempotency_key,
       response_group_id, sequence_index, executor_alias, executor_model,
       source_binding_id, source_external_message_id, source_thread_key,
-      created_at, started_at, ended_at, cancel_reason
+      created_at, started_at, ended_at, cancel_reason, metadata_json
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `,
     )
     .run(
@@ -2605,7 +2606,23 @@ export function createTalkRun(input: TalkRunRecord): void {
       input.started_at,
       input.ended_at,
       input.cancel_reason,
+      input.metadata_json ?? null,
     );
+}
+
+export function setTalkRunMetadataJson(
+  runId: string,
+  metadataJson: string | null,
+): void {
+  getDb()
+    .prepare(
+      `
+      UPDATE talk_runs
+      SET metadata_json = ?
+      WHERE id = ?
+    `,
+    )
+    .run(metadataJson, runId);
 }
 
 export function setTalkRunExecutorProfile(input: {
