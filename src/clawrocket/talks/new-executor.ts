@@ -295,7 +295,9 @@ export function buildToolExecutor(
     if (
       toolName === 'google_drive_search' ||
       toolName === 'google_drive_read' ||
-      toolName === 'google_drive_list_folder'
+      toolName === 'google_drive_list_folder' ||
+      toolName === 'google_docs_read' ||
+      toolName === 'google_docs_batch_update'
     ) {
       return executeGoogleDriveTalkTool({
         talkId,

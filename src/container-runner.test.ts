@@ -109,7 +109,10 @@ const testInput = {
   isMain: false,
 };
 
-const testLegacyTarget = createLegacyGroupExecutionTarget(testGroup, 'test@g.us');
+const testLegacyTarget = createLegacyGroupExecutionTarget(
+  testGroup,
+  'test@g.us',
+);
 
 function emitOutputMarker(
   proc: ReturnType<typeof createFakeProcess>,
@@ -304,13 +307,18 @@ describe('container-runner timeout behavior', () => {
     });
 
     const spawnArgs =
-      vi.mocked(spawn).mock.calls[vi.mocked(spawn).mock.calls.length - 1]?.[1] ??
-      [];
+      vi.mocked(spawn).mock.calls[
+        vi.mocked(spawn).mock.calls.length - 1
+      ]?.[1] ?? [];
     const joinedArgs = Array.isArray(spawnArgs) ? spawnArgs.join(' ') : '';
     expect(joinedArgs).toContain('/tmp/talk-main-run:/workspace/run');
     expect(joinedArgs).toContain('/tmp/project-alpha:/workspace/project');
-    expect(joinedArgs).toContain('/tmp/talk-main-run/claude-home:/home/node/.claude');
-    expect(joinedArgs).toContain('/tmp/talk-main-run/agent-runner-src:/app/src');
+    expect(joinedArgs).toContain(
+      '/tmp/talk-main-run/claude-home:/home/node/.claude',
+    );
+    expect(joinedArgs).toContain(
+      '/tmp/talk-main-run/agent-runner-src:/app/src',
+    );
     expect(joinedArgs).not.toContain('/workspace/group');
     expect(joinedArgs).not.toContain('/workspace/ipc');
     expect(fs.mkdirSync).toHaveBeenCalledWith(
