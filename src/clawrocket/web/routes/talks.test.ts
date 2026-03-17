@@ -312,6 +312,24 @@ describe('talk routes', () => {
     expect(persisted.count).toBe(1);
   });
 
+  it('creates a new thread with the nested thread envelope', async () => {
+    const res = await server.request('/api/v1/talks/talk-owner/threads', {
+      method: 'POST',
+      headers: {
+        Authorization: 'Bearer owner-token',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ title: 'New Analysis Thread' }),
+    });
+
+    expect(res.status).toBe(201);
+    const body = (await res.json()) as any;
+    expect(body.ok).toBe(true);
+    expect(body.data.thread.id).toMatch(/^thread_/);
+    expect(body.data.thread.talk_id).toBe('talk-owner');
+    expect(body.data.thread.title).toBe('New Analysis Thread');
+  });
+
   it('parses supported llm_policy shapes and caps agent badges', async () => {
     upsertTalk({
       id: 'talk-models-array',
@@ -448,7 +466,7 @@ describe('talk routes', () => {
     expect(assignment?.registered_agent_id).toBe('agent.talk');
   });
 
-  it('heals legacy talks that only have the seeded main agent on hosts without a registered main group', async () => {
+  it('preserves legacy talks that only have the seeded main agent assigned', async () => {
     upsertTalk({
       id: 'talk-legacy-main-only',
       ownerId: 'owner-1',
@@ -491,7 +509,7 @@ describe('talk routes', () => {
 
     expect(detailRes.status).toBe(200);
     const detailBody = (await detailRes.json()) as any;
-    expect(detailBody.data.talk.agents).toEqual(['Agent']);
+    expect(detailBody.data.talk.agents).toEqual(['Nanoclaw']);
 
     const assignment = getDb()
       .prepare(
@@ -500,7 +518,7 @@ describe('talk routes', () => {
       .get('talk-legacy-main-only') as
       | { registered_agent_id: string }
       | undefined;
-    expect(assignment?.registered_agent_id).toBe('agent.talk');
+    expect(assignment?.registered_agent_id).toBe('agent.main');
 
     const agentsRes = await server.request(
       '/api/v1/talks/talk-legacy-main-only/agents',
@@ -513,7 +531,7 @@ describe('talk routes', () => {
     expect(agentsRes.status).toBe(200);
     const agentsBody = (await agentsRes.json()) as any;
     expect(agentsBody.data.agents).toHaveLength(1);
-    expect(agentsBody.data.agents[0].id).toBe('agent.talk');
+    expect(agentsBody.data.agents[0].id).toBe('agent.main');
   });
 
   it('removes orphaned deleted talk agents on read and promotes a remaining agent to primary', async () => {

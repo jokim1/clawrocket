@@ -3,13 +3,13 @@ import fs from 'fs';
 import path from 'path';
 
 import { DATA_DIR } from '../../config.js';
-import { getAllRegisteredGroups, getDb } from '../../db.js';
+import { getDb } from '../../db.js';
 import { logger } from '../../logger.js';
+import { createWebRuntimeExecutionTarget } from '../../container-execution-target.js';
 import {
   runContainerAgent,
   type ContainerWebTalkConnectorBundle,
 } from '../../container-runner.js';
-import type { RegisteredGroup } from '../../types.js';
 import {
   buildConnectorToolDefinitions,
   type ConnectorToolDefinition,
@@ -67,21 +67,6 @@ const OUTPUT_RESERVE = 4096;
 const TOOL_SCHEMA_RESERVE = 2000;
 const CHARS_TO_TOKENS = 0.25;
 const SMALL_SOURCE_THRESHOLD = 250;
-
-function getContainerExecutionGroup(): {
-  jid: string;
-  group: RegisteredGroup;
-} {
-  const groups = Object.entries(getAllRegisteredGroups());
-  const mainGroup = groups.find(([, group]) => group.isMain === true);
-  if (!mainGroup) {
-    throw new Error(
-      'Container execution requires a registered main group, but none is configured.',
-    );
-  }
-  const [jid, group] = mainGroup;
-  return { jid, group };
-}
 
 function estimateTokens(text: string): number {
   return Math.ceil(text.length * CHARS_TO_TOKENS);
@@ -417,7 +402,7 @@ function createContextDirectory(input: ExecuteContainerTurnInput): {
 export async function executeContainerAgentTurn(
   input: ExecuteContainerTurnInput,
 ): Promise<ExecuteContainerTurnOutput> {
-  const { jid, group } = getContainerExecutionGroup();
+  const target = createWebRuntimeExecutionTarget();
   const contextDir = createContextDirectory(input);
 
   let activeProcess: ChildProcess | null = null;
@@ -429,14 +414,14 @@ export async function executeContainerAgentTurn(
 
   try {
     const output = await runContainerAgent(
-      group,
+      target,
       {
         prompt: input.userMessage,
         model: input.agent.model_id,
         toolProfile: 'talk_main',
         allowedTools: input.allowedTools,
-        groupFolder: group.folder,
-        chatJid: jid,
+        groupFolder: target.folder,
+        chatJid: target.jid,
         isMain: true,
         assistantName: input.agent.name,
         webTalkConnectorBundle: contextDir.connectorBundle,

@@ -1503,6 +1503,21 @@ a {
   background: #fff;
 }
 
+.talk-tab-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.35rem;
+  height: 1.35rem;
+  margin-left: 0.45rem;
+  padding: 0 0.35rem;
+  border-radius: 999px;
+  background: #e5eefc;
+  color: #1849a3;
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+
 .talk-tab:hover {
   background: #f7faff;
 }
@@ -1517,6 +1532,109 @@ a {
 .talk-tab-panel {
   display: grid;
   gap: 0.75rem;
+}
+
+.talk-rule-list {
+  display: grid;
+  gap: 0.7rem;
+}
+
+.talk-rule-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 0.65rem;
+  align-items: start;
+}
+
+.talk-rule-row-dragging {
+  opacity: 0.8;
+}
+
+.talk-rule-row-over .talk-rule-card {
+  border-color: #9fb9ee;
+  box-shadow: 0 10px 24px rgba(24, 73, 163, 0.1);
+}
+
+.talk-rule-handle {
+  border: 1px solid #d7dfef;
+  border-radius: 10px;
+  background: #f8fbff;
+  color: #5b6d90;
+  min-width: 2.4rem;
+  padding: 0.55rem 0.35rem;
+  cursor: grab;
+}
+
+.talk-rule-handle:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.talk-rule-row-body {
+  min-width: 0;
+}
+
+.talk-rule-card {
+  border: 1px solid #dde5f2;
+  border-radius: 12px;
+  background: #fbfdff;
+  padding: 0.85rem;
+  display: grid;
+  gap: 0.75rem;
+}
+
+.talk-rule-card-inactive {
+  opacity: 0.7;
+  background: #f7f8fb;
+}
+
+.talk-rule-card-top {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.75rem;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.talk-rule-edit-field input {
+  width: 100%;
+}
+
+.talk-rule-actions {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.talk-rule-readonly {
+  margin: 0;
+  color: #27324a;
+}
+
+.talk-rule-create-row {
+  display: flex;
+  gap: 0.75rem;
+  align-items: center;
+  margin-top: 0.75rem;
+}
+
+.talk-state-list {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.talk-state-card {
+  margin: 0;
+}
+
+.talk-state-json {
+  margin: 0;
+  padding: 0.85rem;
+  border-radius: 10px;
+  background: #0f172a;
+  color: #e2e8f0;
+  overflow-x: auto;
+  font-size: 0.85rem;
 }
 
 .agents-panel-header {
@@ -2521,7 +2639,9 @@ a {
   display: flex;
   align-items: center;
   justify-content: center;
-  transition: background 0.15s, border-color 0.15s;
+  transition:
+    background 0.15s,
+    border-color 0.15s;
 }
 
 .main-new-thread-btn:hover {

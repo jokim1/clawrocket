@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   _initTestDatabase,
   type ContextSourceSnapshot,
+  upsertTalkStateEntry,
   updateSourceExtraction,
   upsertTalk,
   upsertUser,
@@ -371,6 +372,63 @@ describe('talk context routes', () => {
         },
       );
       expect(res.status).toBe(201);
+    });
+  });
+
+  // =========================================================================
+  // GET /state
+  // =========================================================================
+
+  describe('state', () => {
+    it('returns an empty state list for a new talk', async () => {
+      const res = await server.request(`/api/v1/talks/${TALK_ID}/state`, {
+        method: 'GET',
+        headers: ownerAuth(),
+      });
+
+      expect(res.status).toBe(200);
+      const body = await json(res);
+      expect((body.data as Record<string, unknown>).entries).toEqual([]);
+    });
+
+    it('returns entries in newest-first order', async () => {
+      const older = upsertTalkStateEntry({
+        talkId: TALK_ID,
+        key: 'older',
+        value: { score: 1 },
+        expectedVersion: 0,
+        updatedByUserId: 'owner-1',
+      });
+      if (!older.ok) {
+        throw new Error('Expected older state entry to be created');
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, 2));
+
+      const newer = upsertTalkStateEntry({
+        talkId: TALK_ID,
+        key: 'newer',
+        value: { score: 2 },
+        expectedVersion: 0,
+        updatedByUserId: 'owner-1',
+      });
+      if (!newer.ok) {
+        throw new Error('Expected newer state entry to be created');
+      }
+
+      const res = await server.request(`/api/v1/talks/${TALK_ID}/state`, {
+        method: 'GET',
+        headers: ownerAuth(),
+      });
+
+      expect(res.status).toBe(200);
+      const body = await json(res);
+      const entries = (body.data as Record<string, unknown>).entries as Array<
+        Record<string, unknown>
+      >;
+      expect(entries).toHaveLength(2);
+      expect(entries[0]?.key).toBe('newer');
+      expect(entries[1]?.key).toBe('older');
     });
   });
 

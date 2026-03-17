@@ -1,8 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   _initTestDatabase,
+  createTalkRun,
   createTalkResourceBinding,
   createMessage,
+  upsertTalkStateEntry,
   upsertUserGoogleCredential,
   upsertTalk,
   upsertUser,
@@ -88,6 +90,22 @@ function insertTalkSummary(summaryText: string) {
     .run(TALK_ID, summaryText, now);
 }
 
+function insertStateEntry(input: {
+  key: string;
+  value: unknown;
+  expectedVersion?: number;
+  updatedByRunId?: string | null;
+}) {
+  return upsertTalkStateEntry({
+    talkId: TALK_ID,
+    key: input.key,
+    value: input.value,
+    expectedVersion: input.expectedVersion ?? 0,
+    updatedByUserId: 'owner-1',
+    updatedByRunId: input.updatedByRunId ?? null,
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Setup
 // ---------------------------------------------------------------------------
@@ -106,11 +124,51 @@ describe('context-loader', () => {
       ownerId: 'owner-1',
       topicTitle: 'Context Loader Test Talk',
     });
+    getDb()
+      .prepare(
+        `
+        INSERT INTO talk_threads (
+          id, talk_id, title, is_default, created_at, updated_at
+        ) VALUES (?, ?, ?, 1, ?, ?)
+      `,
+      )
+      .run(
+        THREAD_ID,
+        TALK_ID,
+        'Default Thread',
+        new Date().toISOString(),
+        new Date().toISOString(),
+      );
   });
 
   afterEach(() => {
     vi.restoreAllMocks();
   });
+
+  function insertRun(runId: string) {
+    const now = new Date().toISOString();
+    createTalkRun({
+      id: runId,
+      talk_id: TALK_ID,
+      thread_id: THREAD_ID,
+      requested_by: 'owner-1',
+      status: 'completed',
+      trigger_message_id: null,
+      target_agent_id: null,
+      idempotency_key: null,
+      response_group_id: null,
+      sequence_index: null,
+      executor_alias: 'direct_http',
+      executor_model: 'claude-sonnet-4-6',
+      source_binding_id: null,
+      source_external_message_id: null,
+      source_thread_key: null,
+      created_at: now,
+      started_at: now,
+      ended_at: now,
+      cancel_reason: null,
+    });
+  }
 
   // =========================================================================
   // Source manifest: stable refs from DB
@@ -280,6 +338,67 @@ describe('context-loader', () => {
       expect(ctx.systemPrompt).toContain('Help with onboarding');
       expect(ctx.systemPrompt).toContain('Use simple language');
       expect(ctx.systemPrompt).toContain('[S1] Notes');
+    });
+
+    it('includes a bounded state snapshot between rules and sources', async () => {
+      getDb()
+        .prepare(
+          `INSERT INTO talk_context_goal (talk_id, goal_text, updated_at) VALUES (?, ?, ?)`,
+        )
+        .run(TALK_ID, 'Help with onboarding', new Date().toISOString());
+
+      const now = new Date().toISOString();
+      getDb()
+        .prepare(
+          `INSERT INTO talk_context_rules (id, talk_id, rule_text, is_active, sort_order, created_at, updated_at) VALUES (?, ?, ?, 1, 0, ?, ?)`,
+        )
+        .run('rule-1', TALK_ID, 'Use simple language', now, now);
+
+      const stateResult = insertStateEntry({
+        key: 'audience',
+        value: { segment: 'new users' },
+      });
+      if (!stateResult.ok) {
+        throw new Error('Expected state entry to be created');
+      }
+
+      insertSource({
+        id: 'src-1',
+        sourceRef: 'S1',
+        sourceType: 'text',
+        title: 'Notes',
+        extractedText: 'Short note.',
+      });
+
+      const ctx = await loadTalkContext(TALK_ID, 128000);
+      const rulesIndex = ctx.systemPrompt.indexOf('**Rules:**');
+      const stateIndex = ctx.systemPrompt.indexOf('**State Snapshot:**');
+      const sourcesIndex = ctx.systemPrompt.indexOf('**Sources:**');
+
+      expect(stateIndex).toBeGreaterThan(rulesIndex);
+      expect(sourcesIndex).toBeGreaterThan(stateIndex);
+      expect(ctx.systemPrompt).toContain('audience');
+      expect(ctx.systemPrompt).toContain('"segment":"new users"');
+      expect(ctx.metadata.stateEntryCount).toBe(1);
+    });
+
+    it('omits state entries when the dedicated state budget is exhausted', async () => {
+      for (let i = 0; i < 16; i += 1) {
+        const result = insertStateEntry({
+          key: `entry-${i + 1}`,
+          value: { payload: 'x'.repeat(1200) },
+        });
+        if (!result.ok) {
+          throw new Error('Expected state entry to be created');
+        }
+      }
+
+      const ctx = await loadTalkContext(TALK_ID, 128000);
+
+      expect(ctx.systemPrompt).toContain('**State Snapshot:**');
+      expect(ctx.systemPrompt).toMatch(
+        /omitted to stay within context budget/i,
+      );
     });
 
     it('inlines small text sources', async () => {
@@ -487,6 +606,7 @@ describe('context-loader', () => {
       const executor = buildToolExecutor(
         TALK_ID,
         'owner-1',
+        'run-test',
         AbortSignal.timeout(5000),
       );
       const result = await executor('read_context_source', { sourceRef: 'S1' });
@@ -509,6 +629,7 @@ describe('context-loader', () => {
       const executor = buildToolExecutor(
         TALK_ID,
         'owner-1',
+        'run-test',
         AbortSignal.timeout(5000),
       );
       const result = await executor('read_context_source', {
@@ -523,6 +644,7 @@ describe('context-loader', () => {
       const executor = buildToolExecutor(
         TALK_ID,
         'owner-1',
+        'run-test',
         AbortSignal.timeout(5000),
       );
       const result = await executor('read_context_source', {});
@@ -535,6 +657,7 @@ describe('context-loader', () => {
       const executor = buildToolExecutor(
         TALK_ID,
         'owner-1',
+        'run-test',
         AbortSignal.timeout(5000),
       );
       const result = await executor('read_context_source', {
@@ -558,6 +681,7 @@ describe('context-loader', () => {
       const executor = buildToolExecutor(
         TALK_ID,
         'owner-1',
+        'run-test',
         AbortSignal.timeout(5000),
       );
       const result = await executor('read_context_source', { sourceRef: 'S3' });
@@ -579,6 +703,7 @@ describe('context-loader', () => {
       const executor = buildToolExecutor(
         TALK_ID,
         'owner-1',
+        'run-test',
         AbortSignal.timeout(5000),
       );
       const result = await executor('read_context_source', { ref: 'S4' });
@@ -622,6 +747,7 @@ describe('context-loader', () => {
       const executor = buildToolExecutor(
         TALK_ID,
         'owner-1',
+        'run-test',
         AbortSignal.timeout(5000),
       );
       const result = await executor('read_attachment', {
@@ -636,6 +762,7 @@ describe('context-loader', () => {
       const executor = buildToolExecutor(
         TALK_ID,
         'owner-1',
+        'run-test',
         AbortSignal.timeout(5000),
       );
       const result = await executor('read_attachment', {
@@ -707,6 +834,7 @@ describe('context-loader', () => {
       const executor = buildToolExecutor(
         TALK_ID,
         'owner-1',
+        'run-test',
         AbortSignal.timeout(5000),
       );
       const result = await executor('google_drive_read', {
@@ -722,6 +850,85 @@ describe('context-loader', () => {
     });
   });
 
+  describe('buildToolExecutor (update_state)', () => {
+    it('creates and updates Talk state entries with CAS semantics', async () => {
+      insertRun('run-state-1');
+      const executor = buildToolExecutor(
+        TALK_ID,
+        'owner-1',
+        'run-state-1',
+        AbortSignal.timeout(5000),
+      );
+
+      const created = await executor('update_state', {
+        key: 'decision',
+        value: { winner: 'Claude' },
+        expectedVersion: 0,
+      });
+      expect(created.isError).toBeFalsy();
+      expect(JSON.parse(created.result)).toMatchObject({
+        key: 'decision',
+        value: { winner: 'Claude' },
+        version: 1,
+        updatedByRunId: 'run-state-1',
+      });
+
+      insertRun('run-state-2');
+      const updater = buildToolExecutor(
+        TALK_ID,
+        'owner-1',
+        'run-state-2',
+        AbortSignal.timeout(5000),
+      );
+      const updated = await updater('update_state', {
+        key: 'decision',
+        value: { winner: 'OpenAI' },
+        expectedVersion: 1,
+      });
+
+      expect(updated.isError).toBeFalsy();
+      expect(JSON.parse(updated.result)).toMatchObject({
+        key: 'decision',
+        value: { winner: 'OpenAI' },
+        version: 2,
+        updatedByRunId: 'run-state-2',
+      });
+    });
+
+    it('returns the current stored entry when the version is stale', async () => {
+      const seed = insertStateEntry({
+        key: 'decision',
+        value: { winner: 'Claude' },
+      });
+      if (!seed.ok) {
+        throw new Error('Expected state entry to be created');
+      }
+
+      insertRun('run-state-3');
+      const executor = buildToolExecutor(
+        TALK_ID,
+        'owner-1',
+        'run-state-3',
+        AbortSignal.timeout(5000),
+      );
+      const result = await executor('update_state', {
+        key: 'decision',
+        value: { winner: 'OpenAI' },
+        expectedVersion: 0,
+      });
+
+      expect(result.isError).toBe(true);
+      expect(JSON.parse(result.result)).toMatchObject({
+        conflict: true,
+        current: {
+          key: 'decision',
+          value: { winner: 'Claude' },
+          version: 1,
+        },
+      });
+    });
+  });
+
   // =========================================================================
   // Executor tool path: unknown tools
   // =========================================================================
@@ -731,6 +938,7 @@ describe('context-loader', () => {
       const executor = buildToolExecutor(
         TALK_ID,
         'owner-1',
+        'run-test',
         AbortSignal.timeout(5000),
       );
       const result = await executor('some_random_tool', {});

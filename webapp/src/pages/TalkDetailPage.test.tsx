@@ -19,6 +19,7 @@ import type {
   ChannelConnection,
   ChannelQueueFailure,
   ChannelTarget,
+  ContextRule,
   ContextSource,
   TalkContext,
   DataConnector,
@@ -29,6 +30,7 @@ import type {
   TalkMessage,
   TalkMessageAttachment,
   TalkRun,
+  TalkStateEntry,
   TalkThread,
   TalkTools,
   RegisteredAgent,
@@ -152,6 +154,136 @@ describe('TalkDetailPage', () => {
     expect(screen.queryByLabelText('Response mode')).toBeNull();
   });
 
+  it('creates and selects a new thread from the Talk thread rail', async () => {
+    const user = userEvent.setup();
+    installTalkDetailFetch();
+
+    renderDetailPage('/app/talks/talk-1');
+
+    await screen.findByPlaceholderText('Send a message to this thread');
+
+    const threadRail = screen.getByLabelText('Talk threads');
+    await user.click(within(threadRail).getByRole('button', { name: 'New' }));
+
+    expect(
+      await screen.findByRole('heading', { name: 'Thread thread-2' }),
+    ).toBeTruthy();
+    expect(
+      screen.getByPlaceholderText('Send a message to this thread'),
+    ).toBeTruthy();
+  });
+
+  it('shows the Rules tab badge and persists inline rule edits', async () => {
+    const user = userEvent.setup();
+    installTalkDetailFetch({
+      context: buildTalkContext({
+        rules: [
+          buildContextRule({
+            id: 'rule-1',
+            ruleText: 'Use simple language',
+            isActive: true,
+            sortOrder: 0,
+          }),
+        ],
+      }),
+    });
+
+    renderDetailPage('/app/talks/talk-1/rules');
+
+    await screen.findByRole('heading', { name: 'Rules' });
+    expect(screen.getByLabelText('1 active rules')).toBeTruthy();
+
+    const input = screen.getByDisplayValue('Use simple language');
+    await user.clear(input);
+    await user.type(input, 'Lead with concrete recommendations');
+    await user.click(screen.getByRole('button', { name: 'Save' }));
+
+    expect(await screen.findByText('Rule updated.')).toBeTruthy();
+    expect(
+      screen.getByDisplayValue('Lead with concrete recommendations'),
+    ).toBeTruthy();
+  });
+
+  it('shows an inline error when toggling a rule fails', async () => {
+    const user = userEvent.setup();
+    installTalkDetailFetch({
+      context: buildTalkContext({
+        rules: [
+          buildContextRule({
+            id: 'rule-1',
+            ruleText: 'Use simple language',
+            isActive: true,
+            sortOrder: 0,
+          }),
+        ],
+      }),
+      rulePatchError: {
+        status: 500,
+        code: 'rule_patch_failed',
+        message: 'Failed to update rule state.',
+      },
+    });
+
+    renderDetailPage('/app/talks/talk-1/rules');
+
+    await screen.findByRole('heading', { name: 'Rules' });
+    await user.click(screen.getByRole('button', { name: 'Pause' }));
+
+    expect(
+      await screen.findByText('Failed to update rule state.'),
+    ).toBeTruthy();
+  });
+
+  it('shows an inline error when deleting a rule fails', async () => {
+    const user = userEvent.setup();
+    installTalkDetailFetch({
+      context: buildTalkContext({
+        rules: [
+          buildContextRule({
+            id: 'rule-1',
+            ruleText: 'Use simple language',
+            isActive: true,
+            sortOrder: 0,
+          }),
+        ],
+      }),
+      ruleDeleteError: {
+        status: 500,
+        code: 'rule_delete_failed',
+        message: 'Failed to delete rule.',
+      },
+    });
+
+    renderDetailPage('/app/talks/talk-1/rules');
+
+    await screen.findByRole('heading', { name: 'Rules' });
+    await user.click(screen.getByRole('button', { name: 'Delete' }));
+
+    expect(await screen.findByText('Failed to delete rule.')).toBeTruthy();
+  });
+
+  it('renders read-only Talk state entries from the State tab', async () => {
+    installTalkDetailFetch({
+      stateEntries: [
+        buildTalkStateEntry({
+          id: 'state-1',
+          key: 'decision',
+          value: { winner: 'Claude', confidence: 0.82 },
+          version: 3,
+          updatedByRunId: 'run-55',
+        }),
+      ],
+    });
+
+    renderDetailPage('/app/talks/talk-1/state');
+
+    await screen.findByRole('heading', { name: 'State' });
+    expect(screen.getByText('decision')).toBeTruthy();
+    expect(screen.getByText(/Version 3/i)).toBeTruthy();
+    expect(screen.getByText(/run-55/i)).toBeTruthy();
+    expect(screen.getByText(/"winner": "Claude"/i)).toBeTruthy();
+  });
+
   it('lets owners manage the read-only project mount from the Agents tab', async () => {
     const user = userEvent.setup();
     installTalkDetailFetch();
@@ -167,7 +299,9 @@ describe('TalkDetailPage', () => {
     await user.click(screen.getByRole('button', { name: 'Save Path' }));
 
     expect(await screen.findByText('Project mount updated.')).toBeTruthy();
-    expect(screen.getByText(/Current mount: \/tmp\/project-alpha/i)).toBeTruthy();
+    expect(
+      screen.getByText(/Current mount: \/tmp\/project-alpha/i),
+    ).toBeTruthy();
   });
 
   it('hides the project mount editor for non-owner talk editors', async () => {
@@ -359,12 +493,8 @@ describe('TalkDetailPage', () => {
     await waitFor(() =>
       expect(openGoogleDrivePickerMock).toHaveBeenCalledTimes(1),
     );
-    expect(
-      screen.queryByText(/Drive binding added to this Talk/i),
-    ).toBeNull();
-    expect(
-      screen.queryByText(/Drive bindings added to this Talk/i),
-    ).toBeNull();
+    expect(screen.queryByText(/Drive binding added to this Talk/i)).toBeNull();
+    expect(screen.queryByText(/Drive bindings added to this Talk/i)).toBeNull();
   });
 
   it('shows picker errors inline in the Tools tab', async () => {
@@ -627,7 +757,10 @@ describe('TalkDetailPage', () => {
     const getRegisteredAgentSelects = () =>
       screen.getAllByLabelText('Registered Agent');
 
-    await user.selectOptions(getRegisteredAgentSelects()[0], 'agent-claude-opus');
+    await user.selectOptions(
+      getRegisteredAgentSelects()[0],
+      'agent-claude-opus',
+    );
 
     const getNicknameInputs = () =>
       screen.getAllByLabelText('Nickname') as HTMLInputElement[];
@@ -1213,7 +1346,7 @@ describe('TalkDetailPage', () => {
     await screen.findByRole('heading', { name: /Cal Football/i });
 
     expect(screen.queryByText(/<internal>/)).toBeNull();
-    expect(screen.getByText('The visible answer')).toBeTruthy();
+    expect(await screen.findByText('The visible answer')).toBeTruthy();
   });
 
   it('keeps failed live responses in chronological order in the timeline', async () => {
@@ -1810,6 +1943,29 @@ function buildTalkContext(input?: Partial<TalkContext>): TalkContext {
   };
 }
 
+function buildContextRule(input?: Partial<ContextRule>): ContextRule {
+  return {
+    id: input?.id ?? 'rule-1',
+    ruleText: input?.ruleText ?? 'Be concise',
+    isActive: input?.isActive ?? true,
+    sortOrder: input?.sortOrder ?? 0,
+    createdAt: input?.createdAt ?? '2026-03-06T00:00:00.000Z',
+    updatedAt: input?.updatedAt ?? '2026-03-06T00:00:00.000Z',
+  };
+}
+
+function buildTalkStateEntry(input?: Partial<TalkStateEntry>): TalkStateEntry {
+  return {
+    id: input?.id ?? 'state-1',
+    key: input?.key ?? 'decision',
+    value: input?.value ?? { winner: 'Claude' },
+    version: input?.version ?? 1,
+    updatedAt: input?.updatedAt ?? '2026-03-06T00:00:00.000Z',
+    updatedByUserId: input?.updatedByUserId ?? 'owner-1',
+    updatedByRunId: input?.updatedByRunId ?? null,
+  };
+}
+
 function buildAiAgentsData(): AiAgentsPageData {
   return {
     defaultClaudeModelId: 'claude-sonnet-4-6',
@@ -1862,6 +2018,17 @@ function installTalkDetailFetch(input?: {
   talkAgents?: TalkAgent[];
   registeredAgents?: RegisteredAgent[];
   context?: TalkContext;
+  stateEntries?: TalkStateEntry[];
+  rulePatchError?: {
+    status: number;
+    code?: string;
+    message: string;
+  };
+  ruleDeleteError?: {
+    status: number;
+    code?: string;
+    message: string;
+  };
   dataConnectors?: DataConnector[];
   talkDataConnectors?: TalkDataConnector[];
   channelConnections?: ChannelConnection[];
@@ -1902,8 +2069,9 @@ function installTalkDetailFetch(input?: {
       talkId: 'talk-1',
       title: null,
       isDefault: true,
-      messageCount: messages.filter((message) => message.threadId === DEFAULT_THREAD_ID)
-        .length,
+      messageCount: messages.filter(
+        (message) => message.threadId === DEFAULT_THREAD_ID,
+      ).length,
       lastMessageAt:
         messages
           .filter((message) => message.threadId === DEFAULT_THREAD_ID)
@@ -1992,6 +2160,7 @@ function installTalkDetailFetch(input?: {
     }),
   ];
   let context = input?.context ?? buildTalkContext();
+  let stateEntries = input?.stateEntries ?? [];
   const channelConnections = input?.channelConnections ?? [
     buildChannelConnection(),
   ];
@@ -2136,7 +2305,10 @@ function installTalkDetailFetch(input?: {
         });
       }
 
-      if (path === '/api/v1/talks/talk-1/messages/delete' && method === 'POST') {
+      if (
+        path === '/api/v1/talks/talk-1/messages/delete' &&
+        method === 'POST'
+      ) {
         const body = JSON.parse(String(init?.body || '{}')) as {
           messageIds?: string[];
           threadId?: string | null;
@@ -2229,6 +2401,100 @@ function installTalkDetailFetch(input?: {
         return jsonResponse(200, {
           ok: true,
           data: input?.onGetContext?.() ?? context,
+        });
+      }
+
+      if (path === '/api/v1/talks/talk-1/state' && method === 'GET') {
+        return jsonResponse(200, {
+          ok: true,
+          data: { entries: stateEntries },
+        });
+      }
+
+      if (path === '/api/v1/talks/talk-1/context/rules' && method === 'POST') {
+        const body = JSON.parse(String(init?.body || '{}')) as {
+          ruleText?: string;
+        };
+        const created = buildContextRule({
+          id: `rule-${context.rules.length + 1}`,
+          ruleText: body.ruleText?.trim() || 'New rule',
+          sortOrder: context.rules.length,
+        });
+        context = {
+          ...context,
+          rules: [...context.rules, created],
+        };
+        return jsonResponse(201, {
+          ok: true,
+          data: { rule: created },
+        });
+      }
+
+      if (
+        /\/api\/v1\/talks\/talk-1\/context\/rules\/[^/]+$/.test(url) &&
+        method === 'PATCH'
+      ) {
+        if (input?.rulePatchError) {
+          return jsonResponse(input.rulePatchError.status, {
+            ok: false,
+            error: {
+              code: input.rulePatchError.code,
+              message: input.rulePatchError.message,
+            },
+          });
+        }
+        const ruleId = url.split('/api/v1/talks/talk-1/context/rules/')[1];
+        const body = JSON.parse(String(init?.body || '{}')) as Partial<
+          Pick<ContextRule, 'ruleText' | 'isActive' | 'sortOrder'>
+        >;
+        let updatedRule: ContextRule | undefined;
+        context = {
+          ...context,
+          rules: context.rules.map((rule) => {
+            if (rule.id !== ruleId) return rule;
+            updatedRule = {
+              ...rule,
+              ...(body.ruleText === undefined
+                ? null
+                : { ruleText: body.ruleText.trim() }),
+              ...(body.isActive === undefined
+                ? null
+                : { isActive: body.isActive }),
+              ...(body.sortOrder === undefined
+                ? null
+                : { sortOrder: body.sortOrder }),
+              updatedAt: '2026-03-06T00:00:30.000Z',
+            };
+            return updatedRule;
+          }),
+        };
+        return jsonResponse(200, {
+          ok: true,
+          data: { rule: updatedRule },
+        });
+      }
+
+      if (
+        /\/api\/v1\/talks\/talk-1\/context\/rules\/[^/]+$/.test(url) &&
+        method === 'DELETE'
+      ) {
+        if (input?.ruleDeleteError) {
+          return jsonResponse(input.ruleDeleteError.status, {
+            ok: false,
+            error: {
+              code: input.ruleDeleteError.code,
+              message: input.ruleDeleteError.message,
+            },
+          });
+        }
+        const ruleId = url.split('/api/v1/talks/talk-1/context/rules/')[1];
+        context = {
+          ...context,
+          rules: context.rules.filter((rule) => rule.id !== ruleId),
+        };
+        return jsonResponse(200, {
+          ok: true,
+          data: { deleted: true },
         });
       }
 
@@ -2623,7 +2889,10 @@ function installTalkDetailFetch(input?: {
         });
       }
 
-      if (path === '/api/v1/talks/talk-1/data-connectors' && method === 'POST') {
+      if (
+        path === '/api/v1/talks/talk-1/data-connectors' &&
+        method === 'POST'
+      ) {
         const body = JSON.parse(String(init?.body || '{}')) as {
           connectorId: string;
         };

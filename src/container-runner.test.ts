@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
 import { EventEmitter } from 'events';
 import { PassThrough } from 'stream';
 import fs from 'fs';
+import { spawn } from 'child_process';
 
 // Sentinel markers must match container-runner.ts
 const OUTPUT_START_MARKER = '---NANOCLAW_OUTPUT_START---';
@@ -88,6 +89,10 @@ vi.mock('child_process', async () => {
 });
 
 import { runContainerAgent, ContainerOutput } from './container-runner.js';
+import {
+  createLegacyGroupExecutionTarget,
+  createWebRuntimeExecutionTarget,
+} from './container-execution-target.js';
 import type { RegisteredGroup } from './types.js';
 
 const testGroup: RegisteredGroup = {
@@ -104,6 +109,8 @@ const testInput = {
   isMain: false,
 };
 
+const testLegacyTarget = createLegacyGroupExecutionTarget(testGroup, 'test@g.us');
+
 function emitOutputMarker(
   proc: ReturnType<typeof createFakeProcess>,
   output: ContainerOutput,
@@ -119,6 +126,7 @@ describe('container-runner timeout behavior', () => {
     vi.mocked(fs.existsSync).mockReset();
     vi.mocked(fs.existsSync).mockReturnValue(false);
     vi.mocked(fs.cpSync).mockReset();
+    vi.mocked(spawn).mockClear();
   });
 
   afterEach(() => {
@@ -128,7 +136,7 @@ describe('container-runner timeout behavior', () => {
   it('timeout after output resolves as success', async () => {
     const onOutput = vi.fn(async () => {});
     const resultPromise = runContainerAgent(
-      testGroup,
+      testLegacyTarget,
       testInput,
       () => {},
       onOutput,
@@ -164,7 +172,7 @@ describe('container-runner timeout behavior', () => {
   it('timeout with no output resolves as error', async () => {
     const onOutput = vi.fn(async () => {});
     const resultPromise = runContainerAgent(
-      testGroup,
+      testLegacyTarget,
       testInput,
       () => {},
       onOutput,
@@ -187,7 +195,7 @@ describe('container-runner timeout behavior', () => {
   it('normal exit after output resolves as success', async () => {
     const onOutput = vi.fn(async () => {});
     const resultPromise = runContainerAgent(
-      testGroup,
+      testLegacyTarget,
       testInput,
       () => {},
       onOutput,
@@ -232,7 +240,7 @@ describe('container-runner timeout behavior', () => {
     });
 
     const resultPromise = runContainerAgent(
-      testGroup,
+      testLegacyTarget,
       {
         ...testInput,
         toolProfile: 'web_talk',
@@ -255,5 +263,59 @@ describe('container-runner timeout behavior', () => {
       recursive: true,
       force: true,
     });
+  });
+
+  it('uses stateless talk_main mounts with the web runtime target and dedicated logs', async () => {
+    vi.mocked(fs.existsSync).mockImplementation((targetPath) => {
+      const normalized =
+        typeof targetPath === 'string' ? targetPath : String(targetPath);
+      return (
+        normalized === '/tmp/talk-main-run' ||
+        normalized === '/tmp/project-alpha' ||
+        normalized.endsWith('/container/agent-runner/src')
+      );
+    });
+
+    const resultPromise = runContainerAgent(
+      createWebRuntimeExecutionTarget(),
+      {
+        prompt: 'Hello',
+        groupFolder: 'web-executor',
+        chatJid: 'internal:web-executor',
+        isMain: true,
+        toolProfile: 'talk_main',
+        ephemeralContextDir: '/tmp/talk-main-run',
+        projectMountHostPath: '/tmp/project-alpha',
+      },
+      () => {},
+    );
+
+    emitOutputMarker(fakeProc, {
+      status: 'success',
+      result: 'Stateless ok',
+    });
+    await vi.advanceTimersByTimeAsync(10);
+    fakeProc.emit('close', 0);
+    await vi.advanceTimersByTimeAsync(10);
+
+    await expect(resultPromise).resolves.toMatchObject({
+      status: 'success',
+      result: 'Stateless ok',
+    });
+
+    const spawnArgs =
+      vi.mocked(spawn).mock.calls[vi.mocked(spawn).mock.calls.length - 1]?.[1] ??
+      [];
+    const joinedArgs = Array.isArray(spawnArgs) ? spawnArgs.join(' ') : '';
+    expect(joinedArgs).toContain('/tmp/talk-main-run:/workspace/run');
+    expect(joinedArgs).toContain('/tmp/project-alpha:/workspace/project');
+    expect(joinedArgs).toContain('/tmp/talk-main-run/claude-home:/home/node/.claude');
+    expect(joinedArgs).toContain('/tmp/talk-main-run/agent-runner-src:/app/src');
+    expect(joinedArgs).not.toContain('/workspace/group');
+    expect(joinedArgs).not.toContain('/workspace/ipc');
+    expect(fs.mkdirSync).toHaveBeenCalledWith(
+      '/tmp/nanoclaw-test-data/container-runs/web-executor/logs',
+      { recursive: true },
+    );
   });
 });

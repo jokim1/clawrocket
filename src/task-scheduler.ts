@@ -8,6 +8,7 @@ import {
   runContainerAgent,
   writeTasksSnapshot,
 } from './container-runner.js';
+import { createLegacyGroupExecutionTarget } from './container-execution-target.js';
 import {
   getAllTasks,
   getDueTasks,
@@ -139,7 +140,7 @@ async function runTask(
 
   try {
     const output = await runContainerAgent(
-      group,
+      createLegacyGroupExecutionTarget(group, task.chat_jid),
       {
         prompt: task.prompt,
         sessionId,

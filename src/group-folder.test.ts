@@ -19,6 +19,7 @@ describe('group folder validation', () => {
     expect(isValidGroupFolder('../../etc')).toBe(false);
     expect(isValidGroupFolder('/tmp')).toBe(false);
     expect(isValidGroupFolder('global')).toBe(false);
+    expect(isValidGroupFolder('web-executor')).toBe(false);
     expect(isValidGroupFolder('')).toBe(false);
   });
 

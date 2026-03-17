@@ -27,6 +27,7 @@ import {
   writeGroupsSnapshot,
   writeTasksSnapshot,
 } from './container-runner.js';
+import { createLegacyGroupExecutionTarget } from './container-execution-target.js';
 import {
   cleanupOrphans,
   ensureContainerRuntimeRunning,
@@ -352,7 +353,7 @@ export async function runAgent(
 
   try {
     const output = await runContainerAgent(
-      group,
+      createLegacyGroupExecutionTarget(group, chatJid),
       {
         prompt,
         sessionId,

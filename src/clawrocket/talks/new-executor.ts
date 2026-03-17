@@ -26,6 +26,7 @@ import {
   type ToolExecutionContext,
 } from '../connectors/tool-executors.js';
 import { parseConnectorToolName } from '../connectors/runtime.js';
+import { upsertTalkStateEntry } from '../db/context-accessors.js';
 import {
   executeWithAgent,
   type ExecutionContext,
@@ -129,6 +130,7 @@ function mapExecutionEvent(
 export function buildToolExecutor(
   talkId: string,
   userId: string,
+  runId: string,
   signal: AbortSignal,
 ) {
   let connectorCache: Map<string, TalkRunConnectorRecord> | null = null;
@@ -198,6 +200,56 @@ export function buildToolExecutor(
       }
 
       return { result: attachmentRow.extracted_text || '' };
+    }
+
+    if (toolName === 'update_state') {
+      const key = args.key as string | undefined;
+      const expectedVersion = args.expectedVersion;
+
+      if (!key?.trim()) {
+        return { result: 'Error: key parameter required', isError: true };
+      }
+      if (
+        typeof expectedVersion !== 'number' ||
+        !Number.isInteger(expectedVersion) ||
+        expectedVersion < 0
+      ) {
+        return {
+          result:
+            'Error: expectedVersion must be a non-negative integer number',
+          isError: true,
+        };
+      }
+
+      try {
+        const result = upsertTalkStateEntry({
+          talkId,
+          key,
+          value: args.value,
+          expectedVersion,
+          updatedByUserId: userId,
+          updatedByRunId: runId,
+        });
+
+        if (!result.ok) {
+          return {
+            result: JSON.stringify({
+              conflict: true,
+              current: result.current,
+            }),
+            isError: true,
+          };
+        }
+
+        return {
+          result: JSON.stringify(result.entry),
+        };
+      } catch (error) {
+        return {
+          result: error instanceof Error ? error.message : String(error),
+          isError: true,
+        };
+      }
     }
 
     if (toolName.startsWith('connector_')) {
@@ -660,6 +712,7 @@ export class CleanTalkExecutor implements TalkExecutor {
       const toolExecutor = buildToolExecutor(
         input.talkId,
         input.requestedBy,
+        input.runId,
         signal,
       );
       const result = await executeWithAgent(

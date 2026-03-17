@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 
-import { getDb, setRegisteredGroup } from '../../db.js';
+import { getDb } from '../../db.js';
 import {
   _initTestDatabase,
   upsertSettingValue,
@@ -72,15 +72,8 @@ describe('execution-planner', () => {
     expect(plan.backend).toBe('direct_http');
   });
 
-  it('returns container for heavy Claude-compatible agents and ignores requiresApproval for routing', () => {
+  it('returns container for heavy Claude-compatible agents without requiring a registered group', () => {
     seedAnthropicSecret();
-    setRegisteredGroup('main-jid', {
-      name: 'Main',
-      folder: 'main',
-      trigger: '@main',
-      added_at: new Date().toISOString(),
-      isMain: true,
-    });
     const agent = createRegisteredAgent({
       name: 'Claude Builder',
       providerId: 'provider.anthropic',
@@ -99,13 +92,6 @@ describe('execution-planner', () => {
 
   it('requires shell when browser is enabled in 5A', () => {
     seedAnthropicSecret();
-    setRegisteredGroup('main-jid', {
-      name: 'Main',
-      folder: 'main',
-      trigger: '@main',
-      added_at: new Date().toISOString(),
-      isMain: true,
-    });
     const agent = createRegisteredAgent({
       name: 'Claude Browser',
       providerId: 'provider.anthropic',
@@ -122,13 +108,6 @@ describe('execution-planner', () => {
   });
 
   it('rejects heavy-tool agents on providers that are not Claude-SDK compatible', () => {
-    setRegisteredGroup('main-jid', {
-      name: 'Main',
-      folder: 'main',
-      trigger: '@main',
-      added_at: new Date().toISOString(),
-      isMain: true,
-    });
     const agent = createRegisteredAgent({
       name: 'GPT Builder',
       providerId: 'provider.openai',
@@ -151,13 +130,6 @@ describe('execution-planner', () => {
       key: 'executor.claudeOauthToken',
       value: 'oauth-token-123',
       updatedBy: 'owner-1',
-    });
-    setRegisteredGroup('main-jid', {
-      name: 'Main',
-      folder: 'main',
-      trigger: '@main',
-      added_at: new Date().toISOString(),
-      isMain: true,
     });
     const agent = createRegisteredAgent({
       name: 'Claude Shell',
