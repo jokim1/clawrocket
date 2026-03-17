@@ -74,8 +74,8 @@ describe('main-executor (pure)', () => {
     vi.mocked(executeWithAgent).mockResolvedValue({
       content: 'Main channel reply',
       agentId: 'agent.main',
-      providerId: 'builtin.mock',
-      modelId: 'mock-default',
+      providerId: 'provider.anthropic',
+      modelId: 'claude-sonnet-4-6',
       usage: {
         inputTokens: 12,
         outputTokens: 34,
@@ -97,8 +97,8 @@ describe('main-executor (pure)', () => {
     // Verify output shape
     expect(result.content).toBe('Main channel reply');
     expect(result.agentId).toBe('agent.main');
-    expect(result.providerId).toBe('builtin.mock');
-    expect(result.modelId).toBe('mock-default');
+    expect(result.providerId).toBe('provider.anthropic');
+    expect(result.modelId).toBe('claude-sonnet-4-6');
     expect(result.threadId).toBe('thread-1');
     expect(result.latencyMs).toBeGreaterThanOrEqual(0);
     expect(result.usage).toEqual({
@@ -147,8 +147,8 @@ describe('main-executor (pure)', () => {
         return {
           content: 'Hello world',
           agentId: 'agent.main',
-          providerId: 'builtin.mock',
-          modelId: 'mock-default',
+          providerId: 'provider.anthropic',
+          modelId: 'claude-sonnet-4-6',
           usage: { inputTokens: 10, outputTokens: 20, estimatedCostUsd: 0.001 },
         };
       },

@@ -138,8 +138,8 @@ describe('CleanTalkExecutor', () => {
           type: 'started',
           runId: options.runId,
           agentId,
-          providerId: 'builtin.mock',
-          modelId: 'mock-default',
+          providerId: 'provider.anthropic',
+          modelId: 'claude-sonnet-4-6',
         });
         options.emit?.({
           type: 'text_delta',
@@ -159,8 +159,8 @@ describe('CleanTalkExecutor', () => {
         return {
           content: `Summary ready. ${toolResult.result}`,
           agentId,
-          providerId: 'builtin.mock',
-          modelId: 'mock-default',
+          providerId: 'provider.anthropic',
+          modelId: 'claude-sonnet-4-6',
           usage: {
             inputTokens: 12,
             outputTokens: 34,
@@ -189,14 +189,14 @@ describe('CleanTalkExecutor', () => {
       'Summary ready. Revenue grew 20 percent quarter over quarter.',
     );
     expect(result.agentId).toBe('agent.main');
-    expect(result.providerId).toBe('builtin.mock');
-    expect(result.modelId).toBe('mock-default');
+    expect(result.providerId).toBe('provider.anthropic');
+    expect(result.modelId).toBe('claude-sonnet-4-6');
     expect(result.responseSequenceInRun).toBe(1);
     expect(result.metadataJson).toBeTruthy();
     expect(JSON.parse(result.metadataJson!)).toMatchObject({
       runId: 'run-talk-1',
-      providerId: 'builtin.mock',
-      modelId: 'mock-default',
+      providerId: 'provider.anthropic',
+      modelId: 'claude-sonnet-4-6',
       responseGroupId: null,
       sequenceIndex: null,
     });
@@ -474,8 +474,8 @@ describe('CleanTalkExecutor', () => {
         return {
           content: 'Agent B prefers direct sales.',
           agentId: 'agent.main',
-          providerId: 'builtin.mock',
-          modelId: 'mock-default',
+          providerId: 'provider.anthropic',
+          modelId: 'claude-sonnet-4-6',
         };
       },
     );
@@ -583,8 +583,8 @@ describe('CleanTalkExecutor', () => {
         return {
           content: 'Synthesis: pursue premium entry pricing with guardrails.',
           agentId: 'agent.main',
-          providerId: 'builtin.mock',
-          modelId: 'mock-default',
+          providerId: 'provider.anthropic',
+          modelId: 'claude-sonnet-4-6',
         };
       },
     );
@@ -695,8 +695,8 @@ describe('CleanTalkExecutor', () => {
         return {
           content: 'Independent second-pass analysis.',
           agentId: 'agent.main',
-          providerId: 'builtin.mock',
-          modelId: 'mock-default',
+          providerId: 'provider.anthropic',
+          modelId: 'claude-sonnet-4-6',
         };
       },
     );
@@ -722,7 +722,7 @@ describe('CleanTalkExecutor', () => {
         `
         UPDATE llm_provider_models
         SET context_window_tokens = 4096
-        WHERE provider_id = 'builtin.mock' AND model_id = 'mock-default'
+        WHERE provider_id = 'provider.anthropic' AND model_id = 'claude-sonnet-4-6'
       `,
       )
       .run();
@@ -797,8 +797,8 @@ describe('CleanTalkExecutor', () => {
         return {
           content: 'Budget-aware analysis.',
           agentId: 'agent.main',
-          providerId: 'builtin.mock',
-          modelId: 'mock-default',
+          providerId: 'provider.anthropic',
+          modelId: 'claude-sonnet-4-6',
         };
       },
     );
