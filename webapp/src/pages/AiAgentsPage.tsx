@@ -32,6 +32,7 @@ type Props = {
 };
 
 type ClaudeAuthMode = 'subscription' | 'api_key';
+type AiAgentsTab = 'providers' | 'registered_agents';
 
 type ProviderDraft = {
   apiKey: string;
@@ -56,15 +57,7 @@ const PROVIDER_KEY_PLACEHOLDER: Record<string, string> = {
 };
 
 const PROVIDER_SAVE_POLL_DELAYS_MS = [
-  1_500,
-  1_500,
-  2_500,
-  3_500,
-  5_000,
-  5_000,
-  5_000,
-  5_000,
-  5_000,
+  1_500, 1_500, 2_500, 3_500, 5_000, 5_000, 5_000, 5_000, 5_000,
 ];
 
 function canManageAgents(userRole: string): boolean {
@@ -258,6 +251,7 @@ export function AiAgentsPage({ onUnauthorized, userRole }: Props): JSX.Element {
   );
   const [mainAgentId, setMainAgentId] = useState<string | null>(null);
   const [mainAgentDraft, setMainAgentDraft] = useState<string>('');
+  const [activeTab, setActiveTab] = useState<AiAgentsTab>('providers');
 
   const returnTo = validateReturnTo(searchParams.get('returnTo'));
   const canManage = canManageAgents(userRole);
@@ -284,7 +278,9 @@ export function AiAgentsPage({ onUnauthorized, userRole }: Props): JSX.Element {
       verificationStatus: claudeCredentialAvailable
         ? settings.verificationStatus
         : 'missing',
-      lastVerifiedAt: claudeCredentialAvailable ? settings.lastVerifiedAt : null,
+      lastVerifiedAt: claudeCredentialAvailable
+        ? settings.lastVerifiedAt
+        : null,
       lastVerificationError: claudeCredentialAvailable
         ? settings.lastVerificationError
         : null,
@@ -777,494 +773,538 @@ export function AiAgentsPage({ onUnauthorized, userRole }: Props): JSX.Element {
         </div>
       ) : null}
 
-      <section className="talk-llm-section">
-        <div className="talk-llm-section-header">
-          <div>
-            <h3>Default Claude Agent</h3>
-            <p className="talk-llm-meta">
-              Every new talk starts with Claude as the default agent. You can
-              add other agents and roles inside the talk itself.
-            </p>
-          </div>
-        </div>
+      <div className="talk-tabs" role="tablist" aria-label="AI agent sections">
+        <button
+          type="button"
+          role="tab"
+          className={`talk-tab${activeTab === 'providers' ? ' active' : ''}`}
+          aria-selected={activeTab === 'providers'}
+          onClick={() => setActiveTab('providers')}
+        >
+          Provider Setup
+        </button>
+        <button
+          type="button"
+          role="tab"
+          className={`talk-tab${activeTab === 'registered_agents' ? ' active' : ''}`}
+          aria-selected={activeTab === 'registered_agents'}
+          onClick={() => setActiveTab('registered_agents')}
+        >
+          Registered Agents
+        </button>
+      </div>
 
-        <article className="talk-llm-card">
-          <div className="talk-llm-card-header">
-            <div>
-              <h4>Claude</h4>
-              <p className="talk-llm-meta">
-                Configure the Claude capability every new talk starts with.
-              </p>
+      {activeTab === 'providers' ? (
+        <>
+          <section className="talk-llm-section">
+            <div className="talk-llm-section-header">
+              <div>
+                <h3>Default Claude Agent</h3>
+                <p className="talk-llm-meta">
+                  Every new talk starts with Claude as the default agent. You
+                  can add other agents and roles inside the talk itself.
+                </p>
+              </div>
             </div>
-            <span
-              className={verificationStatusClass(
-                status.executorAuthMode !== claudeModeDraft ||
-                  !selectedClaudeStored
-                  ? 'not_verified'
-                  : status.verificationStatus,
-              )}
-            >
-              {selectedClaudeStatus}
-            </span>
-          </div>
 
-          <div className="talk-llm-grid">
-            <fieldset className="talk-llm-field-span talk-llm-radio-group">
-              <span>Billing model</span>
-              <div className="talk-llm-radio-options">
-                <label className="talk-llm-radio-option">
-                  <input
-                    type="radio"
-                    name="claude-billing-model"
-                    value="subscription"
-                    checked={claudeModeDraft === 'subscription'}
-                    onChange={() => setClaudeModeDraft('subscription')}
+            <article className="talk-llm-card">
+              <div className="talk-llm-card-header">
+                <div>
+                  <h4>Claude</h4>
+                  <p className="talk-llm-meta">
+                    Configure the Claude capability every new talk starts with.
+                  </p>
+                </div>
+                <span
+                  className={verificationStatusClass(
+                    status.executorAuthMode !== claudeModeDraft ||
+                      !selectedClaudeStored
+                      ? 'not_verified'
+                      : status.verificationStatus,
+                  )}
+                >
+                  {selectedClaudeStatus}
+                </span>
+              </div>
+
+              <div className="talk-llm-grid">
+                <fieldset className="talk-llm-field-span talk-llm-radio-group">
+                  <span>Billing model</span>
+                  <div className="talk-llm-radio-options">
+                    <label className="talk-llm-radio-option">
+                      <input
+                        type="radio"
+                        name="claude-billing-model"
+                        value="subscription"
+                        checked={claudeModeDraft === 'subscription'}
+                        onChange={() => setClaudeModeDraft('subscription')}
+                        disabled={!canManage || busyKey === 'claude-save'}
+                      />
+                      <span>Subscription</span>
+                    </label>
+                    <label className="talk-llm-radio-option">
+                      <input
+                        type="radio"
+                        name="claude-billing-model"
+                        value="api_key"
+                        checked={claudeModeDraft === 'api_key'}
+                        onChange={() => setClaudeModeDraft('api_key')}
+                        disabled={!canManage || busyKey === 'claude-save'}
+                      />
+                      <span>API</span>
+                    </label>
+                  </div>
+                </fieldset>
+
+                <label className="talk-llm-field-span">
+                  <span>Model for new talks</span>
+                  <select
+                    value={claudeModelDraft}
+                    onChange={(event) =>
+                      setClaudeModelDraft(event.target.value)
+                    }
                     disabled={!canManage || busyKey === 'claude-save'}
-                  />
-                  <span>Subscription</span>
-                </label>
-                <label className="talk-llm-radio-option">
-                  <input
-                    type="radio"
-                    name="claude-billing-model"
-                    value="api_key"
-                    checked={claudeModeDraft === 'api_key'}
-                    onChange={() => setClaudeModeDraft('api_key')}
-                    disabled={!canManage || busyKey === 'claude-save'}
-                  />
-                  <span>API</span>
+                  >
+                    {data.claudeModelSuggestions.map((model) => (
+                      <option key={model.modelId} value={model.modelId}>
+                        {model.displayName}
+                      </option>
+                    ))}
+                  </select>
                 </label>
               </div>
-            </fieldset>
 
-            <label className="talk-llm-field-span">
-              <span>Model for new talks</span>
-              <select
-                value={claudeModelDraft}
-                onChange={(event) => setClaudeModelDraft(event.target.value)}
-                disabled={!canManage || busyKey === 'claude-save'}
-              >
-                {data.claudeModelSuggestions.map((model) => (
-                  <option key={model.modelId} value={model.modelId}>
-                    {model.displayName}
-                  </option>
-                ))}
-              </select>
-            </label>
-          </div>
-
-          {claudeModeDraft === 'subscription' ? (
-            <div className="talk-llm-grid">
-              <div className="talk-llm-field-span">
-                <span>Subscription credential</span>
-                {selectedClaudeStored ? (
-                  <div className="talk-llm-stored-key">
-                    <div>
-                      <strong>
-                        {selectedClaudeHint || 'Stored in settings'}
-                      </strong>
+              {claudeModeDraft === 'subscription' ? (
+                <div className="talk-llm-grid">
+                  <div className="talk-llm-field-span">
+                    <span>Subscription credential</span>
+                    {selectedClaudeStored ? (
+                      <div className="talk-llm-stored-key">
+                        <div>
+                          <strong>
+                            {selectedClaudeHint || 'Stored in settings'}
+                          </strong>
+                          <p className="talk-llm-meta">
+                            Last verified{' '}
+                            {formatDateTime(status.lastVerifiedAt)}
+                          </p>
+                        </div>
+                      </div>
+                    ) : (
                       <p className="talk-llm-meta">
-                        Last verified {formatDateTime(status.lastVerifiedAt)}
+                        No Claude subscription credential is stored yet.
                       </p>
+                    )}
+                    <p className="talk-llm-meta">
+                      Subscription credentials power Claude through the
+                      container runtime. Direct Anthropic HTTP still requires an
+                      API key.
+                    </p>
+                    <p className="talk-llm-meta">
+                      Run <code>claude setup-token</code> in your terminal and
+                      paste the token below, or import a detected host login.
+                    </p>
+                    <div className="talk-llm-inline-actions">
+                      {subscriptionHostStatus?.importAvailable ? (
+                        <button
+                          type="button"
+                          className="secondary-btn"
+                          onClick={() => void handleImportSubscription()}
+                          disabled={
+                            !canManage || subscriptionHostBusy === 'importing'
+                          }
+                        >
+                          {subscriptionHostBusy === 'importing'
+                            ? 'Importing…'
+                            : 'Import from host'}
+                        </button>
+                      ) : null}
                     </div>
-                  </div>
-                ) : (
-                  <p className="talk-llm-meta">
-                    No Claude subscription credential is stored yet.
-                  </p>
-                )}
-                <p className="talk-llm-meta">
-                  Subscription credentials power Claude through the container
-                  runtime. Direct Anthropic HTTP still requires an API key.
-                </p>
-                <p className="talk-llm-meta">
-                  Run <code>claude setup-token</code> in your terminal and
-                  paste the token below, or import a detected host login.
-                </p>
-                <div className="talk-llm-inline-actions">
-                  {subscriptionHostStatus?.importAvailable ? (
-                    <button
-                      type="button"
-                      className="secondary-btn"
-                      onClick={() => void handleImportSubscription()}
-                      disabled={
-                        !canManage || subscriptionHostBusy === 'importing'
-                      }
-                    >
-                      {subscriptionHostBusy === 'importing'
-                        ? 'Importing…'
-                        : 'Import from host'}
-                    </button>
-                  ) : null}
-                </div>
-                {subscriptionHostBusy === 'checking' ? (
-                  <p className="talk-llm-meta">
-                    Checking Claude login on this host…
-                  </p>
-                ) : null}
-                {subscriptionHostStatus ? (
-                  <div className="talk-llm-host-status">
-                    <p className="talk-llm-meta">
-                      Checked as user{' '}
-                      {subscriptionHostStatus.serviceUser || 'unknown'} · Home{' '}
-                      {subscriptionHostStatus.serviceHomePath}
-                    </p>
-                    <p className="talk-llm-meta">
-                      {subscriptionHostStatus.message}
-                    </p>
-                    {!showManualTokenFlow &&
-                    subscriptionHostStatus.recommendedCommands.length > 0 ? (
-                      <div className="talk-llm-command-list">
-                        {subscriptionHostStatus.recommendedCommands.map(
-                          (command) => (
-                            <code key={command}>{command}</code>
-                          ),
-                        )}
+                    {subscriptionHostBusy === 'checking' ? (
+                      <p className="talk-llm-meta">
+                        Checking Claude login on this host…
+                      </p>
+                    ) : null}
+                    {subscriptionHostStatus ? (
+                      <div className="talk-llm-host-status">
+                        <p className="talk-llm-meta">
+                          Checked as user{' '}
+                          {subscriptionHostStatus.serviceUser || 'unknown'} ·
+                          Home {subscriptionHostStatus.serviceHomePath}
+                        </p>
+                        <p className="talk-llm-meta">
+                          {subscriptionHostStatus.message}
+                        </p>
+                        {!showManualTokenFlow &&
+                        subscriptionHostStatus.recommendedCommands.length >
+                          0 ? (
+                          <div className="talk-llm-command-list">
+                            {subscriptionHostStatus.recommendedCommands.map(
+                              (command) => (
+                                <code key={command}>{command}</code>
+                              ),
+                            )}
+                          </div>
+                        ) : null}
                       </div>
                     ) : null}
-                  </div>
-                ) : null}
-                <label className="talk-llm-field-span">
-                  <span>Claude Code OAuth token</span>
-                  <div className="talk-llm-secret-input">
-                    <input
-                      type={showClaudeOauthToken ? 'text' : 'password'}
-                      value={claudeOauthDraft}
-                      onChange={(event) => {
-                        setClaudeOauthDraft(event.target.value);
-                      }}
-                      placeholder="Paste token from claude setup-token"
-                      disabled={!canManage || busyKey === 'claude-save'}
-                    />
-                    <button
-                      type="button"
-                      className="talk-llm-eye-toggle"
-                      onClick={() =>
-                        setShowClaudeOauthToken((current) => !current)
-                      }
-                      disabled={!canManage || busyKey === 'claude-save'}
-                      aria-label={
-                        showClaudeOauthToken
-                          ? 'Hide Claude Code OAuth token'
-                          : 'Show Claude Code OAuth token'
-                      }
-                    >
-                      {showClaudeOauthToken ? 'Hide' : 'Show'}
-                    </button>
-                  </div>
-                </label>
-              </div>
-            </div>
-          ) : (
-            <div className="talk-llm-grid">
-              <div className="talk-llm-field-span">
-                <span>Anthropic API credential</span>
-                {selectedClaudeStored ? (
-                  <div className="talk-llm-stored-key">
-                    <div>
-                      <strong>
-                        {selectedClaudeHint || 'Stored in settings'}
-                      </strong>
-                      <p className="talk-llm-meta">
-                        Get a key from{' '}
-                        <a
-                          href="https://console.anthropic.com/settings/keys"
-                          target="_blank"
-                          rel="noreferrer"
-                        >
-                          Anthropic Console
-                        </a>
-                        .
-                      </p>
-                    </div>
-                  </div>
-                ) : (
-                  <p className="talk-llm-meta">
-                    Use an Anthropic Console API key for Claude in talks.
-                  </p>
-                )}
-                <label className="talk-llm-field-span">
-                  <span>Anthropic API key</span>
-                  <div className="talk-llm-secret-input">
-                    <input
-                      type={showClaudeApiKey ? 'text' : 'password'}
-                      value={claudeApiKeyDraft}
-                      onChange={(event) => {
-                        setClaudeApiKeyDraft(event.target.value);
-                      }}
-                      placeholder="sk-ant-..."
-                      disabled={!canManage || busyKey === 'claude-save'}
-                    />
-                    <button
-                      type="button"
-                      className="talk-llm-eye-toggle"
-                      onClick={() => setShowClaudeApiKey((current) => !current)}
-                      disabled={!canManage || busyKey === 'claude-save'}
-                      aria-label={
-                        showClaudeApiKey
-                          ? 'Hide Anthropic API key'
-                          : 'Show Anthropic API key'
-                      }
-                    >
-                      {showClaudeApiKey ? 'Hide' : 'Show'}
-                    </button>
-                  </div>
-                </label>
-              </div>
-            </div>
-          )}
-
-          <div className="talk-llm-inline-actions">
-            {canVerifyStoredClaude ? (
-              <button
-                type="button"
-                className="secondary-btn"
-                onClick={() => void handleVerifyClaude()}
-                disabled={busyKey === 'claude-verify'}
-              >
-                {busyKey === 'claude-verify'
-                  ? 'Verifying…'
-                  : claudeModeDraft === 'subscription'
-                    ? 'Verify subscription runtime'
-                    : 'Verify API key'}
-              </button>
-            ) : null}
-            <button
-              type="button"
-              className="primary-btn"
-              onClick={() => void handleSaveClaude()}
-              disabled={!canManage || busyKey === 'claude-save'}
-            >
-              {busyKey === 'claude-save'
-                ? hasUnsavedClaudeCredentialDraft
-                  ? 'Saving and verifying…'
-                  : 'Saving…'
-                : hasUnsavedClaudeCredentialDraft
-                  ? 'Save and verify Claude'
-                  : 'Save Claude Settings'}
-            </button>
-          </div>
-        </article>
-      </section>
-
-      <section className="talk-llm-section">
-        <div className="talk-llm-section-header">
-          <div>
-            <h3>Additional Providers</h3>
-            <p className="talk-llm-meta">
-              Add any other provider keys you want available when inviting extra
-              agents into a talk.
-            </p>
-          </div>
-        </div>
-
-        <div className="talk-llm-card-list">
-          {additionalProviders.map((provider) => {
-            const draft =
-              providerDrafts[provider.id] || buildProviderDraft(provider);
-            const busySave = busyKey === `provider-save:${provider.id}`;
-            const busyVerify = busyKey === `provider-verify:${provider.id}`;
-            return (
-              <article key={provider.id} className="talk-llm-card">
-                <div className="talk-llm-card-header">
-                  <div>
-                    <h4>{provider.name}</h4>
-                    <p className="talk-llm-meta">
-                      {PROVIDER_DOCS_URL[provider.id] ? (
-                        <a
-                          href={PROVIDER_DOCS_URL[provider.id]}
-                          target="_blank"
-                          rel="noreferrer"
-                        >
-                          Get key from{' '}
-                          {PROVIDER_DOCS_LABEL[provider.id] || provider.name}
-                        </a>
-                      ) : (
-                        'Configure this provider for additional talk agents.'
-                      )}
-                    </p>
-                  </div>
-                  <span
-                    className={verificationStatusClass(
-                      provider.verificationStatus,
-                    )}
-                  >
-                    {formatProviderVerificationSummary(provider)}
-                  </span>
-                </div>
-
-                {provider.hasCredential ? (
-                  <div className="talk-llm-stored-key">
-                    <div>
-                      <strong>
-                        {provider.credentialHint || 'Stored in settings'}
-                      </strong>
-                      <p className="talk-llm-meta">
-                        Last verified {formatDateTime(provider.lastVerifiedAt)}
-                      </p>
-                    </div>
-                    <button
-                      type="button"
-                      className="icon-btn danger-btn"
-                      onClick={() => void handleClearProvider(provider.id)}
-                      disabled={!canManage || busySave}
-                      aria-label={`Delete ${provider.name} credential`}
-                    >
-                      ×
-                    </button>
-                  </div>
-                ) : null}
-
-                <details
-                  className="talk-llm-update-disclosure"
-                  open={draft.expanded}
-                  onToggle={(event) =>
-                    updateProviderDraft(provider.id, {
-                      expanded: (event.currentTarget as HTMLDetailsElement)
-                        .open,
-                    })
-                  }
-                >
-                  <summary>
-                    {provider.hasCredential ? 'Update key' : 'Configure'}
-                  </summary>
-                  <div className="talk-llm-grid">
                     <label className="talk-llm-field-span">
-                      <span>API key</span>
+                      <span>Claude Code OAuth token</span>
                       <div className="talk-llm-secret-input">
                         <input
-                          type={draft.showApiKey ? 'text' : 'password'}
-                          value={draft.apiKey}
-                          onChange={(event) =>
-                            updateProviderDraft(provider.id, {
-                              apiKey: event.target.value,
-                            })
-                          }
-                          placeholder={
-                            PROVIDER_KEY_PLACEHOLDER[provider.id] || 'sk-...'
-                          }
-                          disabled={!canManage || busySave}
+                          type={showClaudeOauthToken ? 'text' : 'password'}
+                          value={claudeOauthDraft}
+                          onChange={(event) => {
+                            setClaudeOauthDraft(event.target.value);
+                          }}
+                          placeholder="Paste token from claude setup-token"
+                          disabled={!canManage || busyKey === 'claude-save'}
                         />
                         <button
                           type="button"
                           className="talk-llm-eye-toggle"
                           onClick={() =>
-                            updateProviderDraft(provider.id, {
-                              showApiKey: !draft.showApiKey,
-                            })
+                            setShowClaudeOauthToken((current) => !current)
                           }
-                          disabled={!canManage || busySave}
+                          disabled={!canManage || busyKey === 'claude-save'}
                           aria-label={
-                            draft.showApiKey
-                              ? `Hide ${provider.name} API key`
-                              : `Show ${provider.name} API key`
+                            showClaudeOauthToken
+                              ? 'Hide Claude Code OAuth token'
+                              : 'Show Claude Code OAuth token'
                           }
                         >
-                          {draft.showApiKey ? 'Hide' : 'Show'}
+                          {showClaudeOauthToken ? 'Hide' : 'Show'}
                         </button>
                       </div>
                     </label>
-                    <div className="talk-llm-inline-actions">
-                      <button
-                        type="button"
-                        className="primary-btn"
-                        onClick={() => void handleSaveProvider(provider.id)}
-                        disabled={!canManage || busySave}
-                      >
-                        {busySave
-                          ? 'Saving…'
-                          : provider.hasCredential
-                            ? 'Update'
-                            : 'Save'}
-                      </button>
-                      {provider.hasCredential ? (
+                  </div>
+                </div>
+              ) : (
+                <div className="talk-llm-grid">
+                  <div className="talk-llm-field-span">
+                    <span>Anthropic API credential</span>
+                    {selectedClaudeStored ? (
+                      <div className="talk-llm-stored-key">
+                        <div>
+                          <strong>
+                            {selectedClaudeHint || 'Stored in settings'}
+                          </strong>
+                          <p className="talk-llm-meta">
+                            Get a key from{' '}
+                            <a
+                              href="https://console.anthropic.com/settings/keys"
+                              target="_blank"
+                              rel="noreferrer"
+                            >
+                              Anthropic Console
+                            </a>
+                            .
+                          </p>
+                        </div>
+                      </div>
+                    ) : (
+                      <p className="talk-llm-meta">
+                        Use an Anthropic Console API key for Claude in talks.
+                      </p>
+                    )}
+                    <label className="talk-llm-field-span">
+                      <span>Anthropic API key</span>
+                      <div className="talk-llm-secret-input">
+                        <input
+                          type={showClaudeApiKey ? 'text' : 'password'}
+                          value={claudeApiKeyDraft}
+                          onChange={(event) => {
+                            setClaudeApiKeyDraft(event.target.value);
+                          }}
+                          placeholder="sk-ant-..."
+                          disabled={!canManage || busyKey === 'claude-save'}
+                        />
                         <button
                           type="button"
-                          className="secondary-btn"
-                          onClick={() => void handleVerifyProvider(provider.id)}
-                          disabled={!canManage || busyVerify}
+                          className="talk-llm-eye-toggle"
+                          onClick={() =>
+                            setShowClaudeApiKey((current) => !current)
+                          }
+                          disabled={!canManage || busyKey === 'claude-save'}
+                          aria-label={
+                            showClaudeApiKey
+                              ? 'Hide Anthropic API key'
+                              : 'Show Anthropic API key'
+                          }
                         >
-                          {busyVerify ? 'Verifying…' : 'Re-verify'}
+                          {showClaudeApiKey ? 'Hide' : 'Show'}
                         </button>
-                      ) : null}
-                    </div>
+                      </div>
+                    </label>
                   </div>
-                </details>
-              </article>
-            );
-          })}
-        </div>
-      </section>
+                </div>
+              )}
 
-      <RegisteredAgentsPanel
-        providers={allProvidersForPanel}
-        executorSettings={settings}
-        onUnauthorized={onUnauthorized}
-        canManage={canManage}
-        onAgentsChanged={setRegisteredAgents}
-      />
-
-      {registeredAgents.length > 0 ? (
-        <section className="talk-llm-section">
-          <div className="talk-llm-section-header">
-            <div>
-              <h3>Main Agent</h3>
-              <p className="talk-llm-meta">
-                The main agent is used for the home channel and as the default
-                when no Talk-specific agent is assigned.
-              </p>
-              <p className={executionPreviewTone(selectedMainAgent || null)}>
-                {formatExecutionPreview(selectedMainAgent || null)}
-              </p>
-            </div>
-          </div>
-          <article className="talk-llm-card">
-            <div className="talk-llm-grid">
-              <label className="talk-llm-field-span">
-                <span>Select main agent</span>
-                <select
-                  value={mainAgentDraft}
-                  onChange={(event) => setMainAgentDraft(event.target.value)}
-                  disabled={!canManage || busyKey === 'main-agent-save'}
-                >
-                  <option value="" disabled>
-                    Choose an agent…
-                  </option>
-                  {registeredAgents
-                    .filter((a) => a.enabled)
-                    .map((agent) => (
-                      <option key={agent.id} value={agent.id}>
-                        {agent.name} ({agent.modelId}
-                        {agent.executionPreview.ready
-                          ? agent.executionPreview.routeReason ===
-                            'subscription_fallback'
-                            ? ' · subscription container'
-                            : agent.executionPreview.backend === 'container'
-                              ? ' · container'
-                              : ' · direct'
-                          : ' · unavailable'}
-                        )
-                      </option>
-                    ))}
-                </select>
-              </label>
               <div className="talk-llm-inline-actions">
+                {canVerifyStoredClaude ? (
+                  <button
+                    type="button"
+                    className="secondary-btn"
+                    onClick={() => void handleVerifyClaude()}
+                    disabled={busyKey === 'claude-verify'}
+                  >
+                    {busyKey === 'claude-verify'
+                      ? 'Verifying…'
+                      : claudeModeDraft === 'subscription'
+                        ? 'Verify subscription runtime'
+                        : 'Verify API key'}
+                  </button>
+                ) : null}
                 <button
                   type="button"
                   className="primary-btn"
-                  onClick={() => void handleSaveMainAgent()}
-                  disabled={
-                    !canSaveMainAgent
-                  }
+                  onClick={() => void handleSaveClaude()}
+                  disabled={!canManage || busyKey === 'claude-save'}
                 >
-                  {busyKey === 'main-agent-save'
-                    ? 'Saving…'
-                    : 'Set as Main Agent'}
+                  {busyKey === 'claude-save'
+                    ? hasUnsavedClaudeCredentialDraft
+                      ? 'Saving and verifying…'
+                      : 'Saving…'
+                    : hasUnsavedClaudeCredentialDraft
+                      ? 'Save and verify Claude'
+                      : 'Save Claude Settings'}
                 </button>
               </div>
+            </article>
+          </section>
+
+          <section className="talk-llm-section">
+            <div className="talk-llm-section-header">
+              <div>
+                <h3>Additional Providers</h3>
+                <p className="talk-llm-meta">
+                  Add any other provider keys you want available when inviting
+                  extra agents into a talk.
+                </p>
+              </div>
             </div>
-          </article>
-        </section>
+
+            <div className="talk-llm-card-list">
+              {additionalProviders.map((provider) => {
+                const draft =
+                  providerDrafts[provider.id] || buildProviderDraft(provider);
+                const busySave = busyKey === `provider-save:${provider.id}`;
+                const busyVerify = busyKey === `provider-verify:${provider.id}`;
+                return (
+                  <article key={provider.id} className="talk-llm-card">
+                    <div className="talk-llm-card-header">
+                      <div>
+                        <h4>{provider.name}</h4>
+                        <p className="talk-llm-meta">
+                          {PROVIDER_DOCS_URL[provider.id] ? (
+                            <a
+                              href={PROVIDER_DOCS_URL[provider.id]}
+                              target="_blank"
+                              rel="noreferrer"
+                            >
+                              Get key from{' '}
+                              {PROVIDER_DOCS_LABEL[provider.id] ||
+                                provider.name}
+                            </a>
+                          ) : (
+                            'Configure this provider for additional talk agents.'
+                          )}
+                        </p>
+                      </div>
+                      <span
+                        className={verificationStatusClass(
+                          provider.verificationStatus,
+                        )}
+                      >
+                        {formatProviderVerificationSummary(provider)}
+                      </span>
+                    </div>
+
+                    {provider.hasCredential ? (
+                      <div className="talk-llm-stored-key">
+                        <div>
+                          <strong>
+                            {provider.credentialHint || 'Stored in settings'}
+                          </strong>
+                          <p className="talk-llm-meta">
+                            Last verified{' '}
+                            {formatDateTime(provider.lastVerifiedAt)}
+                          </p>
+                        </div>
+                        <button
+                          type="button"
+                          className="icon-btn danger-btn"
+                          onClick={() => void handleClearProvider(provider.id)}
+                          disabled={!canManage || busySave}
+                          aria-label={`Delete ${provider.name} credential`}
+                        >
+                          ×
+                        </button>
+                      </div>
+                    ) : null}
+
+                    <details
+                      className="talk-llm-update-disclosure"
+                      open={draft.expanded}
+                      onToggle={(event) =>
+                        updateProviderDraft(provider.id, {
+                          expanded: (event.currentTarget as HTMLDetailsElement)
+                            .open,
+                        })
+                      }
+                    >
+                      <summary>
+                        {provider.hasCredential ? 'Update key' : 'Configure'}
+                      </summary>
+                      <div className="talk-llm-grid">
+                        <label className="talk-llm-field-span">
+                          <span>API key</span>
+                          <div className="talk-llm-secret-input">
+                            <input
+                              type={draft.showApiKey ? 'text' : 'password'}
+                              value={draft.apiKey}
+                              onChange={(event) =>
+                                updateProviderDraft(provider.id, {
+                                  apiKey: event.target.value,
+                                })
+                              }
+                              placeholder={
+                                PROVIDER_KEY_PLACEHOLDER[provider.id] ||
+                                'sk-...'
+                              }
+                              disabled={!canManage || busySave}
+                            />
+                            <button
+                              type="button"
+                              className="talk-llm-eye-toggle"
+                              onClick={() =>
+                                updateProviderDraft(provider.id, {
+                                  showApiKey: !draft.showApiKey,
+                                })
+                              }
+                              disabled={!canManage || busySave}
+                              aria-label={
+                                draft.showApiKey
+                                  ? `Hide ${provider.name} API key`
+                                  : `Show ${provider.name} API key`
+                              }
+                            >
+                              {draft.showApiKey ? 'Hide' : 'Show'}
+                            </button>
+                          </div>
+                        </label>
+                        <div className="talk-llm-inline-actions">
+                          <button
+                            type="button"
+                            className="primary-btn"
+                            onClick={() => void handleSaveProvider(provider.id)}
+                            disabled={!canManage || busySave}
+                          >
+                            {busySave
+                              ? 'Saving…'
+                              : provider.hasCredential
+                                ? 'Update'
+                                : 'Save'}
+                          </button>
+                          {provider.hasCredential ? (
+                            <button
+                              type="button"
+                              className="secondary-btn"
+                              onClick={() =>
+                                void handleVerifyProvider(provider.id)
+                              }
+                              disabled={!canManage || busyVerify}
+                            >
+                              {busyVerify ? 'Verifying…' : 'Re-verify'}
+                            </button>
+                          ) : null}
+                        </div>
+                      </div>
+                    </details>
+                  </article>
+                );
+              })}
+            </div>
+          </section>
+        </>
+      ) : null}
+
+      {activeTab === 'registered_agents' ? (
+        <>
+          <RegisteredAgentsPanel
+            providers={allProvidersForPanel}
+            executorSettings={settings}
+            onUnauthorized={onUnauthorized}
+            canManage={canManage}
+            mainAgentId={mainAgentId}
+            onAgentsChanged={setRegisteredAgents}
+          />
+
+          {registeredAgents.length > 0 ? (
+            <section className="talk-llm-section">
+              <div className="talk-llm-section-header">
+                <div>
+                  <h3>Main Agent</h3>
+                  <p className="talk-llm-meta">
+                    The main agent is used for the home channel and as the
+                    default when no Talk-specific agent is assigned.
+                  </p>
+                  <p
+                    className={executionPreviewTone(selectedMainAgent || null)}
+                  >
+                    {formatExecutionPreview(selectedMainAgent || null)}
+                  </p>
+                </div>
+              </div>
+              <article className="talk-llm-card">
+                <div className="talk-llm-grid">
+                  <label className="talk-llm-field-span">
+                    <span>Select main agent</span>
+                    <select
+                      value={mainAgentDraft}
+                      onChange={(event) =>
+                        setMainAgentDraft(event.target.value)
+                      }
+                      disabled={!canManage || busyKey === 'main-agent-save'}
+                    >
+                      <option value="" disabled>
+                        Choose an agent…
+                      </option>
+                      {registeredAgents
+                        .filter((a) => a.enabled)
+                        .map((agent) => (
+                          <option key={agent.id} value={agent.id}>
+                            {agent.name} ({agent.modelId}
+                            {agent.executionPreview.ready
+                              ? agent.executionPreview.routeReason ===
+                                'subscription_fallback'
+                                ? ' · subscription container'
+                                : agent.executionPreview.backend === 'container'
+                                  ? ' · container'
+                                  : ' · direct'
+                              : ' · unavailable'}
+                            )
+                          </option>
+                        ))}
+                    </select>
+                  </label>
+                  <div className="talk-llm-inline-actions">
+                    <button
+                      type="button"
+                      className="primary-btn"
+                      onClick={() => void handleSaveMainAgent()}
+                      disabled={!canSaveMainAgent}
+                    >
+                      {busyKey === 'main-agent-save'
+                        ? 'Saving…'
+                        : 'Set as Main Agent'}
+                    </button>
+                  </div>
+                </div>
+              </article>
+            </section>
+          ) : null}
+        </>
       ) : null}
 
       {returnTo ? (

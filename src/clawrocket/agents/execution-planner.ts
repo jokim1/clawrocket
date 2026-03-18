@@ -99,11 +99,28 @@ function getAnthropicApiKeyFromDb(): string | null {
   }
 }
 
+function getConfiguredExecutorAuthMode():
+  | 'subscription'
+  | 'api_key'
+  | 'advanced_bearer'
+  | 'none'
+  | null {
+  const mode = getSettingValue('executor.authMode')?.trim() || '';
+  if (
+    mode === 'subscription' ||
+    mode === 'api_key' ||
+    mode === 'advanced_bearer' ||
+    mode === 'none'
+  ) {
+    return mode;
+  }
+  return null;
+}
+
 export function resolveContainerCredential(input?: {
   preferredAuthMode?: 'api_key' | 'subscription';
 }): ContainerCredentialConfig {
-  const configuredAuthMode =
-    getSettingValue('executor.authMode')?.trim() || undefined;
+  const configuredAuthMode = getConfiguredExecutorAuthMode() || undefined;
   const dbOauth = getSettingValue('executor.claudeOauthToken')?.trim() || null;
   const dbAuth = getSettingValue('executor.anthropicAuthToken')?.trim() || null;
   const envOauth = TALK_EXECUTOR_CLAUDE_OAUTH_TOKEN.trim() || null;
@@ -243,6 +260,26 @@ export function planExecution(
   const effectiveTools = getEffectiveToolsForAgent(agent.id, userId);
   const heavyToolFamilies = resolveHeavyToolFamilies(effectiveTools);
   const provider = getProviderRecord(agent.provider_id);
+  const configuredAuthMode = getConfiguredExecutorAuthMode();
+
+  if (
+    heavyToolFamilies.length === 0 &&
+    agent.provider_id === 'provider.anthropic' &&
+    isContainerCompatibleProvider(provider) &&
+    configuredAuthMode === 'subscription'
+  ) {
+    return {
+      backend: 'container',
+      routeReason: 'normal',
+      effectiveTools,
+      providerId: agent.provider_id,
+      modelId: agent.model_id,
+      heavyToolFamilies: [],
+      containerCredential: resolveContainerCredential({
+        preferredAuthMode: 'subscription',
+      }),
+    };
+  }
 
   if (heavyToolFamilies.length === 0) {
     try {
@@ -259,7 +296,8 @@ export function planExecution(
       const resolverError = error as ExecutionResolverError;
       if (
         resolverError?.code === 'ANTHROPIC_REQUIRES_API_KEY' &&
-        isContainerCompatibleProvider(provider)
+        isContainerCompatibleProvider(provider) &&
+        configuredAuthMode !== 'api_key'
       ) {
         let containerCredential: ContainerCredentialConfig | null = null;
         try {
