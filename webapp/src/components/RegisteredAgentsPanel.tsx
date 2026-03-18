@@ -17,6 +17,7 @@ type Props = {
   executorSettings: ExecutorSettings;
   onUnauthorized: () => void;
   canManage: boolean;
+  mainAgentId?: string | null;
   /** Called after any CRUD operation so parent can refresh its own agent list. */
   onAgentsChanged?: (agents: RegisteredAgent[]) => void;
 };
@@ -48,9 +49,14 @@ function buildDefaultRegisteredAgentToolPermissions(): Record<string, boolean> {
 const TOOL_FAMILY_GROUPS = {
   'Heavy tools (container, Claude only)': ['shell', 'filesystem', 'browser'],
   'Web tools': ['web'],
-  'Connectors': ['connectors'],
-  'Google Workspace': ['google_read', 'google_write', 'gmail_read', 'gmail_send'],
-  'Messaging': ['messaging'],
+  Connectors: ['connectors'],
+  'Google Workspace': [
+    'google_read',
+    'google_write',
+    'gmail_read',
+    'gmail_send',
+  ],
+  Messaging: ['messaging'],
 };
 
 const TOOL_NAMES: Record<string, string> = {
@@ -73,8 +79,8 @@ function generateDraftId(): string {
 function hasHeavyTools(toolPermissions: Record<string, boolean>): boolean {
   return Boolean(
     toolPermissions.shell ||
-      toolPermissions.filesystem ||
-      toolPermissions.browser,
+    toolPermissions.filesystem ||
+    toolPermissions.browser,
   );
 }
 
@@ -83,7 +89,9 @@ function buildDraftExecutionPreview(input: {
   providers: AgentProviderCard[];
   executorSettings: ExecutorSettings;
 }): RegisteredAgent['executionPreview'] | null {
-  const provider = input.providers.find((entry) => entry.id === input.draft.providerId);
+  const provider = input.providers.find(
+    (entry) => entry.id === input.draft.providerId,
+  );
   if (!provider || provider.id !== 'provider.anthropic') {
     return null;
   }
@@ -199,6 +207,7 @@ export function RegisteredAgentsPanel(props: Props): JSX.Element {
     executorSettings,
     onUnauthorized,
     canManage,
+    mainAgentId,
     onAgentsChanged,
   } = props;
 
@@ -245,21 +254,24 @@ export function RegisteredAgentsPanel(props: Props): JSX.Element {
     // and have been verified. Fall back to enabled + has-credential if none
     // are verified yet.
     const verified = providers.filter(
-      p => p.enabled && p.hasCredential && p.verificationStatus === 'verified',
+      (p) =>
+        p.enabled && p.hasCredential && p.verificationStatus === 'verified',
     );
     if (verified.length > 0) return verified;
-    return providers.filter(p => p.enabled && p.hasCredential);
+    return providers.filter((p) => p.enabled && p.hasCredential);
   }
 
   function getProviderModels(providerId: string) {
-    const provider = providers.find(p => p.id === providerId);
+    const provider = providers.find((p) => p.id === providerId);
     return provider?.modelSuggestions || [];
   }
 
   function startCreate() {
     setIsCreating(true);
-    const defaultProviderId = readyProviders()[0]?.id || availableProviders()[0]?.id || '';
-    const defaultModelId = getProviderModels(defaultProviderId)[0]?.modelId || '';
+    const defaultProviderId =
+      readyProviders()[0]?.id || availableProviders()[0]?.id || '';
+    const defaultModelId =
+      getProviderModels(defaultProviderId)[0]?.modelId || '';
     setCreateDraft({
       draftId: generateDraftId(),
       name: '',
@@ -348,7 +360,9 @@ export function RegisteredAgentsPanel(props: Props): JSX.Element {
         enabled: editDraft.enabled,
       };
       const updated = await updateRegisteredAgent(input);
-      const nextAgents = agents.map(a => (a.id === editingAgentId ? updated : a));
+      const nextAgents = agents.map((a) =>
+        a.id === editingAgentId ? updated : a,
+      );
       setAgents(nextAgents);
       onAgentsChanged?.(nextAgents);
       setEditingAgentId(null);
@@ -372,7 +386,7 @@ export function RegisteredAgentsPanel(props: Props): JSX.Element {
     try {
       setError(null);
       await deleteRegisteredAgent(agentId);
-      const nextAgents = agents.filter(a => a.id !== agentId);
+      const nextAgents = agents.filter((a) => a.id !== agentId);
       setAgents(nextAgents);
       onAgentsChanged?.(nextAgents);
     } catch (err) {
@@ -406,7 +420,10 @@ export function RegisteredAgentsPanel(props: Props): JSX.Element {
       <div className="registered-agents-header">
         <h3>Registered Agents</h3>
         {canManage && !isCreating && editingAgentId === null && (
-          <button onClick={startCreate} className="registered-agents-button registered-agents-button-primary">
+          <button
+            onClick={startCreate}
+            className="registered-agents-button registered-agents-button-primary"
+          >
             Create Agent
           </button>
         )}
@@ -424,7 +441,7 @@ export function RegisteredAgentsPanel(props: Props): JSX.Element {
         <div className="registered-agents-empty">No registered agents yet.</div>
       ) : (
         <div className="registered-agents-list">
-          {agents.map(agent => (
+          {agents.map((agent) => (
             <div key={agent.id} className="registered-agent-card">
               {editingAgentId === agent.id && editDraft ? (
                 <AgentForm
@@ -440,7 +457,11 @@ export function RegisteredAgentsPanel(props: Props): JSX.Element {
               ) : (
                 <AgentCardView
                   agent={agent}
-                  providerName={providers.find(p => p.id === agent.providerId)?.name || 'Unknown'}
+                  providerName={
+                    providers.find((p) => p.id === agent.providerId)?.name ||
+                    'Unknown'
+                  }
+                  isMainAgent={agent.id === mainAgentId}
                   onEdit={() => startEdit(agent)}
                   onDelete={() => handleDelete(agent.id)}
                   canManage={canManage}
@@ -473,7 +494,9 @@ type AgentFormProps = {
   draft: AgentDraft;
   setDraft: (draft: AgentDraft) => void;
   providers: AgentProviderCard[];
-  getProviderModels: (providerId: string) => Array<{ modelId: string; displayName: string }>;
+  getProviderModels: (
+    providerId: string,
+  ) => Array<{ modelId: string; displayName: string }>;
   executionPreview: RegisteredAgent['executionPreview'] | null;
   onSave: () => void;
   onCancel: () => void;
@@ -491,7 +514,7 @@ function AgentForm({
   canManage,
 }: AgentFormProps): JSX.Element {
   const models = getProviderModels(draft.providerId);
-  const selectedProvider = providers.find(p => p.id === draft.providerId);
+  const selectedProvider = providers.find((p) => p.id === draft.providerId);
   const heavyToolsEnabled = hasHeavyTools(draft.toolPermissions);
   const isNonClaudeProvider =
     selectedProvider?.providerKind !== 'anthropic' && heavyToolsEnabled;
@@ -504,7 +527,7 @@ function AgentForm({
         <input
           type="text"
           value={draft.name}
-          onChange={e => setDraft({ ...draft, name: e.target.value })}
+          onChange={(e) => setDraft({ ...draft, name: e.target.value })}
           placeholder="Agent name"
           disabled={!canManage}
         />
@@ -514,9 +537,10 @@ function AgentForm({
         <span>Provider</span>
         <select
           value={draft.providerId}
-          onChange={e => {
+          onChange={(e) => {
             const newProviderId = e.target.value;
-            const newModelId = getProviderModels(newProviderId)[0]?.modelId || '';
+            const newModelId =
+              getProviderModels(newProviderId)[0]?.modelId || '';
             setDraft({
               ...draft,
               providerId: newProviderId,
@@ -525,9 +549,14 @@ function AgentForm({
           }}
           disabled={!canManage}
         >
-          {providers.map(p => (
+          {providers.map((p) => (
             <option key={p.id} value={p.id}>
-              {p.name}{!p.hasCredential ? ' (no credential)' : !p.enabled ? ' (disabled)' : ''}
+              {p.name}
+              {!p.hasCredential
+                ? ' (no credential)'
+                : !p.enabled
+                  ? ' (disabled)'
+                  : ''}
             </option>
           ))}
         </select>
@@ -537,10 +566,10 @@ function AgentForm({
         <span>Model</span>
         <select
           value={draft.modelId}
-          onChange={e => setDraft({ ...draft, modelId: e.target.value })}
+          onChange={(e) => setDraft({ ...draft, modelId: e.target.value })}
           disabled={!canManage}
         >
-          {models.map(m => (
+          {models.map((m) => (
             <option key={m.modelId} value={m.modelId}>
               {m.displayName}
             </option>
@@ -553,7 +582,7 @@ function AgentForm({
         <input
           type="text"
           value={draft.personaRole}
-          onChange={e => setDraft({ ...draft, personaRole: e.target.value })}
+          onChange={(e) => setDraft({ ...draft, personaRole: e.target.value })}
           placeholder="e.g., Senior Engineer"
           disabled={!canManage}
         />
@@ -563,7 +592,7 @@ function AgentForm({
         <span>System Prompt (optional)</span>
         <textarea
           value={draft.systemPrompt}
-          onChange={e => setDraft({ ...draft, systemPrompt: e.target.value })}
+          onChange={(e) => setDraft({ ...draft, systemPrompt: e.target.value })}
           placeholder="Custom instructions for this agent"
           disabled={!canManage}
           rows={3}
@@ -576,7 +605,7 @@ function AgentForm({
         <input
           type="checkbox"
           checked={draft.enabled}
-          onChange={e => setDraft({ ...draft, enabled: e.target.checked })}
+          onChange={(e) => setDraft({ ...draft, enabled: e.target.checked })}
           disabled={!canManage}
           style={{ width: 'auto' }}
         />
@@ -608,12 +637,12 @@ function AgentForm({
           <div key={groupLabel} className="agent-form-tool-group">
             <div className="agent-form-tool-group-label">{groupLabel}</div>
             <div className="agent-form-tool-checkboxes">
-              {toolNames.map(toolName => (
+              {toolNames.map((toolName) => (
                 <label key={toolName} className="agent-form-tool-checkbox">
                   <input
                     type="checkbox"
                     checked={draft.toolPermissions[toolName] || false}
-                    onChange={e => {
+                    onChange={(e) => {
                       setDraft({
                         ...draft,
                         toolPermissions: {
@@ -654,6 +683,7 @@ function AgentForm({
 type AgentCardViewProps = {
   agent: RegisteredAgent;
   providerName: string;
+  isMainAgent: boolean;
   onEdit: () => void;
   onDelete: () => void;
   canManage: boolean;
@@ -662,6 +692,7 @@ type AgentCardViewProps = {
 function AgentCardView({
   agent,
   providerName,
+  isMainAgent,
   onEdit,
   onDelete,
   canManage,
@@ -678,8 +709,17 @@ function AgentCardView({
             <h4>{agent.name}</h4>
             <div className="registered-agent-card-meta">
               <span className="registered-agent-provider">{providerName}</span>
-              {agent.personaRole && <span className="registered-agent-role">{agent.personaRole}</span>}
-              {!agent.enabled && <span className="registered-agent-disabled">Disabled</span>}
+              {agent.personaRole && (
+                <span className="registered-agent-role">
+                  {agent.personaRole}
+                </span>
+              )}
+              {isMainAgent && (
+                <span className="registered-agent-role">Main Agent</span>
+              )}
+              {!agent.enabled && (
+                <span className="registered-agent-disabled">Disabled</span>
+              )}
             </div>
             <p
               className={
@@ -693,22 +733,27 @@ function AgentCardView({
           </div>
           {canManage && (
             <div className="registered-agent-card-actions">
-              <button onClick={onEdit} className="registered-agents-button registered-agents-button-small">
+              <button
+                onClick={onEdit}
+                className="registered-agents-button registered-agents-button-small"
+              >
                 Edit
               </button>
-              <button
-                onClick={onDelete}
-                className="registered-agents-button registered-agents-button-small registered-agents-button-danger"
-              >
-                Delete
-              </button>
+              {!isMainAgent ? (
+                <button
+                  onClick={onDelete}
+                  className="registered-agents-button registered-agents-button-small registered-agents-button-danger"
+                >
+                  Delete
+                </button>
+              ) : null}
             </div>
           )}
         </div>
 
         {toolList.length > 0 && (
           <div className="registered-agent-card-tools">
-            {toolList.map(tool => (
+            {toolList.map((tool) => (
               <span key={tool} className="registered-agent-tool-pill">
                 {tool}
               </span>
