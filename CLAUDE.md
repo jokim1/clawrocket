@@ -20,6 +20,14 @@ ClawRocket is a NanoClaw-derived fork with two distinct runtime domains:
 
 Keep those domains separate when making changes.
 
+## Engineering Defaults
+
+- Prefer long-term stable architecture over backward-compatibility scaffolding.
+- Do not preserve legacy APIs, schema shapes, data, or local users by default unless the task explicitly requires it.
+- Treat existing local users and stored data as disposable by default at this stage of the project.
+- If a simpler implementation requires resetting, deleting, or rebuilding local data/users, do that instead of carrying compatibility baggage.
+- Remove dead paths instead of supporting old and new behavior in parallel.
+
 ## Most Important Boundaries
 
 - Prefer ClawRocket-specific work under `src/clawrocket/*`.
