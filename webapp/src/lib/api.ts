@@ -323,7 +323,7 @@ export type TalkThread = {
 export type TalkThreadTitleUpdate = {
   id: string;
   talkId: string;
-  title: string | null;
+  title: string;
   isDefault: boolean;
   createdAt: string;
   updatedAt: string;
