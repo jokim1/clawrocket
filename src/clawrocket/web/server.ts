@@ -2739,7 +2739,8 @@ function buildApp(opts: WebServerOptions): Hono {
   });
 
   app.get('/api/v1/talks/:talkId/channels', async (c) => {
-    const auth = (c as any).get('auth') as AuthContext;
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
     const talkId = safeDecodePathSegment(c.req.param('talkId'));
     if (!talkId) {
       return c.json(
@@ -2761,7 +2762,8 @@ function buildApp(opts: WebServerOptions): Hono {
   });
 
   app.post('/api/v1/talks/:talkId/channels', async (c) => {
-    const auth = (c as any).get('auth') as AuthContext;
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
     const talkId = safeDecodePathSegment(c.req.param('talkId'));
     if (!talkId) {
       return c.json(
@@ -2833,7 +2835,8 @@ function buildApp(opts: WebServerOptions): Hono {
   });
 
   app.patch('/api/v1/talks/:talkId/channels/:bindingId', async (c) => {
-    const auth = (c as any).get('auth') as AuthContext;
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
     const talkId = safeDecodePathSegment(c.req.param('talkId'));
     if (!talkId) {
       return c.json(
@@ -2907,7 +2910,8 @@ function buildApp(opts: WebServerOptions): Hono {
   });
 
   app.delete('/api/v1/talks/:talkId/channels/:bindingId', async (c) => {
-    const auth = (c as any).get('auth') as AuthContext;
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
     const talkId = safeDecodePathSegment(c.req.param('talkId'));
     if (!talkId) {
       return c.json(
@@ -2933,7 +2937,8 @@ function buildApp(opts: WebServerOptions): Hono {
   });
 
   app.post('/api/v1/talks/:talkId/channels/:bindingId/test', async (c) => {
-    const auth = (c as any).get('auth') as AuthContext;
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
     const talkId = safeDecodePathSegment(c.req.param('talkId'));
     if (!talkId) {
       return c.json(
@@ -2962,7 +2967,8 @@ function buildApp(opts: WebServerOptions): Hono {
   app.get(
     '/api/v1/talks/:talkId/channels/:bindingId/ingress-failures',
     async (c) => {
-      const auth = (c as any).get('auth') as AuthContext;
+      const auth = requireAuth(c);
+      if (!auth) return unauthorized(c);
       const talkId = safeDecodePathSegment(c.req.param('talkId'));
       if (!talkId) {
         return c.json(
@@ -2991,7 +2997,8 @@ function buildApp(opts: WebServerOptions): Hono {
   app.post(
     '/api/v1/talks/:talkId/channels/:bindingId/ingress-failures/:rowId/retry',
     async (c) => {
-      const auth = (c as any).get('auth') as AuthContext;
+      const auth = requireAuth(c);
+      if (!auth) return unauthorized(c);
       const talkId = safeDecodePathSegment(c.req.param('talkId'));
       if (!talkId) {
         return c.json(
@@ -3021,7 +3028,8 @@ function buildApp(opts: WebServerOptions): Hono {
   app.delete(
     '/api/v1/talks/:talkId/channels/:bindingId/ingress-failures/:rowId',
     async (c) => {
-      const auth = (c as any).get('auth') as AuthContext;
+      const auth = requireAuth(c);
+      if (!auth) return unauthorized(c);
       const talkId = safeDecodePathSegment(c.req.param('talkId'));
       if (!talkId) {
         return c.json(
@@ -3051,7 +3059,8 @@ function buildApp(opts: WebServerOptions): Hono {
   app.get(
     '/api/v1/talks/:talkId/channels/:bindingId/delivery-failures',
     async (c) => {
-      const auth = (c as any).get('auth') as AuthContext;
+      const auth = requireAuth(c);
+      if (!auth) return unauthorized(c);
       const talkId = safeDecodePathSegment(c.req.param('talkId'));
       if (!talkId) {
         return c.json(
@@ -3080,7 +3089,8 @@ function buildApp(opts: WebServerOptions): Hono {
   app.post(
     '/api/v1/talks/:talkId/channels/:bindingId/delivery-failures/:rowId/retry',
     async (c) => {
-      const auth = (c as any).get('auth') as AuthContext;
+      const auth = requireAuth(c);
+      if (!auth) return unauthorized(c);
       const talkId = safeDecodePathSegment(c.req.param('talkId'));
       if (!talkId) {
         return c.json(
@@ -3110,7 +3120,8 @@ function buildApp(opts: WebServerOptions): Hono {
   app.delete(
     '/api/v1/talks/:talkId/channels/:bindingId/delivery-failures/:rowId',
     async (c) => {
-      const auth = (c as any).get('auth') as AuthContext;
+      const auth = requireAuth(c);
+      if (!auth) return unauthorized(c);
       const talkId = safeDecodePathSegment(c.req.param('talkId'));
       if (!talkId) {
         return c.json(
