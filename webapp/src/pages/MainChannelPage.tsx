@@ -69,6 +69,7 @@ type MainAction =
   | { type: 'THREADS_LOADING' }
   | { type: 'THREADS_LOADED'; threads: MainThreadSummary[] }
   | { type: 'THREADS_ERROR'; message: string }
+  | { type: 'THREAD_REMOVED'; threadId: string }
   | { type: 'THREAD_SELECTED'; threadId: string }
   | { type: 'MESSAGES_LOADING' }
   | { type: 'MESSAGES_LOADED'; messages: MainThreadMessage[] }
@@ -82,9 +83,17 @@ type MainAction =
   | { type: 'SEND_STARTED' }
   | { type: 'SEND_FAILED'; message: string }
   | { type: 'SEND_CLEARED' }
-  | { type: 'NEW_THREAD_CREATED'; threadId: string; threadSummary: MainThreadSummary }
+  | {
+      type: 'NEW_THREAD_CREATED';
+      threadId: string;
+      threadSummary: MainThreadSummary;
+    }
   | { type: 'CLEAR_THREAD' }
-  | { type: 'MESSAGES_LOADED_FOR_THREAD'; threadId: string; messages: MainThreadMessage[] };
+  | {
+      type: 'MESSAGES_LOADED_FOR_THREAD';
+      threadId: string;
+      messages: MainThreadMessage[];
+    };
 
 function createInitialState(): MainState {
   return {
@@ -114,9 +123,35 @@ function mainReducer(state: MainState, action: MainAction): MainState {
     case 'THREADS_LOADING':
       return { ...state, threadsLoading: true, threadsError: null };
     case 'THREADS_LOADED':
-      return { ...state, threads: action.threads, threadsLoading: false, threadsError: null };
+      return {
+        ...state,
+        threads: action.threads,
+        threadsLoading: false,
+        threadsError: null,
+      };
     case 'THREADS_ERROR':
       return { ...state, threadsLoading: false, threadsError: action.message };
+    case 'THREAD_REMOVED':
+      return {
+        ...state,
+        threads: state.threads.filter(
+          (thread) => thread.threadId !== action.threadId,
+        ),
+        activeThreadId:
+          state.activeThreadId === action.threadId
+            ? null
+            : state.activeThreadId,
+        messages:
+          state.activeThreadId === action.threadId ? [] : state.messages,
+        messagesLoading:
+          state.activeThreadId === action.threadId
+            ? false
+            : state.messagesLoading,
+        messagesError:
+          state.activeThreadId === action.threadId ? null : state.messagesError,
+        liveResponses:
+          state.activeThreadId === action.threadId ? {} : state.liveResponses,
+      };
     case 'THREAD_SELECTED':
       return {
         ...state,
@@ -129,13 +164,27 @@ function mainReducer(state: MainState, action: MainAction): MainState {
     case 'MESSAGES_LOADING':
       return { ...state, messagesLoading: true, messagesError: null };
     case 'MESSAGES_LOADED':
-      return { ...state, messages: action.messages, messagesLoading: false, messagesError: null };
+      return {
+        ...state,
+        messages: action.messages,
+        messagesLoading: false,
+        messagesError: null,
+      };
     case 'MESSAGES_ERROR':
-      return { ...state, messagesLoading: false, messagesError: action.message };
+      return {
+        ...state,
+        messagesLoading: false,
+        messagesError: action.message,
+      };
     case 'MESSAGES_LOADED_FOR_THREAD':
       // Only apply if the user hasn't navigated away — drop stale results
       if (action.threadId !== state.activeThreadId) return state;
-      return { ...state, messages: action.messages, messagesLoading: false, messagesError: null };
+      return {
+        ...state,
+        messages: action.messages,
+        messagesLoading: false,
+        messagesError: null,
+      };
     case 'MESSAGE_APPENDED': {
       // Deduplicate
       if (state.messages.some((m) => m.id === action.message.id)) return state;
@@ -151,7 +200,10 @@ function mainReducer(state: MainState, action: MainAction): MainState {
               ? { ...t, lastMessageAt: ts, messageCount: t.messageCount + 1 }
               : t,
           )
-        : [{ threadId: tid, lastMessageAt: ts, messageCount: 1 }, ...state.threads];
+        : [
+            { threadId: tid, lastMessageAt: ts, messageCount: 1 },
+            ...state.threads,
+          ];
 
       // Not the active thread — only update thread list
       if (tid !== state.activeThreadId) {
@@ -238,11 +290,20 @@ function mainReducer(state: MainState, action: MainAction): MainState {
       return { ...state, sendState: 'idle', sendError: null };
     case 'NEW_THREAD_CREATED': {
       // Merge-or-insert: if SSE already inserted this thread via MESSAGE_APPENDED, update it; otherwise prepend.
-      const alreadyExists = state.threads.some((t) => t.threadId === action.threadId);
+      const alreadyExists = state.threads.some(
+        (t) => t.threadId === action.threadId,
+      );
       const threads = alreadyExists
         ? state.threads.map((t) =>
             t.threadId === action.threadId
-              ? { ...t, lastMessageAt: action.threadSummary.lastMessageAt, messageCount: Math.max(t.messageCount, action.threadSummary.messageCount) }
+              ? {
+                  ...t,
+                  lastMessageAt: action.threadSummary.lastMessageAt,
+                  messageCount: Math.max(
+                    t.messageCount,
+                    action.threadSummary.messageCount,
+                  ),
+                }
               : t,
           )
         : [action.threadSummary, ...state.threads];
@@ -319,17 +380,42 @@ export function MainChannelPage({
         }
         dispatch({ type: 'THREADS_ERROR', message: String(err) });
       });
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+    };
   }, [onUnauthorized]);
 
   // ── Sync route threadId ──
   useEffect(() => {
-    if (routeThreadId && routeThreadId !== state.activeThreadId) {
-      dispatch({ type: 'THREAD_SELECTED', threadId: routeThreadId });
-    } else if (!routeThreadId && state.activeThreadId) {
-      dispatch({ type: 'CLEAR_THREAD' });
+    if (state.threadsLoading) return;
+    if (!routeThreadId) {
+      if (state.activeThreadId) {
+        dispatch({ type: 'CLEAR_THREAD' });
+      }
+      return;
     }
-  }, [routeThreadId, state.activeThreadId]);
+
+    const isKnownThread = state.threads.some(
+      (thread) => thread.threadId === routeThreadId,
+    );
+    if (!isKnownThread) {
+      if (state.activeThreadId) {
+        dispatch({ type: 'CLEAR_THREAD' });
+      }
+      navigate('/app/main', { replace: true });
+      return;
+    }
+
+    if (routeThreadId !== state.activeThreadId) {
+      dispatch({ type: 'THREAD_SELECTED', threadId: routeThreadId });
+    }
+  }, [
+    navigate,
+    routeThreadId,
+    state.activeThreadId,
+    state.threads,
+    state.threadsLoading,
+  ]);
 
   // Keep ref in sync for use in SSE callbacks (avoids SSE effect depending on activeThreadId)
   activeThreadIdRef.current = state.activeThreadId;
@@ -337,9 +423,10 @@ export function MainChannelPage({
   // ── Load messages when activeThreadId changes ──
   useEffect(() => {
     if (!state.activeThreadId) return;
+    const threadId = state.activeThreadId;
     let cancelled = false;
     dispatch({ type: 'MESSAGES_LOADING' });
-    getMainThread(state.activeThreadId)
+    getMainThread(threadId)
       .then((messages) => {
         if (cancelled) return;
         dispatch({ type: 'MESSAGES_LOADED', messages });
@@ -352,10 +439,17 @@ export function MainChannelPage({
           onUnauthorized();
           return;
         }
+        if (err instanceof ApiError && err.status === 404) {
+          dispatch({ type: 'THREAD_REMOVED', threadId });
+          navigate('/app/main', { replace: true });
+          return;
+        }
         dispatch({ type: 'MESSAGES_ERROR', message: String(err) });
       });
-    return () => { cancelled = true; };
-  }, [state.activeThreadId, onUnauthorized, scrollToBottom]);
+    return () => {
+      cancelled = true;
+    };
+  }, [navigate, onUnauthorized, scrollToBottom, state.activeThreadId]);
 
   // ── SSE Stream ──
   useEffect(() => {
@@ -385,7 +479,11 @@ export function MainChannelPage({
         }
       },
       onResponseCompleted: (event) => {
-        dispatch({ type: 'RESPONSE_COMPLETED', runId: event.runId, threadId: event.threadId });
+        dispatch({
+          type: 'RESPONSE_COMPLETED',
+          runId: event.runId,
+          threadId: event.threadId,
+        });
       },
       onResponseFailed: (event) => {
         dispatch({ type: 'RESPONSE_FAILED', event });
@@ -399,7 +497,13 @@ export function MainChannelPage({
         const tid = activeThreadIdRef.current;
         if (tid) {
           getMainThread(tid)
-            .then((messages) => dispatch({ type: 'MESSAGES_LOADED_FOR_THREAD', threadId: tid, messages }))
+            .then((messages) =>
+              dispatch({
+                type: 'MESSAGES_LOADED_FOR_THREAD',
+                threadId: tid,
+                messages,
+              }),
+            )
             .catch(() => {});
         }
       },
@@ -456,7 +560,14 @@ export function MainChannelPage({
         setDraft(content); // Restore draft
       }
     },
-    [draft, state.sendState, state.activeThreadId, navigate, onUnauthorized, scrollToBottom],
+    [
+      draft,
+      state.sendState,
+      state.activeThreadId,
+      navigate,
+      onUnauthorized,
+      scrollToBottom,
+    ],
   );
 
   // ── Thread selection ──
@@ -475,7 +586,10 @@ export function MainChannelPage({
 
   // ── Build timeline entries ──
   const timeline = useMemo(() => {
-    const entries: Array<{ kind: 'message'; message: MainThreadMessage } | { kind: 'live'; response: LiveResponse }> = [];
+    const entries: Array<
+      | { kind: 'message'; message: MainThreadMessage }
+      | { kind: 'live'; response: LiveResponse }
+    > = [];
     for (const message of state.messages) {
       entries.push({ kind: 'message', message });
     }
@@ -525,7 +639,8 @@ export function MainChannelPage({
     () =>
       [...state.threads].sort(
         (a, b) =>
-          new Date(b.lastMessageAt).getTime() - new Date(a.lastMessageAt).getTime(),
+          new Date(b.lastMessageAt).getTime() -
+          new Date(a.lastMessageAt).getTime(),
       ),
     [state.threads],
   );
@@ -573,7 +688,8 @@ export function MainChannelPage({
                     {thread.threadId.slice(0, 8)}…
                   </span>
                   <span className="main-thread-item-meta">
-                    {thread.messageCount} msg · {formatRelativeTime(thread.lastMessageAt)}
+                    {thread.messageCount} msg ·{' '}
+                    {formatRelativeTime(thread.lastMessageAt)}
                   </span>
                 </button>
               </li>
@@ -639,9 +755,7 @@ export function MainChannelPage({
                 <article
                   key={`live-${response.runId}`}
                   className={`message message-assistant message-live${
-                    response.terminalStatus === 'failed'
-                      ? ' message-error'
-                      : ''
+                    response.terminalStatus === 'failed' ? ' message-error' : ''
                   }`}
                 >
                   <header>
@@ -654,9 +768,7 @@ export function MainChannelPage({
                   </header>
                   <p>{response.text || 'Thinking…'}</p>
                   {response.errorMessage ? (
-                    <p className="run-history-error">
-                      {response.errorMessage}
-                    </p>
+                    <p className="run-history-error">{response.errorMessage}</p>
                   ) : null}
                 </article>
               );

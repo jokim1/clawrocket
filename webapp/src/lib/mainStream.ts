@@ -18,6 +18,7 @@ export type MainStreamState =
   | 'offline';
 
 export type MainMessageAppendedEvent = {
+  talkId?: string | null;
   threadId: string;
   messageId: string;
   runId: string | null;
@@ -129,10 +130,8 @@ export function openMainStream(input: OpenMainStreamInput): MainStreamHandle {
     clearReconnectTimer();
     emitState('reconnecting');
 
-    const baseDelay = BACKOFF_STEPS_MS[Math.min(
-      reconnectAttempt,
-      BACKOFF_STEPS_MS.length - 1,
-    )];
+    const baseDelay =
+      BACKOFF_STEPS_MS[Math.min(reconnectAttempt, BACKOFF_STEPS_MS.length - 1)];
     reconnectAttempt += 1;
     const delay = baseDelay + Math.max(0, jitterMs(baseDelay));
     reconnectTimer = setTimeout(() => {
@@ -222,10 +221,9 @@ export function openMainStream(input: OpenMainStreamInput): MainStreamHandle {
       if (next !== source || stopped) return;
       const payload = parse<MainMessageAppendedEvent>(event);
       if (!payload) return;
-      // Only forward Main-channel messages (those with threadId and no talkId)
-      // The server sends the event with the appropriate fields;
-      // Main messages have threadId set and no talkId field.
-      if (payload.threadId) {
+      // Main subscribes to the user-scoped stream, which also includes Talk
+      // events for accessible talks. Only forward true Main-channel messages.
+      if (payload.threadId && !payload.talkId) {
         input.onMessageAppended(payload);
       }
     });
