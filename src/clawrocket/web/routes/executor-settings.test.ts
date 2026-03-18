@@ -1,5 +1,9 @@
 import { beforeEach, afterEach, describe, expect, it } from 'vitest';
 
+import {
+  _resetContainerRuntimeStatusForTests,
+  _setContainerRuntimeStatusForTests,
+} from '../../../container-runtime.js';
 import { getDb } from '../../../db.js';
 import {
   _initTestDatabase,
@@ -12,6 +16,7 @@ import { ExecutorSubscriptionHostAuthService } from '../../talks/executor-subscr
 import type { AuthContext } from '../types.js';
 import {
   _resetExecutorVerificationSingleFlightForTests,
+  getExecutorStatusRoute,
   getExecutorSettingsRoute,
   importExecutorSubscriptionRoute,
   putExecutorSettingsRoute,
@@ -41,6 +46,8 @@ describe('executor-settings routes', () => {
   beforeEach(() => {
     _initTestDatabase();
     _resetExecutorVerificationSingleFlightForTests();
+    _resetContainerRuntimeStatusForTests();
+    _setContainerRuntimeStatusForTests('ready');
     upsertUser({
       id: auth.userId,
       email: 'owner@example.com',
@@ -51,6 +58,7 @@ describe('executor-settings routes', () => {
 
   afterEach(() => {
     _resetExecutorVerificationSingleFlightForTests();
+    _resetContainerRuntimeStatusForTests();
   });
 
   it('reports stale subscription configs as not_verified until runtime verification runs', () => {
@@ -245,6 +253,53 @@ describe('executor-settings routes', () => {
     expect(getSettingValue('executor.lastVerificationMethod')).toBe(
       'subscription_container_runtime',
     );
+  });
+
+  it('reports subscription runtime as unavailable when Docker is unavailable', () => {
+    upsertSettingValue({
+      key: 'executor.authMode',
+      value: 'subscription',
+      updatedBy: auth.userId,
+    });
+    upsertSettingValue({
+      key: 'executor.claudeOauthToken',
+      value: 'oauth-token-123',
+      updatedBy: auth.userId,
+    });
+    upsertSettingValue({
+      key: 'executor.verificationStatus',
+      value: 'verified',
+      updatedBy: auth.userId,
+    });
+    upsertSettingValue({
+      key: 'executor.lastVerificationMode',
+      value: 'subscription',
+      updatedBy: auth.userId,
+    });
+    upsertSettingValue({
+      key: 'executor.lastVerificationMethod',
+      value: 'subscription_container_runtime',
+      updatedBy: auth.userId,
+    });
+    _setContainerRuntimeStatusForTests('unavailable');
+
+    const settings = getExecutorSettingsRoute(auth);
+    expect(settings.statusCode).toBe(200);
+    expect(settings.body.ok).toBe(true);
+    if (settings.body.ok) {
+      expect(settings.body.data.verificationStatus).toBe('unavailable');
+      expect(settings.body.data.lastVerificationError).toMatch(
+        /container runtime is unavailable/i,
+      );
+    }
+
+    const status = getExecutorStatusRoute(auth);
+    expect(status.statusCode).toBe(200);
+    expect(status.body.ok).toBe(true);
+    if (status.body.ok) {
+      expect(status.body.data.containerRuntimeAvailability).toBe('unavailable');
+      expect(status.body.data.verificationStatus).toBe('unavailable');
+    }
   });
 
   it('deduplicates concurrent verification runs with a process-local lock', async () => {

@@ -815,6 +815,7 @@ export type ExecutorStatus = {
   restartSupported: boolean;
   pendingRestartReasons: string[];
   activeRunCount: number;
+  containerRuntimeAvailability: 'ready' | 'unavailable';
   executorAuthMode: 'subscription' | 'api_key' | 'advanced_bearer' | 'none';
   activeCredentialConfigured: boolean;
   verificationStatus:

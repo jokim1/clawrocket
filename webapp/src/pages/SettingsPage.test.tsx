@@ -41,6 +41,7 @@ describe('SettingsPage', () => {
           restartSupported: true,
           pendingRestartReasons: ['Alias model map changed'],
           activeRunCount: 2,
+          containerRuntimeAvailability: 'ready',
           executorAuthMode: 'api_key',
           activeCredentialConfigured: true,
           verificationStatus: 'verified',
@@ -56,16 +57,16 @@ describe('SettingsPage', () => {
       }),
     ]);
 
-    render(
-      <SettingsPage onUnauthorized={vi.fn()} userRole="owner" />,
-    );
+    render(<SettingsPage onUnauthorized={vi.fn()} userRole="owner" />);
 
     await screen.findByRole('heading', { name: 'Executor Settings' });
     expect(
       await screen.findByText('Configuration errors detected.'),
     ).toBeTruthy();
     expect(await screen.findByText('Alias model map changed')).toBeTruthy();
-    expect((await screen.findAllByText('Active auth mode')).length).toBeGreaterThan(0);
+    expect(
+      (await screen.findAllByText('Active auth mode')).length,
+    ).toBeGreaterThan(0);
     expect(
       await screen.findByRole('button', {
         name: 'Restart ClawRocket Service',
@@ -104,6 +105,7 @@ describe('SettingsPage', () => {
           restartSupported: true,
           pendingRestartReasons: ['Default alias changed from Mock to Gemini'],
           activeRunCount: 0,
+          containerRuntimeAvailability: 'ready',
           executorAuthMode: 'none',
           activeCredentialConfigured: false,
           verificationStatus: 'missing',
@@ -119,21 +121,20 @@ describe('SettingsPage', () => {
       }),
     ]);
 
-    render(
-      <SettingsPage onUnauthorized={vi.fn()} userRole="admin" />,
-    );
+    render(<SettingsPage onUnauthorized={vi.fn()} userRole="admin" />);
 
     await screen.findByRole('heading', { name: 'Executor Settings' });
     expect(
-      (await screen.findAllByText(
-        'Only the account owner can restart the service.',
-      )).length,
+      (
+        await screen.findAllByText(
+          'Only the account owner can restart the service.',
+        )
+      ).length,
     ).toBeGreaterThan(0);
     expect(
       screen.queryByRole('button', { name: 'Restart ClawRocket Service' }),
     ).toBeNull();
   });
-
 });
 
 function mockFetch(responses: Response[]): void {

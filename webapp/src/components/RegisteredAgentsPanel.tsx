@@ -15,6 +15,7 @@ import {
 type Props = {
   providers: AgentProviderCard[];
   executorSettings: ExecutorSettings;
+  containerRuntimeAvailability: 'ready' | 'unavailable';
   onUnauthorized: () => void;
   canManage: boolean;
   mainAgentId?: string | null;
@@ -88,6 +89,7 @@ function buildDraftExecutionPreview(input: {
   draft: AgentDraft;
   providers: AgentProviderCard[];
   executorSettings: ExecutorSettings;
+  containerRuntimeAvailability: 'ready' | 'unavailable';
 }): RegisteredAgent['executionPreview'] | null {
   const provider = input.providers.find(
     (entry) => entry.id === input.draft.providerId,
@@ -99,6 +101,29 @@ function buildDraftExecutionPreview(input: {
   const heavyToolsEnabled = hasHeavyTools(input.draft.toolPermissions);
   const hasSubscriptionCredential =
     input.executorSettings.hasOauthToken || input.executorSettings.hasAuthToken;
+  const containerRuntimeAvailable =
+    input.containerRuntimeAvailability === 'ready';
+  const usesSubscriptionContainerByPolicy =
+    input.executorSettings.executorAuthMode === 'subscription' &&
+    hasSubscriptionCredential;
+  const wouldFallbackToSubscriptionContainer =
+    !input.executorSettings.hasApiKey && hasSubscriptionCredential;
+  const requiresContainerBackend =
+    heavyToolsEnabled ||
+    usesSubscriptionContainerByPolicy ||
+    wouldFallbackToSubscriptionContainer;
+
+  if (requiresContainerBackend && !containerRuntimeAvailable) {
+    return {
+      surface: 'main',
+      backend: null,
+      authPath: null,
+      routeReason: 'no_valid_path',
+      ready: false,
+      message:
+        'Claude container runtime is unavailable on this host. Start Docker before using this Main agent configuration.',
+    };
+  }
 
   if (heavyToolsEnabled) {
     if (
@@ -205,6 +230,7 @@ export function RegisteredAgentsPanel(props: Props): JSX.Element {
   const {
     providers,
     executorSettings,
+    containerRuntimeAvailability,
     onUnauthorized,
     canManage,
     mainAgentId,
@@ -405,6 +431,7 @@ export function RegisteredAgentsPanel(props: Props): JSX.Element {
         draft: createDraft,
         providers,
         executorSettings,
+        containerRuntimeAvailability,
       })
     : null;
   const editPreview = editDraft
@@ -412,6 +439,7 @@ export function RegisteredAgentsPanel(props: Props): JSX.Element {
         draft: editDraft,
         providers,
         executorSettings,
+        containerRuntimeAvailability,
       })
     : null;
 

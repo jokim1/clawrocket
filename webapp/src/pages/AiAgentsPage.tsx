@@ -1234,6 +1234,7 @@ export function AiAgentsPage({ onUnauthorized, userRole }: Props): JSX.Element {
           <RegisteredAgentsPanel
             providers={allProvidersForPanel}
             executorSettings={settings}
+            containerRuntimeAvailability={status.containerRuntimeAvailability}
             onUnauthorized={onUnauthorized}
             canManage={canManage}
             mainAgentId={mainAgentId}

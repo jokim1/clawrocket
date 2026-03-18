@@ -217,6 +217,10 @@ describe('AiAgentsPage', () => {
       </MemoryRouter>,
     );
 
+    await user.click(
+      await screen.findByRole('tab', { name: 'Registered Agents' }),
+    );
+
     const mainSectionHeading = await screen.findByRole('heading', {
       name: 'Main Agent',
     });
@@ -599,6 +603,7 @@ function buildExecutorStatus(): ExecutorStatus {
     restartSupported: false,
     pendingRestartReasons: [],
     activeRunCount: 0,
+    containerRuntimeAvailability: 'ready',
     executorAuthMode: 'subscription',
     activeCredentialConfigured: false,
     verificationStatus: 'missing',
