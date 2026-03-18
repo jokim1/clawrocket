@@ -220,6 +220,95 @@ export type TalkStateEntry = {
   updatedByRunId: string | null;
 };
 
+export type TalkOutputSummary = {
+  id: string;
+  title: string;
+  version: number;
+  contentLength: number;
+  createdAt: string;
+  updatedAt: string;
+  createdByUserId: string | null;
+  updatedByUserId: string | null;
+  updatedByRunId: string | null;
+};
+
+export type TalkOutput = TalkOutputSummary & {
+  contentMarkdown: string;
+};
+
+export type TalkJobWeekday =
+  | 'sun'
+  | 'mon'
+  | 'tue'
+  | 'wed'
+  | 'thu'
+  | 'fri'
+  | 'sat';
+
+export type TalkJobSchedule =
+  | {
+      kind: 'hourly_interval';
+      everyHours: number;
+    }
+  | {
+      kind: 'weekly';
+      weekdays: TalkJobWeekday[];
+      hour: number;
+      minute: number;
+    };
+
+export type TalkJobScope = {
+  connectorIds: string[];
+  channelBindingIds: string[];
+  allowWeb: boolean;
+};
+
+export type TalkJob = {
+  id: string;
+  talkId: string;
+  title: string;
+  prompt: string;
+  targetAgentId: string | null;
+  targetAgentNickname: string | null;
+  status: 'active' | 'paused' | 'blocked';
+  schedule: TalkJobSchedule;
+  timezone: string;
+  deliverableKind: 'thread' | 'report';
+  reportOutputId: string | null;
+  reportOutputTitle: string | null;
+  sourceScope: TalkJobScope;
+  threadId: string;
+  lastRunAt: string | null;
+  lastRunStatus: string | null;
+  nextDueAt: string | null;
+  runCount: number;
+  createdAt: string;
+  updatedAt: string;
+  createdBy: string;
+};
+
+export type TalkJobRunSummary = {
+  id: string;
+  threadId: string;
+  status:
+    | 'queued'
+    | 'running'
+    | 'awaiting_confirmation'
+    | 'cancelled'
+    | 'completed'
+    | 'failed';
+  createdAt: string;
+  startedAt: string | null;
+  completedAt: string | null;
+  triggerMessageId: string | null;
+  responseExcerpt: string | null;
+  errorCode: string | null;
+  errorMessage: string | null;
+  cancelReason: string | null;
+  executorAlias: string | null;
+  executorModel: string | null;
+};
+
 export type TalkThread = {
   id: string;
   talkId: string;
@@ -314,6 +403,14 @@ export type TalkRunContextRetrievedSourceSnapshot = {
   excerpt: string;
 };
 
+export type TalkRunContextOutputManifestItem = {
+  id: string;
+  title: string;
+  version: number;
+  updatedAt: string;
+  contentLength: number;
+};
+
 export type TalkRunContextSnapshot = {
   version: 1;
   threadId: string | null;
@@ -339,6 +436,11 @@ export type TalkRunContextSnapshot = {
     totalCount: number;
     manifest: TalkRunContextSourceManifestItem[];
     inline: TalkRunContextInlineSourceSnapshot[];
+  };
+  outputs: {
+    totalCount: number;
+    omittedCount: number;
+    manifest: TalkRunContextOutputManifestItem[];
   };
   retrieval: {
     query: string | null;
@@ -1923,6 +2025,200 @@ export async function getTalkState(talkId: string): Promise<TalkStateEntry[]> {
     `/api/v1/talks/${encodeURIComponent(talkId)}/state`,
   );
   return envelope.entries;
+}
+
+export async function listTalkOutputs(
+  talkId: string,
+): Promise<TalkOutputSummary[]> {
+  const envelope = await apiRequest<{ outputs: TalkOutputSummary[] }>(
+    `/api/v1/talks/${encodeURIComponent(talkId)}/outputs`,
+  );
+  return envelope.outputs;
+}
+
+export async function getTalkOutput(input: {
+  talkId: string;
+  outputId: string;
+}): Promise<TalkOutput> {
+  const envelope = await apiRequest<{ output: TalkOutput }>(
+    `/api/v1/talks/${encodeURIComponent(input.talkId)}/outputs/${encodeURIComponent(input.outputId)}`,
+  );
+  return envelope.output;
+}
+
+export async function createTalkOutput(input: {
+  talkId: string;
+  title: string;
+  contentMarkdown: string;
+}): Promise<TalkOutput> {
+  const envelope = await apiMutationRequest<{ output: TalkOutput }>(
+    `/api/v1/talks/${encodeURIComponent(input.talkId)}/outputs`,
+    {
+      method: 'POST',
+      includeJson: true,
+      body: JSON.stringify({
+        title: input.title,
+        contentMarkdown: input.contentMarkdown,
+      }),
+    },
+  );
+  return envelope.output;
+}
+
+export async function patchTalkOutput(input: {
+  talkId: string;
+  outputId: string;
+  expectedVersion: number;
+  title?: string;
+  contentMarkdown?: string;
+}): Promise<TalkOutput> {
+  const { talkId, outputId, ...patch } = input;
+  const envelope = await apiMutationRequest<{ output: TalkOutput }>(
+    `/api/v1/talks/${encodeURIComponent(talkId)}/outputs/${encodeURIComponent(outputId)}`,
+    {
+      method: 'PATCH',
+      includeJson: true,
+      body: JSON.stringify(patch),
+    },
+  );
+  return envelope.output;
+}
+
+export async function deleteTalkOutput(input: {
+  talkId: string;
+  outputId: string;
+}): Promise<void> {
+  await apiMutationRequest<{ deleted: true }>(
+    `/api/v1/talks/${encodeURIComponent(input.talkId)}/outputs/${encodeURIComponent(input.outputId)}`,
+    { method: 'DELETE' },
+  );
+}
+
+export async function listTalkJobs(talkId: string): Promise<TalkJob[]> {
+  const envelope = await apiRequest<{ jobs: TalkJob[] }>(
+    `/api/v1/talks/${encodeURIComponent(talkId)}/jobs`,
+  );
+  return envelope.jobs;
+}
+
+export async function getTalkJob(input: {
+  talkId: string;
+  jobId: string;
+}): Promise<TalkJob> {
+  const envelope = await apiRequest<{ job: TalkJob }>(
+    `/api/v1/talks/${encodeURIComponent(input.talkId)}/jobs/${encodeURIComponent(input.jobId)}`,
+  );
+  return envelope.job;
+}
+
+export async function listTalkJobRuns(input: {
+  talkId: string;
+  jobId: string;
+  limit?: number;
+}): Promise<TalkJobRunSummary[]> {
+  const params = new URLSearchParams();
+  if (typeof input.limit === 'number' && input.limit > 0) {
+    params.set('limit', String(Math.floor(input.limit)));
+  }
+  const query = params.toString();
+  const envelope = await apiRequest<{ runs: TalkJobRunSummary[] }>(
+    `/api/v1/talks/${encodeURIComponent(input.talkId)}/jobs/${encodeURIComponent(input.jobId)}/runs${query ? `?${query}` : ''}`,
+  );
+  return envelope.runs;
+}
+
+export async function createTalkJob(input: {
+  talkId: string;
+  title: string;
+  prompt: string;
+  targetAgentId: string;
+  schedule: TalkJobSchedule;
+  timezone: string;
+  deliverableKind: 'thread' | 'report';
+  reportOutputId?: string | null;
+  createReport?: { title: string; contentMarkdown?: string } | null;
+  sourceScope: TalkJobScope;
+}): Promise<TalkJob> {
+  const envelope = await apiMutationRequest<{ job: TalkJob }>(
+    `/api/v1/talks/${encodeURIComponent(input.talkId)}/jobs`,
+    {
+      method: 'POST',
+      includeJson: true,
+      body: JSON.stringify(input),
+    },
+  );
+  return envelope.job;
+}
+
+export async function patchTalkJob(input: {
+  talkId: string;
+  jobId: string;
+  title?: string;
+  prompt?: string;
+  targetAgentId?: string;
+  schedule?: TalkJobSchedule;
+  timezone?: string;
+  deliverableKind?: 'thread' | 'report';
+  reportOutputId?: string | null;
+  createReport?: { title: string; contentMarkdown?: string } | null;
+  sourceScope?: TalkJobScope;
+}): Promise<TalkJob> {
+  const { talkId, jobId, ...patch } = input;
+  const envelope = await apiMutationRequest<{ job: TalkJob }>(
+    `/api/v1/talks/${encodeURIComponent(talkId)}/jobs/${encodeURIComponent(jobId)}`,
+    {
+      method: 'PATCH',
+      includeJson: true,
+      body: JSON.stringify(patch),
+    },
+  );
+  return envelope.job;
+}
+
+export async function deleteTalkJob(input: {
+  talkId: string;
+  jobId: string;
+}): Promise<void> {
+  await apiMutationRequest<{ deleted: true }>(
+    `/api/v1/talks/${encodeURIComponent(input.talkId)}/jobs/${encodeURIComponent(input.jobId)}`,
+    { method: 'DELETE' },
+  );
+}
+
+export async function pauseTalkJob(input: {
+  talkId: string;
+  jobId: string;
+}): Promise<TalkJob> {
+  const envelope = await apiMutationRequest<{ job: TalkJob }>(
+    `/api/v1/talks/${encodeURIComponent(input.talkId)}/jobs/${encodeURIComponent(input.jobId)}/pause`,
+    { method: 'POST' },
+  );
+  return envelope.job;
+}
+
+export async function resumeTalkJob(input: {
+  talkId: string;
+  jobId: string;
+}): Promise<TalkJob> {
+  const envelope = await apiMutationRequest<{ job: TalkJob }>(
+    `/api/v1/talks/${encodeURIComponent(input.talkId)}/jobs/${encodeURIComponent(input.jobId)}/resume`,
+    { method: 'POST' },
+  );
+  return envelope.job;
+}
+
+export async function runTalkJobNow(input: {
+  talkId: string;
+  jobId: string;
+}): Promise<{ job: TalkJob; runId: string; triggerMessageId: string }> {
+  return apiMutationRequest<{
+    job: TalkJob;
+    runId: string;
+    triggerMessageId: string;
+  }>(
+    `/api/v1/talks/${encodeURIComponent(input.talkId)}/jobs/${encodeURIComponent(input.jobId)}/run-now`,
+    { method: 'POST' },
+  );
 }
 
 export async function createTalkContextSource(input: {

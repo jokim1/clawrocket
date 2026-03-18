@@ -31,6 +31,10 @@ import type {
   TalkMessageAttachment,
   TalkRun,
   TalkRunContextSnapshot,
+  TalkOutput,
+  TalkOutputSummary,
+  TalkJob,
+  TalkJobRunSummary,
   TalkStateEntry,
   TalkThread,
   TalkTools,
@@ -243,6 +247,11 @@ describe('TalkDetailPage', () => {
               },
             ],
           },
+          outputs: {
+            totalCount: 0,
+            omittedCount: 0,
+            manifest: [],
+          },
           tools: {
             contextToolNames: ['read_context_source'],
             connectorToolNames: ['google_sheets_query'],
@@ -394,6 +403,101 @@ describe('TalkDetailPage', () => {
     expect(screen.getByText(/Version 3/i)).toBeTruthy();
     expect(screen.getByText(/run-55/i)).toBeTruthy();
     expect(screen.getByText(/"winner": "Claude"/i)).toBeTruthy();
+  });
+
+  it('creates, edits, and deletes outputs from the Outputs tab', async () => {
+    const user = userEvent.setup();
+
+    installTalkDetailFetch({
+      outputs: [
+        buildTalkOutput({
+          id: 'output-1',
+          title: 'Season Outlook',
+          contentMarkdown: '# Outlook\n\nCal wins 7.',
+          contentLength: '# Outlook\n\nCal wins 7.'.length,
+        }),
+      ],
+    });
+
+    renderDetailPage('/app/talks/talk-1/outputs');
+
+    await screen.findByRole('heading', { name: 'Outputs' });
+    expect(screen.getByRole('button', { name: 'New Output' })).toBeTruthy();
+    expect(screen.getByDisplayValue('Season Outlook')).toBeTruthy();
+
+    const titleInput = screen.getByDisplayValue('Season Outlook');
+    const bodyInput = screen.getByLabelText('Markdown Body');
+    await user.clear(titleInput);
+    await user.type(titleInput, 'Updated Outlook');
+    await user.clear(bodyInput);
+    await user.type(bodyInput, 'Fresh body');
+    await user.click(screen.getByRole('button', { name: 'Save Output' }));
+
+    expect(await screen.findByText('Output saved.')).toBeTruthy();
+    expect(screen.getAllByText('Updated Outlook').length).toBeGreaterThan(0);
+
+    await user.click(screen.getByRole('button', { name: 'New Output' }));
+    expect(await screen.findByText('Output created.')).toBeTruthy();
+    expect(screen.getAllByText('Untitled Output').length).toBeGreaterThan(0);
+
+    await user.click(screen.getByRole('button', { name: 'Delete Output' }));
+    expect(await screen.findByText('Output deleted.')).toBeTruthy();
+  });
+
+  it('creates report jobs and can queue them from the Jobs tab', async () => {
+    const user = userEvent.setup();
+
+    installTalkDetailFetch({
+      jobs: [],
+      outputs: [
+        buildTalkOutput({
+          id: 'output-1',
+          title: 'Season Outlook',
+        }),
+      ],
+    });
+
+    renderDetailPage('/app/talks/talk-1/jobs');
+
+    await screen.findByRole('heading', { name: 'Jobs' });
+    expect(screen.getByText('No jobs yet.')).toBeTruthy();
+
+    await user.click(screen.getByRole('button', { name: 'New Job' }));
+
+    await user.type(screen.getByLabelText('Title'), 'Weekly Retention Brief');
+    await user.selectOptions(screen.getByLabelText('Deliverable'), 'report');
+    await user.selectOptions(screen.getByLabelText('Report Target'), 'create');
+    await user.type(
+      screen.getByLabelText('New Report Title'),
+      'Weekly Retention Report',
+    );
+    await user.type(
+      screen.getByLabelText('Prompt'),
+      'Summarize retention changes and the top three follow-ups.',
+    );
+    await user.click(screen.getByLabelText('Allow web access'));
+    await user.click(screen.getByLabelText('FTUE PostHog'));
+
+    expect(
+      screen.getByText(/1 connector · web access: FTUE PostHog/i),
+    ).toBeTruthy();
+
+    await user.click(screen.getByRole('button', { name: 'Create Job' }));
+
+    expect(await screen.findByText('Job created.')).toBeTruthy();
+    expect(
+      screen.getAllByText('Weekly Retention Brief').length,
+    ).toBeGreaterThan(0);
+    expect(screen.getByText(/Report · active/i)).toBeTruthy();
+    expect(screen.getByRole('link', { name: 'Open Report' })).toHaveAttribute(
+      'href',
+      '/app/talks/talk-1/outputs?thread=thread-default',
+    );
+
+    await user.click(screen.getByRole('button', { name: 'Run Now' }));
+
+    expect(await screen.findByText('Job queued.')).toBeTruthy();
+    expect(screen.getAllByText('queued').length).toBeGreaterThan(0);
   });
 
   it('lets owners manage the read-only project mount from the Agents tab', async () => {
@@ -1258,7 +1362,7 @@ describe('TalkDetailPage', () => {
     ).toHaveAttribute('disabled');
   });
 
-  it('warns and blocks send before a multi-agent Talk turn includes a container-only agent', async () => {
+  it('allows multi-agent Talk turns that mix container and direct agents', async () => {
     const user = userEvent.setup();
     const sendBodies: Array<{ content: string; targetAgentIds: string[] }> = [];
 
@@ -1319,7 +1423,7 @@ describe('TalkDetailPage', () => {
     const sendButton = screen.getByRole('button', { name: 'Send' });
 
     const statusPills = screen.getByRole('list', { name: 'Talk agent status' });
-    expect(within(statusPills).getByText('Single-agent only')).toBeTruthy();
+    expect(within(statusPills).queryByText('Single-agent only')).toBeNull();
 
     await user.type(composer, 'Which team has the edge?');
     expect(sendButton).not.toHaveAttribute('disabled');
@@ -1330,15 +1434,23 @@ describe('TalkDetailPage', () => {
     });
     await user.click(openAiChip);
 
-    expect(
-      await screen.findByText(
-        /can only run as the sole selected agent in Talk right now/i,
-      ),
-    ).toBeTruthy();
-    expect(sendButton).toHaveAttribute('disabled');
+    await waitFor(() =>
+      expect(
+        screen.queryByText(
+          /can only run as the sole selected agent in Talk right now/i,
+        ),
+      ).toBeNull(),
+    );
+    expect(sendButton).not.toHaveAttribute('disabled');
 
-    await user.keyboard('{Enter}');
-    await waitFor(() => expect(sendBodies).toHaveLength(0));
+    await user.click(sendButton);
+    await waitFor(() => expect(sendBodies).toHaveLength(1));
+    expect(sendBodies[0]).toEqual({
+      threadId: DEFAULT_THREAD_ID,
+      content: 'Which team has the edge?',
+      targetAgentIds: ['agent-claude', 'agent-openai'],
+      attachmentIds: [],
+    });
   });
 
   it('submits on Enter and keeps Shift+Enter for a newline in the composer', async () => {
@@ -2297,6 +2409,85 @@ function buildTalkStateEntry(input?: Partial<TalkStateEntry>): TalkStateEntry {
   };
 }
 
+function buildTalkOutputSummary(
+  input?: Partial<TalkOutputSummary>,
+): TalkOutputSummary {
+  return {
+    id: input?.id ?? 'output-1',
+    title: input?.title ?? 'Season Outlook',
+    version: input?.version ?? 1,
+    contentLength: input?.contentLength ?? 18,
+    createdAt: input?.createdAt ?? '2026-03-06T00:00:00.000Z',
+    updatedAt: input?.updatedAt ?? '2026-03-06T00:00:00.000Z',
+    createdByUserId: input?.createdByUserId ?? 'owner-1',
+    updatedByUserId: input?.updatedByUserId ?? 'owner-1',
+    updatedByRunId: input?.updatedByRunId ?? null,
+  };
+}
+
+function buildTalkOutput(input?: Partial<TalkOutput>): TalkOutput {
+  const summary = buildTalkOutputSummary(input);
+  return {
+    ...summary,
+    contentMarkdown: input?.contentMarkdown ?? '# Outlook\n\nCal wins 7.',
+  };
+}
+
+function buildTalkJob(input?: Partial<TalkJob>): TalkJob {
+  return {
+    id: input?.id ?? 'job-1',
+    talkId: input?.talkId ?? 'talk-1',
+    title: input?.title ?? 'Daily FTUE Brief',
+    prompt: input?.prompt ?? 'Check FTUE metrics.',
+    targetAgentId: input?.targetAgentId ?? 'agent-claude',
+    targetAgentNickname: input?.targetAgentNickname ?? 'Claude Sonnet 4.6',
+    status: input?.status ?? 'active',
+    schedule: input?.schedule ?? {
+      kind: 'weekly',
+      weekdays: ['mon', 'tue', 'wed', 'thu', 'fri'],
+      hour: 9,
+      minute: 0,
+    },
+    timezone: input?.timezone ?? 'America/Los_Angeles',
+    deliverableKind: input?.deliverableKind ?? 'thread',
+    reportOutputId: input?.reportOutputId ?? null,
+    reportOutputTitle: input?.reportOutputTitle ?? null,
+    sourceScope: input?.sourceScope ?? {
+      connectorIds: [],
+      channelBindingIds: [],
+      allowWeb: false,
+    },
+    threadId: input?.threadId ?? 'thread-job-1',
+    lastRunAt: input?.lastRunAt ?? null,
+    lastRunStatus: input?.lastRunStatus ?? null,
+    nextDueAt: input?.nextDueAt ?? '2026-03-07T17:00:00.000Z',
+    runCount: input?.runCount ?? 0,
+    createdAt: input?.createdAt ?? '2026-03-06T00:00:00.000Z',
+    updatedAt: input?.updatedAt ?? '2026-03-06T00:00:00.000Z',
+    createdBy: input?.createdBy ?? 'owner-1',
+  };
+}
+
+function buildTalkJobRunSummary(
+  input?: Partial<TalkJobRunSummary>,
+): TalkJobRunSummary {
+  return {
+    id: input?.id ?? 'job-run-1',
+    threadId: input?.threadId ?? 'thread-job-1',
+    status: input?.status ?? 'completed',
+    createdAt: input?.createdAt ?? '2026-03-06T09:00:00.000Z',
+    startedAt: input?.startedAt ?? '2026-03-06T09:00:01.000Z',
+    completedAt: input?.completedAt ?? '2026-03-06T09:00:10.000Z',
+    triggerMessageId: input?.triggerMessageId ?? 'msg-job-1',
+    responseExcerpt: input?.responseExcerpt ?? 'Daily summary complete.',
+    errorCode: input?.errorCode ?? null,
+    errorMessage: input?.errorMessage ?? null,
+    cancelReason: input?.cancelReason ?? null,
+    executorAlias: input?.executorAlias ?? null,
+    executorModel: input?.executorModel ?? null,
+  };
+}
+
 function buildAiAgentsData(): AiAgentsPageData {
   return {
     defaultClaudeModelId: 'claude-sonnet-4-6',
@@ -2351,6 +2542,9 @@ function installTalkDetailFetch(input?: {
   registeredAgents?: RegisteredAgent[];
   context?: TalkContext;
   stateEntries?: TalkStateEntry[];
+  outputs?: TalkOutput[];
+  jobs?: TalkJob[];
+  jobRunsByJobId?: Record<string, TalkJobRunSummary[]>;
   rulePatchError?: {
     status: number;
     code?: string;
@@ -2494,6 +2688,11 @@ function installTalkDetailFetch(input?: {
   ];
   let context = input?.context ?? buildTalkContext();
   let stateEntries = input?.stateEntries ?? [];
+  let outputs = input?.outputs ?? [buildTalkOutput()];
+  let jobs = input?.jobs ?? [buildTalkJob()];
+  let jobRunsByJobId = input?.jobRunsByJobId ?? {
+    'job-1': [buildTalkJobRunSummary()],
+  };
   const channelConnections = input?.channelConnections ?? [
     buildChannelConnection(),
   ];
@@ -2761,6 +2960,273 @@ function installTalkDetailFetch(input?: {
         return jsonResponse(200, {
           ok: true,
           data: { entries: stateEntries },
+        });
+      }
+
+      if (path === '/api/v1/talks/talk-1/outputs' && method === 'GET') {
+        return jsonResponse(200, {
+          ok: true,
+          data: {
+            outputs: outputs.map(({ contentMarkdown, ...summary }) => summary),
+          },
+        });
+      }
+
+      if (path === '/api/v1/talks/talk-1/outputs' && method === 'POST') {
+        const body = JSON.parse(String(init?.body || '{}')) as {
+          title?: string;
+          contentMarkdown?: string;
+        };
+        const created = buildTalkOutput({
+          id: `output-${outputs.length + 1}`,
+          title: body.title?.trim() || 'Untitled Output',
+          contentMarkdown: body.contentMarkdown ?? '',
+          version: 1,
+          contentLength: (body.contentMarkdown ?? '').length,
+          createdAt: '2026-03-06T00:00:00.000Z',
+          updatedAt: '2026-03-06T00:00:00.000Z',
+        });
+        outputs = [created, ...outputs];
+        return jsonResponse(201, {
+          ok: true,
+          data: { output: created },
+        });
+      }
+
+      if (path === '/api/v1/talks/talk-1/jobs' && method === 'GET') {
+        return jsonResponse(200, {
+          ok: true,
+          data: { jobs },
+        });
+      }
+
+      if (path === '/api/v1/talks/talk-1/jobs' && method === 'POST') {
+        const body = JSON.parse(String(init?.body || '{}')) as {
+          title?: string;
+          prompt?: string;
+          targetAgentId?: string;
+          schedule?: TalkJob['schedule'];
+          timezone?: string;
+          deliverableKind?: TalkJob['deliverableKind'];
+          reportOutputId?: string | null;
+          createReport?: { title?: string; contentMarkdown?: string } | null;
+          sourceScope?: TalkJob['sourceScope'];
+        };
+        let reportOutputId = body.reportOutputId ?? null;
+        let reportOutputTitle: string | null = null;
+        if (body.deliverableKind === 'report' && body.createReport?.title) {
+          const createdOutput = buildTalkOutput({
+            id: `output-${outputs.length + 1}`,
+            title: body.createReport.title,
+            contentMarkdown: body.createReport.contentMarkdown ?? '',
+            contentLength: (body.createReport.contentMarkdown ?? '').length,
+          });
+          outputs = [createdOutput, ...outputs];
+          reportOutputId = createdOutput.id;
+          reportOutputTitle = createdOutput.title;
+        }
+        const created = buildTalkJob({
+          id: `job-${jobs.length + 1}`,
+          title: body.title?.trim() || 'Untitled Job',
+          prompt: body.prompt?.trim() || '',
+          targetAgentId: body.targetAgentId ?? 'agent-claude',
+          schedule: body.schedule ?? {
+            kind: 'weekly',
+            weekdays: ['mon'],
+            hour: 9,
+            minute: 0,
+          },
+          timezone: body.timezone ?? 'America/Los_Angeles',
+          deliverableKind: body.deliverableKind ?? 'thread',
+          reportOutputId,
+          reportOutputTitle,
+          sourceScope: body.sourceScope ?? {
+            connectorIds: [],
+            channelBindingIds: [],
+            allowWeb: false,
+          },
+          threadId: `thread-job-${jobs.length + 1}`,
+        });
+        jobs = [created, ...jobs];
+        jobRunsByJobId[created.id] = [];
+        return jsonResponse(201, {
+          ok: true,
+          data: { job: created },
+        });
+      }
+
+      if (
+        /\/api\/v1\/talks\/talk-1\/jobs\/[^/]+$/.test(path) &&
+        method === 'PATCH'
+      ) {
+        const jobId = path.split('/api/v1/talks/talk-1/jobs/')[1];
+        const body = JSON.parse(
+          String(init?.body || '{}'),
+        ) as Partial<TalkJob> & {
+          createReport?: { title?: string; contentMarkdown?: string } | null;
+        };
+        jobs = jobs.map((job) =>
+          job.id === jobId
+            ? buildTalkJob({
+                ...job,
+                ...body,
+                reportOutputId:
+                  body.reportOutputId !== undefined
+                    ? body.reportOutputId
+                    : job.reportOutputId,
+              })
+            : job,
+        );
+        return jsonResponse(200, {
+          ok: true,
+          data: { job: jobs.find((job) => job.id === jobId) },
+        });
+      }
+
+      if (
+        /\/api\/v1\/talks\/talk-1\/jobs\/[^/]+$/.test(path) &&
+        method === 'DELETE'
+      ) {
+        const jobId = path.split('/api/v1/talks/talk-1/jobs/')[1];
+        jobs = jobs.filter((job) => job.id !== jobId);
+        delete jobRunsByJobId[jobId];
+        return jsonResponse(200, { ok: true, data: { deleted: true } });
+      }
+
+      if (
+        /\/api\/v1\/talks\/talk-1\/jobs\/[^/]+\/runs$/.test(path) &&
+        method === 'GET'
+      ) {
+        const jobId = path
+          .split('/api/v1/talks/talk-1/jobs/')[1]!
+          .replace('/runs', '');
+        return jsonResponse(200, {
+          ok: true,
+          data: { runs: jobRunsByJobId[jobId] ?? [] },
+        });
+      }
+
+      if (
+        /\/api\/v1\/talks\/talk-1\/jobs\/[^/]+\/pause$/.test(path) &&
+        method === 'POST'
+      ) {
+        const jobId = path
+          .split('/api/v1/talks/talk-1/jobs/')[1]!
+          .replace('/pause', '');
+        jobs = jobs.map((job) =>
+          job.id === jobId ? { ...job, status: 'paused' } : job,
+        );
+        return jsonResponse(200, {
+          ok: true,
+          data: { job: jobs.find((job) => job.id === jobId) },
+        });
+      }
+
+      if (
+        /\/api\/v1\/talks\/talk-1\/jobs\/[^/]+\/resume$/.test(path) &&
+        method === 'POST'
+      ) {
+        const jobId = path
+          .split('/api/v1/talks/talk-1/jobs/')[1]!
+          .replace('/resume', '');
+        jobs = jobs.map((job) =>
+          job.id === jobId ? { ...job, status: 'active' } : job,
+        );
+        return jsonResponse(200, {
+          ok: true,
+          data: { job: jobs.find((job) => job.id === jobId) },
+        });
+      }
+
+      if (
+        /\/api\/v1\/talks\/talk-1\/jobs\/[^/]+\/run-now$/.test(path) &&
+        method === 'POST'
+      ) {
+        const jobId = path
+          .split('/api/v1/talks/talk-1/jobs/')[1]!
+          .replace('/run-now', '');
+        const run = buildTalkJobRunSummary({
+          id: `job-run-${(jobRunsByJobId[jobId] ?? []).length + 1}`,
+          status: 'queued',
+          responseExcerpt: null,
+        });
+        jobRunsByJobId = {
+          ...jobRunsByJobId,
+          [jobId]: [run, ...(jobRunsByJobId[jobId] ?? [])],
+        };
+        return jsonResponse(202, {
+          ok: true,
+          data: {
+            job: jobs.find((job) => job.id === jobId),
+            runId: run.id,
+            triggerMessageId: 'msg-job-run',
+          },
+        });
+      }
+
+      if (
+        /\/api\/v1\/talks\/talk-1\/outputs\/[^/]+$/.test(path) &&
+        method === 'GET'
+      ) {
+        const outputId = path.split('/api/v1/talks/talk-1/outputs/')[1];
+        const output = outputs.find((entry) => entry.id === outputId);
+        if (!output) {
+          return jsonResponse(404, {
+            ok: false,
+            error: { code: 'not_found', message: 'Output not found.' },
+          });
+        }
+        return jsonResponse(200, {
+          ok: true,
+          data: { output },
+        });
+      }
+
+      if (
+        /\/api\/v1\/talks\/talk-1\/outputs\/[^/]+$/.test(path) &&
+        method === 'PATCH'
+      ) {
+        const outputId = path.split('/api/v1/talks/talk-1/outputs/')[1];
+        const body = JSON.parse(String(init?.body || '{}')) as {
+          expectedVersion: number;
+          title?: string;
+          contentMarkdown?: string;
+        };
+        outputs = outputs.map((output) =>
+          output.id === outputId
+            ? {
+                ...output,
+                title:
+                  body.title === undefined ? output.title : body.title.trim(),
+                contentMarkdown:
+                  body.contentMarkdown === undefined
+                    ? output.contentMarkdown
+                    : body.contentMarkdown,
+                version: output.version + 1,
+                updatedAt: '2026-03-06T00:00:30.000Z',
+                contentLength:
+                  body.contentMarkdown === undefined
+                    ? output.contentLength
+                    : body.contentMarkdown.length,
+              }
+            : output,
+        );
+        const updated = outputs.find((output) => output.id === outputId);
+        return jsonResponse(200, {
+          ok: true,
+          data: { output: updated },
+        });
+      }
+
+      if (
+        /\/api\/v1\/talks\/talk-1\/outputs\/[^/]+$/.test(path) &&
+        method === 'DELETE'
+      ) {
+        const outputId = path.split('/api/v1/talks/talk-1/outputs/')[1];
+        outputs = outputs.filter((output) => output.id !== outputId);
+        return jsonResponse(200, {
+          ok: true,
+          data: { deleted: true },
         });
       }
 
