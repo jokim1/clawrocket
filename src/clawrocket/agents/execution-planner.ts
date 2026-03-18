@@ -21,7 +21,6 @@ import {
 export const EXECUTOR_MAIN_PROJECT_PATH_KEY = 'executor.mainProjectPath';
 
 export type ExecutionBackend = 'direct_http' | 'container';
-export type ExecutionSurface = 'main' | 'talk_single' | 'talk_multi';
 export type ExecutionRouteReason = 'normal' | 'subscription_fallback';
 
 export interface ContainerCredentialConfig {
@@ -57,7 +56,6 @@ export class ExecutionPlannerError extends Error {
       | 'CONTAINER_BROWSER_REQUIRES_SHELL'
       | 'CONTAINER_PROVIDER_INCOMPATIBLE'
       | 'CONTAINER_CREDENTIAL_MISSING'
-      | 'CONTAINER_SURFACE_UNSUPPORTED'
       | 'DIRECT_EXECUTION_UNAVAILABLE',
     public readonly details?: Record<string, unknown>,
   ) {
@@ -241,7 +239,6 @@ export function getContainerAllowedTools(input: {
 export function planExecution(
   agent: RegisteredAgentRecord,
   userId: string,
-  surface: ExecutionSurface = 'main',
 ): ExecutionPlan {
   const effectiveTools = getEffectiveToolsForAgent(agent.id, userId);
   const heavyToolFamilies = resolveHeavyToolFamilies(effectiveTools);
@@ -274,17 +271,6 @@ export function planExecution(
         }
 
         if (containerCredential) {
-          if (surface === 'talk_multi') {
-            throw new ExecutionPlannerError(
-              `Agent ${agent.name} would require Claude subscription container fallback, which is not supported for multi-agent Talk rounds.`,
-              'CONTAINER_SURFACE_UNSUPPORTED',
-              {
-                requestedFallback: 'subscription_container',
-                surface,
-              },
-            );
-          }
-
           return {
             backend: 'container',
             routeReason: 'subscription_fallback',

@@ -192,7 +192,7 @@ describe('execution-planner', () => {
       toolPermissionsJson: JSON.stringify({ web: true }),
     });
 
-    const plan = planExecution(agent, 'owner-1', 'main');
+    const plan = planExecution(agent, 'owner-1');
     expect(plan.backend).toBe('container');
     expect(plan.routeReason).toBe('subscription_fallback');
     if (plan.backend === 'container') {
@@ -214,12 +214,12 @@ describe('execution-planner', () => {
       toolPermissionsJson: JSON.stringify({ web: true }),
     });
 
-    const plan = planExecution(agent, 'owner-1', 'talk_single');
+    const plan = planExecution(agent, 'owner-1');
     expect(plan.backend).toBe('container');
     expect(plan.routeReason).toBe('subscription_fallback');
   });
 
-  it('rejects subscription fallback for multi-agent Talk rounds', () => {
+  it('allows subscription fallback for multi-agent Talk rounds', () => {
     upsertSettingValue({
       key: 'executor.claudeOauthToken',
       value: 'oauth-token-123',
@@ -232,9 +232,9 @@ describe('execution-planner', () => {
       toolPermissionsJson: JSON.stringify({ web: true }),
     });
 
-    expect(() => planExecution(agent, 'owner-1', 'talk_multi')).toThrowError(
-      /not supported for multi-agent Talk rounds/i,
-    );
+    const plan = planExecution(agent, 'owner-1');
+    expect(plan.backend).toBe('container');
+    expect(plan.routeReason).toBe('subscription_fallback');
   });
 
   it('maps effective tools into the talk/main container profile', () => {

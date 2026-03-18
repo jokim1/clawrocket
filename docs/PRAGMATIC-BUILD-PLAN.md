@@ -24,9 +24,9 @@ What is already shipped:
 
 What is next:
 
-1. **Phase 8** — context inspection, lightweight role-aware context hints, lightweight retrieval
-2. Mixed direct/container multi-agent parity and pre-send guardrails for unsupported heavy-tool agent mixes
-3. Post-phase work — Main→Talk migration, Outputs, Jobs, fuller execution planner, eventual Talk→Workspace rename
+1. **Outputs v1** — native talk-owned durable artifacts, writable by users and Talk agents
+2. Jobs and fuller execution-planner work
+3. Post-phase work — Main→Talk migration, eventual Talk→Workspace rename, richer artifact sync
 
 This changes practical sequencing, not the remaining numbered phase inventory in this document.
 
@@ -303,17 +303,16 @@ What doesn't work:
 - Talk uses planner only for:
   - single-agent turns
   - targeted single-agent turns
-- Multi-agent Talk turns remain direct-only in 5A.
-- If a multi-agent Talk turn includes any agent that would require container, reject pre-enqueue with a clear error naming the blocking agents and the resolution path.
+- Multi-agent Talk turns now support mixed direct/container execution on the same round.
+- UI guardrails still block only truly unavailable agent selections before send.
 
 ### 5A exit criteria
 - Single-agent Talk and Main runs can route to a stateless container path when heavy tools require it.
-- Multi-agent Talk turns reject unsupported would-be container combinations before enqueue.
+- Multi-agent Talk turns can mix direct-safe and container-backed agents.
 - Read-only project-path configuration exists for Talk, with a dedicated route/UI.
 - Container-backed runs operate on generated context files plus optional read-only project mounts, not hidden session memory.
 
 ### What 5A does NOT deliver
-- Mixed direct/container multi-agent Talk rounds
 - Writable project mounts
 - Container delta streaming
 - Per-provider-secret parity for container auth
@@ -472,7 +471,7 @@ WORKSPACE-REWRITE-PLAN.md defines the destination. This document defines the roa
 | Data Connectors | Phase 7 | `talk_data_connectors` exists, attach UI works | Clarify UI taxonomy |
 | Channel Bindings | Phase 7 | `talk_channel_bindings` + `talk_channel_policies` exist, create UI works | Complete edit/update, clarify UI taxonomy |
 | Context Strategy | Phase 4 (basic) + 8 (full) | `context-loader.ts` already builds ContextPackage | Phase 4 standardizes; Phase 8 adds inspection + retrieval |
-| Outputs | Future | Nothing exists | After context strategy is solid |
+| Outputs | In Progress | Outputs v1 branch in flight | Native talk-owned artifact layer |
 | Jobs | Future | Nothing exists | After rules + state prove the pattern |
 | Execution Planner | Future | `execution-resolver.ts` handles direct HTTP | After container-in-Talk + context strategy ship |
 | Credential Sources / Model Bindings | Future | execution-resolver.ts is the v1 version | |
