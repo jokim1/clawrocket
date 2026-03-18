@@ -6,12 +6,16 @@ import {
   _initTestDatabase,
   createTalkOutput,
   createTalkThread,
+  getTalkRunById,
+  listTalkMessages,
   upsertTalk,
   upsertTalkMember,
   upsertUser,
   upsertWebSession,
 } from '../../db/index.js';
 import { hashSessionToken } from '../../identity/session.js';
+import { MockTalkExecutor } from '../../talks/mock-executor.js';
+import { TalkRunWorker } from '../../talks/run-worker.js';
 import { _resetRateLimitStateForTests } from '../middleware/rate-limit.js';
 import { createWebServer, WebServerHandle } from '../server.js';
 import type { TalkContextSourceIngestionService } from '../../talks/source-ingestion.js';
@@ -25,6 +29,20 @@ function authHeaders(token: string) {
 
 async function json(res: Response) {
   return res.json() as Promise<Record<string, any>>;
+}
+
+async function waitFor(
+  predicate: () => boolean,
+  timeoutMs = 2_000,
+  intervalMs = 10,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  }
+
+  throw new Error('Timed out waiting for condition');
 }
 
 function attachTalkAgent(talkId: string, agentId: string, nickname: string) {
@@ -174,6 +192,92 @@ describe('talk job routes', () => {
     expect(runNowRes.status).toBe(202);
     const runNowBody = await json(runNowRes);
     expect(runNowBody.data.runId).toBeTruthy();
+  });
+
+  it('run-now executes a thread job to completion and appends the assistant result', async () => {
+    const runWorker = new TalkRunWorker({
+      executor: new MockTalkExecutor({ executionMs: 5 }),
+      pollMs: 10_000,
+      maxConcurrency: 1,
+    });
+    await runWorker.start();
+
+    server = createWebServer({
+      host: '127.0.0.1',
+      port: 0,
+      sourceIngestion,
+      runWorker,
+    });
+
+    try {
+      const createRes = await server.request('/api/v1/talks/talk-1/jobs', {
+        method: 'POST',
+        headers: authHeaders('owner-token'),
+        body: JSON.stringify({
+          title: 'Daily Cal News Summary',
+          prompt:
+            'Check the web for the most recent Cal football news in the last day.',
+          targetAgentId: agentId,
+          schedule: {
+            kind: 'weekly',
+            weekdays: ['mon', 'tue', 'wed', 'thu', 'fri'],
+            hour: 9,
+            minute: 0,
+          },
+          timezone: 'America/Los_Angeles',
+          deliverableKind: 'thread',
+          sourceScope: {
+            connectorIds: [],
+            channelBindingIds: [],
+            allowWeb: true,
+          },
+        }),
+      });
+      expect(createRes.status).toBe(201);
+      const created = await json(createRes);
+      const jobId = created.data.job.id as string;
+      const threadId = created.data.job.threadId as string;
+
+      const runNowRes = await server.request(
+        `/api/v1/talks/talk-1/jobs/${jobId}/run-now`,
+        {
+          method: 'POST',
+          headers: authHeaders('owner-token'),
+        },
+      );
+      expect(runNowRes.status).toBe(202);
+      const runNowBody = await json(runNowRes);
+      const runId = runNowBody.data.runId as string;
+
+      await waitFor(() => getTalkRunById(runId)?.status === 'completed');
+
+      const messages = listTalkMessages({
+        talkId: 'talk-1',
+        threadId,
+        limit: 20,
+      });
+      expect(messages.map((message) => message.role)).toEqual([
+        'user',
+        'assistant',
+      ]);
+      expect(messages[1]?.content).toContain(
+        'Mock assistant response to: Check the web for the most recent Cal football news in the last day.',
+      );
+
+      const jobRes = await server.request(
+        `/api/v1/talks/talk-1/jobs/${jobId}`,
+        {
+          method: 'GET',
+          headers: authHeaders('owner-token'),
+        },
+      );
+      expect(jobRes.status).toBe(200);
+      const jobBody = await json(jobRes);
+      expect(jobBody.data.job.runCount).toBe(1);
+      expect(jobBody.data.job.lastRunStatus).toBe('completed');
+    } finally {
+      await runWorker.stop();
+    }
   });
 
   it('blocks non-members from reading jobs and viewers from mutating them', async () => {

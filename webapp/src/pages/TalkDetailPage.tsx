@@ -2279,6 +2279,26 @@ export function TalkDetailPage({
     [agents, loadSelectedJobRuns, selectedJobId, talkId],
   );
 
+  const refreshSelectedJobExecutionState = useCallback(
+    async (jobId: string) => {
+      const [job, runs] = await Promise.all([
+        getTalkJob({ talkId, jobId }),
+        listTalkJobRuns({ talkId, jobId, limit: 20 }),
+      ]);
+      setTalkJobs((current) =>
+        current.map((candidate) => (candidate.id === job.id ? job : candidate)),
+      );
+      if (selectedJobId === job.id) {
+        setSelectedJobId(job.id);
+        setJobDraft(buildJobDraftFromJob(job));
+        setSelectedJobRuns(runs);
+      }
+      setSelectedJobRunsStatus({ status: 'idle' });
+      return { job, runs };
+    },
+    [selectedJobId, talkId],
+  );
+
   const refreshTalkTools = useCallback(
     async (options?: { showLoading?: boolean }) => {
       if (options?.showLoading) {
@@ -4187,9 +4207,50 @@ export function TalkDetailPage({
     if (!selectedJob || !canEditJobs) return;
     setTalkJobsStatus({ status: 'saving' });
     try {
-      await runTalkJobNow({ talkId, jobId: selectedJob.id });
-      await loadSelectedJobRuns(selectedJob.id, { showLoading: false });
+      const queued = await runTalkJobNow({ talkId, jobId: selectedJob.id });
+      await refreshSelectedJobExecutionState(selectedJob.id);
       setTalkJobsStatus({ status: 'success', message: 'Job queued.' });
+
+      void (async () => {
+        const isTerminal = (status: TalkJobRunSummary['status']) =>
+          status === 'completed' ||
+          status === 'failed' ||
+          status === 'cancelled';
+
+        for (let attempt = 0; attempt < 15; attempt += 1) {
+          await new Promise((resolve) => window.setTimeout(resolve, 1000));
+          try {
+            const { runs } = await refreshSelectedJobExecutionState(
+              selectedJob.id,
+            );
+            const latest =
+              runs.find((run) => run.id === queued.runId) ?? runs[0] ?? null;
+            if (!latest || !isTerminal(latest.status)) {
+              continue;
+            }
+            if (selectedJob.threadId === activeThreadIdRef.current) {
+              await resyncTalkState({ refreshThreads: true });
+            }
+            setTalkJobsStatus(
+              latest.status === 'completed'
+                ? { status: 'success', message: 'Job completed.' }
+                : {
+                    status: 'error',
+                    message:
+                      latest.errorMessage ||
+                      latest.cancelReason ||
+                      `Job ${latest.status}.`,
+                  },
+            );
+            return;
+          } catch (pollErr) {
+            if (pollErr instanceof UnauthorizedError) {
+              handleUnauthorized();
+            }
+            return;
+          }
+        }
+      })();
     } catch (err) {
       if (err instanceof UnauthorizedError) {
         handleUnauthorized();
@@ -4203,7 +4264,8 @@ export function TalkDetailPage({
   }, [
     canEditJobs,
     handleUnauthorized,
-    loadSelectedJobRuns,
+    refreshSelectedJobExecutionState,
+    resyncTalkState,
     selectedJob,
     talkId,
   ]);
