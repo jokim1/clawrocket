@@ -1163,6 +1163,11 @@ describe('talk routes', () => {
           state: [],
           sources: [],
         },
+        outputs: {
+          totalCount: 0,
+          omittedCount: 0,
+          manifest: [],
+        },
         tools: {
           contextToolNames: ['read_context_source'],
           connectorToolNames: [],

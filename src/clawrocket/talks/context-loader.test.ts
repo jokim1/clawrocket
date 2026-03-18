@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   _initTestDatabase,
   createTalkRun,
+  createTalkOutput,
   createTalkResourceBinding,
   createMessage,
   initializeTalkToolGrants,
@@ -490,6 +491,32 @@ describe('context-loader', () => {
       expect(ctx.systemPrompt).toContain('audience');
       expect(ctx.systemPrompt).toContain('"segment":"new users"');
       expect(ctx.metadata.stateEntryCount).toBe(1);
+    });
+
+    it('includes a bounded outputs manifest and output tools without inlining bodies', async () => {
+      createTalkOutput({
+        talkId: TALK_ID,
+        title: 'Draft Report',
+        contentMarkdown: '# Report\n\nDetailed body text',
+        createdByUserId: 'owner-1',
+      });
+      createTalkOutput({
+        talkId: TALK_ID,
+        title: 'Decision Memo',
+        contentMarkdown: 'Second output body',
+        createdByUserId: 'owner-1',
+      });
+
+      const ctx = await loadTalkContext(TALK_ID, 128000);
+
+      expect(ctx.systemPrompt).toContain('**Outputs:**');
+      expect(ctx.systemPrompt).toContain('Draft Report');
+      expect(ctx.systemPrompt).not.toContain('Detailed body text');
+      expect(ctx.contextSnapshot.outputs.totalCount).toBe(2);
+      expect(ctx.contextSnapshot.outputs.manifest).toHaveLength(2);
+      expect(ctx.contextSnapshot.tools.contextToolNames).toEqual(
+        expect.arrayContaining(['list_outputs', 'read_output', 'write_output']),
+      );
     });
 
     it('omits state entries when the dedicated state budget is exhausted', async () => {

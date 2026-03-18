@@ -1654,6 +1654,40 @@ a {
   font-size: 0.85rem;
 }
 
+.talk-outputs-layout {
+  display: grid;
+  grid-template-columns: minmax(240px, 320px) minmax(0, 1fr);
+  gap: 0.9rem;
+  align-items: start;
+}
+
+.talk-outputs-list {
+  display: grid;
+  gap: 0.65rem;
+}
+
+.talk-output-list-item {
+  display: grid;
+  gap: 0.25rem;
+  width: 100%;
+  text-align: left;
+  border: 1px solid #d9e3f6;
+  border-radius: 12px;
+  padding: 0.8rem 0.9rem;
+  background: #fff;
+  color: inherit;
+}
+
+.talk-output-list-item-active {
+  border-color: #2358c5;
+  box-shadow: 0 0 0 1px rgba(35, 88, 197, 0.2);
+  background: #f7faff;
+}
+
+.talk-output-editor {
+  min-width: 0;
+}
+
 .agents-panel-header {
   display: flex;
   justify-content: space-between;
@@ -2301,6 +2335,10 @@ a {
 
   .talk-workspace-scroll {
     max-height: none;
+  }
+
+  .talk-outputs-layout {
+    grid-template-columns: 1fr;
   }
 
   .app-main-topbar {

@@ -14,6 +14,9 @@ import { CronExpressionParser } from 'cron-parser';
 import {
   readWebTalkConnectorBundleFromEnv,
   registerConnectorTools,
+  readWebTalkOutputBridgeDirFromEnv,
+  readWebTalkOutputToolNamesFromEnv,
+  registerOutputTools,
 } from './connectors.js';
 
 const IPC_DIR = '/workspace/ipc';
@@ -45,9 +48,16 @@ const server = new McpServer({
 });
 
 const webTalkConnectorBundle = readWebTalkConnectorBundleFromEnv();
+const webTalkOutputBridgeDir = readWebTalkOutputBridgeDirFromEnv();
+const webTalkOutputToolNames = readWebTalkOutputToolNamesFromEnv();
 
-if (webTalkConnectorBundle) {
+if (webTalkConnectorBundle || webTalkOutputBridgeDir) {
+  if (webTalkConnectorBundle) {
   registerConnectorTools(server, webTalkConnectorBundle);
+  }
+  if (webTalkOutputBridgeDir) {
+    registerOutputTools(server, webTalkOutputBridgeDir, webTalkOutputToolNames);
+  }
 } else {
 server.tool(
   'send_message',

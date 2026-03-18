@@ -14,9 +14,11 @@
 import { getDb } from '../../db.js';
 import {
   getRegisteredAgent,
+  type EffectiveToolAccess,
   type RegisteredAgentRecord,
 } from '../db/agent-accessors.js';
 import { getTalkById } from '../db/accessors.js';
+import { getTalkJobById } from '../db/job-accessors.js';
 import {
   listConnectorsForTalkRun,
   type TalkRunConnectorRecord,
@@ -44,8 +46,10 @@ import type { TalkPersonaRole } from '../llm/types.js';
 import { executeWebFetch, executeWebSearch } from '../tools/web-tools.js';
 import { loadTalkContext } from './context-loader.js';
 import { executeGoogleDriveTalkTool } from './google-drive-tools.js';
+import { executeTalkOutputTool } from './output-tools.js';
 import {
   TalkExecutorError,
+  type TalkJobExecutionPolicy,
   type TalkExecutionEvent,
   type TalkExecutor,
   type TalkExecutorInput,
@@ -134,6 +138,7 @@ export function buildToolExecutor(
   userId: string,
   runId: string,
   signal: AbortSignal,
+  jobPolicy?: TalkJobExecutionPolicy | null,
 ) {
   let connectorCache: Map<string, TalkRunConnectorRecord> | null = null;
 
@@ -150,6 +155,21 @@ export function buildToolExecutor(
     toolName: string,
     args: Record<string, unknown>,
   ): Promise<{ result: string; isError?: boolean }> => {
+    if (
+      toolName === 'list_outputs' ||
+      toolName === 'read_output' ||
+      toolName === 'write_output'
+    ) {
+      return executeTalkOutputTool({
+        talkId,
+        userId,
+        runId,
+        toolName,
+        args,
+        policy: jobPolicy,
+      });
+    }
+
     if (toolName === 'read_context_source') {
       const ref = args.sourceRef as string | undefined;
       if (!ref) {
@@ -205,6 +225,12 @@ export function buildToolExecutor(
     }
 
     if (toolName === 'update_state') {
+      if (jobPolicy && !jobPolicy.allowStateMutation) {
+        return {
+          result: 'Error: update_state is not available for scheduled job runs',
+          isError: true,
+        };
+      }
       const key = args.key as string | undefined;
       const expectedVersion = args.expectedVersion;
 
@@ -278,6 +304,15 @@ export function buildToolExecutor(
           isError: true,
         };
       }
+      if (
+        jobPolicy &&
+        !jobPolicy.allowedConnectorIds.includes(parsed.connectorId)
+      ) {
+        return {
+          result: `Connector '${parsed.connectorId}' is not available for this scheduled job.`,
+          isError: true,
+        };
+      }
 
       const context: ToolExecutionContext = {
         connector,
@@ -289,9 +324,21 @@ export function buildToolExecutor(
     }
 
     if (toolName === 'web_fetch') {
+      if (jobPolicy && !jobPolicy.allowWeb) {
+        return {
+          result: 'Error: web_fetch is not available for this scheduled job',
+          isError: true,
+        };
+      }
       return executeWebFetch(args, signal);
     }
     if (toolName === 'web_search') {
+      if (jobPolicy && !jobPolicy.allowWeb) {
+        return {
+          result: 'Error: web_search is not available for this scheduled job',
+          isError: true,
+        };
+      }
       return executeWebSearch(args, signal);
     }
     if (
@@ -315,6 +362,34 @@ export function buildToolExecutor(
       isError: true,
     };
   };
+}
+
+function buildTalkJobExecutionPolicy(
+  jobId: string | null | undefined,
+): TalkJobExecutionPolicy | null {
+  if (!jobId) return null;
+  const job = getTalkJobById(jobId);
+  if (!job) return null;
+  return {
+    jobId: job.id,
+    allowedConnectorIds: job.sourceScope.connectorIds,
+    allowedChannelBindingIds: job.sourceScope.channelBindingIds,
+    allowWeb: job.sourceScope.allowWeb,
+    allowStateMutation: false,
+    allowOutputWrite: false,
+  };
+}
+
+function filterEffectiveToolsForJob(
+  effectiveTools: EffectiveToolAccess[],
+  jobPolicy: TalkJobExecutionPolicy | null,
+): EffectiveToolAccess[] {
+  if (!jobPolicy || jobPolicy.allowWeb) {
+    return effectiveTools;
+  }
+  return effectiveTools.map((tool) =>
+    tool.toolFamily === 'web' ? { ...tool, enabled: false } : tool,
+  );
 }
 
 function resolveTalkAgent(
@@ -608,6 +683,7 @@ export class CleanTalkExecutor implements TalkExecutor {
     try {
       resolvedAgent = resolveTalkAgent(input.talkId, input.targetAgentId);
       const modelContextWindow = getModelContextWindow(resolvedAgent);
+      const jobPolicy = buildTalkJobExecutionPolicy(input.jobId);
       const contextPackage = await loadTalkContext(
         input.talkId,
         modelContextWindow,
@@ -617,6 +693,7 @@ export class CleanTalkExecutor implements TalkExecutor {
         {
           personaRole: resolvedAgent.persona_role as TalkPersonaRole | null,
           retrievalQuery: input.triggerContent,
+          jobPolicy,
         },
       );
       setTalkRunMetadataJson(
@@ -639,10 +716,10 @@ export class CleanTalkExecutor implements TalkExecutor {
         sequenceIndex: input.sequenceIndex,
       });
 
-      const plan = planExecution(
-        resolvedAgent,
-        input.requestedBy,
-        'talk_single',
+      const plan = planExecution(resolvedAgent, input.requestedBy);
+      const scopedEffectiveTools = filterEffectiveToolsForJob(
+        plan.effectiveTools,
+        jobPolicy,
       );
 
       if (plan.backend === 'container') {
@@ -672,7 +749,7 @@ export class CleanTalkExecutor implements TalkExecutor {
           userMessage: orderedStep.userMessage,
           signal,
           allowedTools: getContainerAllowedTools({
-            effectiveTools: plan.effectiveTools,
+            effectiveTools: scopedEffectiveTools,
             includeConnectorTools: contextPackage.connectorTools.length > 0,
           }),
           context: {
@@ -691,6 +768,7 @@ export class CleanTalkExecutor implements TalkExecutor {
           triggerMessageId: input.triggerMessageId,
           historyMessageIds: contextPackage.metadata.historyMessageIds,
           projectMountHostPath,
+          jobPolicy,
         });
 
         emitTalkEvent({
@@ -730,6 +808,7 @@ export class CleanTalkExecutor implements TalkExecutor {
         input.requestedBy,
         input.runId,
         signal,
+        jobPolicy,
       );
       const result = await executeWithAgent(
         resolvedAgent.id,

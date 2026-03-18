@@ -1957,8 +1957,8 @@ export function getOrCreateDefaultThread(talkId: string): string {
 
   getDb()
     .prepare(
-      `INSERT INTO talk_threads (id, talk_id, title, is_default, created_at, updated_at)
-       VALUES (?, ?, 'Default Thread', 1, ?, ?)`,
+      `INSERT INTO talk_threads (id, talk_id, title, is_default, is_internal, created_at, updated_at)
+       VALUES (?, ?, 'Default Thread', 1, 0, ?, ?)`,
     )
     .run(threadId, talkId, now, now);
 
@@ -2001,7 +2001,7 @@ export function listTalkThreads(talkId: string): Array<{
         WHERE talk_id = ?
         GROUP BY thread_id
       ) m ON m.thread_id = t.id
-      WHERE t.talk_id = ?
+      WHERE t.talk_id = ? AND t.is_internal = 0
       ORDER BY COALESCE(m.last_message_at, t.created_at) DESC
     `,
     )
@@ -2023,11 +2023,13 @@ export function listTalkThreads(talkId: string): Array<{
 export function createTalkThread(input: {
   talkId: string;
   title?: string | null;
+  isInternal?: boolean;
 }): {
   id: string;
   talk_id: string;
   title: string | null;
   is_default: number;
+  is_internal: number;
   created_at: string;
   updated_at: string;
 } {
@@ -2045,16 +2047,24 @@ export function createTalkThread(input: {
 
   getDb()
     .prepare(
-      `INSERT INTO talk_threads (id, talk_id, title, is_default, created_at, updated_at)
-       VALUES (?, ?, ?, 0, ?, ?)`,
+      `INSERT INTO talk_threads (id, talk_id, title, is_default, is_internal, created_at, updated_at)
+       VALUES (?, ?, ?, 0, ?, ?, ?)`,
     )
-    .run(threadId, input.talkId, input.title ?? null, now, now);
+    .run(
+      threadId,
+      input.talkId,
+      input.title ?? null,
+      input.isInternal ? 1 : 0,
+      now,
+      now,
+    );
 
   return {
     id: threadId,
     talk_id: input.talkId,
     title: input.title ?? null,
     is_default: 0,
+    is_internal: input.isInternal ? 1 : 0,
     created_at: now,
     updated_at: now,
   };
@@ -2557,6 +2567,7 @@ export interface TalkRunRecord {
   requested_by: string;
   status: TalkRunStatus;
   trigger_message_id: string | null;
+  job_id?: string | null;
   target_agent_id?: string | null;
   idempotency_key: string | null;
   response_group_id?: string | null;
@@ -2578,12 +2589,12 @@ export function createTalkRun(input: TalkRunRecord): void {
     .prepare(
       `
     INSERT INTO talk_runs (
-      id, talk_id, thread_id, requested_by, status, trigger_message_id, target_agent_id, idempotency_key,
+      id, talk_id, thread_id, requested_by, status, trigger_message_id, job_id, target_agent_id, idempotency_key,
       response_group_id, sequence_index, executor_alias, executor_model,
       source_binding_id, source_external_message_id, source_thread_key,
       created_at, started_at, ended_at, cancel_reason, metadata_json
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `,
     )
     .run(
@@ -2593,6 +2604,7 @@ export function createTalkRun(input: TalkRunRecord): void {
       input.requested_by,
       input.status,
       input.trigger_message_id,
+      input.job_id ?? null,
       input.target_agent_id || null,
       input.idempotency_key,
       input.response_group_id || null,

@@ -47,6 +47,10 @@ export interface ContainerInput {
   assistantName?: string;
   secrets?: Record<string, string>;
   webTalkConnectorBundle?: ContainerWebTalkConnectorBundle;
+  enableWebTalkOutputTools?: boolean;
+  webTalkOutputToolNames?: Array<
+    'list_outputs' | 'read_output' | 'write_output'
+  >;
   ephemeralContextDir?: string;
   projectMountHostPath?: string | null;
 }
