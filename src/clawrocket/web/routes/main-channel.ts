@@ -2,8 +2,10 @@ import { randomUUID } from 'crypto';
 import {
   canUserAccessMainThread,
   enqueueMainTurnAtomic,
+  getMainThreadTitle,
   listMainThreadsForUser,
   MainThreadBusyError,
+  updateMainThreadTitle,
 } from '../../db/index.js';
 import { getDb } from '../../../db.js';
 import type { AuthContext, ApiEnvelope } from '../types.js';
@@ -14,6 +16,7 @@ import type { AuthContext, ApiEnvelope } from '../types.js';
 
 interface ThreadSummary {
   threadId: string;
+  title: string | null;
   lastMessageAt: string;
   messageCount: number;
 }
@@ -27,6 +30,7 @@ export function listMainThreadsRoute(auth: AuthContext): {
 
     const threads: ThreadSummary[] = rows.map((row) => ({
       threadId: row.thread_id,
+      title: row.title,
       lastMessageAt: row.last_message_at,
       messageCount: row.message_count,
     }));
@@ -171,6 +175,7 @@ interface PostMainMessageResponse {
   messageId: string;
   threadId: string;
   runId: string;
+  title: string | null;
 }
 
 export function postMainMessageRoute(
@@ -250,6 +255,7 @@ export function postMainMessageRoute(
           messageId: result.message.id,
           threadId,
           runId: result.run.id,
+          title: getMainThreadTitle(threadId, auth.userId),
         },
       },
     };
@@ -274,6 +280,92 @@ export function postMainMessageRoute(
         error: {
           code: 'internal_error',
           message: `Failed to post message: ${String(err)}`,
+        },
+      },
+    };
+  }
+}
+
+interface PatchMainThreadBody {
+  title?: unknown;
+}
+
+interface PatchMainThreadResponse {
+  threadId: string;
+  title: string;
+}
+
+export function patchMainThreadRoute(
+  auth: AuthContext,
+  threadId: string,
+  body: PatchMainThreadBody,
+): {
+  statusCode: number;
+  body: ApiEnvelope<PatchMainThreadResponse>;
+} {
+  if (typeof body.title !== 'string' || !body.title.trim()) {
+    return {
+      statusCode: 400,
+      body: {
+        ok: false,
+        error: {
+          code: 'invalid_input',
+          message: 'title is required and must be a non-empty string',
+        },
+      },
+    };
+  }
+
+  if (!canUserAccessMainThread(threadId, auth.userId)) {
+    return {
+      statusCode: 404,
+      body: {
+        ok: false,
+        error: {
+          code: 'not_found',
+          message: `Thread '${threadId}' not found`,
+        },
+      },
+    };
+  }
+
+  try {
+    const updated = updateMainThreadTitle({
+      threadId,
+      userId: auth.userId,
+      title: body.title,
+    });
+    if (!updated) {
+      return {
+        statusCode: 404,
+        body: {
+          ok: false,
+          error: {
+            code: 'not_found',
+            message: `Thread '${threadId}' not found`,
+          },
+        },
+      };
+    }
+
+    return {
+      statusCode: 200,
+      body: {
+        ok: true,
+        data: {
+          threadId: updated.thread_id,
+          title: updated.title,
+        },
+      },
+    };
+  } catch (err) {
+    return {
+      statusCode: 500,
+      body: {
+        ok: false,
+        error: {
+          code: 'internal_error',
+          message: `Failed to update thread title: ${String(err)}`,
         },
       },
     };

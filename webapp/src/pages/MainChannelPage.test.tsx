@@ -9,11 +9,13 @@ const {
   listMainThreadsMock,
   getMainThreadMock,
   postMainMessageMock,
+  updateMainThreadTitleMock,
   openMainStreamMock,
 } = vi.hoisted(() => ({
   listMainThreadsMock: vi.fn(),
   getMainThreadMock: vi.fn(),
   postMainMessageMock: vi.fn(),
+  updateMainThreadTitleMock: vi.fn(),
   openMainStreamMock: vi.fn(() => ({ close: vi.fn() })),
 }));
 
@@ -25,6 +27,7 @@ vi.mock('../lib/api', async () => {
     listMainThreads: listMainThreadsMock,
     getMainThread: getMainThreadMock,
     postMainMessage: postMainMessageMock,
+    updateMainThreadTitle: updateMainThreadTitleMock,
   };
 });
 
@@ -49,6 +52,7 @@ describe('MainChannelPage', () => {
     listMainThreadsMock.mockResolvedValue([
       {
         threadId: '78fc5d1e-e7e9-4d65-a82d-352c89eba992',
+        title: 'Morning planning',
         lastMessageAt: '2026-03-18T12:00:00.000Z',
         messageCount: 2,
       },
@@ -91,6 +95,7 @@ describe('MainChannelPage', () => {
     listMainThreadsMock.mockResolvedValue([
       {
         threadId: '78fc5d1e-e7e9-4d65-a82d-352c89eba992',
+        title: 'Morning planning',
         lastMessageAt: '2026-03-18T12:00:00.000Z',
         messageCount: 2,
       },
@@ -135,6 +140,49 @@ describe('MainChannelPage', () => {
       expect(screen.getByTestId('location').textContent).toBe('/app/main'),
     );
     expect(screen.queryByText(/ApiError:/)).toBeNull();
+  });
+
+  it('renders inferred thread titles and the shared new-thread affordance', async () => {
+    listMainThreadsMock.mockResolvedValue([
+      {
+        threadId: 'thread-main-1',
+        title: 'Cal football recruiting notes',
+        lastMessageAt: '2026-03-18T12:00:00.000Z',
+        messageCount: 2,
+      },
+    ]);
+    getMainThreadMock.mockResolvedValue([
+      {
+        id: 'msg-1',
+        threadId: 'thread-main-1',
+        role: 'user',
+        content: 'Cal football recruiting notes',
+        agentId: null,
+        createdBy: 'user-1',
+        createdAt: '2026-03-18T12:00:00.000Z',
+      },
+    ]);
+
+    render(
+      <MemoryRouter initialEntries={['/app/main/thread-main-1']}>
+        <Routes>
+          <Route
+            path="/app/main"
+            element={<MainChannelPage onUnauthorized={vi.fn()} />}
+          />
+          <Route
+            path="/app/main/:threadId"
+            element={<MainChannelPage onUnauthorized={vi.fn()} />}
+          />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    await screen.findByRole('button', { name: 'Start new thread' });
+    expect(screen.getAllByText('Cal football recruiting notes')).toHaveLength(
+      2,
+    );
+    expect(screen.getByRole('button', { name: 'Rename thread' })).toBeTruthy();
   });
 });
 

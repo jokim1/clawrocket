@@ -2,6 +2,11 @@ import { randomUUID } from 'crypto';
 
 import { getDb } from '../../db.js';
 import {
+  inferThreadTitleFromContent,
+  isLegacyPlaceholderTalkThreadTitle,
+  normalizeStoredThreadTitle,
+} from './thread-title-utils.js';
+import {
   TalkAccessRole,
   TalkMessageRole,
   TalkRunStatus,
@@ -1934,6 +1939,134 @@ export function deleteTalkMessagesAtomic(input: {
  * If the Talk already has a default thread (is_default=1), returns its ID.
  * Otherwise creates one and returns the new ID.
  */
+function getFirstTalkThreadUserMessageContent(
+  talkId: string,
+  threadId: string,
+): string | null {
+  const row = getDb()
+    .prepare(
+      `
+      SELECT content
+      FROM talk_messages
+      WHERE talk_id = ? AND thread_id = ? AND role = 'user'
+      ORDER BY created_at ASC
+      LIMIT 1
+    `,
+    )
+    .get(talkId, threadId) as { content: string } | undefined;
+  return row?.content ?? null;
+}
+
+function getFirstMainThreadUserMessageContent(threadId: string): string | null {
+  const row = getDb()
+    .prepare(
+      `
+      SELECT content
+      FROM talk_messages
+      WHERE talk_id IS NULL AND thread_id = ? AND role = 'user'
+      ORDER BY created_at ASC
+      LIMIT 1
+    `,
+    )
+    .get(threadId) as { content: string } | undefined;
+  return row?.content ?? null;
+}
+
+function shouldAutoInferTalkThreadTitle(
+  title: string | null | undefined,
+): boolean {
+  const normalized = normalizeStoredThreadTitle(title);
+  return normalized === null || isLegacyPlaceholderTalkThreadTitle(normalized);
+}
+
+function maybePersistTalkThreadTitleFromMessages(
+  talkId: string,
+  threadId: string,
+  currentTitle: string | null | undefined,
+): string | null {
+  const normalizedTitle = normalizeStoredThreadTitle(currentTitle);
+  if (!shouldAutoInferTalkThreadTitle(normalizedTitle)) {
+    return normalizedTitle;
+  }
+
+  const inferredTitle = inferThreadTitleFromContent(
+    getFirstTalkThreadUserMessageContent(talkId, threadId),
+  );
+  if (!inferredTitle) {
+    return normalizedTitle;
+  }
+
+  const now = new Date().toISOString();
+  getDb()
+    .prepare(
+      `
+      UPDATE talk_threads
+      SET title = ?, updated_at = ?
+      WHERE id = ? AND talk_id = ?
+        AND (
+          title IS NULL OR
+          trim(title) = '' OR
+          title = 'Default Thread'
+        )
+    `,
+    )
+    .run(inferredTitle, now, threadId, talkId);
+
+  return inferredTitle;
+}
+
+function ensureMainThreadMetadataRow(input: {
+  threadId: string;
+  userId: string;
+  now: string;
+}): void {
+  getDb()
+    .prepare(
+      `
+      INSERT INTO main_threads (thread_id, user_id, title, created_at, updated_at)
+      VALUES (?, ?, NULL, ?, ?)
+      ON CONFLICT(thread_id) DO NOTHING
+    `,
+    )
+    .run(input.threadId, input.userId, input.now, input.now);
+}
+
+function maybePersistMainThreadTitleFromMessages(input: {
+  threadId: string;
+  userId: string;
+  currentTitle: string | null | undefined;
+}): string | null {
+  const normalizedTitle = normalizeStoredThreadTitle(input.currentTitle);
+  if (normalizedTitle) {
+    return normalizedTitle;
+  }
+
+  const inferredTitle = inferThreadTitleFromContent(
+    getFirstMainThreadUserMessageContent(input.threadId),
+  );
+  if (!inferredTitle) {
+    return null;
+  }
+
+  const now = new Date().toISOString();
+  ensureMainThreadMetadataRow({
+    threadId: input.threadId,
+    userId: input.userId,
+    now,
+  });
+  getDb()
+    .prepare(
+      `
+      UPDATE main_threads
+      SET title = ?, updated_at = ?
+      WHERE thread_id = ? AND (title IS NULL OR trim(title) = '')
+    `,
+    )
+    .run(inferredTitle, now, input.threadId);
+
+  return inferredTitle;
+}
+
 export function getOrCreateDefaultThread(talkId: string): string {
   const existing = getDb()
     .prepare(
@@ -1958,7 +2091,7 @@ export function getOrCreateDefaultThread(talkId: string): string {
   getDb()
     .prepare(
       `INSERT INTO talk_threads (id, talk_id, title, is_default, is_internal, created_at, updated_at)
-       VALUES (?, ?, 'Default Thread', 1, 0, ?, ?)`,
+       VALUES (?, ?, NULL, 1, 0, ?, ?)`,
     )
     .run(threadId, talkId, now, now);
 
@@ -1982,7 +2115,7 @@ export function listTalkThreads(talkId: string): Array<{
   // createTalk() default-thread fix, may still have zero thread rows. Heal that
   // state on read so the UI always has an active thread to select.
   getOrCreateDefaultThread(talkId);
-  return getDb()
+  const rows = getDb()
     .prepare(
       `
       SELECT
@@ -2015,6 +2148,10 @@ export function listTalkThreads(talkId: string): Array<{
     message_count: number;
     last_message_at: string | null;
   }>;
+  return rows.map((row) => ({
+    ...row,
+    title: maybePersistTalkThreadTitleFromMessages(talkId, row.id, row.title),
+  }));
 }
 
 /**
@@ -2034,6 +2171,7 @@ export function createTalkThread(input: {
   updated_at: string;
 } {
   const now = new Date().toISOString();
+  const normalizedTitle = normalizeStoredThreadTitle(input.title ?? null);
   const { uuid } = getDb()
     .prepare(
       `SELECT lower(hex(randomblob(4)) || '-' || hex(randomblob(2)) || '-4' ||
@@ -2053,7 +2191,7 @@ export function createTalkThread(input: {
     .run(
       threadId,
       input.talkId,
-      input.title ?? null,
+      normalizedTitle,
       input.isInternal ? 1 : 0,
       now,
       now,
@@ -2062,10 +2200,71 @@ export function createTalkThread(input: {
   return {
     id: threadId,
     talk_id: input.talkId,
-    title: input.title ?? null,
+    title: normalizedTitle,
     is_default: 0,
     is_internal: input.isInternal ? 1 : 0,
     created_at: now,
+    updated_at: now,
+  };
+}
+
+export function updateTalkThreadTitle(input: {
+  talkId: string;
+  threadId: string;
+  title: string;
+}): {
+  id: string;
+  talk_id: string;
+  title: string;
+  is_default: number;
+  is_internal: number;
+  created_at: string;
+  updated_at: string;
+} | null {
+  const normalizedTitle = normalizeStoredThreadTitle(input.title);
+  if (!normalizedTitle) {
+    throw new Error('Thread title must be a non-empty string');
+  }
+
+  const existing = getDb()
+    .prepare(
+      `
+      SELECT id, talk_id, is_default, is_internal, created_at
+      FROM talk_threads
+      WHERE id = ? AND talk_id = ?
+    `,
+    )
+    .get(input.threadId, input.talkId) as
+    | {
+        id: string;
+        talk_id: string;
+        is_default: number;
+        is_internal: number;
+        created_at: string;
+      }
+    | undefined;
+  if (!existing) {
+    return null;
+  }
+
+  const now = new Date().toISOString();
+  getDb()
+    .prepare(
+      `
+      UPDATE talk_threads
+      SET title = ?, updated_at = ?
+      WHERE id = ? AND talk_id = ?
+    `,
+    )
+    .run(normalizedTitle, now, input.threadId, input.talkId);
+
+  return {
+    id: existing.id,
+    talk_id: existing.talk_id,
+    title: normalizedTitle,
+    is_default: existing.is_default,
+    is_internal: existing.is_internal,
+    created_at: existing.created_at,
     updated_at: now,
   };
 }
@@ -2181,6 +2380,14 @@ export function enqueueTalkTurnAtomic(input: {
         createdBy: message.created_by,
         createdAt: message.created_at,
       });
+      const currentThread = getDb()
+        .prepare(`SELECT title FROM talk_threads WHERE id = ? AND talk_id = ?`)
+        .get(threadId, txInput.talkId) as { title: string | null } | undefined;
+      maybePersistTalkThreadTitleFromMessages(
+        txInput.talkId,
+        threadId,
+        currentThread?.title ?? null,
+      );
 
       for (const run of runs) {
         createTalkRun(run);
@@ -3682,14 +3889,16 @@ export function canUserAccessMainThread(
 
 export function listMainThreadsForUser(userId: string): Array<{
   thread_id: string;
+  title: string | null;
   last_message_at: string;
   message_count: number;
 }> {
-  return getDb()
+  const rows = getDb()
     .prepare(
       `
       SELECT
         t.thread_id,
+        mt.title,
         t.last_message_at,
         t.message_count
       FROM (
@@ -3701,15 +3910,90 @@ export function listMainThreadsForUser(userId: string): Array<{
         WHERE talk_id IS NULL AND thread_id IS NOT NULL
         GROUP BY thread_id
       ) t
+      LEFT JOIN main_threads mt ON mt.thread_id = t.thread_id
       WHERE (${buildMainThreadOwnerSubquery('t.thread_id')}) = ?
       ORDER BY t.last_message_at DESC
     `,
     )
     .all(userId) as Array<{
     thread_id: string;
+    title: string | null;
     last_message_at: string;
     message_count: number;
   }>;
+  return rows.map((row) => ({
+    ...row,
+    title: maybePersistMainThreadTitleFromMessages({
+      threadId: row.thread_id,
+      userId,
+      currentTitle: row.title,
+    }),
+  }));
+}
+
+export function getMainThreadTitle(
+  threadId: string,
+  userId: string,
+): string | null {
+  const row = getDb()
+    .prepare(`SELECT title FROM main_threads WHERE thread_id = ?`)
+    .get(threadId) as { title: string | null } | undefined;
+  return maybePersistMainThreadTitleFromMessages({
+    threadId,
+    userId,
+    currentTitle: row?.title ?? null,
+  });
+}
+
+export function updateMainThreadTitle(input: {
+  threadId: string;
+  userId: string;
+  title: string;
+}): {
+  thread_id: string;
+  user_id: string;
+  title: string;
+  updated_at: string;
+} | null {
+  const normalizedTitle = normalizeStoredThreadTitle(input.title);
+  if (!normalizedTitle) {
+    throw new Error('Thread title must be a non-empty string');
+  }
+
+  const exists = getDb()
+    .prepare(
+      `
+      SELECT 1 AS exists_flag
+      FROM talk_messages
+      WHERE talk_id IS NULL AND thread_id = ?
+      LIMIT 1
+    `,
+    )
+    .get(input.threadId) as { exists_flag: number } | undefined;
+  if (!exists) {
+    return null;
+  }
+
+  const now = new Date().toISOString();
+  getDb()
+    .prepare(
+      `
+      INSERT INTO main_threads (thread_id, user_id, title, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(thread_id) DO UPDATE SET
+        user_id = excluded.user_id,
+        title = excluded.title,
+        updated_at = excluded.updated_at
+    `,
+    )
+    .run(input.threadId, input.userId, normalizedTitle, now, now);
+
+  return {
+    thread_id: input.threadId,
+    user_id: input.userId,
+    title: normalizedTitle,
+    updated_at: now,
+  };
 }
 
 /**
@@ -3760,6 +4044,16 @@ export function enqueueMainTurnAtomic(input: {
           txInput.userId,
           now,
         );
+      ensureMainThreadMetadataRow({
+        threadId: txInput.threadId,
+        userId: txInput.userId,
+        now,
+      });
+      maybePersistMainThreadTitleFromMessages({
+        threadId: txInput.threadId,
+        userId: txInput.userId,
+        currentTitle: null,
+      });
 
       // Insert queued run
       getDb()

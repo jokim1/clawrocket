@@ -23,10 +23,17 @@ import {
   listMainThreads,
   postMainMessage,
   UnauthorizedError,
+  updateMainThreadTitle,
   type MainThreadMessage,
   type MainThreadSummary,
 } from '../lib/api';
 import { stripInternalAssistantText } from '../lib/assistantText';
+import { InlineEditableTitle } from '../components/InlineEditableTitle';
+import { ThreadStartButton } from '../components/ThreadStartButton';
+import {
+  displayThreadTitle,
+  inferThreadTitleFromContent,
+} from '../lib/threadTitles';
 import {
   openMainStream,
   type MainMessageAppendedEvent,
@@ -71,6 +78,7 @@ type MainAction =
   | { type: 'THREADS_ERROR'; message: string }
   | { type: 'THREAD_REMOVED'; threadId: string }
   | { type: 'THREAD_SELECTED'; threadId: string }
+  | { type: 'THREAD_TITLE_UPDATED'; threadId: string; title: string }
   | { type: 'MESSAGES_LOADING' }
   | { type: 'MESSAGES_LOADED'; messages: MainThreadMessage[] }
   | { type: 'MESSAGES_ERROR'; message: string }
@@ -161,6 +169,15 @@ function mainReducer(state: MainState, action: MainAction): MainState {
         messagesError: null,
         liveResponses: {},
       };
+    case 'THREAD_TITLE_UPDATED':
+      return {
+        ...state,
+        threads: state.threads.map((thread) =>
+          thread.threadId === action.threadId
+            ? { ...thread, title: action.title }
+            : thread,
+        ),
+      };
     case 'MESSAGES_LOADING':
       return { ...state, messagesLoading: true, messagesError: null };
     case 'MESSAGES_LOADED':
@@ -197,11 +214,28 @@ function mainReducer(state: MainState, action: MainAction): MainState {
       const threads = knownThread
         ? state.threads.map((t) =>
             t.threadId === tid
-              ? { ...t, lastMessageAt: ts, messageCount: t.messageCount + 1 }
+              ? {
+                  ...t,
+                  title:
+                    t.title ||
+                    (action.message.role === 'user'
+                      ? inferThreadTitleFromContent(action.message.content)
+                      : t.title),
+                  lastMessageAt: ts,
+                  messageCount: t.messageCount + 1,
+                }
               : t,
           )
         : [
-            { threadId: tid, lastMessageAt: ts, messageCount: 1 },
+            {
+              threadId: tid,
+              title:
+                action.message.role === 'user'
+                  ? inferThreadTitleFromContent(action.message.content)
+                  : null,
+              lastMessageAt: ts,
+              messageCount: 1,
+            },
             ...state.threads,
           ];
 
@@ -298,6 +332,7 @@ function mainReducer(state: MainState, action: MainAction): MainState {
             t.threadId === action.threadId
               ? {
                   ...t,
+                  title: action.threadSummary.title,
                   lastMessageAt: action.threadSummary.lastMessageAt,
                   messageCount: Math.max(
                     t.messageCount,
@@ -536,6 +571,7 @@ export function MainChannelPage({
             threadId: result.threadId,
             threadSummary: {
               threadId: result.threadId,
+              title: result.title || inferThreadTitleFromContent(content),
               lastMessageAt: new Date().toISOString(),
               messageCount: 1,
             },
@@ -644,6 +680,36 @@ export function MainChannelPage({
       ),
     [state.threads],
   );
+  const activeThread = useMemo(
+    () =>
+      sortedThreads.find(
+        (thread) => thread.threadId === state.activeThreadId,
+      ) || null,
+    [sortedThreads, state.activeThreadId],
+  );
+
+  const handleRenameThread = useCallback(
+    async (title: string) => {
+      if (!state.activeThreadId) return;
+      try {
+        const updated = await updateMainThreadTitle({
+          threadId: state.activeThreadId,
+          title,
+        });
+        dispatch({
+          type: 'THREAD_TITLE_UPDATED',
+          threadId: updated.threadId,
+          title: updated.title,
+        });
+      } catch (err) {
+        if (err instanceof UnauthorizedError) {
+          onUnauthorized();
+        }
+        throw err;
+      }
+    },
+    [onUnauthorized, state.activeThreadId],
+  );
 
   const hasActiveThread = !!routeThreadId;
 
@@ -653,14 +719,7 @@ export function MainChannelPage({
       <aside className="main-thread-list" aria-label="Threads">
         <div className="main-thread-list-header">
           <h2>Main (Nanoclaw)</h2>
-          <button
-            type="button"
-            className="main-new-thread-btn"
-            onClick={startNewThread}
-            aria-label="New thread"
-          >
-            +
-          </button>
+          <ThreadStartButton onClick={startNewThread} />
         </div>
 
         {state.threadsLoading ? (
@@ -684,8 +743,8 @@ export function MainChannelPage({
                   }`}
                   onClick={() => selectThread(thread.threadId)}
                 >
-                  <span className="main-thread-item-id">
-                    {thread.threadId.slice(0, 8)}…
+                  <span className="main-thread-item-title">
+                    {displayThreadTitle(thread.title)}
                   </span>
                   <span className="main-thread-item-meta">
                     {thread.messageCount} msg ·{' '}
@@ -703,9 +762,19 @@ export function MainChannelPage({
         <header className="main-thread-detail-header">
           <div className="main-thread-detail-title">
             {hasActiveThread ? (
-              <span>Thread {routeThreadId!.slice(0, 8)}…</span>
+              activeThread ? (
+                <InlineEditableTitle
+                  title={displayThreadTitle(activeThread.title)}
+                  onSave={handleRenameThread}
+                  buttonClassName="thread-detail-title-button"
+                  inputClassName="thread-detail-title-input"
+                  errorClassName="thread-detail-title-error"
+                />
+              ) : (
+                <span>{displayThreadTitle(null)}</span>
+              )
             ) : (
-              <span>New conversation</span>
+              <span>New thread</span>
             )}
           </div>
           <span className={streamBadgeClass}>{streamBadgeLabel}</span>

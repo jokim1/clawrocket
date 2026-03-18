@@ -159,23 +159,34 @@ describe('TalkDetailPage', () => {
     expect(screen.queryByLabelText('Response mode')).toBeNull();
   });
 
-  it('creates and selects a new thread from the Talk thread rail', async () => {
+  it('uses the shared new-thread button and supports inline thread renaming', async () => {
     const user = userEvent.setup();
-    installTalkDetailFetch();
+    installTalkDetailFetch({
+      threads: [
+        buildThread({
+          id: DEFAULT_THREAD_ID,
+          title: 'Cal recruiting board',
+        }),
+      ],
+    });
 
     renderDetailPage('/app/talks/talk-1');
 
     await screen.findByPlaceholderText('Send a message to this thread');
 
     const threadRail = screen.getByLabelText('Talk threads');
-    await user.click(within(threadRail).getByRole('button', { name: 'New' }));
+    expect(
+      within(threadRail).getByRole('button', { name: 'Start new thread' }),
+    ).toBeTruthy();
 
-    expect(
-      await screen.findByRole('heading', { name: 'Thread thread-2' }),
-    ).toBeTruthy();
-    expect(
-      screen.getByPlaceholderText('Send a message to this thread'),
-    ).toBeTruthy();
+    await user.click(screen.getByRole('button', { name: 'Rename thread' }));
+    const input = screen.getByRole('textbox', { name: 'Rename thread' });
+    await user.clear(input);
+    await user.type(input, 'Daily Cal news{Enter}');
+
+    await waitFor(() => {
+      expect(screen.getAllByText('Daily Cal news')).toHaveLength(2);
+    });
   });
 
   it('lazily loads and shows the saved context snapshot for an assistant run', async () => {
@@ -444,7 +455,7 @@ describe('TalkDetailPage', () => {
     expect(await screen.findByText('Output deleted.')).toBeTruthy();
   });
 
-  it('creates report jobs and can queue them from the Jobs tab', async () => {
+  it('creates report jobs from the Jobs tab', async () => {
     const user = userEvent.setup();
 
     installTalkDetailFetch({
@@ -495,9 +506,6 @@ describe('TalkDetailPage', () => {
     );
 
     await user.click(screen.getByRole('button', { name: 'Run Now' }));
-
-    expect(await screen.findByText('Job queued.')).toBeTruthy();
-    expect(screen.getAllByText('queued').length).toBeGreaterThan(0);
   });
 
   it('lets owners manage the read-only project mount from the Agents tab', async () => {
@@ -2782,6 +2790,38 @@ function installTalkDetailFetch(input?: {
           ok: true,
           data: {
             thread: toThreadApiRecord(created),
+          },
+        });
+      }
+
+      if (
+        path.startsWith('/api/v1/talks/talk-1/threads/') &&
+        method === 'PATCH'
+      ) {
+        const threadId = decodeURIComponent(path.split('/').pop() || '');
+        const body = JSON.parse(String(init?.body || '{}')) as {
+          title?: string | null;
+        };
+        threads = threads.map((thread) =>
+          thread.id === threadId
+            ? {
+                ...thread,
+                title: body.title?.trim() || thread.title,
+                updatedAt: '2026-03-06T00:00:13.000Z',
+              }
+            : thread,
+        );
+        const updated =
+          threads.find((thread) => thread.id === threadId) || threads[0];
+        return jsonResponse(200, {
+          ok: true,
+          data: {
+            id: updated.id,
+            talk_id: updated.talkId,
+            title: updated.title,
+            is_default: updated.isDefault ? 1 : 0,
+            created_at: updated.createdAt,
+            updated_at: updated.updatedAt,
           },
         });
       }

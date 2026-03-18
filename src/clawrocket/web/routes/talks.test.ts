@@ -330,6 +330,59 @@ describe('talk routes', () => {
     expect(body.data.thread.title).toBe('New Analysis Thread');
   });
 
+  it('infers talk thread titles from the first user message', async () => {
+    createTalkMessage({
+      id: 'msg-thread-title',
+      talkId: 'talk-owner',
+      threadId: 'thread-talk-owner',
+      role: 'user',
+      content: 'Check the latest Cal football injury updates',
+      createdBy: 'owner-1',
+      createdAt: '2026-03-07T00:00:00.000Z',
+    });
+
+    const res = await server.request('/api/v1/talks/talk-owner/threads', {
+      headers: {
+        Authorization: 'Bearer owner-token',
+      },
+    });
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as any;
+    expect(body.ok).toBe(true);
+    expect(body.data.threads[0].title).toBe(
+      'Check the latest Cal football injury updates',
+    );
+  });
+
+  it('renames a talk thread', async () => {
+    const res = await server.request(
+      '/api/v1/talks/talk-owner/threads/thread-talk-owner',
+      {
+        method: 'PATCH',
+        headers: {
+          Authorization: 'Bearer owner-token',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ title: 'Daily Cal news' }),
+      },
+    );
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as any;
+    expect(body.ok).toBe(true);
+    expect(body.data.title).toBe('Daily Cal news');
+
+    const listRes = await server.request('/api/v1/talks/talk-owner/threads', {
+      headers: {
+        Authorization: 'Bearer owner-token',
+      },
+    });
+    expect(listRes.status).toBe(200);
+    const listBody = (await listRes.json()) as any;
+    expect(listBody.data.threads[0].title).toBe('Daily Cal news');
+  });
+
   it('parses supported llm_policy shapes and caps agent badges', async () => {
     upsertTalk({
       id: 'talk-models-array',
