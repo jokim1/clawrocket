@@ -25,6 +25,18 @@ describe('auth routes (phase 1)', () => {
     expect(typeof body.data.devMode).toBe('boolean');
   });
 
+  it('uses a local callback URI for loopback auth start requests', async () => {
+    const startRes = await server.request('/api/v1/auth/google/start', {
+      method: 'POST',
+    });
+    expect(startRes.status).toBe(200);
+
+    const startBody = (await startRes.json()) as any;
+    const authorizationUrl = new URL(startBody.data.authorizationUrl);
+    expect(authorizationUrl.origin).toBe('http://127.0.0.1:3210');
+    expect(authorizationUrl.pathname).toBe('/api/v1/auth/google/callback');
+  });
+
   it('supports owner-claim on first OAuth callback and /session/me', async () => {
     const startRes = await server.request('/api/v1/auth/google/start', {
       method: 'POST',

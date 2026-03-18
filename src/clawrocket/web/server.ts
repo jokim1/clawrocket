@@ -10,8 +10,10 @@ import { Context, Hono } from 'hono';
 import {
   ACCESS_TOKEN_TTL_SEC,
   AUTH_DEV_MODE,
+  GOOGLE_OAUTH_REDIRECT_URI,
   REFRESH_TOKEN_TTL_SEC,
   TRUSTED_PROXY_MODE,
+  WEB_PORT,
   WEB_SECURE_COOKIES,
   isPublicMode,
 } from '../config.js';
@@ -434,6 +436,7 @@ function buildApp(opts: WebServerOptions): Hono {
       }
 
       const payload = startGoogleOAuth({
+        redirectUri: resolveGoogleOAuthRedirectUri(c, opts),
         returnTo: normalizeReturnToPath(requestedReturnTo) || undefined,
       });
       return c.json({ ok: true, data: payload }, 200);
@@ -601,6 +604,7 @@ function buildApp(opts: WebServerOptions): Hono {
     const result = startUserGoogleAccountConnectRoute({
       auth,
       scopes,
+      redirectUri: resolveGoogleOAuthRedirectUri(c, opts),
       returnTo:
         typeof payload.data.returnTo === 'string'
           ? normalizeReturnToPath(payload.data.returnTo)
@@ -656,6 +660,7 @@ function buildApp(opts: WebServerOptions): Hono {
     const result = startUserGoogleScopeExpansionRoute({
       auth,
       scopes,
+      redirectUri: resolveGoogleOAuthRedirectUri(c, opts),
       returnTo:
         typeof payload.data.returnTo === 'string'
           ? normalizeReturnToPath(payload.data.returnTo)
@@ -5778,6 +5783,55 @@ function isSafeRelativeRedirectTarget(pathValue: string): boolean {
   if (pathValue.includes('\\')) return false;
   if (/[\u0000-\u001f\u007f]/.test(pathValue)) return false;
   return true;
+}
+
+function resolveGoogleOAuthRedirectUri(
+  c: Context,
+  opts: WebServerOptions,
+): string {
+  const localOverride = resolveLoopbackGoogleOAuthRedirectUri(c, opts);
+  if (localOverride) return localOverride;
+  return (
+    GOOGLE_OAUTH_REDIRECT_URI ||
+    `http://127.0.0.1:${WEB_PORT}/api/v1/auth/google/callback`
+  );
+}
+
+function resolveLoopbackGoogleOAuthRedirectUri(
+  c: Context,
+  opts: WebServerOptions,
+): string | null {
+  let requestUrl: URL;
+  try {
+    requestUrl = new URL(c.req.url);
+  } catch {
+    return null;
+  }
+
+  if (!isLoopbackHostname(requestUrl.hostname)) {
+    return null;
+  }
+
+  const callbackUrl = new URL(requestUrl.toString());
+  callbackUrl.hostname = isLoopbackHostname(opts.host)
+    ? opts.host
+    : requestUrl.hostname;
+  callbackUrl.pathname = '/api/v1/auth/google/callback';
+  callbackUrl.search = '';
+  callbackUrl.hash = '';
+  callbackUrl.port =
+    requestUrl.port || (opts.port > 0 ? String(opts.port) : String(WEB_PORT));
+  return callbackUrl.toString();
+}
+
+function isLoopbackHostname(hostname: string): boolean {
+  const normalized = hostname.trim().toLowerCase();
+  return (
+    normalized === 'localhost' ||
+    normalized === '127.0.0.1' ||
+    normalized === '::1' ||
+    normalized === '[::1]'
+  );
 }
 
 function normalizeUser(user: UserLike) {

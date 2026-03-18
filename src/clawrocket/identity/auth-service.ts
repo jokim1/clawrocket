@@ -100,6 +100,7 @@ const GOOGLE_ISSUERS = new Set([
 export function startGoogleOAuth(input?: {
   returnTo?: string;
   scopes?: string[];
+  redirectUri?: string;
 }): OAuthStartResult {
   const state = randomOpaque(24);
   const nonce = randomOpaque(24);
@@ -112,6 +113,7 @@ export function startGoogleOAuth(input?: {
   ).toISOString();
 
   const redirectUri =
+    input?.redirectUri ||
     GOOGLE_OAUTH_REDIRECT_URI ||
     'http://127.0.0.1:3210/api/v1/auth/google/callback';
 
@@ -134,7 +136,7 @@ export function startGoogleOAuth(input?: {
     return { state, authorizationUrl, expiresInSec: OAUTH_STATE_TTL_SEC };
   }
 
-  if (!GOOGLE_OAUTH_CLIENT_ID || !GOOGLE_OAUTH_REDIRECT_URI) {
+  if (!GOOGLE_OAUTH_CLIENT_ID || !redirectUri) {
     throw new AuthError(
       'google_oauth_not_configured',
       'Google OAuth is not configured',
@@ -153,7 +155,7 @@ export function startGoogleOAuth(input?: {
   );
   const params = new URLSearchParams({
     client_id: GOOGLE_OAUTH_CLIENT_ID,
-    redirect_uri: GOOGLE_OAUTH_REDIRECT_URI,
+    redirect_uri: redirectUri,
     response_type: 'code',
     scope: requestedScopes.join(' '),
     access_type: 'offline',

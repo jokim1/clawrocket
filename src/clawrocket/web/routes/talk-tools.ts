@@ -601,6 +601,7 @@ export function startUserGoogleAccountConnectRoute(input: {
   auth: AuthContext;
   scopes?: string[];
   returnTo?: string | null;
+  redirectUri?: string;
 }): {
   statusCode: number;
   body: ApiEnvelope<{ authorizationUrl: string; expiresInSec: number }>;
@@ -613,6 +614,7 @@ export function startUserGoogleAccountConnectRoute(input: {
     new Set((input.scopes || []).map((scope) => scope.trim()).filter(Boolean)),
   );
   const start = startGoogleOAuth({
+    redirectUri: input.redirectUri,
     returnTo: input.returnTo || '/app/talks',
     scopes,
   });
@@ -637,6 +639,7 @@ export function startUserGoogleScopeExpansionRoute(input: {
   auth: AuthContext;
   scopes: string[];
   returnTo?: string | null;
+  redirectUri?: string;
 }): {
   statusCode: number;
   body: ApiEnvelope<{ authorizationUrl: string; expiresInSec: number }>;
@@ -655,6 +658,7 @@ export function startUserGoogleScopeExpansionRoute(input: {
     return invalidResponse('invalid_scopes', 'At least one scope is required.');
   }
   const start = startGoogleOAuth({
+    redirectUri: input.redirectUri,
     returnTo: input.returnTo || '/app/talks',
     scopes,
   });

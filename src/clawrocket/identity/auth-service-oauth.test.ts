@@ -41,6 +41,7 @@ describe('auth service google oauth code flow', () => {
             iss: 'https://accounts.google.com',
             aud: 'test-client-id',
             exp: Math.floor(Date.now() / 1000) + 3600,
+            sub: 'google-subject-owner',
             email: 'owner@example.com',
             email_verified: true,
             name: 'Owner',
@@ -71,6 +72,95 @@ describe('auth service google oauth code flow', () => {
     expect(result.user.email).toBe('owner@example.com');
     expect(result.user.role).toBe('owner');
     expect(result.session.accessToken).toBeTruthy();
+  });
+
+  it('uses an explicit local redirect override even when hosted oauth config is present', async () => {
+    vi.resetModules();
+    vi.stubEnv('AUTH_DEV_MODE', 'false');
+    vi.stubEnv('GOOGLE_OAUTH_CLIENT_ID', 'test-client-id');
+    vi.stubEnv('GOOGLE_OAUTH_CLIENT_SECRET', 'test-client-secret');
+    vi.stubEnv('INITIAL_OWNER_EMAIL', 'owner@example.com');
+    vi.stubEnv(
+      'GOOGLE_OAUTH_REDIRECT_URI',
+      'https://clawtalk.app/api/v1/auth/google/callback',
+    );
+
+    const db = await import('../db/index.js');
+    const authService = await import('./auth-service.js');
+    db._initTestDatabase();
+
+    const localRedirectUri =
+      'http://127.0.0.1:3210/api/v1/auth/google/callback';
+    const oauthStart = authService.startGoogleOAuth({
+      redirectUri: localRedirectUri,
+    });
+    const authUrl = new URL(oauthStart.authorizationUrl);
+    const nonce = authUrl.searchParams.get('nonce');
+    expect(authUrl.searchParams.get('redirect_uri')).toBe(localRedirectUri);
+    expect(nonce).toBeTruthy();
+
+    globalThis.fetch = vi.fn(async (input, init) => {
+      const url = getRequestUrl(input);
+      if (url === 'https://oauth2.googleapis.com/token') {
+        const params = normalizeFormBody(init?.body);
+        expect(params.get('redirect_uri')).toBe(localRedirectUri);
+        return jsonResponse({
+          access_token: 'google-access-token',
+          id_token: buildTestIdToken({
+            iss: 'https://accounts.google.com',
+            aud: 'test-client-id',
+            exp: Math.floor(Date.now() / 1000) + 3600,
+            sub: 'google-subject-owner',
+            email: 'owner@example.com',
+            email_verified: true,
+            name: 'Owner',
+            nonce: nonce!,
+          }),
+        });
+      }
+
+      if (url.startsWith('https://oauth2.googleapis.com/tokeninfo')) {
+        return jsonResponse({
+          iss: 'https://accounts.google.com',
+          aud: 'test-client-id',
+          exp: String(Math.floor(Date.now() / 1000) + 3600),
+          email: 'owner@example.com',
+          email_verified: 'true',
+          name: 'Owner',
+        });
+      }
+
+      throw new Error(`Unexpected URL: ${url}`);
+    }) as typeof fetch;
+
+    const result = await authService.completeGoogleOAuthCallback({
+      state: oauthStart.state,
+      code: 'auth-code-local-override',
+    });
+
+    expect(result.user.email).toBe('owner@example.com');
+  });
+
+  it('keeps the configured hosted redirect when no override is provided', async () => {
+    vi.resetModules();
+    vi.stubEnv('AUTH_DEV_MODE', 'false');
+    vi.stubEnv('GOOGLE_OAUTH_CLIENT_ID', 'test-client-id');
+    vi.stubEnv('GOOGLE_OAUTH_CLIENT_SECRET', 'test-client-secret');
+    vi.stubEnv(
+      'GOOGLE_OAUTH_REDIRECT_URI',
+      'https://clawtalk.app/api/v1/auth/google/callback',
+    );
+
+    const db = await import('../db/index.js');
+    const authService = await import('./auth-service.js');
+    db._initTestDatabase();
+
+    const oauthStart = authService.startGoogleOAuth();
+    const authUrl = new URL(oauthStart.authorizationUrl);
+
+    expect(authUrl.searchParams.get('redirect_uri')).toBe(
+      'https://clawtalk.app/api/v1/auth/google/callback',
+    );
   });
 
   it('rejects code flow when nonce claim mismatches stored oauth state', async () => {

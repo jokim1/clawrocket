@@ -174,6 +174,8 @@ describe('talk tools routes', () => {
     expect(connectRes.status).toBe(200);
     const connectBody = (await connectRes.json()) as any;
     const connectUrl = new URL(connectBody.data.authorizationUrl);
+    expect(connectUrl.origin).toBe('http://127.0.0.1:3210');
+    expect(connectUrl.pathname).toBe('/api/v1/auth/google/callback');
     const connectState = connectUrl.searchParams.get('state');
     expect(connectState).toBeTruthy();
 
@@ -209,6 +211,8 @@ describe('talk tools routes', () => {
     expect(expandRes.status).toBe(200);
     const expandBody = (await expandRes.json()) as any;
     const expandUrl = new URL(expandBody.data.authorizationUrl);
+    expect(expandUrl.origin).toBe('http://127.0.0.1:3210');
+    expect(expandUrl.pathname).toBe('/api/v1/auth/google/callback');
     const expandState = expandUrl.searchParams.get('state');
     expect(expandState).toBeTruthy();
 
