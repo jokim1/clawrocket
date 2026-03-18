@@ -1,4 +1,11 @@
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 
@@ -183,6 +190,45 @@ describe('MainChannelPage', () => {
       2,
     );
     expect(screen.getByRole('button', { name: 'Rename thread' })).toBeTruthy();
+  });
+
+  it('strips surrounding quotes when inferring a new Main thread title', async () => {
+    listMainThreadsMock.mockResolvedValue([]);
+    getMainThreadMock.mockResolvedValue([]);
+    postMainMessageMock.mockResolvedValue({
+      messageId: 'msg-1',
+      threadId: 'thread-main-1',
+      runId: 'run-1',
+      title: null,
+    });
+
+    render(
+      <MemoryRouter initialEntries={['/app/main']}>
+        <Routes>
+          <Route
+            path="/app/main"
+            element={<MainChannelPage onUnauthorized={vi.fn()} />}
+          />
+          <Route
+            path="/app/main/:threadId"
+            element={<MainChannelPage onUnauthorized={vi.fn()} />}
+          />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    await screen.findByRole('heading', { name: 'Main (Nanoclaw)' });
+    fireEvent.change(screen.getByPlaceholderText('Message Nanoclaw…'), {
+      target: { value: '"Cal football recruiting notes"' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+
+    await waitFor(() =>
+      expect(
+        screen.getAllByText('Cal football recruiting notes')[0],
+      ).toBeTruthy(),
+    );
+    expect(screen.queryByText('"Cal football recruiting notes"')).toBeNull();
   });
 });
 

@@ -320,6 +320,15 @@ export type TalkThread = {
   lastMessageAt: string | null;
 };
 
+export type TalkThreadTitleUpdate = {
+  id: string;
+  talkId: string;
+  title: string | null;
+  isDefault: boolean;
+  createdAt: string;
+  updatedAt: string;
+};
+
 export type TalkMessageAttachment = {
   id: string;
   fileName: string;
@@ -1159,7 +1168,7 @@ export async function updateTalkThreadTitle(input: {
   talkId: string;
   threadId: string;
   title: string;
-}): Promise<TalkThread> {
+}): Promise<TalkThreadTitleUpdate> {
   const envelope = await apiMutationRequest<{
     id: string;
     talk_id: string;
@@ -1182,8 +1191,6 @@ export async function updateTalkThreadTitle(input: {
     isDefault: envelope.is_default === 1,
     createdAt: envelope.created_at,
     updatedAt: envelope.updated_at,
-    messageCount: 0,
-    lastMessageAt: null,
   };
 }
 

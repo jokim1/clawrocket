@@ -30,6 +30,7 @@ import {
   patchMainThreadRoute,
   postMainMessageRoute,
 } from '../web/routes/main-channel.js';
+import { ThreadTitleValidationError } from '../db/thread-title-utils.js';
 import type { AuthContext } from '../web/types.js';
 
 const USER_A = 'user-a';
@@ -187,6 +188,30 @@ describe('Main channel DB accessors', () => {
       // USER_B should NOT see this thread — they're not the first author
       const listB = listMainThreadsForUser(USER_B);
       expect(listB).toHaveLength(0);
+    });
+
+    it('does not backfill thread titles on list reads', () => {
+      const threadId = randomUUID();
+      getDb()
+        .prepare(
+          `INSERT INTO talk_messages (id, talk_id, thread_id, role, content, created_by, created_at)
+           VALUES (?, NULL, ?, 'user', ?, ?, ?)`,
+        )
+        .run(
+          `msg_${randomUUID()}`,
+          threadId,
+          'Quoted thread title should stay unset on read',
+          USER_A,
+          new Date().toISOString(),
+        );
+
+      const result = listMainThreadsRoute(makeAuth(USER_A));
+      expect(result.statusCode).toBe(200);
+      expect(result.body.ok).toBe(true);
+      if (result.body.ok) {
+        expect(result.body.data[0].threadId).toBe(threadId);
+        expect(result.body.data[0].title).toBeNull();
+      }
     });
   });
 
@@ -672,6 +697,55 @@ describe('Main channel routes', () => {
       expect(listed.body.ok).toBe(true);
       if (listed.body.ok) {
         expect(listed.body.data[0].title).toBe('Daily planning');
+      }
+    });
+
+    it('rejects overlong thread titles with invalid_input', () => {
+      const threadId = randomUUID();
+      enqueueMainTurnAtomic({
+        threadId,
+        userId: USER_A,
+        content: 'draft agenda',
+        messageId: `msg_${randomUUID()}`,
+        runId: `run_${randomUUID()}`,
+      });
+
+      const result = patchMainThreadRoute(makeAuth(USER_A), threadId, {
+        title: 'x'.repeat(121),
+      });
+      expect(result.statusCode).toBe(400);
+      expect(result.body.ok).toBe(false);
+      if (!result.body.ok) {
+        expect(result.body.error.code).toBe('invalid_input');
+      }
+    });
+
+    it('maps accessor validation errors to invalid_input', () => {
+      const threadId = randomUUID();
+      enqueueMainTurnAtomic({
+        threadId,
+        userId: USER_A,
+        content: 'draft agenda',
+        messageId: `msg_${randomUUID()}`,
+        runId: `run_${randomUUID()}`,
+      });
+
+      const result = patchMainThreadRoute(
+        makeAuth(USER_A),
+        threadId,
+        { title: 'Valid title' },
+        {
+          updateMainThreadTitle: () => {
+            throw new ThreadTitleValidationError(
+              'Thread title must be at most 120 characters',
+            );
+          },
+        },
+      );
+      expect(result.statusCode).toBe(400);
+      expect(result.body.ok).toBe(false);
+      if (!result.body.ok) {
+        expect(result.body.error.code).toBe('invalid_input');
       }
     });
   });

@@ -7,6 +7,10 @@ import {
   MainThreadBusyError,
   updateMainThreadTitle,
 } from '../../db/index.js';
+import {
+  ThreadTitleValidationError,
+  validateEditableThreadTitle,
+} from '../../db/thread-title-utils.js';
 import { getDb } from '../../../db.js';
 import type { AuthContext, ApiEnvelope } from '../types.js';
 
@@ -295,25 +299,38 @@ interface PatchMainThreadResponse {
   title: string;
 }
 
+interface PatchMainThreadDeps {
+  updateMainThreadTitle?: typeof updateMainThreadTitle;
+}
+
 export function patchMainThreadRoute(
   auth: AuthContext,
   threadId: string,
   body: PatchMainThreadBody,
+  deps?: PatchMainThreadDeps,
 ): {
   statusCode: number;
   body: ApiEnvelope<PatchMainThreadResponse>;
 } {
-  if (typeof body.title !== 'string' || !body.title.trim()) {
-    return {
-      statusCode: 400,
-      body: {
-        ok: false,
-        error: {
-          code: 'invalid_input',
-          message: 'title is required and must be a non-empty string',
+  let title: string;
+  try {
+    title = validateEditableThreadTitle(
+      typeof body.title === 'string' ? body.title : null,
+    );
+  } catch (err) {
+    if (err instanceof ThreadTitleValidationError) {
+      return {
+        statusCode: 400,
+        body: {
+          ok: false,
+          error: {
+            code: 'invalid_input',
+            message: err.message,
+          },
         },
-      },
-    };
+      };
+    }
+    throw err;
   }
 
   if (!canUserAccessMainThread(threadId, auth.userId)) {
@@ -330,10 +347,10 @@ export function patchMainThreadRoute(
   }
 
   try {
-    const updated = updateMainThreadTitle({
+    const updated = (deps?.updateMainThreadTitle ?? updateMainThreadTitle)({
       threadId,
       userId: auth.userId,
-      title: body.title,
+      title,
     });
     if (!updated) {
       return {
@@ -359,6 +376,18 @@ export function patchMainThreadRoute(
       },
     };
   } catch (err) {
+    if (err instanceof ThreadTitleValidationError) {
+      return {
+        statusCode: 400,
+        body: {
+          ok: false,
+          error: {
+            code: 'invalid_input',
+            message: err.message,
+          },
+        },
+      };
+    }
     return {
       statusCode: 500,
       body: {

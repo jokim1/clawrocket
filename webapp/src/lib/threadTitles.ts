@@ -13,13 +13,14 @@ export function displayThreadTitle(
 
 export function inferThreadTitleFromContent(
   content: string | null | undefined,
-): string {
+): string | null {
   const compact = content?.replace(/\s+/g, ' ').trim() || '';
   if (!compact) {
-    return 'New thread';
+    return null;
   }
-  if (compact.length <= MAX_THREAD_TITLE_CHARS) {
-    return compact;
+  const unquoted = compact.replace(/^["'`]+|["'`]+$/g, '').trim() || compact;
+  if (unquoted.length <= MAX_THREAD_TITLE_CHARS) {
+    return unquoted;
   }
-  return `${compact.slice(0, MAX_THREAD_TITLE_CHARS - 1).trimEnd()}…`;
+  return `${unquoted.slice(0, MAX_THREAD_TITLE_CHARS - 1).trimEnd()}…`;
 }

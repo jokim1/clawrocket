@@ -21,9 +21,11 @@ import {
   canUserAccessTalk,
   countRunningTalkRuns,
   deleteGoogleOAuthLinkRequest,
+  getTalkForUser,
   getOutboxEventsForTopics,
   getOutboxMinEventIdForTopics,
   getGoogleOAuthLinkRequest,
+  listTalkThreads,
   resolveThreadIdForTalk,
   TalkThreadValidationError,
   getUserById,
@@ -132,6 +134,7 @@ import {
   patchMainThreadRoute,
   postMainMessageRoute,
 } from './routes/main-channel.js';
+import { patchTalkThreadRoute } from './routes/talk-threads.js';
 import {
   attachTalkDataConnectorRoute,
   createDataConnectorRoute,
@@ -2652,8 +2655,6 @@ function buildApp(opts: WebServerOptions): Hono {
     }
 
     try {
-      const { getTalkForUser, listTalkThreads } =
-        await import('../db/accessors.js');
       const talk = getTalkForUser(talkId, auth.userId);
       if (!talk) {
         return c.json(
@@ -2791,64 +2792,16 @@ function buildApp(opts: WebServerOptions): Hono {
         400,
       );
     }
-    if (typeof payload.data.title !== 'string' || !payload.data.title.trim()) {
-      return c.json(
-        {
-          ok: false,
-          error: {
-            code: 'invalid_input',
-            message: 'title is required and must be a non-empty string',
-          },
-        },
-        400,
-      );
-    }
-
-    try {
-      const { getTalkForUser, updateTalkThreadTitle } =
-        await import('../db/accessors.js');
-      const talk = getTalkForUser(talkId, auth.userId);
-      if (!talk) {
-        return c.json(
-          {
-            ok: false,
-            error: { code: 'talk_not_found', message: 'Talk not found' },
-          },
-          404,
-        );
-      }
-      if (!canEditTalk(talkId, auth.userId, auth.role)) {
-        return c.json(
-          {
-            ok: false,
-            error: { code: 'forbidden', message: 'Talk is read-only' },
-          },
-          403,
-        );
-      }
-
-      const thread = updateTalkThreadTitle({
-        talkId,
-        threadId,
-        title: payload.data.title,
-      });
-      if (!thread) {
-        return c.json(
-          {
-            ok: false,
-            error: { code: 'thread_not_found', message: 'Thread not found' },
-          },
-          404,
-        );
-      }
-
-      return c.json({ ok: true, data: thread });
-    } catch (err) {
-      return c.json(
-        { ok: false, error: { code: 'internal_error', message: String(err) } },
-        500,
-      );
-    }
+    const result = patchTalkThreadRoute({
+      auth,
+      talkId,
+      threadId,
+      body: payload.data,
+    });
+    return new Response(JSON.stringify(result.body), {
+      status: result.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
   });
 
   app.get('/api/v1/talks/:talkId/agents', async (c) => {
