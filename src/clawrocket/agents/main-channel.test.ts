@@ -27,6 +27,7 @@ import { createRegisteredAgent } from '../db/agent-accessors.js';
 import {
   listMainThreadsRoute,
   getMainThreadRoute,
+  patchMainThreadRoute,
   postMainMessageRoute,
 } from '../web/routes/main-channel.js';
 import type { AuthContext } from '../web/types.js';
@@ -528,6 +529,7 @@ describe('Main channel routes', () => {
       if (result.body.ok) {
         expect(result.body.data).toHaveLength(1);
         expect(result.body.data[0].threadId).toBe(threadId);
+        expect(result.body.data[0].title).toBe('hello');
       }
     });
 
@@ -596,6 +598,7 @@ describe('Main channel routes', () => {
         expect(result.body.data.messageId).toBeTruthy();
         expect(result.body.data.threadId).toBeTruthy();
         expect(result.body.data.runId).toBeTruthy();
+        expect(result.body.data.title).toBe('hello');
       }
     });
 
@@ -639,6 +642,36 @@ describe('Main channel routes', () => {
       expect(r2.body.ok).toBe(false);
       if (!r2.body.ok) {
         expect(r2.body.error.code).toBe('thread_busy');
+      }
+    });
+  });
+
+  describe('patchMainThreadRoute', () => {
+    it('renames an owned thread and persists the title', () => {
+      const threadId = randomUUID();
+      enqueueMainTurnAtomic({
+        threadId,
+        userId: USER_A,
+        content: 'draft agenda',
+        messageId: `msg_${randomUUID()}`,
+        runId: `run_${randomUUID()}`,
+      });
+
+      const result = patchMainThreadRoute(makeAuth(USER_A), threadId, {
+        title: 'Daily planning',
+      });
+      expect(result.statusCode).toBe(200);
+      expect(result.body.ok).toBe(true);
+      if (result.body.ok) {
+        expect(result.body.data.threadId).toBe(threadId);
+        expect(result.body.data.title).toBe('Daily planning');
+      }
+
+      const listed = listMainThreadsRoute(makeAuth(USER_A));
+      expect(listed.statusCode).toBe(200);
+      expect(listed.body.ok).toBe(true);
+      if (listed.body.ok) {
+        expect(listed.body.data[0].title).toBe('Daily planning');
       }
     });
   });

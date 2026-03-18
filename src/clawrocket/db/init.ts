@@ -678,6 +678,16 @@ function createClawrocketSchema(database: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_talk_threads_talk_id
       ON talk_threads(talk_id);
 
+    CREATE TABLE IF NOT EXISTS main_threads (
+      thread_id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      title TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_main_threads_user_id_updated_at
+      ON main_threads(user_id, updated_at);
+
     CREATE TABLE IF NOT EXISTS talk_tool_grants (
       talk_id TEXT NOT NULL REFERENCES talks(id) ON DELETE CASCADE,
       tool_id TEXT NOT NULL,

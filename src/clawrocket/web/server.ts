@@ -129,6 +129,7 @@ import {
 import {
   listMainThreadsRoute,
   getMainThreadRoute,
+  patchMainThreadRoute,
   postMainMessageRoute,
 } from './routes/main-channel.js';
 import {
@@ -1395,6 +1396,47 @@ function buildApp(opts: WebServerOptions): Hono {
     });
     if (!rateResult.allowed) return rateLimitedResponse(c, rateResult);
     const result = getMainThreadRoute(auth, c.req.param('threadId'));
+    return new Response(JSON.stringify(result.body), {
+      status: result.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
+  });
+
+  app.patch('/api/v1/main/threads/:threadId', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+    const rateResult = checkRateLimit({
+      principalId: auth.userId,
+      bucket: 'write',
+    });
+    if (!rateResult.allowed) return rateLimitedResponse(c, rateResult);
+    const csrf = validateCsrfToken({
+      method: c.req.method,
+      authType: auth.authType,
+      cookieHeader: c.req.header('cookie'),
+      csrfHeader: c.req.header('x-csrf-token'),
+    });
+    if (!csrf.ok) {
+      return c.json(
+        { ok: false, error: { code: 'csrf_failed', message: csrf.reason } },
+        403,
+      );
+    }
+
+    const bodyText = await c.req.text();
+    const payload = parseJsonPayload<Record<string, unknown>>(bodyText);
+    if (!payload.ok) {
+      return c.json(
+        { ok: false, error: { code: 'invalid_json', message: payload.error } },
+        400,
+      );
+    }
+
+    const result = patchMainThreadRoute(
+      auth,
+      c.req.param('threadId'),
+      payload.data,
+    );
     return new Response(JSON.stringify(result.body), {
       status: result.statusCode,
       headers: { 'content-type': 'application/json; charset=utf-8' },
@@ -2696,6 +2738,111 @@ function buildApp(opts: WebServerOptions): Hono {
         typeof body.title === 'string' ? body.title.trim() || null : null;
       const thread = createTalkThread({ talkId, title });
       return c.json({ ok: true, data: { thread } }, 201);
+    } catch (err) {
+      return c.json(
+        { ok: false, error: { code: 'internal_error', message: String(err) } },
+        500,
+      );
+    }
+  });
+
+  app.patch('/api/v1/talks/:talkId/threads/:threadId', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+
+    const rateResult = checkRateLimit({ userId: auth.userId, bucket: 'write' });
+    if (!rateResult.allowed) {
+      return rateLimitedResponse(c, rateResult);
+    }
+
+    const csrf = validateCsrfToken({
+      method: c.req.method,
+      authType: auth.authType,
+      cookieHeader: c.req.header('cookie'),
+      csrfHeader: c.req.header('x-csrf-token'),
+    });
+    if (!csrf.ok) {
+      return c.json(
+        { ok: false, error: { code: 'csrf_failed', message: csrf.reason } },
+        403,
+      );
+    }
+
+    const talkId = safeDecodePathSegment(c.req.param('talkId'));
+    const threadId = safeDecodePathSegment(c.req.param('threadId'));
+    if (!talkId || !threadId) {
+      return c.json(
+        {
+          ok: false,
+          error: {
+            code: 'invalid_talk_id',
+            message: 'Invalid Talk or thread ID',
+          },
+        },
+        400,
+      );
+    }
+
+    const bodyText = await c.req.text();
+    const payload = parseJsonPayload<{ title?: unknown }>(bodyText);
+    if (!payload.ok) {
+      return c.json(
+        { ok: false, error: { code: 'invalid_json', message: payload.error } },
+        400,
+      );
+    }
+    if (typeof payload.data.title !== 'string' || !payload.data.title.trim()) {
+      return c.json(
+        {
+          ok: false,
+          error: {
+            code: 'invalid_input',
+            message: 'title is required and must be a non-empty string',
+          },
+        },
+        400,
+      );
+    }
+
+    try {
+      const { getTalkForUser, updateTalkThreadTitle } =
+        await import('../db/accessors.js');
+      const talk = getTalkForUser(talkId, auth.userId);
+      if (!talk) {
+        return c.json(
+          {
+            ok: false,
+            error: { code: 'talk_not_found', message: 'Talk not found' },
+          },
+          404,
+        );
+      }
+      if (!canEditTalk(talkId, auth.userId, auth.role)) {
+        return c.json(
+          {
+            ok: false,
+            error: { code: 'forbidden', message: 'Talk is read-only' },
+          },
+          403,
+        );
+      }
+
+      const thread = updateTalkThreadTitle({
+        talkId,
+        threadId,
+        title: payload.data.title,
+      });
+      if (!thread) {
+        return c.json(
+          {
+            ok: false,
+            error: { code: 'thread_not_found', message: 'Thread not found' },
+          },
+          404,
+        );
+      }
+
+      return c.json({ ok: true, data: thread });
     } catch (err) {
       return c.json(
         { ok: false, error: { code: 'internal_error', message: String(err) } },

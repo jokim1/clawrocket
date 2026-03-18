@@ -113,6 +113,7 @@ import {
   updateTalkProjectMount,
   updateTalkTools,
   updateTalkAgents,
+  updateTalkThreadTitle,
   pauseTalkJob,
   resumeTalkJob,
   runTalkJobNow,
@@ -120,10 +121,13 @@ import {
   type RegisteredAgent,
   UnauthorizedError,
 } from '../lib/api';
+import { InlineEditableTitle } from '../components/InlineEditableTitle';
+import { ThreadStartButton } from '../components/ThreadStartButton';
 import { TalkHistoryEditor } from '../components/TalkHistoryEditor';
 import { stripInternalAssistantText } from '../lib/assistantText';
 import { launchGoogleAccountPopup } from '../lib/googleAccountPopup';
 import { openGoogleDrivePicker } from '../lib/googlePicker';
+import { displayThreadTitle } from '../lib/threadTitles';
 import { openTalkStream } from '../lib/talkStream';
 import type {
   MessageAppendedEvent,
@@ -1383,9 +1387,7 @@ function sortThreads(threads: TalkThread[]): TalkThread[] {
 }
 
 function formatThreadLabel(thread: TalkThread): string {
-  if (thread.title?.trim()) return thread.title.trim();
-  if (thread.isDefault) return 'Default Thread';
-  return `Thread ${thread.id.slice(0, 8)}`;
+  return displayThreadTitle(thread.title);
 }
 
 function buildThreadHref(
@@ -2936,6 +2938,36 @@ export function TalkDetailPage({
   const activeThread = useMemo(
     () => sortedThreads.find((thread) => thread.id === activeThreadId) || null,
     [activeThreadId, sortedThreads],
+  );
+  const handleRenameActiveThread = useCallback(
+    async (title: string) => {
+      if (state.kind !== 'ready' || !state.talk || !activeThread) return;
+      try {
+        const updated = await updateTalkThreadTitle({
+          talkId: state.talk.id,
+          threadId: activeThread.id,
+          title,
+        });
+        setThreadState((current) => ({
+          ...current,
+          threads: current.threads.map((thread) =>
+            thread.id === updated.id
+              ? {
+                  ...thread,
+                  title: updated.title,
+                  updatedAt: updated.updatedAt,
+                }
+              : thread,
+          ),
+        }));
+      } catch (err) {
+        if (err instanceof UnauthorizedError) {
+          handleUnauthorized();
+        }
+        throw err;
+      }
+    },
+    [activeThread, handleUnauthorized, state],
   );
   const runHistory = useMemo(
     () =>
@@ -9281,13 +9313,9 @@ export function TalkDetailPage({
               <aside className="talk-thread-rail" aria-label="Talk threads">
                 <div className="talk-thread-rail-header">
                   <h2>Threads</h2>
-                  <button
-                    type="button"
-                    className="secondary-btn"
+                  <ThreadStartButton
                     onClick={() => void handleCreateThread()}
-                  >
-                    New
-                  </button>
+                  />
                 </div>
                 <form
                   className="talk-thread-search"
@@ -9326,8 +9354,7 @@ export function TalkDetailPage({
                           onClick={() => handleSearchResultSelect(result)}
                         >
                           <strong>
-                            {result.threadTitle?.trim() ||
-                              `Thread ${result.threadId.slice(0, 8)}`}
+                            {displayThreadTitle(result.threadTitle)}
                           </strong>
                           <span>{result.preview}</span>
                         </button>
@@ -9377,11 +9404,17 @@ export function TalkDetailPage({
               <div className="talk-thread-detail">
                 <div className="talk-thread-detail-header">
                   <div>
-                    <h2>
-                      {activeThread
-                        ? formatThreadLabel(activeThread)
-                        : 'Thread'}
-                    </h2>
+                    {activeThread ? (
+                      <InlineEditableTitle
+                        title={formatThreadLabel(activeThread)}
+                        onSave={handleRenameActiveThread}
+                        buttonClassName="thread-detail-title-button"
+                        inputClassName="thread-detail-title-input"
+                        errorClassName="thread-detail-title-error"
+                      />
+                    ) : (
+                      <h2>New thread</h2>
+                    )}
                     <p className="policy-muted">
                       Use <code>/edit</code> or the button here to remove old
                       messages from this thread.

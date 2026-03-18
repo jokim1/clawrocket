@@ -1155,6 +1155,38 @@ export async function createTalkThread(input: {
   };
 }
 
+export async function updateTalkThreadTitle(input: {
+  talkId: string;
+  threadId: string;
+  title: string;
+}): Promise<TalkThread> {
+  const envelope = await apiMutationRequest<{
+    id: string;
+    talk_id: string;
+    title: string;
+    is_default: number;
+    created_at: string;
+    updated_at: string;
+  }>(
+    `/api/v1/talks/${encodeURIComponent(input.talkId)}/threads/${encodeURIComponent(input.threadId)}`,
+    {
+      method: 'PATCH',
+      includeJson: true,
+      body: JSON.stringify({ title: input.title }),
+    },
+  );
+  return {
+    id: envelope.id,
+    talkId: envelope.talk_id,
+    title: envelope.title,
+    isDefault: envelope.is_default === 1,
+    createdAt: envelope.created_at,
+    updatedAt: envelope.updated_at,
+    messageCount: 0,
+    lastMessageAt: null,
+  };
+}
+
 export async function listTalkMessages(
   talkId: string,
   options?: { threadId?: string | null },
@@ -2414,6 +2446,7 @@ export async function restartService(): Promise<{
 
 export type MainThreadSummary = {
   threadId: string;
+  title: string | null;
   lastMessageAt: string;
   messageCount: number;
 };
@@ -2443,11 +2476,17 @@ export async function getMainThread(
 export async function postMainMessage(input: {
   content: string;
   threadId?: string;
-}): Promise<{ messageId: string; threadId: string; runId: string }> {
+}): Promise<{
+  messageId: string;
+  threadId: string;
+  runId: string;
+  title: string | null;
+}> {
   return apiMutationRequest<{
     messageId: string;
     threadId: string;
     runId: string;
+    title: string | null;
   }>('/api/v1/main/messages', {
     method: 'POST',
     includeJson: true,
@@ -2456,6 +2495,20 @@ export async function postMainMessage(input: {
       ...(input.threadId ? { threadId: input.threadId } : {}),
     }),
   });
+}
+
+export async function updateMainThreadTitle(input: {
+  threadId: string;
+  title: string;
+}): Promise<{ threadId: string; title: string }> {
+  return apiMutationRequest<{ threadId: string; title: string }>(
+    `/api/v1/main/threads/${encodeURIComponent(input.threadId)}`,
+    {
+      method: 'PATCH',
+      includeJson: true,
+      body: JSON.stringify({ title: input.title }),
+    },
+  );
 }
 
 export async function getHealthStatus(): Promise<boolean> {

@@ -2741,14 +2741,12 @@ a {
   color: #1f2a44;
 }
 
-.main-new-thread-btn {
+.thread-start-btn {
   background: none;
   border: 1px solid #c4d0e8;
   border-radius: 6px;
-  width: 28px;
-  height: 28px;
-  font-size: 1.15rem;
-  line-height: 1;
+  width: 32px;
+  height: 32px;
   color: #4b5978;
   cursor: pointer;
   display: flex;
@@ -2759,7 +2757,12 @@ a {
     border-color 0.15s;
 }
 
-.main-new-thread-btn:hover {
+.thread-start-btn svg {
+  width: 16px;
+  height: 16px;
+}
+
+.thread-start-btn:hover {
   background: #eef2fa;
   border-color: #a3b5d6;
 }
@@ -2809,10 +2812,9 @@ a {
   border-left-color: #2759d6;
 }
 
-.main-thread-item-id {
+.main-thread-item-title {
   font-weight: 600;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 0.8rem;
+  font-size: 0.86rem;
   color: #1f2a44;
 }
 
@@ -2843,6 +2845,51 @@ a {
   font-size: 0.95rem;
   font-weight: 600;
   color: #1f2a44;
+}
+
+.inline-editable-title {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.thread-detail-title-button {
+  border: none;
+  background: transparent;
+  padding: 0;
+  font: inherit;
+  font-size: 1rem;
+  font-weight: 600;
+  color: #1f2a44;
+  cursor: text;
+  text-align: left;
+}
+
+.thread-detail-title-button:hover {
+  color: #1b4fc9;
+}
+
+.thread-detail-title-input {
+  min-width: 240px;
+  max-width: min(100%, 540px);
+  border: 1px solid #c4d0e8;
+  border-radius: 8px;
+  padding: 0.45rem 0.65rem;
+  font: inherit;
+  font-size: 1rem;
+  font-weight: 600;
+  color: #1f2a44;
+}
+
+.thread-detail-title-input:focus {
+  outline: none;
+  border-color: #2759d6;
+}
+
+.thread-detail-title-error {
+  margin: 0;
+  font-size: 0.78rem;
+  color: #c0392b;
 }
 
 /* Timeline */
