@@ -20,13 +20,17 @@ import {
   CONTAINER_RUNTIME_BIN,
   readonlyMountArgs,
   stopContainer,
+  getContainerRuntimeStatus,
   ensureContainerRuntimeRunning,
   cleanupOrphans,
+  _resetContainerRuntimeStatusForTests,
+  _setContainerRuntimeStatusForTests,
 } from './container-runtime.js';
 import { logger } from './logger.js';
 
 beforeEach(() => {
   vi.clearAllMocks();
+  _resetContainerRuntimeStatusForTests();
 });
 
 // --- Pure functions ---
@@ -72,7 +76,24 @@ describe('ensureContainerRuntimeRunning', () => {
     expect(() => ensureContainerRuntimeRunning()).toThrow(
       'Container runtime is required but failed to start',
     );
-    expect(logger.error).toHaveBeenCalled();
+    expect(logger.warn).toHaveBeenCalled();
+  });
+});
+
+describe('getContainerRuntimeStatus', () => {
+  it('returns unavailable without throwing when docker info fails', () => {
+    mockExecSync.mockImplementationOnce(() => {
+      throw new Error('Cannot connect to the Docker daemon');
+    });
+
+    expect(getContainerRuntimeStatus({ refresh: true })).toBe('unavailable');
+  });
+
+  it('honors forced test status overrides', () => {
+    _setContainerRuntimeStatusForTests('unavailable');
+
+    expect(getContainerRuntimeStatus()).toBe('unavailable');
+    expect(mockExecSync).not.toHaveBeenCalled();
   });
 });
 

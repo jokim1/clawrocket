@@ -8,6 +8,21 @@ import { logger } from './logger.js';
 
 /** The container runtime binary name. */
 export const CONTAINER_RUNTIME_BIN = 'docker';
+export type ContainerRuntimeStatus = 'ready' | 'unavailable';
+
+const CONTAINER_RUNTIME_STATUS_CACHE_TTL_MS = 5_000;
+let cachedContainerRuntimeStatus: {
+  status: ContainerRuntimeStatus;
+  checkedAt: number;
+} | null = null;
+let forcedContainerRuntimeStatusForTests: ContainerRuntimeStatus | null = null;
+
+export class ContainerRuntimeUnavailableError extends Error {
+  constructor(message = 'Container runtime is required but failed to start') {
+    super(message);
+    this.name = 'ContainerRuntimeUnavailableError';
+  }
+}
 
 /** Returns CLI args for a readonly bind mount. */
 export function readonlyMountArgs(
@@ -22,42 +37,71 @@ export function stopContainer(name: string): string {
   return `${CONTAINER_RUNTIME_BIN} stop ${name}`;
 }
 
-/** Ensure the container runtime is running, starting it if needed. */
-export function ensureContainerRuntimeRunning(): void {
+export function getContainerRuntimeStatus(input?: {
+  refresh?: boolean;
+  logReady?: boolean;
+  logFailure?: boolean;
+}): ContainerRuntimeStatus {
+  if (forcedContainerRuntimeStatusForTests) {
+    return forcedContainerRuntimeStatusForTests;
+  }
+  const now = Date.now();
+  if (
+    !input?.refresh &&
+    cachedContainerRuntimeStatus &&
+    now - cachedContainerRuntimeStatus.checkedAt <
+      CONTAINER_RUNTIME_STATUS_CACHE_TTL_MS
+  ) {
+    return cachedContainerRuntimeStatus.status;
+  }
+
   try {
     execSync(`${CONTAINER_RUNTIME_BIN} info`, {
       stdio: 'pipe',
-      timeout: 10000,
+      timeout: 10_000,
     });
-    logger.debug('Container runtime already running');
+    cachedContainerRuntimeStatus = {
+      status: 'ready',
+      checkedAt: now,
+    };
+    if (input?.logReady) {
+      logger.debug('Container runtime already running');
+    }
+    return 'ready';
   } catch (err) {
-    logger.error({ err }, 'Failed to reach container runtime');
-    console.error(
-      '\n╔════════════════════════════════════════════════════════════════╗',
-    );
-    console.error(
-      '║  FATAL: Container runtime failed to start                      ║',
-    );
-    console.error(
-      '║                                                                ║',
-    );
-    console.error(
-      '║  Agents cannot run without a container runtime. To fix:        ║',
-    );
-    console.error(
-      '║  1. Ensure Docker is installed and running                     ║',
-    );
-    console.error(
-      '║  2. Run: docker info                                           ║',
-    );
-    console.error(
-      '║  3. Restart NanoClaw                                           ║',
-    );
-    console.error(
-      '╚════════════════════════════════════════════════════════════════╝\n',
-    );
-    throw new Error('Container runtime is required but failed to start');
+    cachedContainerRuntimeStatus = {
+      status: 'unavailable',
+      checkedAt: now,
+    };
+    if (input?.logFailure) {
+      logger.warn({ err }, 'Container runtime is unavailable');
+    }
+    return 'unavailable';
   }
+}
+
+/** Ensure the container runtime is running, starting it if needed. */
+export function ensureContainerRuntimeRunning(): void {
+  if (
+    getContainerRuntimeStatus({
+      refresh: true,
+      logReady: true,
+      logFailure: true,
+    }) !== 'ready'
+  ) {
+    throw new ContainerRuntimeUnavailableError();
+  }
+}
+
+export function _resetContainerRuntimeStatusForTests(): void {
+  cachedContainerRuntimeStatus = null;
+  forcedContainerRuntimeStatusForTests = null;
+}
+
+export function _setContainerRuntimeStatusForTests(
+  status: ContainerRuntimeStatus | null,
+): void {
+  forcedContainerRuntimeStatusForTests = status;
 }
 
 /** Kill orphaned NanoClaw containers from previous runs. */

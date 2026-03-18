@@ -1,5 +1,9 @@
 import { createHash, randomUUID } from 'crypto';
 
+import {
+  getContainerRuntimeStatus,
+  type ContainerRuntimeStatus,
+} from '../../../container-runtime.js';
 import { getDb } from '../../../db.js';
 import { executeContainerAgentTurn } from '../../agents/container-turn-executor.js';
 import {
@@ -71,6 +75,7 @@ export interface ExecutorStatusData {
   restartSupported: boolean;
   pendingRestartReasons: string[];
   activeRunCount: number;
+  containerRuntimeAvailability: ContainerRuntimeStatus;
   executorAuthMode: ExecutorAuthMode;
   activeCredentialConfigured: boolean;
   verificationStatus: ExecutorVerificationStatus;
@@ -362,6 +367,10 @@ export function getExecutorAuthState(): ExecutorAuthState {
 
 function baseExecutorSettingsData(): ExecutorSettingsData {
   const authState = getExecutorAuthState();
+  const runtimeAwareVerificationState = computeRuntimeAwareVerificationState(
+    authState,
+    getContainerRuntimeStatus(),
+  );
   const updatedAt =
     getSettingValue('executor.lastVerifiedAt') ||
     getSettingValue('executor.updatedAt');
@@ -378,9 +387,9 @@ function baseExecutorSettingsData(): ExecutorSettingsData {
     oauthTokenHint: authState.oauthTokenHint,
     authTokenHint: authState.authTokenHint,
     activeCredentialConfigured: authState.activeCredentialConfigured,
-    verificationStatus: authState.verificationStatus,
+    verificationStatus: runtimeAwareVerificationState.verificationStatus,
     lastVerifiedAt: authState.lastVerifiedAt,
-    lastVerificationError: authState.lastVerificationError,
+    lastVerificationError: runtimeAwareVerificationState.lastVerificationError,
     anthropicBaseUrl:
       TALK_EXECUTOR_ANTHROPIC_BASE_URL || 'https://api.anthropic.com',
     isConfigured: authState.activeCredentialConfigured,
@@ -397,22 +406,50 @@ export function buildExecutorSettingsData(): ExecutorSettingsData {
 
 export function buildExecutorStatusData(): ExecutorStatusData {
   const authState = getExecutorAuthState();
+  const containerRuntimeAvailability = getContainerRuntimeStatus();
+  const runtimeAwareVerificationState = computeRuntimeAwareVerificationState(
+    authState,
+    containerRuntimeAvailability,
+  );
   return {
     mode: 'real',
     restartSupported: false,
     pendingRestartReasons: [],
     activeRunCount: 0,
+    containerRuntimeAvailability,
     executorAuthMode: authState.executorAuthMode,
     activeCredentialConfigured: authState.activeCredentialConfigured,
-    verificationStatus: authState.verificationStatus,
+    verificationStatus: runtimeAwareVerificationState.verificationStatus,
     lastVerifiedAt: authState.lastVerifiedAt,
-    lastVerificationError: authState.lastVerificationError,
+    lastVerificationError: runtimeAwareVerificationState.lastVerificationError,
     hasProviderAuth: authState.activeCredentialConfigured,
     hasValidAliasMap: true,
     configVersion: 1,
     isConfigured: authState.activeCredentialConfigured,
     bootId: 'web',
     configErrors: [],
+  };
+}
+
+function computeRuntimeAwareVerificationState(
+  authState: ExecutorAuthState,
+  containerRuntimeAvailability: ContainerRuntimeStatus,
+): Pick<ExecutorStatusData, 'verificationStatus' | 'lastVerificationError'> {
+  if (
+    authState.executorAuthMode === 'subscription' &&
+    authState.activeCredentialConfigured &&
+    containerRuntimeAvailability === 'unavailable'
+  ) {
+    return {
+      verificationStatus: 'unavailable',
+      lastVerificationError:
+        'Claude container runtime is unavailable or unhealthy. Check Docker and try again.',
+    };
+  }
+
+  return {
+    verificationStatus: authState.verificationStatus,
+    lastVerificationError: authState.lastVerificationError,
   };
 }
 

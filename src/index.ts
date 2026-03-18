@@ -30,6 +30,7 @@ import {
 import { createLegacyGroupExecutionTarget } from './container-execution-target.js';
 import {
   cleanupOrphans,
+  ContainerRuntimeUnavailableError,
   ensureContainerRuntimeRunning,
 } from './container-runtime.js';
 import {
@@ -502,9 +503,20 @@ function recoverPendingMessages(): void {
   }
 }
 
-function ensureContainerSystemRunning(): void {
-  ensureContainerRuntimeRunning();
-  cleanupOrphans();
+function ensureContainerSystemRunning(): boolean {
+  try {
+    ensureContainerRuntimeRunning();
+    cleanupOrphans();
+    return true;
+  } catch (error) {
+    if (error instanceof ContainerRuntimeUnavailableError) {
+      logger.warn(
+        'Continuing without a container runtime; container-backed agent execution is unavailable until Docker is healthy.',
+      );
+      return false;
+    }
+    throw error;
+  }
 }
 
 async function main(): Promise<void> {

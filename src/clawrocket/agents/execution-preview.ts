@@ -1,4 +1,5 @@
 import type { RegisteredAgentRecord } from '../db/agent-accessors.js';
+import { getContainerRuntimeStatus } from '../../container-runtime.js';
 import {
   ExecutionPlannerError,
   planExecution,
@@ -39,6 +40,20 @@ function buildReadyMessage(
   return 'Main will use the Claude container runtime with an Anthropic API key.';
 }
 
+function buildContainerRuntimeUnavailableMessage(
+  agent: RegisteredAgentRecord,
+  plan: Extract<ExecutionPlan, { backend: 'container' }>,
+): string {
+  if (
+    agent.provider_id === 'provider.anthropic' &&
+    plan.routeReason === 'subscription_fallback'
+  ) {
+    return 'Claude container runtime is unavailable on this host. Start Docker or configure an Anthropic API key for this agent.';
+  }
+
+  return 'Claude container runtime is unavailable on this host. Start Docker before using this agent in Main.';
+}
+
 function normalizePlannerFailureMessage(error: ExecutionPlannerError): string {
   if (error.code === 'DIRECT_EXECUTION_UNAVAILABLE') {
     return 'No valid Main execution path is currently configured for this agent.';
@@ -52,6 +67,19 @@ export function buildMainExecutionPreview(
 ): AgentExecutionPreview {
   try {
     const plan = planExecution(agent, userId);
+    if (
+      plan.backend === 'container' &&
+      getContainerRuntimeStatus() !== 'ready'
+    ) {
+      return {
+        surface: 'main',
+        backend: null,
+        authPath: null,
+        routeReason: 'no_valid_path',
+        ready: false,
+        message: buildContainerRuntimeUnavailableMessage(agent, plan),
+      };
+    }
     return {
       surface: 'main',
       backend: plan.backend,
