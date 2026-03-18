@@ -62,6 +62,7 @@ import {
   createTalkThread,
   createTalkMessage,
   createTalkRun,
+  enqueueTalkTurnAtomic,
   getQueuedTalkRuns,
   getRunningTalkRun,
   getTalkExecutorSession,
@@ -73,6 +74,8 @@ import {
   upsertWebSession,
 } from '../../db/index.js';
 import { createRegisteredAgent } from '../../db/agent-accessors.js';
+import { ThreadTitleValidationError } from '../../db/thread-title-utils.js';
+import { patchTalkThreadRoute } from './talk-threads.js';
 import { hashSessionToken } from '../../identity/session.js';
 import { _resetRateLimitStateForTests } from '../middleware/rate-limit.js';
 import { createWebServer, WebServerHandle } from '../server.js';
@@ -331,14 +334,15 @@ describe('talk routes', () => {
   });
 
   it('infers talk thread titles from the first user message', async () => {
-    createTalkMessage({
-      id: 'msg-thread-title',
+    enqueueTalkTurnAtomic({
       talkId: 'talk-owner',
       threadId: 'thread-talk-owner',
-      role: 'user',
+      userId: 'owner-1',
       content: 'Check the latest Cal football injury updates',
-      createdBy: 'owner-1',
-      createdAt: '2026-03-07T00:00:00.000Z',
+      messageId: 'msg-thread-title',
+      runIds: ['run-thread-title'],
+      targetAgentIds: ['ta-talk-owner'],
+      now: '2026-03-07T00:00:00.000Z',
     });
 
     const res = await server.request('/api/v1/talks/talk-owner/threads', {
@@ -353,6 +357,36 @@ describe('talk routes', () => {
     expect(body.data.threads[0].title).toBe(
       'Check the latest Cal football injury updates',
     );
+  });
+
+  it('does not backfill talk thread titles on list reads', async () => {
+    const thread = createTalkThread({
+      talkId: 'talk-owner',
+      title: null,
+    });
+    createTalkMessage({
+      id: 'msg-thread-list-read',
+      talkId: 'talk-owner',
+      threadId: thread.id,
+      role: 'user',
+      content: 'Thread titles should not backfill on list anymore',
+      createdBy: 'owner-1',
+      createdAt: '2026-03-07T00:01:00.000Z',
+    });
+
+    const res = await server.request('/api/v1/talks/talk-owner/threads', {
+      headers: {
+        Authorization: 'Bearer owner-token',
+      },
+    });
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as any;
+    expect(body.ok).toBe(true);
+    const listed = body.data.threads.find(
+      (candidate: any) => candidate.id === thread.id,
+    );
+    expect(listed?.title).toBeNull();
   });
 
   it('renames a talk thread', async () => {
@@ -381,6 +415,52 @@ describe('talk routes', () => {
     expect(listRes.status).toBe(200);
     const listBody = (await listRes.json()) as any;
     expect(listBody.data.threads[0].title).toBe('Daily Cal news');
+  });
+
+  it('rejects overlong talk thread titles with invalid_input', async () => {
+    const res = await server.request(
+      '/api/v1/talks/talk-owner/threads/thread-talk-owner',
+      {
+        method: 'PATCH',
+        headers: {
+          Authorization: 'Bearer owner-token',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ title: 'x'.repeat(121) }),
+      },
+    );
+
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as any;
+    expect(body.ok).toBe(false);
+    expect(body.error.code).toBe('invalid_input');
+  });
+
+  it('maps accessor validation errors to invalid_input for talk thread rename', () => {
+    const result = patchTalkThreadRoute({
+      auth: {
+        userId: 'owner-1',
+        sessionId: 'session-owner-1',
+        role: 'owner',
+        authType: 'bearer',
+      },
+      talkId: 'talk-owner',
+      threadId: 'thread-talk-owner',
+      body: { title: 'Valid title' },
+      deps: {
+        updateTalkThreadTitle: () => {
+          throw new ThreadTitleValidationError(
+            'Thread title must be at most 120 characters',
+          );
+        },
+      },
+    });
+
+    expect(result.statusCode).toBe(400);
+    expect(result.body.ok).toBe(false);
+    if (!result.body.ok) {
+      expect(result.body.error.code).toBe('invalid_input');
+    }
   });
 
   it('parses supported llm_policy shapes and caps agent badges', async () => {

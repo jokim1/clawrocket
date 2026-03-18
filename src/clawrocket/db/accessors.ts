@@ -5,6 +5,7 @@ import {
   inferThreadTitleFromContent,
   isLegacyPlaceholderTalkThreadTitle,
   normalizeStoredThreadTitle,
+  validateEditableThreadTitle,
 } from './thread-title-utils.js';
 import {
   TalkAccessRole,
@@ -1972,20 +1973,16 @@ function getFirstMainThreadUserMessageContent(threadId: string): string | null {
   return row?.content ?? null;
 }
 
-function shouldAutoInferTalkThreadTitle(
-  title: string | null | undefined,
-): boolean {
-  const normalized = normalizeStoredThreadTitle(title);
-  return normalized === null || isLegacyPlaceholderTalkThreadTitle(normalized);
-}
-
 function maybePersistTalkThreadTitleFromMessages(
   talkId: string,
   threadId: string,
   currentTitle: string | null | undefined,
 ): string | null {
   const normalizedTitle = normalizeStoredThreadTitle(currentTitle);
-  if (!shouldAutoInferTalkThreadTitle(normalizedTitle)) {
+  if (
+    normalizedTitle !== null &&
+    !isLegacyPlaceholderTalkThreadTitle(normalizedTitle)
+  ) {
     return normalizedTitle;
   }
 
@@ -2148,10 +2145,7 @@ export function listTalkThreads(talkId: string): Array<{
     message_count: number;
     last_message_at: string | null;
   }>;
-  return rows.map((row) => ({
-    ...row,
-    title: maybePersistTalkThreadTitleFromMessages(talkId, row.id, row.title),
-  }));
+  return rows;
 }
 
 /**
@@ -2221,10 +2215,7 @@ export function updateTalkThreadTitle(input: {
   created_at: string;
   updated_at: string;
 } | null {
-  const normalizedTitle = normalizeStoredThreadTitle(input.title);
-  if (!normalizedTitle) {
-    throw new Error('Thread title must be a non-empty string');
-  }
+  const normalizedTitle = validateEditableThreadTitle(input.title);
 
   const existing = getDb()
     .prepare(
@@ -3921,28 +3912,17 @@ export function listMainThreadsForUser(userId: string): Array<{
     last_message_at: string;
     message_count: number;
   }>;
-  return rows.map((row) => ({
-    ...row,
-    title: maybePersistMainThreadTitleFromMessages({
-      threadId: row.thread_id,
-      userId,
-      currentTitle: row.title,
-    }),
-  }));
+  return rows;
 }
 
 export function getMainThreadTitle(
   threadId: string,
-  userId: string,
+  _userId: string,
 ): string | null {
   const row = getDb()
     .prepare(`SELECT title FROM main_threads WHERE thread_id = ?`)
     .get(threadId) as { title: string | null } | undefined;
-  return maybePersistMainThreadTitleFromMessages({
-    threadId,
-    userId,
-    currentTitle: row?.title ?? null,
-  });
+  return normalizeStoredThreadTitle(row?.title ?? null);
 }
 
 export function updateMainThreadTitle(input: {
@@ -3955,10 +3935,7 @@ export function updateMainThreadTitle(input: {
   title: string;
   updated_at: string;
 } | null {
-  const normalizedTitle = normalizeStoredThreadTitle(input.title);
-  if (!normalizedTitle) {
-    throw new Error('Thread title must be a non-empty string');
-  }
+  const normalizedTitle = validateEditableThreadTitle(input.title);
 
   const exists = getDb()
     .prepare(
