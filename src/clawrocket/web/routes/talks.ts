@@ -48,10 +48,6 @@ import {
   getTalkAgentRows,
   type TalkAgentInput,
 } from '../../agents/agent-registry.js';
-import {
-  ExecutionPlannerError,
-  planExecution,
-} from '../../agents/execution-planner.js';
 import { getRegisteredAgent } from '../../db/agent-accessors.js';
 import { MAX_ATTACHMENTS_PER_MESSAGE } from '../../talks/attachment-extraction.js';
 import { canEditTalk } from '../middleware/acl.js';
@@ -440,48 +436,6 @@ function validateTalkProjectPath(rawPath: string): {
   }
 
   return { projectPath: result.realHostPath };
-}
-
-function summarizeBlockingAgentNames(names: string[]): string {
-  if (names.length === 0) return 'One or more selected agents';
-  if (names.length === 1) return names[0]!;
-  if (names.length === 2) return `${names[0]} and ${names[1]}`;
-  return `${names.slice(0, -1).join(', ')}, and ${names.at(-1)}`;
-}
-
-function getUnsupportedMultiAgentContainerNames(input: {
-  selectedAgents: Array<{ id: string; name: string }>;
-  userId: string;
-}): string[] {
-  const blockingNames = new Set<string>();
-
-  for (const selectedAgent of input.selectedAgents) {
-    const agent = getRegisteredAgent(selectedAgent.id);
-    if (!agent || agent.enabled !== 1) {
-      continue;
-    }
-
-    try {
-      const plan = planExecution(agent, input.userId, 'talk_multi');
-      if (plan.backend === 'container') {
-        blockingNames.add(selectedAgent.name);
-      }
-    } catch (error) {
-      if (
-        error instanceof ExecutionPlannerError &&
-        error.code !== 'DIRECT_EXECUTION_UNAVAILABLE'
-      ) {
-        blockingNames.add(selectedAgent.name);
-        continue;
-      }
-      if (error instanceof ExecutionPlannerError) {
-        continue;
-      }
-      throw error;
-    }
-  }
-
-  return Array.from(blockingNames);
 }
 
 function validateAgentInputs(input: unknown): {
@@ -1988,26 +1942,6 @@ export function enqueueTalkChat(input: {
         },
       },
     };
-  }
-
-  if (selectedAgents.length > 1) {
-    const blockingAgentNames = getUnsupportedMultiAgentContainerNames({
-      selectedAgents,
-      userId: input.auth.userId,
-    });
-    if (blockingAgentNames.length > 0) {
-      const agentSummary = summarizeBlockingAgentNames(blockingAgentNames);
-      return {
-        statusCode: 400,
-        body: {
-          ok: false,
-          error: {
-            code: 'multi_agent_container_unsupported',
-            message: `${agentSummary} require container execution, which is not supported for multi-agent Talk turns in Phase 5A. Target that agent alone, disable heavy tools on it, or use a direct-safe agent set.`,
-          },
-        },
-      };
-    }
   }
 
   const messageId = `msg_${randomUUID()}`;

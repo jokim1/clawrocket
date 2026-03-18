@@ -1,3 +1,12 @@
+export interface TalkJobExecutionPolicy {
+  jobId: string;
+  allowedConnectorIds: string[];
+  allowedChannelBindingIds: string[];
+  allowWeb: boolean;
+  allowStateMutation: boolean;
+  allowOutputWrite: boolean;
+}
+
 export interface TalkExecutorInput {
   runId: string;
   talkId: string;
@@ -5,6 +14,7 @@ export interface TalkExecutorInput {
   requestedBy: string;
   triggerMessageId: string;
   triggerContent: string;
+  jobId?: string | null;
   targetAgentId?: string | null;
   responseGroupId?: string | null;
   sequenceIndex?: number | null;

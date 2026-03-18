@@ -10,6 +10,8 @@ export * from './agent-accessors.js';
 export * from './channel-accessors.js';
 export * from './connector-accessors.js';
 export * from './context-accessors.js';
+export * from './job-accessors.js';
+export * from './output-accessors.js';
 export * from './talk-tools-accessors.js';
 export { isDatabaseHealthy };
 

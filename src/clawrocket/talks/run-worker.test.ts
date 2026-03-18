@@ -4,14 +4,20 @@ import {
   _initTestDatabase,
   cancelTalkRunsAtomic,
   createTalk,
+  createJobTriggerRun,
   createTalkMessage,
+  createTalkJob,
+  createTalkOutput,
   createTalkRun,
   enqueueTalkTurnAtomic as enqueueTalkTurnAtomicRaw,
+  getTalkOutput,
   getOutboxEventsForTopics,
   getTalkRunById,
   listTalkMessages,
   upsertUser,
 } from '../db/index.js';
+import { createRegisteredAgent } from '../db/agent-accessors.js';
+import { getDb } from '../../db.js';
 
 import type {
   TalkExecutionEvent,
@@ -266,6 +272,69 @@ describe('TalkRunWorker', () => {
 
     await waitFor(() => getTalkRunById('run-1')?.status === 'completed');
     expect(Date.now() - startedAt).toBeLessThan(1_000);
+
+    await worker.stop();
+  });
+
+  it('writes report-job results into the configured output after a successful run', async () => {
+    const agent = createRegisteredAgent({
+      name: 'Scheduler Agent',
+      providerId: 'provider.openai',
+      modelId: 'gpt-5-mini',
+      systemPrompt: 'Do scheduled work.',
+    });
+    getDb()
+      .prepare(
+        `
+        INSERT INTO talk_agents (
+          id, talk_id, registered_agent_id, nickname, is_primary, sort_order, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, 1, 0, datetime('now'), datetime('now'))
+      `,
+      )
+      .run('ta-job-agent', 'talk-1', agent.id, agent.name);
+    const output = createTalkOutput({
+      talkId: 'talk-1',
+      title: 'Daily Report',
+      contentMarkdown: 'Old content',
+      createdByUserId: 'owner-1',
+    });
+    const job = createTalkJob({
+      talkId: 'talk-1',
+      title: 'Daily Brief',
+      prompt: 'Summarize key updates.',
+      targetAgentId: agent.id,
+      schedule: { kind: 'hourly_interval', everyHours: 24 },
+      timezone: 'America/Los_Angeles',
+      deliverableKind: 'report',
+      reportOutputId: output.id,
+      createdBy: 'owner-1',
+    });
+
+    const enqueued = createJobTriggerRun({
+      jobId: job.id,
+      triggerSource: 'manual',
+      allowPaused: true,
+    });
+    expect(enqueued.status).toBe('enqueued');
+    if (enqueued.status !== 'enqueued') {
+      return;
+    }
+
+    const worker = new TalkRunWorker({
+      executor: new MockTalkExecutor({ executionMs: 5 }),
+      pollMs: 10_000,
+      maxConcurrency: 1,
+    });
+    await worker.start();
+
+    worker.wake();
+    await waitFor(() => getTalkRunById(enqueued.runId)?.status === 'completed');
+
+    const updated = getTalkOutput('talk-1', output.id);
+    expect(updated?.contentMarkdown).toBe(
+      'Mock assistant response to: Summarize key updates.',
+    );
+    expect(updated?.updatedByRunId).toBe(enqueued.runId);
 
     await worker.stop();
   });

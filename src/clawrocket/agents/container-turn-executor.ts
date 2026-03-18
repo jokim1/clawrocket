@@ -24,6 +24,8 @@ import {
   GOOGLE_OAUTH_CLIENT_SECRET,
 } from '../config.js';
 import type { RegisteredAgentRecord } from '../db/agent-accessors.js';
+import { executeTalkOutputTool } from '../talks/output-tools.js';
+import type { TalkJobExecutionPolicy } from '../talks/executor.js';
 import type { ContainerCredentialConfig } from './execution-planner.js';
 import type { ExecutionContext } from './agent-router.js';
 import type { LlmMessage } from './llm-client.js';
@@ -44,6 +46,7 @@ interface ExecuteContainerTurnInput {
   triggerMessageId?: string | null;
   historyMessageIds?: string[];
   projectMountHostPath?: string | null;
+  jobPolicy?: TalkJobExecutionPolicy | null;
 }
 
 interface ExecuteContainerTurnOutput {
@@ -63,10 +66,26 @@ interface MaterializedAttachmentFile {
   relativePath: string;
 }
 
+interface WebTalkOutputBridgeRequest {
+  id: string;
+  toolName: 'list_outputs' | 'read_output' | 'write_output';
+  args: Record<string, unknown>;
+}
+
+type WebTalkOutputToolName = WebTalkOutputBridgeRequest['toolName'];
+
+interface WebTalkOutputBridgeResponse {
+  id: string;
+  result: string;
+  isError?: boolean;
+}
+
 const OUTPUT_RESERVE = 4096;
 const TOOL_SCHEMA_RESERVE = 2000;
 const CHARS_TO_TOKENS = 0.25;
 const SMALL_SOURCE_THRESHOLD = 250;
+const WEB_TALK_OUTPUT_BRIDGE_DIRNAME = '.nanoclaw-web-talk-output-bridge';
+const WEB_TALK_OUTPUT_BRIDGE_POLL_MS = 50;
 
 function estimateTokens(text: string): number {
   return Math.ceil(text.length * CHARS_TO_TOKENS);
@@ -83,6 +102,10 @@ function writeFile(targetPath: string, content: string): void {
     targetPath,
     content.endsWith('\n') ? content : `${content}\n`,
   );
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function renderHistoryMarkdown(history: LlmMessage[]): string {
@@ -253,6 +276,110 @@ function materializeTalkAttachmentFiles(
   });
 }
 
+function ensureOutputBridgeDirectories(baseDir: string): string {
+  const bridgeDir = path.join(baseDir, WEB_TALK_OUTPUT_BRIDGE_DIRNAME);
+  fs.mkdirSync(path.join(bridgeDir, 'requests'), { recursive: true });
+  fs.mkdirSync(path.join(bridgeDir, 'responses'), { recursive: true });
+  return bridgeDir;
+}
+
+function writeOutputBridgeResponse(
+  bridgeDir: string,
+  response: WebTalkOutputBridgeResponse,
+): void {
+  const responsePath = path.join(bridgeDir, 'responses', `${response.id}.json`);
+  const tempPath = `${responsePath}.tmp`;
+  fs.writeFileSync(tempPath, JSON.stringify(response));
+  fs.renameSync(tempPath, responsePath);
+}
+
+async function handleOutputBridgeRequest(input: {
+  talkId: string;
+  userId: string;
+  runId: string;
+  request: WebTalkOutputBridgeRequest;
+  jobPolicy?: TalkJobExecutionPolicy | null;
+}): Promise<WebTalkOutputBridgeResponse> {
+  const result = await executeTalkOutputTool({
+    talkId: input.talkId,
+    userId: input.userId,
+    runId: input.runId,
+    toolName: input.request.toolName,
+    args: input.request.args,
+    policy: input.jobPolicy,
+  });
+  return {
+    id: input.request.id,
+    result: result.result,
+    ...(result.isError ? { isError: true } : {}),
+  };
+}
+
+function startOutputBridge(input: {
+  bridgeDir: string;
+  talkId: string;
+  userId: string;
+  runId: string;
+  jobPolicy?: TalkJobExecutionPolicy | null;
+}): {
+  stop: () => void;
+  done: Promise<void>;
+} {
+  let stopped = false;
+  const done = (async () => {
+    while (!stopped) {
+      const requestDir = path.join(input.bridgeDir, 'requests');
+      const files = fs.existsSync(requestDir)
+        ? fs.readdirSync(requestDir).filter((file) => file.endsWith('.json'))
+        : [];
+
+      for (const file of files) {
+        if (stopped) break;
+        const requestPath = path.join(requestDir, file);
+        const processingPath = `${requestPath}.processing`;
+        try {
+          fs.renameSync(requestPath, processingPath);
+        } catch {
+          continue;
+        }
+
+        try {
+          const raw = fs.readFileSync(processingPath, 'utf-8');
+          const request = JSON.parse(raw) as WebTalkOutputBridgeRequest;
+          const response = await handleOutputBridgeRequest({
+            talkId: input.talkId,
+            userId: input.userId,
+            runId: input.runId,
+            request,
+            jobPolicy: input.jobPolicy,
+          });
+          writeOutputBridgeResponse(input.bridgeDir, response);
+        } catch (error) {
+          const requestId = path.basename(file, '.json');
+          writeOutputBridgeResponse(input.bridgeDir, {
+            id: requestId,
+            result: error instanceof Error ? error.message : String(error),
+            isError: true,
+          });
+        } finally {
+          fs.rmSync(processingPath, { force: true });
+        }
+      }
+
+      if (!stopped) {
+        await sleep(WEB_TALK_OUTPUT_BRIDGE_POLL_MS);
+      }
+    }
+  })();
+
+  return {
+    stop: () => {
+      stopped = true;
+    },
+    done,
+  };
+}
+
 function buildClaudeMd(input: {
   systemPrompt: string;
   sourceFiles: MaterializedSourceFile[];
@@ -310,10 +437,14 @@ function buildClaudeMd(input: {
 
 function buildConnectorBundle(
   talkId: string,
+  jobPolicy?: TalkJobExecutionPolicy | null,
 ): ContainerWebTalkConnectorBundle | undefined {
-  const connectors = listConnectorsForTalkRun(talkId).filter(
-    (connector) => connector.verificationStatus === 'verified',
-  );
+  const connectors = listConnectorsForTalkRun(talkId)
+    .filter(
+      (connector) =>
+        !jobPolicy || jobPolicy.allowedConnectorIds.includes(connector.id),
+    )
+    .filter((connector) => connector.verificationStatus === 'verified');
   if (connectors.length === 0) return undefined;
 
   const toolDefinitions = buildConnectorToolDefinitions(connectors);
@@ -345,9 +476,20 @@ function buildConnectorBundle(
   };
 }
 
+function getAllowedOutputToolNames(
+  jobPolicy?: TalkJobExecutionPolicy | null,
+): WebTalkOutputToolName[] {
+  if (!jobPolicy || jobPolicy.allowOutputWrite) {
+    return ['list_outputs', 'read_output', 'write_output'];
+  }
+  return ['list_outputs', 'read_output'];
+}
+
 function createContextDirectory(input: ExecuteContainerTurnInput): {
   path: string;
   connectorBundle?: ContainerWebTalkConnectorBundle;
+  outputBridgeDir?: string;
+  outputToolNames: WebTalkOutputToolName[];
 } {
   const baseDir = fs.mkdtempSync(
     path.join(DATA_DIR, `${input.promptLabel}-container-turn-${input.runId}-`),
@@ -390,12 +532,17 @@ function createContextDirectory(input: ExecuteContainerTurnInput): {
     path.join(baseDir, 'HISTORY.md'),
     renderHistoryMarkdown(boundedHistory),
   );
+  const outputBridgeDir = input.talkId
+    ? ensureOutputBridgeDirectories(baseDir)
+    : undefined;
 
   return {
     path: baseDir,
     connectorBundle: input.talkId
-      ? buildConnectorBundle(input.talkId)
+      ? buildConnectorBundle(input.talkId, input.jobPolicy)
       : undefined,
+    outputBridgeDir,
+    outputToolNames: getAllowedOutputToolNames(input.jobPolicy),
   };
 }
 
@@ -404,6 +551,16 @@ export async function executeContainerAgentTurn(
 ): Promise<ExecuteContainerTurnOutput> {
   const target = createWebRuntimeExecutionTarget();
   const contextDir = createContextDirectory(input);
+  const outputBridge =
+    input.talkId && contextDir.outputBridgeDir
+      ? startOutputBridge({
+          bridgeDir: contextDir.outputBridgeDir,
+          talkId: input.talkId,
+          userId: input.userId,
+          runId: input.runId,
+          jobPolicy: input.jobPolicy,
+        })
+      : null;
 
   let activeProcess: ChildProcess | null = null;
   const onAbort = () => {
@@ -424,6 +581,9 @@ export async function executeContainerAgentTurn(
         chatJid: target.jid,
         isMain: true,
         assistantName: input.agent.name,
+        enableWebTalkOutputTools:
+          Boolean(input.talkId) && contextDir.outputToolNames.length > 0,
+        webTalkOutputToolNames: contextDir.outputToolNames,
         webTalkConnectorBundle: contextDir.connectorBundle,
         ephemeralContextDir: contextDir.path,
         projectMountHostPath: input.projectMountHostPath ?? null,
@@ -460,6 +620,8 @@ export async function executeContainerAgentTurn(
     throw error;
   } finally {
     input.signal.removeEventListener('abort', onAbort);
+    outputBridge?.stop();
+    await outputBridge?.done;
     fs.rmSync(contextDir.path, { recursive: true, force: true });
   }
 }

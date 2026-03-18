@@ -18,6 +18,7 @@ import { getDb } from '../../db.js';
 import {
   _initTestDatabase,
   createTalkMessage,
+  createTalkOutput,
   createTalkRun,
   upsertTalk,
   upsertUser,
@@ -26,7 +27,7 @@ import { executeWithAgent } from '../agents/agent-router.js';
 import { planExecution } from '../agents/execution-planner.js';
 import { executeContainerAgentTurn } from '../agents/container-turn-executor.js';
 import { resolveValidatedProjectMountPath } from '../agents/project-mounts.js';
-import { CleanTalkExecutor } from './new-executor.js';
+import { buildToolExecutor, CleanTalkExecutor } from './new-executor.js';
 import type { TalkExecutionEvent } from './executor.js';
 
 const TALK_ID = 'talk-clean-exec';
@@ -860,5 +861,126 @@ describe('CleanTalkExecutor', () => {
       },
       new AbortController().signal,
     );
+  });
+
+  it('executes Talk output tools for direct runs', async () => {
+    const now = new Date().toISOString();
+    createTalkRun({
+      id: 'run-output-tools',
+      talk_id: TALK_ID,
+      thread_id: THREAD_ID,
+      requested_by: 'owner-1',
+      status: 'running',
+      trigger_message_id: null,
+      target_agent_id: 'agent.main',
+      idempotency_key: null,
+      response_group_id: null,
+      sequence_index: null,
+      executor_alias: null,
+      executor_model: null,
+      source_binding_id: null,
+      source_external_message_id: null,
+      source_thread_key: null,
+      created_at: now,
+      started_at: now,
+      ended_at: null,
+      cancel_reason: null,
+    });
+
+    const executeTool = buildToolExecutor(
+      TALK_ID,
+      'owner-1',
+      'run-output-tools',
+      new AbortController().signal,
+    );
+
+    const created = await executeTool('write_output', {
+      expectedVersion: 0,
+      title: 'Draft Memo',
+      contentMarkdown: 'Initial content',
+    });
+    expect(created.isError).toBeUndefined();
+    const createdOutput = JSON.parse(created.result) as {
+      id: string;
+      version: number;
+    };
+
+    const listed = await executeTool('list_outputs', {});
+    expect(JSON.parse(listed.result)).toMatchObject({
+      outputs: [
+        expect.objectContaining({
+          id: createdOutput.id,
+          title: 'Draft Memo',
+          version: 1,
+        }),
+      ],
+    });
+
+    const updated = await executeTool('write_output', {
+      outputId: createdOutput.id,
+      expectedVersion: createdOutput.version,
+      contentMarkdown: 'Revised content',
+    });
+    expect(updated.isError).toBeUndefined();
+    expect(JSON.parse(updated.result)).toMatchObject({
+      id: createdOutput.id,
+      contentMarkdown: 'Revised content',
+      version: 2,
+      updatedByRunId: 'run-output-tools',
+    });
+  });
+
+  it('rejects restricted job tools while keeping read-only output access', async () => {
+    const output = createTalkOutput({
+      talkId: TALK_ID,
+      title: 'Weekly Brief',
+      contentMarkdown: '# Hello',
+      createdByUserId: 'owner-1',
+    });
+
+    const executeTool = buildToolExecutor(
+      TALK_ID,
+      'owner-1',
+      'run-job-tools',
+      new AbortController().signal,
+      {
+        jobId: 'job-1',
+        allowedConnectorIds: [],
+        allowedChannelBindingIds: [],
+        allowWeb: false,
+        allowStateMutation: false,
+        allowOutputWrite: false,
+      },
+    );
+
+    const listed = await executeTool('list_outputs', {});
+    expect(listed.isError).toBeUndefined();
+    expect(listed.result).toContain(output.id);
+
+    const read = await executeTool('read_output', { outputId: output.id });
+    expect(read.isError).toBeUndefined();
+    expect(read.result).toContain('# Hello');
+
+    const write = await executeTool('write_output', {
+      outputId: output.id,
+      expectedVersion: 1,
+      contentMarkdown: 'Updated',
+    });
+    expect(write.isError).toBe(true);
+    expect(write.result).toContain('not available for scheduled job runs');
+
+    const stateUpdate = await executeTool('update_state', {
+      key: 'focus',
+      value: { ok: true },
+      expectedVersion: 0,
+    });
+    expect(stateUpdate.isError).toBe(true);
+    expect(stateUpdate.result).toContain('update_state is not available');
+
+    const webSearch = await executeTool('web_search', {
+      query: 'cal football',
+    });
+    expect(webSearch.isError).toBe(true);
+    expect(webSearch.result).toContain('web_search is not available');
   });
 });

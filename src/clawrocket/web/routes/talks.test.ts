@@ -981,7 +981,7 @@ describe('talk routes', () => {
     expect(wakeCalls).toBe(1);
   });
 
-  it('rejects multi-agent turns when any selected agent would require container routing', async () => {
+  it('allows multi-agent turns when selected agents mix direct and container routing', async () => {
     const heavyAgent = createRegisteredAgent({
       name: 'Heavy Claude',
       providerId: 'provider.anthropic',
@@ -1013,14 +1013,17 @@ describe('talk routes', () => {
       body: JSON.stringify({ content: 'Run the full panel' }),
     });
 
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(202);
     const body = (await res.json()) as any;
-    expect(body.ok).toBe(false);
-    expect(body.error.code).toBe('multi_agent_container_unsupported');
-    expect(body.error.message).toContain('Heavy Claude');
-    expect(body.error.message).toContain('Target that agent alone');
-    expect(getQueuedTalkRuns('talk-owner')).toHaveLength(0);
-    expect(wakeCalls).toBe(0);
+    expect(body.ok).toBe(true);
+    expect(body.data.runs).toHaveLength(2);
+    expect(body.data.runs[0].responseGroupId).toBeTruthy();
+    expect(body.data.runs[0].responseGroupId).toBe(
+      body.data.runs[1].responseGroupId,
+    );
+    expect(body.data.runs.map((run: any) => run.sequenceIndex)).toEqual([0, 1]);
+    expect(getQueuedTalkRuns('talk-owner')).toHaveLength(2);
+    expect(wakeCalls).toBe(1);
   });
 
   it('allows targeted single-agent turns even when that agent requires container routing', async () => {
@@ -1159,6 +1162,11 @@ describe('talk routes', () => {
           roleTerms: ['risk'],
           state: [],
           sources: [],
+        },
+        outputs: {
+          totalCount: 0,
+          omittedCount: 0,
+          manifest: [],
         },
         tools: {
           contextToolNames: ['read_context_source'],

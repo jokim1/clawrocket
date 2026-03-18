@@ -31,6 +31,8 @@ interface ContainerInput {
   isScheduledTask?: boolean;
   assistantName?: string;
   secrets?: Record<string, string>;
+  enableWebTalkOutputTools?: boolean;
+  webTalkOutputToolNames?: Array<'list_outputs' | 'read_output' | 'write_output'>;
   webTalkConnectorBundle?: {
     connectors: Array<{
       id: string;
@@ -413,6 +415,11 @@ async function runQuery(
   const hasWebTalkConnectorTools =
     (useWebTalkProfile || useTalkMainProfile) &&
     (containerInput.webTalkConnectorBundle?.toolDefinitions.length || 0) > 0;
+  const hasWebTalkOutputTools =
+    (useWebTalkProfile || useTalkMainProfile) &&
+    containerInput.enableWebTalkOutputTools === true;
+  const hasWebTalkMcpTools =
+    hasWebTalkConnectorTools || hasWebTalkOutputTools;
 
   // Poll IPC for follow-up messages and _close sentinel during the query.
   // Single-turn profiles close the input stream immediately.
@@ -496,7 +503,7 @@ async function runQuery(
     ...(containerInput.allowedTools && containerInput.allowedTools.length > 0
       ? containerInput.allowedTools
       : defaultAllowedTools),
-    ...((!useWebTalkProfile && !useTalkMainProfile) || hasWebTalkConnectorTools
+    ...((!useWebTalkProfile && !useTalkMainProfile) || hasWebTalkMcpTools
       ? ['mcp__nanoclaw__*']
       : []),
   ];
@@ -517,7 +524,7 @@ async function runQuery(
       permissionMode: 'bypassPermissions',
       allowDangerouslySkipPermissions: true,
       settingSources: ['project', 'user'],
-      ...((!useWebTalkProfile && !useTalkMainProfile) || hasWebTalkConnectorTools
+      ...((!useWebTalkProfile && !useTalkMainProfile) || hasWebTalkMcpTools
         ? {
             mcpServers: {
               nanoclaw: {
@@ -532,6 +539,21 @@ async function runQuery(
                         NANOCLAW_WEB_TALK_CONNECTOR_BUNDLE: JSON.stringify(
                           containerInput.webTalkConnectorBundle,
                         ),
+                      }
+                    : {}),
+                  ...(hasWebTalkOutputTools
+                    ? {
+                        NANOCLAW_WEB_TALK_OUTPUT_BRIDGE_DIR:
+                          '/workspace/run/.nanoclaw-web-talk-output-bridge',
+                        ...(containerInput.webTalkOutputToolNames &&
+                        containerInput.webTalkOutputToolNames.length > 0
+                          ? {
+                              NANOCLAW_WEB_TALK_OUTPUT_TOOL_NAMES:
+                                JSON.stringify(
+                                  containerInput.webTalkOutputToolNames,
+                                ),
+                            }
+                          : {}),
                       }
                     : {}),
                 },

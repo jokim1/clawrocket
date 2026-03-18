@@ -67,9 +67,9 @@ Implementation: Before routing, compute effective permissions. Routing uses `ena
 
 ### What this plan delivers
 
-Main (Nanoclaw) as the best everyday AI surface — fast, tool-capable, always available. Talks as configured workspaces with shared context, connectors, and selected agents. Ordered multi-agent Talks as the default synthesis surface, with panel as the quick alternative. Container Claude agents as premium heavy-tool specialists for Main and single-agent Talk turns when shell/filesystem work is needed.
+Main (Nanoclaw) as the best everyday AI surface — fast, tool-capable, always available. Talks as configured workspaces with shared context, connectors, and selected agents. Ordered multi-agent Talks as the default synthesis surface, with panel as the quick alternative. Container Claude agents as premium heavy-tool specialists for Main and Talk turns, including mixed direct/container multi-agent rounds when shell/filesystem work is needed.
 
-What it does NOT deliver in 5A: mixed direct/container multi-agent Talk rounds, seamless free-form inter-agent conversation, identical behavior across all providers and backends, or real-time streaming from containerized agents (final-result-only).
+What it does NOT deliver in 5A: seamless free-form inter-agent conversation, identical behavior across all providers and backends, or real-time streaming from containerized agents (final-result-only).
 
 ---
 
@@ -426,13 +426,12 @@ The historical implementation-order checklist above is no longer the right roadm
   - explicit separation between Channel Bindings and Data Connectors in the Talk UI
   - fully editable channel binding policies
   - Google Docs as a real data connector/tool surface
-- The next practical milestone is **Phase 8**:
+- Phase 8 and the immediate mixed-talk polish are now shipped:
   - per-run context inspection
   - lightweight role-aware context hints
   - lightweight retrieval on top of the standardized context package
-- Separate near-term polish after Phase 8:
   - mixed direct/container multi-agent backend parity
-  - pre-send guardrails for unsupported heavy-tool agent mixes in multi-agent Talks
+  - pre-send guardrails for unavailable multi-agent mixes
 - Post-phase work remains:
   - Main → Talk migration when channel sync needs it
   - Outputs, Jobs, and a fuller execution planner

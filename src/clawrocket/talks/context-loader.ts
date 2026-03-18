@@ -15,6 +15,7 @@
 import { getDb } from '../../db.js';
 import { listConnectorsForTalkRun } from '../db/connector-accessors.js';
 import { listTalkStateEntries } from '../db/context-accessors.js';
+import { listTalkOutputs } from '../db/output-accessors.js';
 import {
   buildConnectorToolDefinitions,
   type ConnectorToolDefinition,
@@ -29,6 +30,8 @@ import {
   buildBoundGoogleDrivePromptSection,
   buildGoogleDriveContextTools,
 } from './google-drive-tools.js';
+import { buildTalkOutputToolDefinitions } from './output-tools.js';
+import type { TalkJobExecutionPolicy } from './executor.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -94,6 +97,14 @@ export interface TalkRunContextRetrievedSourceSnapshot {
   excerpt: string;
 }
 
+export interface TalkRunContextOutputManifestItem {
+  id: string;
+  title: string;
+  version: number;
+  updatedAt: string;
+  contentLength: number;
+}
+
 export interface TalkRunContextSnapshot {
   version: 1;
   threadId: string | null;
@@ -111,6 +122,11 @@ export interface TalkRunContextSnapshot {
     totalCount: number;
     manifest: TalkRunContextSourceManifestItem[];
     inline: TalkRunContextInlineSourceSnapshot[];
+  };
+  outputs: {
+    totalCount: number;
+    omittedCount: number;
+    manifest: TalkRunContextOutputManifestItem[];
   };
   retrieval: {
     query: string | null;
@@ -143,6 +159,7 @@ const SMALL_SOURCE_THRESHOLD = 250; // Max tokens to inline a source
 const MAX_RETRIEVED_STATE_ENTRIES = 3;
 const MAX_RETRIEVED_SOURCE_ITEMS = 3;
 const MAX_RETRIEVED_SOURCE_CHARS = 500;
+const MAX_OUTPUT_MANIFEST_ITEMS = 10;
 
 const STOPWORDS = new Set([
   'a',
@@ -294,6 +311,7 @@ export async function loadTalkContext(
   options?: {
     personaRole?: TalkPersonaRole | null;
     retrievalQuery?: string | null;
+    jobPolicy?: TalkJobExecutionPolicy | null;
   },
 ): Promise<ContextPackage> {
   const db = getDb();
@@ -313,6 +331,7 @@ export async function loadTalkContext(
     stateEntries,
     STATE_SNAPSHOT_RESERVE,
   );
+  const outputManifest = buildOutputManifest(talkId);
 
   // Step 2: Build source manifest
   const sources = fetchSources(db, talkId);
@@ -335,7 +354,7 @@ export async function loadTalkContext(
   const boundGoogleDriveResources = buildBoundGoogleDrivePromptSection(talkId);
 
   // Step 3: Build connector tools (currently empty stub)
-  const connectorTools = buildConnectorTools(db, talkId);
+  const connectorTools = buildConnectorTools(db, talkId, options?.jobPolicy);
 
   // Step 4: Assemble system prompt
   const systemPrompt = assembleSystemPrompt(
@@ -344,6 +363,7 @@ export async function loadTalkContext(
     rules,
     roleHint,
     stateSnapshot.promptText,
+    outputManifest.promptText,
     retrievedContext.promptText,
     sourceLines,
     boundGoogleDriveResources,
@@ -351,7 +371,7 @@ export async function loadTalkContext(
   const systemPromptTokens = Math.ceil(systemPrompt.length * CHARS_TO_TOKENS);
 
   // Step 5: Build context tools (always included)
-  const contextTools = buildContextTools(talkId, userId);
+  const contextTools = buildContextTools(talkId, userId, options?.jobPolicy);
 
   // Step 6: Load message history with token budgeting (thread-scoped if threadId provided)
   const availableBudget =
@@ -423,6 +443,11 @@ export async function loadTalkContext(
           ref: source.ref,
           text: source.inlineContent!,
         })),
+    },
+    outputs: {
+      totalCount: outputManifest.totalCount,
+      omittedCount: outputManifest.omittedCount,
+      manifest: outputManifest.included,
     },
     retrieval: {
       query: options?.retrievalQuery?.trim() || null,
@@ -587,12 +612,21 @@ function buildSourceManifest(sources: SourceRow[]): Array<{
  * definitions. An attached connector that later becomes invalid or
  * unavailable is silently excluded — fail closed.
  */
-function buildConnectorTools(_db: any, talkId: string): LlmToolDefinition[] {
+function buildConnectorTools(
+  _db: any,
+  talkId: string,
+  jobPolicy?: TalkJobExecutionPolicy | null,
+): LlmToolDefinition[] {
   // listConnectorsForTalkRun already filters: enabled=1, has ciphertext.
   const connectors = listConnectorsForTalkRun(talkId);
+  const scopedConnectors = jobPolicy
+    ? connectors.filter((connector) =>
+        jobPolicy.allowedConnectorIds.includes(connector.id),
+      )
+    : connectors;
 
   // Additional runtime guard: only verified connectors produce tools.
-  const verified = connectors.filter(
+  const verified = scopedConnectors.filter(
     (c) => c.verificationStatus === 'verified',
   );
 
@@ -614,6 +648,7 @@ function assembleSystemPrompt(
   rules: string[],
   roleHint: string | null,
   stateSnapshot: string | null,
+  outputManifest: string | null,
   retrievedContext: string | null,
   sourceLines: Array<{
     ref: string;
@@ -647,6 +682,10 @@ function assembleSystemPrompt(
 
   if (stateSnapshot) {
     parts.push(stateSnapshot);
+  }
+
+  if (outputManifest) {
+    parts.push(outputManifest);
   }
 
   if (retrievedContext) {
@@ -753,8 +792,12 @@ function buildStateSnapshot(
 function buildContextTools(
   talkId: string,
   userId?: string | null,
+  jobPolicy?: TalkJobExecutionPolicy | null,
 ): LlmToolDefinition[] {
-  return [
+  const tools: LlmToolDefinition[] = [
+    ...buildTalkOutputToolDefinitions({
+      includeWrite: jobPolicy ? jobPolicy.allowOutputWrite : true,
+    }),
     {
       name: 'read_context_source',
       description:
@@ -784,7 +827,11 @@ function buildContextTools(
         required: ['attachmentId'],
       },
     },
-    {
+    ...buildGoogleDriveContextTools({ talkId, userId }),
+  ];
+
+  if (!jobPolicy || jobPolicy.allowStateMutation) {
+    tools.push({
       name: 'update_state',
       description:
         'Persist a structured JSON state entry for this Talk using compare-and-swap versioning. Create new keys with expectedVersion 0. Update existing keys with their current version from the state snapshot. On conflict, the tool returns the current stored value as an error so you can retry.',
@@ -807,10 +854,60 @@ function buildContextTools(
         },
         required: ['key', 'value', 'expectedVersion'],
       },
-    },
-    ...buildGoogleDriveContextTools({ talkId, userId }),
-    ...WEB_TOOL_DEFINITIONS,
-  ];
+    });
+  }
+
+  if (!jobPolicy || jobPolicy.allowWeb) {
+    tools.push(...WEB_TOOL_DEFINITIONS);
+  }
+
+  return tools;
+}
+
+function buildOutputManifest(talkId: string): {
+  totalCount: number;
+  omittedCount: number;
+  included: TalkRunContextOutputManifestItem[];
+  promptText: string | null;
+} {
+  const outputs = listTalkOutputs(talkId);
+  if (outputs.length === 0) {
+    return {
+      totalCount: 0,
+      omittedCount: 0,
+      included: [],
+      promptText: null,
+    };
+  }
+
+  const included = outputs
+    .slice(0, MAX_OUTPUT_MANIFEST_ITEMS)
+    .map((output) => ({
+      id: output.id,
+      title: output.title,
+      version: output.version,
+      updatedAt: output.updatedAt,
+      contentLength: output.contentLength,
+    }));
+  const omittedCount = Math.max(0, outputs.length - included.length);
+  const lines = included.map(
+    (output) =>
+      `- ${output.id}: ${output.title} (v${output.version}, ${output.contentLength} chars, updated ${output.updatedAt})`,
+  );
+  if (omittedCount > 0) {
+    lines.push(
+      `- ${omittedCount} additional output${
+        omittedCount === 1 ? '' : 's'
+      } omitted from the default manifest.`,
+    );
+  }
+
+  return {
+    totalCount: outputs.length,
+    omittedCount,
+    included,
+    promptText: `**Outputs:**\n${lines.join('\n')}`,
+  };
 }
 
 function buildRoleHint(personaRole: TalkPersonaRole | null): string | null {

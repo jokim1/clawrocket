@@ -4,11 +4,15 @@ import { TALK_RUN_MAX_CONCURRENCY, TALK_RUN_POLL_MS } from '../config.js';
 import {
   claimQueuedTalkRuns,
   appendOutboxEvent,
+  blockTalkJob,
   completeRunAndPromoteNextAtomic,
   failInterruptedRunsOnStartup,
   failRunAndPromoteNextAtomic,
+  getTalkJobById,
   getTalkMessageById,
   getTalkRunById,
+  markTalkJobRunFinished,
+  replaceJobReportOutput,
   type TalkRunRecord,
 } from '../db/index.js';
 import { logger } from '../../logger.js';
@@ -235,6 +239,7 @@ export class TalkRunWorker implements TalkRunWorkerControl {
           requestedBy: run.requested_by,
           triggerMessageId: triggerMessage.id,
           triggerContent: triggerMessage.content,
+          jobId: run.job_id ?? null,
           targetAgentId: run.target_agent_id,
           responseGroupId: run.response_group_id ?? null,
           sequenceIndex: run.sequence_index ?? null,
@@ -243,11 +248,12 @@ export class TalkRunWorker implements TalkRunWorkerControl {
         (event) => this.emitExecutionEvent(event),
       );
       const latencyMs = Date.now() - executionStartedAt;
+      const responseContent = stripInternalTalkResponseText(output.content);
 
       const completed = completeRunAndPromoteNextAtomic({
         runId: run.id,
         responseMessageId: `msg_${randomUUID()}`,
-        responseContent: stripInternalTalkResponseText(output.content),
+        responseContent,
         responseMetadataJson: output.metadataJson,
         agentId: output.agentId,
         agentNickname: output.agentNickname,
@@ -266,6 +272,7 @@ export class TalkRunWorker implements TalkRunWorkerControl {
         if (completed.deliveryQueued) {
           this.onChannelDeliveryQueued?.();
         }
+        await this.handleJobCompletion(run, responseContent);
         this.onTalkTerminal?.(run.talk_id!);
       }
     } catch (error) {
@@ -281,6 +288,50 @@ export class TalkRunWorker implements TalkRunWorkerControl {
         error instanceof TalkExecutorError ? error.code : 'execution_failed',
         errorMessage(error),
       );
+    }
+  }
+
+  private async handleJobCompletion(
+    run: TalkRunRecord,
+    responseContent: string,
+  ): Promise<void> {
+    if (!run.job_id) return;
+    let finalStatus = 'completed';
+
+    try {
+      const job = getTalkJobById(run.job_id);
+      if (job?.deliverableKind === 'report') {
+        if (!job.reportOutputId) {
+          blockTalkJob(job.talkId, job.id, 'blocked');
+          finalStatus = 'blocked';
+        } else {
+          const updated = replaceJobReportOutput({
+            talkId: job.talkId,
+            outputId: job.reportOutputId,
+            contentMarkdown: responseContent,
+            updatedByRunId: run.id,
+          });
+          if (!updated) {
+            blockTalkJob(job.talkId, job.id, 'blocked');
+            finalStatus = 'blocked';
+          }
+        }
+      }
+    } catch (error) {
+      logger.error(
+        {
+          err: error,
+          runId: run.id,
+          talkId: run.talk_id,
+          jobId: run.job_id,
+        },
+        'Job report delivery failed after successful run completion',
+      );
+    } finally {
+      markTalkJobRunFinished({
+        jobId: run.job_id,
+        status: finalStatus,
+      });
     }
   }
 
@@ -336,6 +387,12 @@ export class TalkRunWorker implements TalkRunWorkerControl {
         'Run failure skipped due to non-running status',
       );
       return;
+    }
+    if (run.job_id) {
+      markTalkJobRunFinished({
+        jobId: run.job_id,
+        status: 'failed',
+      });
     }
     this.onTalkTerminal?.(run.talk_id!);
   }

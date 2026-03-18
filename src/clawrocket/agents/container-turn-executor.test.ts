@@ -17,9 +17,22 @@ vi.mock('../../container-runner.js', async () => {
 
 import { executeContainerAgentTurn } from './container-turn-executor.js';
 import type { RegisteredAgentRecord } from '../db/agent-accessors.js';
+import { _initTestDatabase, upsertTalk, upsertUser } from '../db/index.js';
 
 describe('container-turn-executor', () => {
   beforeEach(() => {
+    _initTestDatabase();
+    upsertUser({
+      id: 'owner-1',
+      email: 'owner@example.com',
+      displayName: 'Owner',
+      role: 'owner',
+    });
+    upsertTalk({
+      id: 'talk-1',
+      ownerId: 'owner-1',
+      topicTitle: 'Container Test Talk',
+    });
     runContainerAgentMock.mockReset();
     runContainerAgentMock.mockResolvedValue({
       status: 'success',
@@ -47,6 +60,7 @@ describe('container-turn-executor', () => {
       runId: 'run-1',
       userId: 'owner-1',
       agent,
+      talkId: 'talk-1',
       promptLabel: 'talk',
       userMessage: 'hello',
       signal: controller.signal,
@@ -80,6 +94,7 @@ describe('container-turn-executor', () => {
       groupFolder: 'web-executor',
       chatJid: 'internal:web-executor',
       isMain: true,
+      enableWebTalkOutputTools: true,
     });
     expect(typeof input.ephemeralContextDir).toBe('string');
     expect(fs.existsSync(input.ephemeralContextDir)).toBe(false);

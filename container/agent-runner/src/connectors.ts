@@ -1,5 +1,7 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
+import fs from 'fs';
+import path from 'path';
 
 const GOOGLE_TOKEN_ENDPOINT = 'https://oauth2.googleapis.com/token';
 const GOOGLE_DOCS_BASE_URL = 'https://docs.googleapis.com';
@@ -14,6 +16,8 @@ const MAX_POSTHOG_LIMIT = 1_000;
 const DEFAULT_POSTHOG_LIMIT = 100;
 const MAX_POSTHOG_RANGE_DAYS = 90;
 const MAX_SHEETS_RANGE_LENGTH = 200;
+const WEB_TALK_OUTPUT_BRIDGE_TIMEOUT_MS = 15_000;
+const WEB_TALK_OUTPUT_BRIDGE_POLL_MS = 50;
 
 type JsonMap = Record<string, unknown>;
 
@@ -72,6 +76,21 @@ interface ToolExecutionResult {
   content: string;
   isError: boolean;
 }
+
+interface WebTalkOutputBridgeRequest {
+  id: string;
+  toolName: 'list_outputs' | 'read_output' | 'write_output';
+  args: Record<string, unknown>;
+}
+
+interface WebTalkOutputBridgeResponse {
+  id: string;
+  result: string;
+  isError?: boolean;
+}
+
+type WebTalkOutputToolName =
+  | WebTalkOutputBridgeRequest['toolName'];
 
 interface PostHogConnectorConfig {
   hostUrl: string;
@@ -200,6 +219,94 @@ export function readWebTalkConnectorBundleFromEnv(): WebTalkConnectorBundle | nu
   } catch {
     return null;
   }
+}
+
+export function readWebTalkOutputBridgeDirFromEnv(): string | null {
+  const raw = process.env.NANOCLAW_WEB_TALK_OUTPUT_BRIDGE_DIR;
+  return typeof raw === 'string' && raw.trim() ? raw.trim() : null;
+}
+
+export function readWebTalkOutputToolNamesFromEnv(): WebTalkOutputToolName[] {
+  const raw = process.env.NANOCLAW_WEB_TALK_OUTPUT_TOOL_NAMES;
+  if (!raw) {
+    return ['list_outputs', 'read_output', 'write_output'];
+  }
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) {
+      return ['list_outputs', 'read_output', 'write_output'];
+    }
+    const allowed = new Set<WebTalkOutputToolName>([
+      'list_outputs',
+      'read_output',
+      'write_output',
+    ]);
+    const toolNames = parsed.filter(
+      (value): value is WebTalkOutputToolName =>
+        typeof value === 'string' &&
+        allowed.has(value as WebTalkOutputToolName),
+    );
+    return toolNames.length > 0
+      ? Array.from(new Set(toolNames))
+      : ['list_outputs', 'read_output', 'write_output'];
+  } catch {
+    return ['list_outputs', 'read_output', 'write_output'];
+  }
+}
+
+function writeBridgeRequest(
+  bridgeDir: string,
+  payload: WebTalkOutputBridgeRequest,
+): void {
+  const requestsDir = path.join(bridgeDir, 'requests');
+  fs.mkdirSync(requestsDir, { recursive: true });
+  const filePath = path.join(requestsDir, `${payload.id}.json`);
+  const tempPath = `${filePath}.tmp`;
+  fs.writeFileSync(tempPath, JSON.stringify(payload));
+  fs.renameSync(tempPath, filePath);
+}
+
+async function waitForBridgeResponse(
+  bridgeDir: string,
+  requestId: string,
+): Promise<WebTalkOutputBridgeResponse> {
+  const responsesDir = path.join(bridgeDir, 'responses');
+  const responsePath = path.join(responsesDir, `${requestId}.json`);
+  const deadline = Date.now() + WEB_TALK_OUTPUT_BRIDGE_TIMEOUT_MS;
+
+  while (Date.now() < deadline) {
+    if (fs.existsSync(responsePath)) {
+      const raw = fs.readFileSync(responsePath, 'utf-8');
+      fs.unlinkSync(responsePath);
+      return JSON.parse(raw) as WebTalkOutputBridgeResponse;
+    }
+    await new Promise((resolve) =>
+      setTimeout(resolve, WEB_TALK_OUTPUT_BRIDGE_POLL_MS),
+    );
+  }
+
+  throw new ConnectorToolError(
+    'output_bridge_timeout',
+    'Timed out waiting for the Talk output bridge to respond.',
+  );
+}
+
+async function executeOutputBridgeTool(
+  bridgeDir: string,
+  toolName: WebTalkOutputBridgeRequest['toolName'],
+  args: Record<string, unknown>,
+): Promise<ToolExecutionResult> {
+  const requestId = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+  writeBridgeRequest(bridgeDir, {
+    id: requestId,
+    toolName,
+    args,
+  });
+  const response = await waitForBridgeResponse(bridgeDir, requestId);
+  return {
+    content: response.result,
+    isError: response.isError === true,
+  };
 }
 
 function parsePostHogConnectorConfig(
@@ -1327,5 +1434,71 @@ export function registerConnectorTools(
         );
         break;
     }
+  }
+}
+
+export function registerOutputTools(
+  server: McpServer,
+  bridgeDir: string,
+  allowedToolNames: WebTalkOutputToolName[],
+): void {
+  if (allowedToolNames.includes('list_outputs')) {
+    server.tool(
+      'list_outputs',
+      'List saved Talk outputs as lightweight summaries.',
+      {},
+      async () =>
+        formatToolResult(
+          await executeOutputBridgeTool(bridgeDir, 'list_outputs', {}),
+        ),
+    );
+  }
+
+  if (allowedToolNames.includes('read_output')) {
+    server.tool(
+      'read_output',
+      'Read a saved Talk output by outputId.',
+      {
+        outputId: z.string().describe('Saved Talk output ID.'),
+      },
+      async (args: Record<string, unknown>) =>
+        formatToolResult(
+          await executeOutputBridgeTool(bridgeDir, 'read_output', args),
+        ),
+    );
+  }
+
+  if (allowedToolNames.includes('write_output')) {
+    server.tool(
+      'write_output',
+      'Create or update a saved Talk output using compare-and-swap versioning over the whole document.',
+      {
+        outputId: z
+          .string()
+          .optional()
+          .describe(
+            'Existing output ID for updates. Omit to create a new output.',
+          ),
+        title: z
+          .string()
+          .optional()
+          .describe('Output title. Required for create. Optional for update.'),
+        contentMarkdown: z
+          .string()
+          .optional()
+          .describe('Markdown body. Required for create. Optional for update.'),
+        expectedVersion: z
+          .number()
+          .int()
+          .nonnegative()
+          .describe(
+            'Use 0 for create. For updates, use the current output version.',
+          ),
+      },
+      async (args: Record<string, unknown>) =>
+        formatToolResult(
+          await executeOutputBridgeTool(bridgeDir, 'write_output', args),
+        ),
+    );
   }
 }

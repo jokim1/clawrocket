@@ -671,6 +671,7 @@ function createClawrocketSchema(database: Database.Database): void {
       talk_id TEXT REFERENCES talks(id) ON DELETE CASCADE,
       title TEXT,
       is_default INTEGER NOT NULL DEFAULT 0,
+      is_internal INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
@@ -763,6 +764,49 @@ function createClawrocketSchema(database: Database.Database): void {
     );
     CREATE INDEX IF NOT EXISTS idx_talk_state_entries_talk_updated
       ON talk_state_entries(talk_id, updated_at DESC, key ASC);
+
+    CREATE TABLE IF NOT EXISTS talk_outputs (
+      id TEXT PRIMARY KEY,
+      talk_id TEXT NOT NULL REFERENCES talks(id) ON DELETE CASCADE,
+      title TEXT NOT NULL,
+      content_markdown TEXT NOT NULL,
+      version INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      created_by_user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+      updated_by_user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+      updated_by_run_id TEXT REFERENCES talk_runs(id) ON DELETE SET NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_talk_outputs_talk_updated
+      ON talk_outputs(talk_id, updated_at DESC, id ASC);
+
+    CREATE TABLE IF NOT EXISTS talk_jobs (
+      id TEXT PRIMARY KEY,
+      talk_id TEXT NOT NULL REFERENCES talks(id) ON DELETE CASCADE,
+      title TEXT NOT NULL,
+      prompt TEXT NOT NULL,
+      target_agent_id TEXT REFERENCES registered_agents(id) ON DELETE SET NULL,
+      status TEXT NOT NULL
+        CHECK(status IN ('active', 'paused', 'blocked')),
+      schedule_json TEXT NOT NULL,
+      timezone TEXT NOT NULL,
+      deliverable_kind TEXT NOT NULL
+        CHECK(deliverable_kind IN ('thread', 'report')),
+      report_output_id TEXT REFERENCES talk_outputs(id) ON DELETE SET NULL,
+      source_scope_json TEXT NOT NULL,
+      thread_id TEXT NOT NULL REFERENCES talk_threads(id) ON DELETE CASCADE,
+      last_run_at TEXT,
+      last_run_status TEXT,
+      next_due_at TEXT,
+      run_count INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      created_by TEXT NOT NULL REFERENCES users(id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_talk_jobs_talk_updated
+      ON talk_jobs(talk_id, updated_at DESC, created_at DESC, id ASC);
+    CREATE INDEX IF NOT EXISTS idx_talk_jobs_due_status
+      ON talk_jobs(status, next_due_at, created_at);
 
     CREATE TABLE IF NOT EXISTS talk_context_sources (
       id TEXT PRIMARY KEY,
@@ -898,6 +942,7 @@ function createClawrocketSchema(database: Database.Database): void {
       status TEXT NOT NULL
         CHECK(status IN ('queued', 'running', 'awaiting_confirmation', 'cancelled', 'completed', 'failed')),
       trigger_message_id TEXT REFERENCES talk_messages(id),
+      job_id TEXT REFERENCES talk_jobs(id) ON DELETE SET NULL,
       target_agent_id TEXT,
       agent_id TEXT REFERENCES registered_agents(id) ON DELETE SET NULL,
       executor_alias TEXT,
@@ -1089,6 +1134,7 @@ function createClawrocketSchema(database: Database.Database): void {
   migrateAddThreadIdColumns(database);
   migrateLlmAttemptsTable(database);
   migrateAddMissingColumns(database);
+  ensureJobsSupportIndexes(database);
 
   // ---------------------------------------------------------------------------
   // PR #105 — Comprehensive schema-audit migrations.
@@ -1593,6 +1639,11 @@ function migrateAddMissingColumns(database: Database.Database): void {
       definition: 'TEXT',
     },
     {
+      table: 'talk_runs',
+      column: 'job_id',
+      definition: 'TEXT',
+    },
+    {
       table: 'talk_messages',
       column: 'agent_id',
       definition: 'TEXT',
@@ -1612,6 +1663,11 @@ function migrateAddMissingColumns(database: Database.Database): void {
       column: 'metadata_json',
       definition: 'TEXT',
     },
+    {
+      table: 'talk_threads',
+      column: 'is_internal',
+      definition: 'INTEGER NOT NULL DEFAULT 0',
+    },
   ];
 
   for (const { table, column, definition } of additions) {
@@ -1621,6 +1677,18 @@ function migrateAddMissingColumns(database: Database.Database): void {
     if (cols.length === 0) continue; // table doesn't exist yet
     if (cols.some((c) => c.name === column)) continue; // already present
     database.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition};`);
+  }
+}
+
+function ensureJobsSupportIndexes(database: Database.Database): void {
+  const talkRunCols = database
+    .prepare(`PRAGMA table_info(talk_runs)`)
+    .all() as Array<{ name: string }>;
+  if (talkRunCols.some((column) => column.name === 'job_id')) {
+    database.exec(`
+      CREATE INDEX IF NOT EXISTS idx_talk_runs_job_id_created_at
+        ON talk_runs(job_id, created_at DESC, id ASC);
+    `);
   }
 }
 

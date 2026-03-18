@@ -46,6 +46,7 @@ import {
 } from '../identity/session.js';
 import { KeychainBridge, noopKeychainBridge } from '../secrets/keychain.js';
 import type { TalkRunWorkerControl } from '../talks/run-worker.js';
+import type { TalkJobWorkerControl } from '../talks/job-worker.js';
 import type { MainRunWorkerControl } from '../agents/main-run-worker.js';
 import { hashOpaqueToken } from '../security/hash.js';
 import { validateCsrfToken } from './middleware/csrf.js';
@@ -163,6 +164,24 @@ import {
   setTalkGoalRoute,
 } from './routes/talk-context.js';
 import {
+  createTalkOutputRoute,
+  deleteTalkOutputRoute,
+  getTalkOutputRoute,
+  listTalkOutputsRoute,
+  patchTalkOutputRoute,
+} from './routes/talk-outputs.js';
+import {
+  createTalkJobRoute,
+  deleteTalkJobRoute,
+  getTalkJobRoute,
+  listTalkJobRunsRoute,
+  listTalkJobsRoute,
+  patchTalkJobRoute,
+  pauseTalkJobRoute,
+  resumeTalkJobRoute,
+  runTalkJobNowRoute,
+} from './routes/talk-jobs.js';
+import {
   listTalkAttachmentsRoute,
   uploadTalkAttachmentRoute,
 } from './routes/talk-attachments.js';
@@ -207,6 +226,7 @@ export interface WebServerOptions {
   port: number;
   keychain: KeychainBridge;
   runWorker: TalkRunWorkerControl;
+  jobWorker: TalkJobWorkerControl;
   mainRunWorker: MainRunWorkerControl;
   webAppDistDir: string;
   dataConnectorVerifier: DataConnectorVerifier;
@@ -243,12 +263,18 @@ export function createWebServer(
       /* no-op */
     },
   };
+  const noopJobWorker: TalkJobWorkerControl = {
+    wake: () => {
+      /* no-op */
+    },
+  };
 
   const opts: WebServerOptions = {
     host: input?.host ?? '127.0.0.1',
     port: input?.port ?? 3210,
     keychain: input?.keychain || noopKeychainBridge,
     runWorker: input?.runWorker || noopRunWorker,
+    jobWorker: input?.jobWorker || noopJobWorker,
     mainRunWorker: input?.mainRunWorker || noopMainRunWorker,
     webAppDistDir: input?.webAppDistDir ?? DEFAULT_WEB_APP_DIST_DIR,
     dataConnectorVerifier:
@@ -3574,6 +3600,545 @@ function buildApp(opts: WebServerOptions): Hono {
       auth,
       talkId: c.req.param('talkId'),
     });
+    return new Response(JSON.stringify(result.body), {
+      status: result.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
+  });
+
+  app.get('/api/v1/talks/:talkId/outputs', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+
+    const result = listTalkOutputsRoute({
+      auth,
+      talkId: c.req.param('talkId'),
+    });
+    return new Response(JSON.stringify(result.body), {
+      status: result.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
+  });
+
+  app.get('/api/v1/talks/:talkId/outputs/:outputId', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+
+    const result = getTalkOutputRoute({
+      auth,
+      talkId: c.req.param('talkId'),
+      outputId: c.req.param('outputId'),
+    });
+    return new Response(JSON.stringify(result.body), {
+      status: result.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
+  });
+
+  app.post('/api/v1/talks/:talkId/outputs', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+
+    const rateResult = checkRateLimit({
+      principalId: auth.userId,
+      bucket: 'write',
+    });
+    if (!rateResult.allowed) {
+      return rateLimitedResponse(c, rateResult);
+    }
+
+    const csrf = validateCsrfToken({
+      method: c.req.method,
+      authType: auth.authType,
+      cookieHeader: c.req.header('cookie'),
+      csrfHeader: c.req.header('x-csrf-token'),
+    });
+    if (!csrf.ok) {
+      return c.json(
+        { ok: false, error: { code: 'csrf_failed', message: csrf.reason } },
+        403,
+      );
+    }
+
+    const bodyText = await c.req.text();
+    const payload = parseJsonPayload<{
+      title?: string;
+      contentMarkdown?: string;
+    }>(bodyText);
+    if (!payload.ok) {
+      return c.json(
+        { ok: false, error: { code: 'invalid_json', message: payload.error } },
+        400,
+      );
+    }
+
+    const result = createTalkOutputRoute({
+      auth,
+      talkId: c.req.param('talkId'),
+      title: typeof payload.data.title === 'string' ? payload.data.title : '',
+      contentMarkdown:
+        typeof payload.data.contentMarkdown === 'string'
+          ? payload.data.contentMarkdown
+          : '',
+    });
+    return new Response(JSON.stringify(result.body), {
+      status: result.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
+  });
+
+  app.patch('/api/v1/talks/:talkId/outputs/:outputId', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+
+    const rateResult = checkRateLimit({
+      principalId: auth.userId,
+      bucket: 'write',
+    });
+    if (!rateResult.allowed) {
+      return rateLimitedResponse(c, rateResult);
+    }
+
+    const csrf = validateCsrfToken({
+      method: c.req.method,
+      authType: auth.authType,
+      cookieHeader: c.req.header('cookie'),
+      csrfHeader: c.req.header('x-csrf-token'),
+    });
+    if (!csrf.ok) {
+      return c.json(
+        { ok: false, error: { code: 'csrf_failed', message: csrf.reason } },
+        403,
+      );
+    }
+
+    const bodyText = await c.req.text();
+    const payload = parseJsonPayload<{
+      expectedVersion?: number;
+      title?: string;
+      contentMarkdown?: string;
+    }>(bodyText);
+    if (!payload.ok) {
+      return c.json(
+        { ok: false, error: { code: 'invalid_json', message: payload.error } },
+        400,
+      );
+    }
+
+    const result = patchTalkOutputRoute({
+      auth,
+      talkId: c.req.param('talkId'),
+      outputId: c.req.param('outputId'),
+      expectedVersion:
+        typeof payload.data.expectedVersion === 'number'
+          ? payload.data.expectedVersion
+          : undefined,
+      title:
+        typeof payload.data.title === 'string' ? payload.data.title : undefined,
+      contentMarkdown:
+        typeof payload.data.contentMarkdown === 'string'
+          ? payload.data.contentMarkdown
+          : undefined,
+    });
+    return new Response(JSON.stringify(result.body), {
+      status: result.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
+  });
+
+  app.delete('/api/v1/talks/:talkId/outputs/:outputId', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+
+    const rateResult = checkRateLimit({
+      principalId: auth.userId,
+      bucket: 'write',
+    });
+    if (!rateResult.allowed) {
+      return rateLimitedResponse(c, rateResult);
+    }
+
+    const csrf = validateCsrfToken({
+      method: c.req.method,
+      authType: auth.authType,
+      cookieHeader: c.req.header('cookie'),
+      csrfHeader: c.req.header('x-csrf-token'),
+    });
+    if (!csrf.ok) {
+      return c.json(
+        { ok: false, error: { code: 'csrf_failed', message: csrf.reason } },
+        403,
+      );
+    }
+
+    const result = deleteTalkOutputRoute({
+      auth,
+      talkId: c.req.param('talkId'),
+      outputId: c.req.param('outputId'),
+    });
+    return new Response(JSON.stringify(result.body), {
+      status: result.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
+  });
+
+  app.get('/api/v1/talks/:talkId/jobs', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+
+    const result = listTalkJobsRoute({
+      auth,
+      talkId: c.req.param('talkId'),
+    });
+    return new Response(JSON.stringify(result.body), {
+      status: result.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
+  });
+
+  app.get('/api/v1/talks/:talkId/jobs/:jobId', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+
+    const result = getTalkJobRoute({
+      auth,
+      talkId: c.req.param('talkId'),
+      jobId: c.req.param('jobId'),
+    });
+    return new Response(JSON.stringify(result.body), {
+      status: result.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
+  });
+
+  app.get('/api/v1/talks/:talkId/jobs/:jobId/runs', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+
+    const rawLimit = c.req.query('limit');
+    const parsedLimit =
+      rawLimit && /^\d+$/.test(rawLimit) ? parseInt(rawLimit, 10) : undefined;
+    const result = listTalkJobRunsRoute({
+      auth,
+      talkId: c.req.param('talkId'),
+      jobId: c.req.param('jobId'),
+      limit: parsedLimit,
+    });
+    return new Response(JSON.stringify(result.body), {
+      status: result.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
+  });
+
+  app.post('/api/v1/talks/:talkId/jobs', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+
+    const rateResult = checkRateLimit({
+      principalId: auth.userId,
+      bucket: 'write',
+    });
+    if (!rateResult.allowed) {
+      return rateLimitedResponse(c, rateResult);
+    }
+
+    const csrf = validateCsrfToken({
+      method: c.req.method,
+      authType: auth.authType,
+      cookieHeader: c.req.header('cookie'),
+      csrfHeader: c.req.header('x-csrf-token'),
+    });
+    if (!csrf.ok) {
+      return c.json(
+        { ok: false, error: { code: 'csrf_failed', message: csrf.reason } },
+        403,
+      );
+    }
+
+    const bodyText = await c.req.text();
+    const payload = parseJsonPayload<{
+      title?: string;
+      prompt?: string;
+      targetAgentId?: string;
+      schedule?: Record<string, unknown>;
+      timezone?: string;
+      deliverableKind?: 'thread' | 'report';
+      reportOutputId?: string | null;
+      createReport?: Record<string, unknown>;
+      sourceScope?: Record<string, unknown>;
+    }>(bodyText);
+    if (!payload.ok) {
+      return c.json(
+        { ok: false, error: { code: 'invalid_json', message: payload.error } },
+        400,
+      );
+    }
+
+    const result = createTalkJobRoute({
+      auth,
+      talkId: c.req.param('talkId'),
+      title: typeof payload.data.title === 'string' ? payload.data.title : '',
+      prompt:
+        typeof payload.data.prompt === 'string' ? payload.data.prompt : '',
+      targetAgentId:
+        typeof payload.data.targetAgentId === 'string'
+          ? payload.data.targetAgentId
+          : '',
+      schedule: (payload.data.schedule ?? null) as any,
+      timezone:
+        typeof payload.data.timezone === 'string' ? payload.data.timezone : '',
+      deliverableKind:
+        payload.data.deliverableKind === 'report' ? 'report' : 'thread',
+      reportOutputId:
+        typeof payload.data.reportOutputId === 'string' ||
+        payload.data.reportOutputId === null
+          ? payload.data.reportOutputId
+          : undefined,
+      createReport: payload.data.createReport,
+      sourceScope: (payload.data.sourceScope ?? null) as any,
+    });
+
+    if (result.statusCode === 201) {
+      opts.jobWorker.wake();
+    }
+
+    return new Response(JSON.stringify(result.body), {
+      status: result.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
+  });
+
+  app.patch('/api/v1/talks/:talkId/jobs/:jobId', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+
+    const rateResult = checkRateLimit({
+      principalId: auth.userId,
+      bucket: 'write',
+    });
+    if (!rateResult.allowed) {
+      return rateLimitedResponse(c, rateResult);
+    }
+
+    const csrf = validateCsrfToken({
+      method: c.req.method,
+      authType: auth.authType,
+      cookieHeader: c.req.header('cookie'),
+      csrfHeader: c.req.header('x-csrf-token'),
+    });
+    if (!csrf.ok) {
+      return c.json(
+        { ok: false, error: { code: 'csrf_failed', message: csrf.reason } },
+        403,
+      );
+    }
+
+    const bodyText = await c.req.text();
+    const payload = parseJsonPayload<{
+      title?: string;
+      prompt?: string;
+      targetAgentId?: string;
+      schedule?: Record<string, unknown>;
+      timezone?: string;
+      deliverableKind?: 'thread' | 'report';
+      reportOutputId?: string | null;
+      createReport?: Record<string, unknown>;
+      sourceScope?: Record<string, unknown>;
+    }>(bodyText);
+    if (!payload.ok) {
+      return c.json(
+        { ok: false, error: { code: 'invalid_json', message: payload.error } },
+        400,
+      );
+    }
+
+    const result = patchTalkJobRoute({
+      auth,
+      talkId: c.req.param('talkId'),
+      jobId: c.req.param('jobId'),
+      title:
+        typeof payload.data.title === 'string' ? payload.data.title : undefined,
+      prompt:
+        typeof payload.data.prompt === 'string'
+          ? payload.data.prompt
+          : undefined,
+      targetAgentId:
+        typeof payload.data.targetAgentId === 'string'
+          ? payload.data.targetAgentId
+          : undefined,
+      schedule: payload.data.schedule as any,
+      timezone:
+        typeof payload.data.timezone === 'string'
+          ? payload.data.timezone
+          : undefined,
+      deliverableKind:
+        payload.data.deliverableKind === 'report' ||
+        payload.data.deliverableKind === 'thread'
+          ? payload.data.deliverableKind
+          : undefined,
+      reportOutputId:
+        typeof payload.data.reportOutputId === 'string' ||
+        payload.data.reportOutputId === null
+          ? payload.data.reportOutputId
+          : undefined,
+      createReport: payload.data.createReport,
+      sourceScope: payload.data.sourceScope as any,
+    });
+
+    if (result.statusCode === 200) {
+      opts.jobWorker.wake();
+    }
+
+    return new Response(JSON.stringify(result.body), {
+      status: result.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
+  });
+
+  app.delete('/api/v1/talks/:talkId/jobs/:jobId', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+
+    const rateResult = checkRateLimit({
+      principalId: auth.userId,
+      bucket: 'write',
+    });
+    if (!rateResult.allowed) {
+      return rateLimitedResponse(c, rateResult);
+    }
+
+    const csrf = validateCsrfToken({
+      method: c.req.method,
+      authType: auth.authType,
+      cookieHeader: c.req.header('cookie'),
+      csrfHeader: c.req.header('x-csrf-token'),
+    });
+    if (!csrf.ok) {
+      return c.json(
+        { ok: false, error: { code: 'csrf_failed', message: csrf.reason } },
+        403,
+      );
+    }
+
+    const result = deleteTalkJobRoute({
+      auth,
+      talkId: c.req.param('talkId'),
+      jobId: c.req.param('jobId'),
+    });
+    return new Response(JSON.stringify(result.body), {
+      status: result.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
+  });
+
+  app.post('/api/v1/talks/:talkId/jobs/:jobId/pause', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+
+    const rateResult = checkRateLimit({
+      principalId: auth.userId,
+      bucket: 'write',
+    });
+    if (!rateResult.allowed) {
+      return rateLimitedResponse(c, rateResult);
+    }
+
+    const csrf = validateCsrfToken({
+      method: c.req.method,
+      authType: auth.authType,
+      cookieHeader: c.req.header('cookie'),
+      csrfHeader: c.req.header('x-csrf-token'),
+    });
+    if (!csrf.ok) {
+      return c.json(
+        { ok: false, error: { code: 'csrf_failed', message: csrf.reason } },
+        403,
+      );
+    }
+
+    const result = pauseTalkJobRoute({
+      auth,
+      talkId: c.req.param('talkId'),
+      jobId: c.req.param('jobId'),
+    });
+    return new Response(JSON.stringify(result.body), {
+      status: result.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
+  });
+
+  app.post('/api/v1/talks/:talkId/jobs/:jobId/resume', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+
+    const rateResult = checkRateLimit({
+      principalId: auth.userId,
+      bucket: 'write',
+    });
+    if (!rateResult.allowed) {
+      return rateLimitedResponse(c, rateResult);
+    }
+
+    const csrf = validateCsrfToken({
+      method: c.req.method,
+      authType: auth.authType,
+      cookieHeader: c.req.header('cookie'),
+      csrfHeader: c.req.header('x-csrf-token'),
+    });
+    if (!csrf.ok) {
+      return c.json(
+        { ok: false, error: { code: 'csrf_failed', message: csrf.reason } },
+        403,
+      );
+    }
+
+    const result = resumeTalkJobRoute({
+      auth,
+      talkId: c.req.param('talkId'),
+      jobId: c.req.param('jobId'),
+    });
+    if (result.statusCode === 200) {
+      opts.jobWorker.wake();
+    }
+    return new Response(JSON.stringify(result.body), {
+      status: result.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
+  });
+
+  app.post('/api/v1/talks/:talkId/jobs/:jobId/run-now', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+
+    const rateResult = checkRateLimit({
+      principalId: auth.userId,
+      bucket: 'write',
+    });
+    if (!rateResult.allowed) {
+      return rateLimitedResponse(c, rateResult);
+    }
+
+    const csrf = validateCsrfToken({
+      method: c.req.method,
+      authType: auth.authType,
+      cookieHeader: c.req.header('cookie'),
+      csrfHeader: c.req.header('x-csrf-token'),
+    });
+    if (!csrf.ok) {
+      return c.json(
+        { ok: false, error: { code: 'csrf_failed', message: csrf.reason } },
+        403,
+      );
+    }
+
+    const result = runTalkJobNowRoute({
+      auth,
+      talkId: c.req.param('talkId'),
+      jobId: c.req.param('jobId'),
+    });
+    if (result.statusCode === 202) {
+      opts.runWorker.wake();
+    }
     return new Response(JSON.stringify(result.body), {
       status: result.statusCode,
       headers: { 'content-type': 'application/json; charset=utf-8' },

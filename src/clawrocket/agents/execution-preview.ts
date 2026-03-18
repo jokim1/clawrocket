@@ -51,7 +51,7 @@ export function buildMainExecutionPreview(
   userId: string,
 ): AgentExecutionPreview {
   try {
-    const plan = planExecution(agent, userId, 'main');
+    const plan = planExecution(agent, userId);
     return {
       surface: 'main',
       backend: plan.backend,
