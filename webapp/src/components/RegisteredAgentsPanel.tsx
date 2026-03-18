@@ -131,6 +131,34 @@ function buildDraftExecutionPreview(input: {
     };
   }
 
+  if (
+    input.executorSettings.executorAuthMode === 'subscription' &&
+    hasSubscriptionCredential
+  ) {
+    return {
+      surface: 'main',
+      backend: 'container',
+      authPath: 'subscription',
+      routeReason: 'normal',
+      ready: true,
+      message: 'Main will use Claude subscription via the container runtime.',
+    };
+  }
+
+  if (
+    input.executorSettings.executorAuthMode === 'api_key' &&
+    input.executorSettings.hasApiKey
+  ) {
+    return {
+      surface: 'main',
+      backend: 'direct_http',
+      authPath: 'api_key',
+      routeReason: 'normal',
+      ready: true,
+      message: 'Main will use Anthropic direct HTTP with an API key.',
+    };
+  }
+
   if (input.executorSettings.hasApiKey) {
     return {
       surface: 'main',

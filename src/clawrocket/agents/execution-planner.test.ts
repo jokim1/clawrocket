@@ -219,6 +219,57 @@ describe('execution-planner', () => {
     expect(plan.routeReason).toBe('subscription_fallback');
   });
 
+  it('prefers configured subscription mode over direct Anthropic HTTP for light Claude agents', () => {
+    seedAnthropicSecret('sk-ant-stale');
+    upsertSettingValue({
+      key: 'executor.authMode',
+      value: 'subscription',
+      updatedBy: 'owner-1',
+    });
+    upsertSettingValue({
+      key: 'executor.claudeOauthToken',
+      value: 'oauth-token-123',
+      updatedBy: 'owner-1',
+    });
+    const agent = createRegisteredAgent({
+      name: 'Claude Light',
+      providerId: 'provider.anthropic',
+      modelId: 'claude-sonnet-4-6',
+      toolPermissionsJson: JSON.stringify({ web: true }),
+    });
+
+    const plan = planExecution(agent, 'owner-1');
+    expect(plan.backend).toBe('container');
+    expect(plan.routeReason).toBe('normal');
+    if (plan.backend === 'container') {
+      expect(plan.containerCredential.authMode).toBe('subscription');
+      expect(plan.heavyToolFamilies).toEqual([]);
+    }
+  });
+
+  it('does not silently fall back to subscription when api key mode is explicitly selected', () => {
+    upsertSettingValue({
+      key: 'executor.authMode',
+      value: 'api_key',
+      updatedBy: 'owner-1',
+    });
+    upsertSettingValue({
+      key: 'executor.claudeOauthToken',
+      value: 'oauth-token-123',
+      updatedBy: 'owner-1',
+    });
+    const agent = createRegisteredAgent({
+      name: 'Claude Light',
+      providerId: 'provider.anthropic',
+      modelId: 'claude-sonnet-4-6',
+      toolPermissionsJson: JSON.stringify({ web: true }),
+    });
+
+    expect(() => planExecution(agent, 'owner-1')).toThrowError(
+      /Direct execution is unavailable|No Anthropic API key configured/i,
+    );
+  });
+
   it('allows subscription fallback for multi-agent Talk rounds', () => {
     upsertSettingValue({
       key: 'executor.claudeOauthToken',
