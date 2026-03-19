@@ -96,7 +96,8 @@ function encodeDndId(id: DndId): string {
 
 function decodeDndId(value: string): DndId | null {
   if (value === 'root-drop') return { kind: 'root-drop' };
-  if (value.startsWith('talk:')) return { kind: 'talk', talkId: value.slice(5) };
+  if (value.startsWith('talk:'))
+    return { kind: 'talk', talkId: value.slice(5) };
   if (value.startsWith('folder-drop:')) {
     return { kind: 'folder-drop', folderId: value.slice(12) };
   }
@@ -104,16 +105,6 @@ function decodeDndId(value: string): DndId | null {
     return { kind: 'folder', folderId: value.slice(7) };
   }
   return null;
-}
-
-function ClawTalkMark(): JSX.Element {
-  return (
-    <span className="clawtalk-sidebar-brand-mark" aria-hidden="true">
-      <svg viewBox="0 0 24 24" focusable="false">
-        <path d="M6.5 4.5c1.4 0 2.5 1.2 2.5 2.6V10l1.8-2.4c.7-.9 2-1.1 2.9-.4.9.7 1.1 2 .4 2.9l-.9 1.2h3.3c2.5 0 4.5 2 4.5 4.5v.8c0 1.4-1.1 2.5-2.5 2.5H9.6c-2.8 0-5.1-2.3-5.1-5.1V7.1c0-1.4.9-2.6 2-2.6Z" />
-      </svg>
-    </span>
-  );
 }
 
 function DraggableRow({
@@ -127,10 +118,11 @@ function DraggableRow({
   className?: string;
   children: React.ReactNode;
 }): JSX.Element {
-  const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({
-    id: draggableId,
-    disabled,
-  });
+  const { attributes, listeners, setNodeRef, transform, isDragging } =
+    useDraggable({
+      id: draggableId,
+      disabled,
+    });
   return (
     <div
       ref={setNodeRef}
@@ -168,7 +160,9 @@ function DropZone({
   );
 }
 
-function buildMoveTargets(items: TalkSidebarItem[]): Array<{ id: string | null; label: string }> {
+function buildMoveTargets(
+  items: TalkSidebarItem[],
+): Array<{ id: string | null; label: string }> {
   return [
     { id: null, label: '(Top Level)' },
     ...items
@@ -196,7 +190,9 @@ export function ClawTalkSidebar({
   renameDraft,
 }: Props): JSX.Element {
   const canManageAgents = userRole === 'owner' || userRole === 'admin';
-  const [expandedFolderIds, setExpandedFolderIds] = useState<Record<string, boolean>>({});
+  const [expandedFolderIds, setExpandedFolderIds] = useState<
+    Record<string, boolean>
+  >({});
   const [menuState, setMenuState] = useState<MenuState>(null);
   const [renamingFolderId, setRenamingFolderId] = useState<string | null>(null);
   const [folderDrafts, setFolderDrafts] = useState<Record<string, string>>({});
@@ -204,9 +200,15 @@ export function ClawTalkSidebar({
   const [menuPosition, setMenuPosition] = useState<MenuPosition | null>(null);
   const menuRef = useRef<HTMLDivElement | null>(null);
   const createMenuButtonRef = useRef<HTMLButtonElement | null>(null);
-  const talkMenuButtonRefs = useRef<Record<string, HTMLButtonElement | null>>({});
-  const folderMenuButtonRefs = useRef<Record<string, HTMLButtonElement | null>>({});
-  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 8 } }));
+  const talkMenuButtonRefs = useRef<Record<string, HTMLButtonElement | null>>(
+    {},
+  );
+  const folderMenuButtonRefs = useRef<Record<string, HTMLButtonElement | null>>(
+    {},
+  );
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
+  );
 
   useEffect(() => {
     setExpandedFolderIds((current) => {
@@ -239,7 +241,8 @@ export function ClawTalkSidebar({
 
     const getMenuAnchor = (): HTMLButtonElement | null => {
       if (menuState.type === 'create') return createMenuButtonRef.current;
-      if (menuState.type === 'talk') return talkMenuButtonRefs.current[menuState.talkId] ?? null;
+      if (menuState.type === 'talk')
+        return talkMenuButtonRefs.current[menuState.talkId] ?? null;
       return folderMenuButtonRefs.current[menuState.folderId] ?? null;
     };
 
@@ -275,7 +278,9 @@ export function ClawTalkSidebar({
       const top = openAbove
         ? Math.max(
             viewportPadding,
-            anchorRect.top - offset - Math.min(menuHeight || maxHeight, maxHeight),
+            anchorRect.top -
+              offset -
+              Math.min(menuHeight || maxHeight, maxHeight),
           )
         : Math.min(
             belowTop,
@@ -362,7 +367,12 @@ export function ClawTalkSidebar({
     if (!active || !over) return;
 
     if (active.kind === 'folder') {
-      if (over.kind !== 'folder' && over.kind !== 'talk' && over.kind !== 'root-drop') return;
+      if (
+        over.kind !== 'folder' &&
+        over.kind !== 'talk' &&
+        over.kind !== 'root-drop'
+      )
+        return;
       const destinationIndex =
         over.kind === 'root-drop'
           ? items.length
@@ -385,7 +395,8 @@ export function ClawTalkSidebar({
 
     if (over.kind === 'folder' || over.kind === 'folder-drop') {
       const folder = items.find(
-        (item): item is TalkSidebarFolder => item.type === 'folder' && item.id === over.folderId,
+        (item): item is TalkSidebarFolder =>
+          item.type === 'folder' && item.id === over.folderId,
       );
       if (!folder) return;
       void onReorder({
@@ -415,7 +426,9 @@ export function ClawTalkSidebar({
       if (destinationIndex === -1) {
         for (const item of items) {
           if (item.type === 'folder') {
-            const childIndex = item.talks.findIndex((talk) => talk.id === over.talkId);
+            const childIndex = item.talks.findIndex(
+              (talk) => talk.id === over.talkId,
+            );
             if (childIndex >= 0) {
               destinationFolderId = item.id;
               destinationIndex = childIndex;
@@ -434,7 +447,10 @@ export function ClawTalkSidebar({
     }
   };
 
-  const renderTalkRow = (talk: TalkSidebarItem & { type: 'talk' }, inFolder = false) => {
+  const renderTalkRow = (
+    talk: TalkSidebarItem & { type: 'talk' },
+    inFolder = false,
+  ) => {
     const menuOpen = menuState?.type === 'talk' && menuState.talkId === talk.id;
     const renaming = renameDraft?.talkId === talk.id;
     const moveOpen = menuOpen && menuState.moveOpen;
@@ -444,8 +460,12 @@ export function ClawTalkSidebar({
         id={encodeDndId({ kind: 'talk', talkId: talk.id })}
         active={activeDragId !== null}
       >
-        <DraggableRow draggableId={encodeDndId({ kind: 'talk', talkId: talk.id })}>
-          <div className={`clawtalk-sidebar-tree-row clawtalk-sidebar-talk-row${inFolder ? ' clawtalk-sidebar-talk-row-nested' : ''}`}>
+        <DraggableRow
+          draggableId={encodeDndId({ kind: 'talk', talkId: talk.id })}
+        >
+          <div
+            className={`clawtalk-sidebar-tree-row clawtalk-sidebar-talk-row${inFolder ? ' clawtalk-sidebar-talk-row-nested' : ''}`}
+          >
             <NavLink
               to={`/app/talks/${talk.id}`}
               className={({ isActive }) =>
@@ -453,7 +473,9 @@ export function ClawTalkSidebar({
               }
             >
               <span className="clawtalk-sidebar-tree-title">
-                {renaming ? renameDraft.draft || 'Untitled talk' : talk.title || 'Untitled talk'}
+                {renaming
+                  ? renameDraft.draft || 'Untitled talk'
+                  : talk.title || 'Untitled talk'}
               </span>
             </NavLink>
             <div className="clawtalk-sidebar-tree-actions">
@@ -474,49 +496,59 @@ export function ClawTalkSidebar({
               >
                 …
               </button>
-              {menuOpen ? (
-                renderMenu(
-                  <>
-                    <button type="button" onClick={() => onRenameTalk(talk.id, talk.title)}>
-                      Rename Talk
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() =>
-                        setMenuState({ type: 'talk', talkId: talk.id, moveOpen: !moveOpen })
-                      }
-                    >
-                      Move To
-                    </button>
-                    {moveOpen ? (
-                      <div className="clawtalk-sidebar-submenu">
-                        {moveTargets.map((target) => (
-                          <button
-                            key={target.id || 'top-level'}
-                            type="button"
-                            onClick={async () => {
-                              setMenuState(null);
-                              await onPatchTalk({ talkId: talk.id, folderId: target.id });
-                            }}
-                          >
-                            {target.label}
-                          </button>
-                        ))}
-                      </div>
-                    ) : null}
-                    <button
-                      type="button"
-                      className="danger"
-                      onClick={async () => {
-                        setMenuState(null);
-                        await onDeleteTalk(talk.id);
-                      }}
-                    >
-                      Delete Talk
-                    </button>
-                  </>,
-                )
-              ) : null}
+              {menuOpen
+                ? renderMenu(
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => onRenameTalk(talk.id, talk.title)}
+                      >
+                        Rename Talk
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setMenuState({
+                            type: 'talk',
+                            talkId: talk.id,
+                            moveOpen: !moveOpen,
+                          })
+                        }
+                      >
+                        Move To
+                      </button>
+                      {moveOpen ? (
+                        <div className="clawtalk-sidebar-submenu">
+                          {moveTargets.map((target) => (
+                            <button
+                              key={target.id || 'top-level'}
+                              type="button"
+                              onClick={async () => {
+                                setMenuState(null);
+                                await onPatchTalk({
+                                  talkId: talk.id,
+                                  folderId: target.id,
+                                });
+                              }}
+                            >
+                              {target.label}
+                            </button>
+                          ))}
+                        </div>
+                      ) : null}
+                      <button
+                        type="button"
+                        className="danger"
+                        onClick={async () => {
+                          setMenuState(null);
+                          await onDeleteTalk(talk.id);
+                        }}
+                      >
+                        Delete Talk
+                      </button>
+                    </>,
+                  )
+                : null}
             </div>
           </div>
         </DraggableRow>
@@ -525,7 +557,8 @@ export function ClawTalkSidebar({
   };
 
   const renderFolderRow = (folder: TalkSidebarFolder) => {
-    const menuOpen = menuState?.type === 'folder' && menuState.folderId === folder.id;
+    const menuOpen =
+      menuState?.type === 'folder' && menuState.folderId === folder.id;
     const expanded = expandedFolderIds[folder.id] !== false;
     const renaming = renamingFolderId === folder.id;
     const draft = folderDrafts[folder.id] ?? folder.title;
@@ -536,7 +569,9 @@ export function ClawTalkSidebar({
           id={encodeDndId({ kind: 'folder', folderId: folder.id })}
           active={activeDragId !== null}
         >
-          <DraggableRow draggableId={encodeDndId({ kind: 'folder', folderId: folder.id })}>
+          <DraggableRow
+            draggableId={encodeDndId({ kind: 'folder', folderId: folder.id })}
+          >
             <div className="clawtalk-sidebar-tree-row clawtalk-sidebar-folder-row">
               <button
                 type="button"
@@ -604,7 +639,8 @@ export function ClawTalkSidebar({
                   aria-label={`Manage ${folder.title || 'Untitled folder'}`}
                   onClick={() =>
                     setMenuState((current) =>
-                      current?.type === 'folder' && current.folderId === folder.id
+                      current?.type === 'folder' &&
+                      current.folderId === folder.id
                         ? null
                         : { type: 'folder', folderId: folder.id },
                     )
@@ -612,39 +648,39 @@ export function ClawTalkSidebar({
                 >
                   …
                 </button>
-                {menuOpen ? (
-                  renderMenu(
-                    <>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setMenuState(null);
-                          setRenamingFolderId(folder.id);
-                          setFolderDrafts((current) => ({
-                            ...current,
-                            [folder.id]: folder.title,
-                          }));
-                        }}
-                      >
-                        Rename Folder
-                      </button>
-                      <button
-                        type="button"
-                        className="danger"
-                        onClick={async () => {
-                          setMenuState(null);
-                          const confirmed = window.confirm(
-                            `Delete "${folder.title || 'Untitled folder'}"? Its talks will be moved to Top Level.`,
-                          );
-                          if (!confirmed) return;
-                          await onDeleteFolder(folder.id);
-                        }}
-                      >
-                        Delete Folder
-                      </button>
-                    </>,
-                  )
-                ) : null}
+                {menuOpen
+                  ? renderMenu(
+                      <>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setMenuState(null);
+                            setRenamingFolderId(folder.id);
+                            setFolderDrafts((current) => ({
+                              ...current,
+                              [folder.id]: folder.title,
+                            }));
+                          }}
+                        >
+                          Rename Folder
+                        </button>
+                        <button
+                          type="button"
+                          className="danger"
+                          onClick={async () => {
+                            setMenuState(null);
+                            const confirmed = window.confirm(
+                              `Delete "${folder.title || 'Untitled folder'}"? Its talks will be moved to Top Level.`,
+                            );
+                            if (!confirmed) return;
+                            await onDeleteFolder(folder.id);
+                          }}
+                        >
+                          Delete Folder
+                        </button>
+                      </>,
+                    )
+                  : null}
               </div>
             </div>
           </DraggableRow>
@@ -669,14 +705,6 @@ export function ClawTalkSidebar({
 
   return (
     <aside className="clawtalk-sidebar" aria-label="Primary navigation">
-      <div className="clawtalk-sidebar-brand">
-        <ClawTalkMark />
-        <div>
-          <strong>ClawTalk</strong>
-          <span>Talk workspace</span>
-        </div>
-      </div>
-
       <nav className="clawtalk-sidebar-nav" aria-label="App sections">
         <NavLink
           to="/app/talks"
@@ -719,23 +747,31 @@ export function ClawTalkSidebar({
               ref={createMenuButtonRef}
               aria-label="Create talk or folder"
               onClick={() =>
-                setMenuState((current) => (current?.type === 'create' ? null : { type: 'create' }))
+                setMenuState((current) =>
+                  current?.type === 'create' ? null : { type: 'create' },
+                )
               }
             >
               +
             </button>
-            {menuState?.type === 'create' ? (
-              renderMenu(
-                <>
-                  <button type="button" onClick={() => void handleCreateTalkClick()}>
-                    New Talk
-                  </button>
-                  <button type="button" onClick={() => void handleCreateFolderClick()}>
-                    New Folder
-                  </button>
-                </>,
-              )
-            ) : null}
+            {menuState?.type === 'create'
+              ? renderMenu(
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => void handleCreateTalkClick()}
+                    >
+                      New Talk
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void handleCreateFolderClick()}
+                    >
+                      New Folder
+                    </button>
+                  </>,
+                )
+              : null}
           </div>
         </div>
 
@@ -754,7 +790,9 @@ export function ClawTalkSidebar({
           ) : error ? (
             <p className="clawtalk-sidebar-empty">{error}</p>
           ) : items.length === 0 ? (
-            <p className="clawtalk-sidebar-empty">No talks yet. Use + to create one.</p>
+            <p className="clawtalk-sidebar-empty">
+              No talks yet. Use + to create one.
+            </p>
           ) : (
             <DndContext
               sensors={sensors}
@@ -763,10 +801,15 @@ export function ClawTalkSidebar({
               onDragEnd={handleDragEnd}
               onDragCancel={() => setActiveDragId(null)}
             >
-              <DropZone id={encodeDndId({ kind: 'root-drop' })} active={activeDragId !== null}>
+              <DropZone
+                id={encodeDndId({ kind: 'root-drop' })}
+                active={activeDragId !== null}
+              >
                 <div className="clawtalk-sidebar-tree">
                   {items.map((item) =>
-                    item.type === 'folder' ? renderFolderRow(item) : renderTalkRow(item),
+                    item.type === 'folder'
+                      ? renderFolderRow(item)
+                      : renderTalkRow(item),
                   )}
                 </div>
               </DropZone>

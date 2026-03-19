@@ -1,4 +1,5 @@
 import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -7,6 +8,7 @@ import { App } from './App';
 describe('App', () => {
   afterEach(() => {
     cleanup();
+    window.localStorage.clear();
     vi.unstubAllGlobals();
   });
 
@@ -110,10 +112,63 @@ describe('App', () => {
     renderWithRouter('/app/talks');
     await screen.findByRole('heading', { name: 'Talks' });
     expect(screen.getByText('ClawTalk')).toBeTruthy();
-    expect(screen.getByRole('link', { name: 'Home' })).toBeTruthy();
-    expect(screen.getAllByRole('link', { name: /Family Planning/i })).toHaveLength(
-      2,
+    expect(screen.getByRole('searchbox', { name: 'Search' })).toBeTruthy();
+    expect(screen.getByRole('link', { name: 'Help' })).toHaveAttribute(
+      'href',
+      'https://clawtalk.app/help',
     );
+    expect(
+      screen.getByRole('button', { name: 'Collapse sidebar' }),
+    ).toBeTruthy();
+    expect(screen.getByRole('link', { name: 'Home' })).toBeTruthy();
+    expect(
+      screen.getAllByRole('link', { name: /Family Planning/i }),
+    ).toHaveLength(2);
+  });
+
+  it('collapses and re-expands the sidebar from the top header', async () => {
+    const user = userEvent.setup();
+    mockFetchByPath({
+      '/api/v1/session/me': [
+        jsonResponse(200, {
+          ok: true,
+          data: {
+            user: {
+              id: 'u1',
+              email: 'owner@example.com',
+              displayName: 'Owner',
+              role: 'owner',
+            },
+          },
+        }),
+      ],
+      '/api/v1/talks/sidebar': [
+        jsonResponse(200, {
+          ok: true,
+          data: {
+            items: [],
+          },
+        }),
+      ],
+    });
+
+    renderWithRouter('/app/talks');
+    const collapseButton = await screen.findByRole('button', {
+      name: 'Collapse sidebar',
+    });
+    expect(screen.getByRole('link', { name: 'Home' })).toBeTruthy();
+
+    await user.click(collapseButton);
+
+    expect(screen.getByRole('button', { name: 'Expand sidebar' })).toBeTruthy();
+    expect(screen.queryByRole('link', { name: 'Home' })).toBeNull();
+
+    await user.click(screen.getByRole('button', { name: 'Expand sidebar' }));
+
+    expect(
+      await screen.findByRole('button', { name: 'Collapse sidebar' }),
+    ).toBeTruthy();
+    expect(screen.getByRole('link', { name: 'Home' })).toBeTruthy();
   });
 
   it('returns to sign-in when a later API call returns 401', async () => {
@@ -246,6 +301,14 @@ describe('App', () => {
             talkId: 'talk-missing',
             messages: [],
             page: { limit: 100, count: 0, beforeCreatedAt: null },
+          },
+        }),
+      ],
+      '/api/v1/talks/talk-missing/threads': [
+        jsonResponse(200, {
+          ok: true,
+          data: {
+            threads: [],
           },
         }),
       ],
