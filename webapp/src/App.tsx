@@ -1,7 +1,14 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
+import {
+  Navigate,
+  Route,
+  Routes,
+  useLocation,
+  useNavigate,
+} from 'react-router-dom';
 
 import { AvatarMenu } from './components/AvatarMenu';
+import { ClawTalkMark } from './components/ClawTalkMark';
 import { ClawTalkSidebar } from './components/ClawTalkSidebar';
 import { SignInView } from './components/SignInView';
 import {
@@ -40,6 +47,8 @@ type RenameDraft = {
   draft: string;
 } | null;
 
+const SIDEBAR_COLLAPSED_STORAGE_KEY = 'clawtalk.sidebarCollapsed';
+
 function toSidebarTalk(talk: Talk): TalkSidebarTalk {
   return {
     type: 'talk',
@@ -50,7 +59,10 @@ function toSidebarTalk(talk: Talk): TalkSidebarTalk {
   };
 }
 
-function updateSidebarTalk(items: TalkSidebarItem[], talk: Talk): TalkSidebarItem[] {
+function updateSidebarTalk(
+  items: TalkSidebarItem[],
+  talk: Talk,
+): TalkSidebarItem[] {
   return items.map((item) => {
     if (item.type === 'talk') {
       return item.id === talk.id ? toSidebarTalk(talk) : item;
@@ -64,7 +76,10 @@ function updateSidebarTalk(items: TalkSidebarItem[], talk: Talk): TalkSidebarIte
   });
 }
 
-function removeSidebarTalk(items: TalkSidebarItem[], talkId: string): TalkSidebarItem[] {
+function removeSidebarTalk(
+  items: TalkSidebarItem[],
+  talkId: string,
+): TalkSidebarItem[] {
   return items
     .filter((item) => !(item.type === 'talk' && item.id === talkId))
     .map((item) =>
@@ -74,7 +89,10 @@ function removeSidebarTalk(items: TalkSidebarItem[], talkId: string): TalkSideba
     );
 }
 
-function insertTopLevelTalk(items: TalkSidebarItem[], talk: Talk): TalkSidebarItem[] {
+function insertTopLevelTalk(
+  items: TalkSidebarItem[],
+  talk: Talk,
+): TalkSidebarItem[] {
   return [toSidebarTalk(talk), ...items];
 }
 
@@ -89,7 +107,9 @@ function replaceSidebarFolder(
     sortOrder: folder.sortOrder,
     talks: folder.talks,
   };
-  const existing = items.find((item) => item.type === 'folder' && item.id === folder.id);
+  const existing = items.find(
+    (item) => item.type === 'folder' && item.id === folder.id,
+  );
   if (!existing) {
     return [...items, nextFolder].sort(
       (a, b) => a.sortOrder - b.sortOrder || a.id.localeCompare(b.id),
@@ -100,9 +120,13 @@ function replaceSidebarFolder(
   );
 }
 
-function removeSidebarFolder(items: TalkSidebarItem[], folderId: string): TalkSidebarItem[] {
+function removeSidebarFolder(
+  items: TalkSidebarItem[],
+  folderId: string,
+): TalkSidebarItem[] {
   const folder = items.find(
-    (item): item is TalkSidebarFolder => item.type === 'folder' && item.id === folderId,
+    (item): item is TalkSidebarFolder =>
+      item.type === 'folder' && item.id === folderId,
   );
   if (!folder) return items;
   const withoutFolder = items.filter(
@@ -115,7 +139,10 @@ function removeSidebarFolder(items: TalkSidebarItem[], folderId: string): TalkSi
   return [...promoted, ...withoutFolder];
 }
 
-function findTalkTitle(items: TalkSidebarItem[], talkId: string): string | null {
+function findTalkTitle(
+  items: TalkSidebarItem[],
+  talkId: string,
+): string | null {
   for (const item of items) {
     if (item.type === 'talk' && item.id === talkId) return item.title;
     if (item.type === 'folder') {
@@ -139,9 +166,12 @@ function buildOptimisticReorder(
 
   if (input.itemType === 'folder') {
     if (input.destinationFolderId !== null) return items;
-    const root = items.filter((item) => item.type !== 'folder' || item.id !== input.itemId);
+    const root = items.filter(
+      (item) => item.type !== 'folder' || item.id !== input.itemId,
+    );
     const folder = items.find(
-      (item): item is TalkSidebarFolder => item.type === 'folder' && item.id === input.itemId,
+      (item): item is TalkSidebarFolder =>
+        item.type === 'folder' && item.id === input.itemId,
     );
     if (!folder) return items;
     const next = [...root];
@@ -153,12 +183,18 @@ function buildOptimisticReorder(
     .filter((item) => !(item.type === 'talk' && item.id === input.itemId))
     .map((item) =>
       item.type === 'folder'
-        ? { ...item, talks: item.talks.filter((talk) => talk.id !== input.itemId) }
+        ? {
+            ...item,
+            talks: item.talks.filter((talk) => talk.id !== input.itemId),
+          }
         : item,
     );
 
   const moving =
-    items.find((item): item is TalkSidebarTalk => item.type === 'talk' && item.id === input.itemId) ||
+    items.find(
+      (item): item is TalkSidebarTalk =>
+        item.type === 'talk' && item.id === input.itemId,
+    ) ||
     items
       .filter((item): item is TalkSidebarFolder => item.type === 'folder')
       .flatMap((folder) => folder.talks)
@@ -179,7 +215,8 @@ function buildOptimisticReorder(
   }
 
   return stripped.map((item) => {
-    if (item.type !== 'folder' || item.id !== input.destinationFolderId) return item;
+    if (item.type !== 'folder' || item.id !== input.destinationFolderId)
+      return item;
     const talks = [...item.talks];
     talks.splice(Math.min(destinationIndex, talks.length), 0, {
       ...moving,
@@ -201,6 +238,23 @@ export function App() {
   const [sidebarLoading, setSidebarLoading] = useState(true);
   const [sidebarError, setSidebarError] = useState<string | null>(null);
   const [renameDraft, setRenameDraft] = useState<RenameDraft>(null);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const stored = window.localStorage.getItem(SIDEBAR_COLLAPSED_STORAGE_KEY);
+    if (stored === 'true') {
+      setSidebarCollapsed(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    window.localStorage.setItem(
+      SIDEBAR_COLLAPSED_STORAGE_KEY,
+      sidebarCollapsed ? 'true' : 'false',
+    );
+  }, [sidebarCollapsed]);
 
   const refreshSession = useCallback(async () => {
     try {
@@ -244,7 +298,9 @@ export function App() {
         handleUnauthorized();
         return;
       }
-      setSidebarError(err instanceof Error ? err.message : 'Failed to load talks');
+      setSidebarError(
+        err instanceof Error ? err.message : 'Failed to load talks',
+      );
     } finally {
       setSidebarLoading(false);
     }
@@ -286,22 +342,34 @@ export function App() {
     [navigate],
   );
 
-  const handleRenameDraftChange = useCallback((talkId: string, draft: string) => {
-    setRenameDraft({ talkId, draft });
-  }, []);
+  const handleRenameDraftChange = useCallback(
+    (talkId: string, draft: string) => {
+      setRenameDraft({ talkId, draft });
+    },
+    [],
+  );
 
   const handleRenameDraftCancel = useCallback((talkId: string) => {
     setRenameDraft((current) => (current?.talkId === talkId ? null : current));
   }, []);
 
-  const handleRenameDraftCommit = useCallback(async (talkId: string, draft: string) => {
-    const updated = await patchTalkMetadata({ talkId, title: draft });
-    setSidebarItems((current) => updateSidebarTalk(current, updated));
-    setRenameDraft((current) => (current?.talkId === talkId ? null : current));
-  }, []);
+  const handleRenameDraftCommit = useCallback(
+    async (talkId: string, draft: string) => {
+      const updated = await patchTalkMetadata({ talkId, title: draft });
+      setSidebarItems((current) => updateSidebarTalk(current, updated));
+      setRenameDraft((current) =>
+        current?.talkId === talkId ? null : current,
+      );
+    },
+    [],
+  );
 
   const handlePatchTalk = useCallback(
-    async (input: { talkId: string; title?: string; folderId?: string | null }) => {
+    async (input: {
+      talkId: string;
+      title?: string;
+      folderId?: string | null;
+    }) => {
       const updated = await patchTalkMetadata(input);
       setSidebarItems((current) => {
         const without = removeSidebarTalk(current, updated.id);
@@ -312,7 +380,8 @@ export function App() {
               ? {
                   ...item,
                   talks: [...item.talks, nextTalk].sort(
-                    (a, b) => a.sortOrder - b.sortOrder || a.id.localeCompare(b.id),
+                    (a, b) =>
+                      a.sortOrder - b.sortOrder || a.id.localeCompare(b.id),
                   ),
                 }
               : item,
@@ -339,16 +408,22 @@ export function App() {
     [location.pathname, navigate],
   );
 
-  const handleRenameFolder = useCallback(async (folderId: string, title: string) => {
-    const updated = await patchTalkFolder({ folderId, title });
-    setSidebarItems((current) => replaceSidebarFolder(current, updated));
-  }, []);
+  const handleRenameFolder = useCallback(
+    async (folderId: string, title: string) => {
+      const updated = await patchTalkFolder({ folderId, title });
+      setSidebarItems((current) => replaceSidebarFolder(current, updated));
+    },
+    [],
+  );
 
-  const handleDeleteFolder = useCallback(async (folderId: string) => {
-    await deleteTalkFolder(folderId);
-    setSidebarItems((current) => removeSidebarFolder(current, folderId));
-    void refreshSidebar();
-  }, [refreshSidebar]);
+  const handleDeleteFolder = useCallback(
+    async (folderId: string) => {
+      await deleteTalkFolder(folderId);
+      setSidebarItems((current) => removeSidebarFolder(current, folderId));
+      void refreshSidebar();
+    },
+    [refreshSidebar],
+  );
 
   const handleReorder = useCallback(
     async (input: {
@@ -375,17 +450,16 @@ export function App() {
     auth.status === 'authenticated' &&
     (auth.user.role === 'owner' || auth.user.role === 'admin');
 
-  const handleUserUpdated = useCallback(
-    (user: SessionUser) => {
-      setAuth({ status: 'authenticated', user });
-    },
-    [],
-  );
+  const handleUserUpdated = useCallback((user: SessionUser) => {
+    setAuth({ status: 'authenticated', user });
+  }, []);
 
   const currentTalkId = location.pathname.startsWith('/app/talks/')
     ? decodeURIComponent(location.pathname.split('/')[3] || '')
     : '';
-  const currentTalkTitle = currentTalkId ? findTalkTitle(sidebarItems, currentTalkId) : null;
+  const currentTalkTitle = currentTalkId
+    ? findTalkTitle(sidebarItems, currentTalkId)
+    : null;
   const isTalkRoute =
     location.pathname.startsWith('/app/talks/') &&
     location.pathname !== '/app/talks';
@@ -400,46 +474,85 @@ export function App() {
   }
 
   return (
-    <main className="app-shell">
-      <ClawTalkSidebar
-        items={sidebarItems}
-        loading={sidebarLoading}
-        error={sidebarError}
-        userRole={auth.user.role}
-        onCreateTalk={handleCreateTalk}
-        onCreateFolder={handleCreateFolder}
-        onRenameTalk={handleRenameTalk}
-        onPatchTalk={handlePatchTalk}
-        onDeleteTalk={handleDeleteTalk}
-        onRenameFolder={handleRenameFolder}
-        onDeleteFolder={handleDeleteFolder}
-        onReorder={handleReorder}
-        renameDraft={renameDraft}
-      />
-      <div className="app-main">
-        <header className="app-main-topbar">
-          <div className="app-main-topbar-spacer" />
+    <main
+      className={`app-shell${sidebarCollapsed ? ' app-shell-sidebar-collapsed' : ''}`}
+    >
+      <header className="app-global-header">
+        <div className="app-global-header-left">
+          <button
+            type="button"
+            className="app-sidebar-toggle"
+            aria-label={
+              sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'
+            }
+            onClick={() => setSidebarCollapsed((current) => !current)}
+          >
+            {sidebarCollapsed ? '▸' : '◂'}
+          </button>
+          <div className="app-global-brand">
+            <ClawTalkMark />
+            <span className="app-global-brand-title">ClawTalk</span>
+          </div>
+          <form
+            className="app-global-search"
+            role="search"
+            onSubmit={(event) => event.preventDefault()}
+          >
+            <span className="app-global-search-icon" aria-hidden="true">
+              ⌕
+            </span>
+            <input type="search" aria-label="Search" placeholder="Search..." />
+          </form>
+        </div>
+        <div className="app-global-header-right">
+          <a
+            className="app-global-help-link"
+            href="https://clawtalk.app/help"
+            target="_blank"
+            rel="noreferrer"
+            aria-label="Help"
+            title="Help"
+          >
+            ?
+          </a>
           <AvatarMenu
             user={auth.user}
             canManageSettings={canManageSettings}
             onSignOut={handleSignOut}
             signOutBusy={signOutBusy}
           />
-        </header>
-        <div className={`app-main-content${isTalkRoute || isMainRoute ? ' app-main-content-talk' : ''}`}>
+        </div>
+      </header>
+      {!sidebarCollapsed ? (
+        <ClawTalkSidebar
+          items={sidebarItems}
+          loading={sidebarLoading}
+          error={sidebarError}
+          userRole={auth.user.role}
+          onCreateTalk={handleCreateTalk}
+          onCreateFolder={handleCreateFolder}
+          onRenameTalk={handleRenameTalk}
+          onPatchTalk={handlePatchTalk}
+          onDeleteTalk={handleDeleteTalk}
+          onRenameFolder={handleRenameFolder}
+          onDeleteFolder={handleDeleteFolder}
+          onReorder={handleReorder}
+          renameDraft={renameDraft}
+        />
+      ) : null}
+      <div className="app-main">
+        <div
+          className={`app-main-content${isTalkRoute || isMainRoute ? ' app-main-content-talk' : ''}`}
+        >
           <Routes>
             <Route path="/" element={<Navigate to="/app/main" replace />} />
             <Route
               path="/app/main"
-              element={
-                <MainChannelPage onUnauthorized={handleUnauthorized} />
-              }
+              element={<MainChannelPage onUnauthorized={handleUnauthorized} />}
             />
             <Route
               path="/app/main/:threadId"
-              element={
-                <MainChannelPage onUnauthorized={handleUnauthorized} />
-              }
+              element={<MainChannelPage onUnauthorized={handleUnauthorized} />}
             />
             <Route
               path="/app/talks"

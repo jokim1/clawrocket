@@ -23,23 +23,137 @@ a {
 
 .app-shell {
   min-height: 100vh;
-  display: flex;
-  align-items: stretch;
+  display: grid;
+  grid-template-columns: 285px minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
   gap: 1rem;
   padding: 1rem;
 }
 
+.app-shell-sidebar-collapsed {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.app-global-header {
+  grid-column: 1 / -1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.75rem 1rem;
+  border: 1px solid #d6dfed;
+  border-radius: 18px;
+  background: linear-gradient(180deg, #fbfdff 0%, #f3f6fb 100%);
+  box-shadow: 0 12px 32px rgba(31, 52, 88, 0.08);
+}
+
+.app-global-header-left,
+.app-global-header-right {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 0.85rem;
+}
+
+.app-global-header-left {
+  flex: 1;
+}
+
+.app-sidebar-toggle,
+.app-global-help-link {
+  width: 2.35rem;
+  height: 2.35rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid #d7dfef;
+  border-radius: 12px;
+  background: #fff;
+  color: #34528c;
+  text-decoration: none;
+  cursor: pointer;
+  transition:
+    border-color 140ms ease,
+    background 140ms ease,
+    color 140ms ease,
+    box-shadow 140ms ease;
+}
+
+.app-sidebar-toggle:hover,
+.app-global-help-link:hover {
+  border-color: #b9cbef;
+  background: #f7faff;
+  color: #143f8f;
+  box-shadow: inset 0 0 0 1px #d7e4ff;
+}
+
+.app-global-brand {
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.app-global-brand-title {
+  font-size: 1.25rem;
+  font-weight: 700;
+  color: #18263d;
+}
+
+.app-global-search {
+  flex: 1;
+  min-width: 0;
+  max-width: 32rem;
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  padding: 0.1rem 0.9rem;
+  border: 1px solid #d6dfed;
+  border-radius: 14px;
+  background: #fff;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.65);
+}
+
+.app-global-search:focus-within {
+  border-color: #abc2f2;
+  box-shadow:
+    inset 0 0 0 1px #c7d8fb,
+    0 0 0 3px rgba(134, 174, 251, 0.18);
+}
+
+.app-global-search-icon {
+  color: #6d7c99;
+  font-size: 0.95rem;
+}
+
+.app-global-search input {
+  width: 100%;
+  border: 0;
+  background: transparent;
+  color: #1d2433;
+  font-size: 0.95rem;
+  padding: 0.58rem 0;
+}
+
+.app-global-search input:focus {
+  outline: none;
+}
+
+.app-global-search input::placeholder {
+  color: #7c89a2;
+}
+
 .clawtalk-sidebar {
+  grid-column: 1;
   width: 285px;
   flex: 0 0 285px;
-  align-self: flex-start;
+  align-self: stretch;
   display: flex;
   flex-direction: column;
   gap: 1rem;
   padding: 1rem 0.9rem;
-  position: sticky;
-  top: 1rem;
-  max-height: calc(100vh - 2rem);
+  min-height: 0;
   overflow: hidden;
   border: 1px solid #d6dfed;
   border-radius: 18px;
@@ -407,19 +521,15 @@ a {
 }
 
 .app-main {
+  grid-column: 2;
   min-width: 0;
-  flex: 1;
   display: flex;
   flex-direction: column;
-  gap: 1rem;
   min-height: 0;
 }
 
-.app-main-topbar {
-  display: flex;
-  justify-content: flex-end;
-  align-items: center;
-  gap: 1rem;
+.app-shell-sidebar-collapsed .app-main {
+  grid-column: 1;
 }
 
 .app-main-content {
@@ -434,10 +544,6 @@ a {
   display: flex;
   overflow: hidden;
   align-content: stretch;
-}
-
-.app-main-topbar-spacer {
-  flex: 1;
 }
 
 /* ── Avatar Menu ── */
@@ -2323,14 +2429,34 @@ a {
 
 @media (max-width: 960px) {
   .app-shell {
-    flex-direction: column;
+    grid-template-columns: 1fr;
+    grid-template-rows: auto auto minmax(0, 1fr);
   }
 
   .clawtalk-sidebar {
+    grid-column: 1;
     width: 100%;
-    flex-basis: auto;
     position: static;
     max-height: none;
+  }
+
+  .app-main,
+  .app-shell-sidebar-collapsed .app-main {
+    grid-column: 1;
+  }
+
+  .app-global-header {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .app-global-header-left,
+  .app-global-header-right {
+    width: 100%;
+  }
+
+  .app-global-search {
+    max-width: none;
   }
 
   .clawtalk-sidebar-talks {
@@ -2353,17 +2479,16 @@ a {
   .talk-outputs-layout {
     grid-template-columns: 1fr;
   }
-
-  .app-main-topbar {
-    justify-content: space-between;
-    align-items: flex-start;
-    flex-direction: column;
-  }
 }
 
 @media (max-width: 720px) {
-  .clawtalk-sidebar-brand {
-    padding-bottom: 0.6rem;
+  .app-global-header-left {
+    flex-wrap: wrap;
+  }
+
+  .app-global-search {
+    flex-basis: 100%;
+    order: 1;
   }
 
   .page-header {
