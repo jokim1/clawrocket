@@ -1631,10 +1631,25 @@ a {
   margin-top: 0.65rem;
 }
 
+.talk-tabs-stack {
+  display: grid;
+  gap: 0.55rem;
+  margin-top: 0.65rem;
+}
+
+.talk-subtabs-row {
+  display: flex;
+  align-items: center;
+}
+
 .talk-tabs {
   display: flex;
   gap: 0.55rem;
   flex-wrap: wrap;
+}
+
+.talk-subtabs {
+  gap: 0.45rem;
 }
 
 .talk-orchestration-picker {

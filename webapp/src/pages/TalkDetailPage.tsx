@@ -156,6 +156,17 @@ type TabKey =
   | 'data-connectors'
   | 'runs';
 
+const SETTINGS_TAB_KEYS: ReadonlyArray<
+  Extract<
+    TabKey,
+    'context' | 'rules' | 'tools' | 'state' | 'channels' | 'data-connectors'
+  >
+> = ['context', 'rules', 'tools', 'state', 'channels', 'data-connectors'];
+
+function isSettingsTabKey(tab: TabKey): boolean {
+  return SETTINGS_TAB_KEYS.includes(tab as (typeof SETTINGS_TAB_KEYS)[number]);
+}
+
 type RunView = TalkRun & {
   updatedAt: number;
 };
@@ -3168,11 +3179,13 @@ export function TalkDetailPage({
   const runsTabHref = activeThreadId
     ? buildThreadHref(talkId, activeThreadId, 'runs')
     : `/app/talks/${talkId}/runs`;
+  const settingsTabHref = contextTabHref;
   const manageAgentsHref = `/app/agents?returnTo=${encodeURIComponent(
     threadAwareTalkTabHref,
   )}&focus=providers`;
   const manageConnectorsHref = '/app/connectors';
   const isRenaming = renameDraft?.talkId === talkId;
+  const isSettingsTab = isSettingsTabKey(currentTab);
 
   useEffect(() => {
     if (state.kind !== 'ready' || currentTab !== 'tools') return;
@@ -3532,7 +3545,7 @@ export function TalkDetailPage({
           setTalkOutputsStatus({
             status: 'error',
             message:
-              err instanceof Error ? err.message : 'Failed to load outputs.',
+              err instanceof Error ? err.message : 'Failed to load reports.',
           });
         }
       }
@@ -3846,7 +3859,7 @@ export function TalkDetailPage({
         setSelectedOutputStatus({
           status: 'error',
           message:
-            err instanceof Error ? err.message : 'Failed to load output.',
+            err instanceof Error ? err.message : 'Failed to load report.',
         });
       }
     },
@@ -3859,7 +3872,7 @@ export function TalkDetailPage({
     try {
       const output = await createTalkOutput({
         talkId,
-        title: 'Untitled Output',
+        title: 'Untitled Report',
         contentMarkdown: '',
       });
       setTalkOutputs((current) => [output, ...current]);
@@ -3871,7 +3884,7 @@ export function TalkDetailPage({
       setSelectedOutputStatus({ status: 'idle' });
       setTalkOutputsStatus({
         status: 'success',
-        message: 'Output created.',
+        message: 'Report created.',
       });
     } catch (err) {
       if (err instanceof UnauthorizedError) {
@@ -3881,7 +3894,7 @@ export function TalkDetailPage({
       setTalkOutputsStatus({
         status: 'error',
         message:
-          err instanceof Error ? err.message : 'Failed to create output.',
+          err instanceof Error ? err.message : 'Failed to create report.',
       });
     }
   }, [canEditOutputs, handleUnauthorized, talkId]);
@@ -3907,7 +3920,7 @@ export function TalkDetailPage({
       );
       setTalkOutputsStatus({
         status: 'success',
-        message: 'Output saved.',
+        message: 'Report saved.',
       });
     } catch (err) {
       if (err instanceof UnauthorizedError) {
@@ -3916,7 +3929,7 @@ export function TalkDetailPage({
       }
       setTalkOutputsStatus({
         status: 'error',
-        message: err instanceof Error ? err.message : 'Failed to save output.',
+        message: err instanceof Error ? err.message : 'Failed to save report.',
       });
     }
   }, [
@@ -3953,7 +3966,7 @@ export function TalkDetailPage({
       }
       setTalkOutputsStatus({
         status: 'success',
-        message: 'Output deleted.',
+        message: 'Report deleted.',
       });
     } catch (err) {
       if (err instanceof UnauthorizedError) {
@@ -3963,7 +3976,7 @@ export function TalkDetailPage({
       setTalkOutputsStatus({
         status: 'error',
         message:
-          err instanceof Error ? err.message : 'Failed to delete output.',
+          err instanceof Error ? err.message : 'Failed to delete report.',
       });
     }
   }, [
@@ -5990,97 +6003,116 @@ export function TalkDetailPage({
                   })}
                 </div>
               ) : null}
-              <div className="talk-tabs-row">
-                <nav className="talk-tabs" aria-label="Talk sections">
-                  <Link
-                    to={threadAwareTalkTabHref}
-                    className={`talk-tab ${currentTab === 'talk' ? 'talk-tab-active' : ''}`}
-                  >
-                    Talk
-                  </Link>
-                  <Link
-                    to={agentsTabHref}
-                    className={`talk-tab ${currentTab === 'agents' ? 'talk-tab-active' : ''}`}
-                  >
-                    Agents
-                  </Link>
-                  <Link
-                    to={jobsTabHref}
-                    className={`talk-tab ${currentTab === 'jobs' ? 'talk-tab-active' : ''}`}
-                  >
-                    Jobs
-                  </Link>
-                  <Link
-                    to={toolsTabHref}
-                    className={`talk-tab ${currentTab === 'tools' ? 'talk-tab-active' : ''}`}
-                  >
-                    Tools
-                  </Link>
-                  <Link
-                    to={contextTabHref}
-                    className={`talk-tab ${currentTab === 'context' ? 'talk-tab-active' : ''}`}
-                  >
-                    Context
-                  </Link>
-                  <Link
-                    to={rulesTabHref}
-                    className={`talk-tab ${currentTab === 'rules' ? 'talk-tab-active' : ''}`}
-                  >
-                    Rules
-                    <span
-                      className="talk-tab-badge"
-                      aria-label={`${activeRuleCount} active rules`}
+              <div className="talk-tabs-stack">
+                <div className="talk-tabs-row">
+                  <nav className="talk-tabs" aria-label="Talk sections">
+                    <Link
+                      to={threadAwareTalkTabHref}
+                      className={`talk-tab ${currentTab === 'talk' ? 'talk-tab-active' : ''}`}
                     >
-                      {activeRuleCount}
-                    </span>
-                  </Link>
-                  <Link
-                    to={stateTabHref}
-                    className={`talk-tab ${currentTab === 'state' ? 'talk-tab-active' : ''}`}
-                  >
-                    State
-                  </Link>
-                  <Link
-                    to={outputsTabHref}
-                    className={`talk-tab ${currentTab === 'outputs' ? 'talk-tab-active' : ''}`}
-                  >
-                    Outputs
-                  </Link>
-                  <Link
-                    to={channelsTabHref}
-                    className={`talk-tab ${currentTab === 'channels' ? 'talk-tab-active' : ''}`}
-                  >
-                    Channels
-                  </Link>
-                  <Link
-                    to={connectorsTabHref}
-                    className={`talk-tab ${currentTab === 'data-connectors' ? 'talk-tab-active' : ''}`}
-                  >
-                    Data Connectors
-                  </Link>
-                  <Link
-                    to={runsTabHref}
-                    className={`talk-tab ${currentTab === 'runs' ? 'talk-tab-active' : ''}`}
-                  >
-                    Run History
-                  </Link>
-                </nav>
-                {showOrchestrationSelector ? (
-                  <label className="talk-orchestration-picker">
-                    <span>Response mode</span>
-                    <select
-                      value={orchestrationMode}
-                      onChange={(event) =>
-                        void handleOrchestrationModeChange(
-                          event.target.value as 'ordered' | 'panel',
-                        )
-                      }
-                      disabled={orchestrationState.status === 'saving'}
+                      Talk
+                    </Link>
+                    <Link
+                      to={agentsTabHref}
+                      className={`talk-tab ${currentTab === 'agents' ? 'talk-tab-active' : ''}`}
                     >
-                      <option value="ordered">Ordered Responses</option>
-                      <option value="panel">Parallel Responses (Quick)</option>
-                    </select>
-                  </label>
+                      Agents
+                    </Link>
+                    <Link
+                      to={jobsTabHref}
+                      className={`talk-tab ${currentTab === 'jobs' ? 'talk-tab-active' : ''}`}
+                    >
+                      Jobs
+                    </Link>
+                    <Link
+                      to={settingsTabHref}
+                      className={`talk-tab ${isSettingsTab ? 'talk-tab-active' : ''}`}
+                    >
+                      Settings
+                    </Link>
+                    <Link
+                      to={outputsTabHref}
+                      className={`talk-tab ${currentTab === 'outputs' ? 'talk-tab-active' : ''}`}
+                    >
+                      Reports
+                    </Link>
+                    <Link
+                      to={runsTabHref}
+                      className={`talk-tab ${currentTab === 'runs' ? 'talk-tab-active' : ''}`}
+                    >
+                      Run History
+                    </Link>
+                  </nav>
+                  {showOrchestrationSelector ? (
+                    <label className="talk-orchestration-picker">
+                      <span>Response mode</span>
+                      <select
+                        value={orchestrationMode}
+                        onChange={(event) =>
+                          void handleOrchestrationModeChange(
+                            event.target.value as 'ordered' | 'panel',
+                          )
+                        }
+                        disabled={orchestrationState.status === 'saving'}
+                      >
+                        <option value="ordered">Ordered Responses</option>
+                        <option value="panel">
+                          Parallel Responses (Quick)
+                        </option>
+                      </select>
+                    </label>
+                  ) : null}
+                </div>
+                {isSettingsTab ? (
+                  <div className="talk-subtabs-row">
+                    <nav
+                      className="talk-tabs talk-subtabs"
+                      aria-label="Talk settings sections"
+                    >
+                      <Link
+                        to={contextTabHref}
+                        className={`talk-tab ${currentTab === 'context' ? 'talk-tab-active' : ''}`}
+                      >
+                        Context
+                      </Link>
+                      <Link
+                        to={rulesTabHref}
+                        className={`talk-tab ${currentTab === 'rules' ? 'talk-tab-active' : ''}`}
+                      >
+                        Rules
+                        <span
+                          className="talk-tab-badge"
+                          aria-label={`${activeRuleCount} active rules`}
+                        >
+                          {activeRuleCount}
+                        </span>
+                      </Link>
+                      <Link
+                        to={toolsTabHref}
+                        className={`talk-tab ${currentTab === 'tools' ? 'talk-tab-active' : ''}`}
+                      >
+                        Tools
+                      </Link>
+                      <Link
+                        to={stateTabHref}
+                        className={`talk-tab ${currentTab === 'state' ? 'talk-tab-active' : ''}`}
+                      >
+                        State
+                      </Link>
+                      <Link
+                        to={channelsTabHref}
+                        className={`talk-tab ${currentTab === 'channels' ? 'talk-tab-active' : ''}`}
+                      >
+                        Channels
+                      </Link>
+                      <Link
+                        to={connectorsTabHref}
+                        className={`talk-tab ${currentTab === 'data-connectors' ? 'talk-tab-active' : ''}`}
+                      >
+                        Data Connectors
+                      </Link>
+                    </nav>
+                  </div>
                 ) : null}
               </div>
               {showOrchestrationSelector ? (
@@ -6947,15 +6979,15 @@ export function TalkDetailPage({
           ) : null}
 
           {currentTab === 'outputs' ? (
-            <section className="talk-tab-panel" aria-label="Talk outputs">
+            <section className="talk-tab-panel" aria-label="Talk reports">
               {talkOutputsStatus.status === 'loading' && !talkOutputsLoaded ? (
-                <p className="page-state">Loading outputs…</p>
+                <p className="page-state">Loading reports…</p>
               ) : talkOutputsStatus.status === 'error' && !talkOutputsLoaded ? (
                 <p className="page-state error">{talkOutputsStatus.message}</p>
               ) : (
                 <>
                   <div className="agents-panel-header">
-                    <h2>Outputs</h2>
+                    <h2>Reports</h2>
                     {canEditOutputs ? (
                       <button
                         type="button"
@@ -6963,12 +6995,12 @@ export function TalkDetailPage({
                         onClick={() => void handleCreateOutput()}
                         disabled={talkOutputsStatus.status === 'saving'}
                       >
-                        New Output
+                        New Report
                       </button>
                     ) : null}
                   </div>
                   <p className="policy-muted">
-                    Outputs are durable talk-level artifacts. They are separate
+                    Reports are durable talk-level artifacts. They are separate
                     from transcript messages and can be updated by users or Talk
                     agents.
                   </p>
@@ -6976,7 +7008,7 @@ export function TalkDetailPage({
                   <div className="talk-outputs-layout">
                     <aside
                       className="talk-outputs-list"
-                      aria-label="Outputs list"
+                      aria-label="Reports list"
                     >
                       {talkOutputs.length > 0 ? (
                         talkOutputs.map((output) => (
@@ -7000,13 +7032,13 @@ export function TalkDetailPage({
                           </button>
                         ))
                       ) : (
-                        <p className="page-state">No outputs yet.</p>
+                        <p className="page-state">No reports yet.</p>
                       )}
                     </aside>
 
                     <div className="talk-output-editor">
                       {selectedOutputStatus.status === 'loading' ? (
-                        <p className="page-state">Loading output…</p>
+                        <p className="page-state">Loading report…</p>
                       ) : selectedOutputStatus.status === 'error' ? (
                         <p className="page-state error">
                           {selectedOutputStatus.message}
@@ -7072,7 +7104,7 @@ export function TalkDetailPage({
                               >
                                 {talkOutputsStatus.status === 'saving'
                                   ? 'Saving…'
-                                  : 'Save Output'}
+                                  : 'Save Report'}
                               </button>
                             ) : null}
                             {canEditOutputs ? (
@@ -7082,7 +7114,7 @@ export function TalkDetailPage({
                                 onClick={() => void handleDeleteOutput()}
                                 disabled={talkOutputsStatus.status === 'saving'}
                               >
-                                Delete Output
+                                Delete Report
                               </button>
                             ) : null}
                           </div>
