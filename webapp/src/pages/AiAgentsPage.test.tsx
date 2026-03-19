@@ -245,6 +245,36 @@ describe('AiAgentsPage', () => {
       screen.getByRole('button', { name: 'Set as Main Agent' }),
     ).toBeDisabled();
   });
+
+  it('applies an obvious active state to the selected AI Agents tab', async () => {
+    const user = userEvent.setup();
+    installAiAgentsFetch();
+
+    render(
+      <MemoryRouter initialEntries={['/app/agents']}>
+        <AiAgentsPage onUnauthorized={vi.fn()} userRole="owner" />
+      </MemoryRouter>,
+    );
+
+    const providerTab = await screen.findByRole('tab', {
+      name: 'Provider Setup',
+    });
+    const registeredAgentsTab = screen.getByRole('tab', {
+      name: 'Registered Agents',
+    });
+
+    expect(providerTab).toHaveAttribute('aria-selected', 'true');
+    expect(providerTab.className).toContain('talk-tab-active');
+    expect(registeredAgentsTab).toHaveAttribute('aria-selected', 'false');
+    expect(registeredAgentsTab.className).not.toContain('talk-tab-active');
+
+    await user.click(registeredAgentsTab);
+
+    expect(providerTab).toHaveAttribute('aria-selected', 'false');
+    expect(providerTab.className).not.toContain('talk-tab-active');
+    expect(registeredAgentsTab).toHaveAttribute('aria-selected', 'true');
+    expect(registeredAgentsTab.className).toContain('talk-tab-active');
+  });
 });
 
 function installAiAgentsFetch() {
