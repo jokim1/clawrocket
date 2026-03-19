@@ -777,7 +777,7 @@ export function AiAgentsPage({ onUnauthorized, userRole }: Props): JSX.Element {
         <button
           type="button"
           role="tab"
-          className={`talk-tab${activeTab === 'providers' ? ' active' : ''}`}
+          className={`talk-tab${activeTab === 'providers' ? ' talk-tab-active' : ''}`}
           aria-selected={activeTab === 'providers'}
           onClick={() => setActiveTab('providers')}
         >
@@ -786,7 +786,7 @@ export function AiAgentsPage({ onUnauthorized, userRole }: Props): JSX.Element {
         <button
           type="button"
           role="tab"
-          className={`talk-tab${activeTab === 'registered_agents' ? ' active' : ''}`}
+          className={`talk-tab${activeTab === 'registered_agents' ? ' talk-tab-active' : ''}`}
           aria-selected={activeTab === 'registered_agents'}
           onClick={() => setActiveTab('registered_agents')}
         >
