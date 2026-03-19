@@ -4,7 +4,6 @@ import {
   createMessageAttachment,
   getMessageAttachmentById,
   getTalkForUser,
-  listMessageAttachments,
   listTalkAttachments,
   updateAttachmentExtraction,
   type AttachmentSnapshot,
@@ -12,11 +11,15 @@ import {
 import { canEditTalk } from '../middleware/acl.js';
 import type { ApiEnvelope, AuthContext } from '../types.js';
 
-import { saveAttachmentFile } from '../../talks/attachment-storage.js';
+import {
+  loadAttachmentFile,
+  saveAttachmentFile,
+} from '../../talks/attachment-storage.js';
 import {
   ALLOWED_ATTACHMENT_MIME_TYPES,
   MAX_ATTACHMENT_SIZE,
   extractAttachmentText,
+  inferSupportedAttachmentMimeType,
 } from '../../talks/attachment-extraction.js';
 
 // ---------------------------------------------------------------------------
@@ -56,6 +59,20 @@ function badRequest(
   };
 }
 
+function toAttachmentResponse(
+  attachment: AttachmentSnapshot,
+): ApiEnvelope<{ attachment: AttachmentSnapshot }> {
+  return {
+    ok: true,
+    data: { attachment },
+  };
+}
+
+function sanitizeInlineFileName(fileName: string): string {
+  const sanitized = fileName.replace(/["\r\n]/g, '').trim();
+  return sanitized || 'attachment';
+}
+
 // ---------------------------------------------------------------------------
 // POST /talks/:talkId/attachments
 // ---------------------------------------------------------------------------
@@ -82,74 +99,13 @@ export async function uploadTalkAttachmentRoute(input: {
   }
 
   const { file } = input;
-
-  // Browsers sometimes send empty or generic MIME types (e.g. application/octet-stream).
-  // Fall back to extension-based inference so valid files aren't rejected.
-  const EXTENSION_MIME_MAP: Record<string, string> = {
-    // Text-based (existing + new)
-    '.txt': 'text/plain',
-    '.md': 'text/markdown',
-    '.csv': 'text/csv',
-    '.html': 'text/html',
-    '.htm': 'text/html',
-    '.rtf': 'text/rtf',
-    // Code / structured data
-    '.json': 'application/json',
-    '.xml': 'application/xml',
-    '.yaml': 'text/yaml',
-    '.yml': 'text/yaml',
-    '.py': 'text/x-python',
-    '.js': 'text/javascript',
-    '.ts': 'text/typescript',
-    '.jsx': 'text/javascript',
-    '.tsx': 'text/typescript',
-    '.java': 'text/x-java',
-    '.c': 'text/x-c',
-    '.h': 'text/x-c',
-    '.cpp': 'text/x-c++',
-    '.hpp': 'text/x-c++',
-    '.go': 'text/x-go',
-    '.rs': 'text/x-rust',
-    '.sh': 'text/x-shellscript',
-    '.bash': 'text/x-shellscript',
-    '.sql': 'text/x-sql',
-    '.rb': 'text/plain',
-    '.php': 'text/plain',
-    '.swift': 'text/plain',
-    '.kt': 'text/plain',
-    '.lua': 'text/plain',
-    '.r': 'text/plain',
-    '.toml': 'text/plain',
-    '.ini': 'text/plain',
-    '.cfg': 'text/plain',
-    '.env': 'text/plain',
-    '.log': 'text/plain',
-    // Documents (existing + PPTX)
-    '.pdf': 'application/pdf',
-    '.docx':
-      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-    '.xlsx':
-      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-    '.pptx':
-      'application/vnd.openxmlformats-officedocument.presentationml.presentation',
-  };
-
-  let mimeType = file.type;
-  if (!ALLOWED_ATTACHMENT_MIME_TYPES.has(mimeType)) {
-    const ext = file.name.includes('.')
-      ? `.${file.name.split('.').pop()!.toLowerCase()}`
-      : '';
-    const inferred = EXTENSION_MIME_MAP[ext];
-    if (inferred) {
-      mimeType = inferred;
-    }
-  }
+  const mimeType = inferSupportedAttachmentMimeType(file.name, file.type);
 
   // Validate MIME type
-  if (!ALLOWED_ATTACHMENT_MIME_TYPES.has(mimeType)) {
+  if (!mimeType || !ALLOWED_ATTACHMENT_MIME_TYPES.has(mimeType)) {
     return badRequest(
       'unsupported_file_type',
-      `File type "${mimeType}" is not supported. Allowed: ${[...ALLOWED_ATTACHMENT_MIME_TYPES].join(', ')}`,
+      `File type "${file.type || 'unknown'}" is not supported. Allowed: ${[...ALLOWED_ATTACHMENT_MIME_TYPES].join(', ')}`,
     );
   }
 
@@ -192,31 +148,8 @@ export async function uploadTalkAttachmentRoute(input: {
     updateAttachmentExtraction({
       attachmentId,
       extractedText,
-      extractionStatus: 'extracted',
+      extractionStatus: 'ready',
     });
-    // Re-read to get updated status
-    const updated = getMessageAttachmentById(attachmentId, input.talkId);
-    if (updated) {
-      return {
-        statusCode: 201,
-        body: {
-          ok: true,
-          data: {
-            attachment: {
-              id: updated.id,
-              messageId: updated.message_id,
-              fileName: updated.file_name,
-              fileSize: updated.file_size,
-              mimeType: updated.mime_type,
-              extractionStatus: updated.extraction_status,
-              extractionError: updated.extraction_error,
-              extractedTextLength: updated.extracted_text?.length ?? null,
-              createdAt: updated.created_at,
-            },
-          },
-        },
-      };
-    }
   } catch (err) {
     updateAttachmentExtraction({
       attachmentId,
@@ -226,9 +159,27 @@ export async function uploadTalkAttachmentRoute(input: {
     });
   }
 
+  const updated = getMessageAttachmentById(attachmentId, input.talkId);
+  if (updated) {
+    return {
+      statusCode: 201,
+      body: toAttachmentResponse({
+        id: updated.id,
+        messageId: updated.message_id,
+        fileName: updated.file_name,
+        fileSize: updated.file_size,
+        mimeType: updated.mime_type,
+        extractionStatus: updated.extraction_status,
+        extractionError: updated.extraction_error,
+        extractedTextLength: updated.extracted_text?.length ?? null,
+        createdAt: updated.created_at,
+      }),
+    };
+  }
+
   return {
     statusCode: 201,
-    body: { ok: true, data: { attachment } },
+    body: toAttachmentResponse(attachment),
   };
 }
 
@@ -253,4 +204,49 @@ export function listTalkAttachmentsRoute(input: {
       data: { attachments: listTalkAttachments(input.talkId) },
     },
   };
+}
+
+// ---------------------------------------------------------------------------
+// GET /talks/:talkId/attachments/:attachmentId/content
+// ---------------------------------------------------------------------------
+
+export async function getTalkAttachmentContentRoute(input: {
+  auth: AuthContext;
+  talkId: string;
+  attachmentId: string;
+}): Promise<
+  | {
+      statusCode: number;
+      body: ApiEnvelope<never>;
+    }
+  | {
+      statusCode: number;
+      body: Buffer;
+      headers: Record<string, string>;
+    }
+> {
+  const talk = getTalkForUser(input.talkId, input.auth.userId);
+  if (!talk) return notFoundResponse('Talk not found.');
+
+  const attachment = getMessageAttachmentById(input.attachmentId, input.talkId);
+  if (!attachment) return notFoundResponse('Attachment not found.');
+
+  try {
+    const content = await loadAttachmentFile(attachment.storage_key);
+    return {
+      statusCode: 200,
+      body: content,
+      headers: {
+        'content-type': attachment.mime_type || 'application/octet-stream',
+        'content-length': String(content.byteLength),
+        'cache-control': 'private, max-age=31536000, immutable',
+        'content-disposition': `inline; filename="${sanitizeInlineFileName(attachment.file_name)}"`,
+      },
+    };
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+      return notFoundResponse('Attachment file not found.');
+    }
+    throw err;
+  }
 }

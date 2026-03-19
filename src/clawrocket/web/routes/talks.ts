@@ -103,7 +103,7 @@ interface TalkMessageAttachmentApi {
   fileName: string;
   fileSize: number;
   mimeType: string;
-  extractionStatus: 'pending' | 'extracted' | 'failed';
+  extractionStatus: 'pending' | 'ready' | 'failed';
 }
 
 interface TalkMessageApiRecord {
