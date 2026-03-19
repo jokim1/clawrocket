@@ -65,6 +65,16 @@ describe('TalkDetailPage', () => {
   beforeEach(() => {
     document.cookie = 'cr_csrf_token=test-csrf-token';
     streamInput = null;
+    Object.defineProperty(URL, 'createObjectURL', {
+      configurable: true,
+      writable: true,
+      value: vi.fn(() => 'blob:preview-image'),
+    });
+    Object.defineProperty(URL, 'revokeObjectURL', {
+      configurable: true,
+      writable: true,
+      value: vi.fn(),
+    });
     vi.stubGlobal(
       'confirm',
       vi.fn(() => true),
@@ -83,6 +93,8 @@ describe('TalkDetailPage', () => {
     vi.useRealTimers();
     vi.unstubAllGlobals();
     vi.clearAllMocks();
+    Reflect.deleteProperty(URL, 'createObjectURL');
+    Reflect.deleteProperty(URL, 'revokeObjectURL');
     document.cookie = 'cr_csrf_token=; Max-Age=0; path=/';
   });
 
@@ -1261,6 +1273,39 @@ describe('TalkDetailPage', () => {
     expect(screen.getByText('via browser')).toBeTruthy();
   }, 10000);
 
+  it('keeps pasted text sources available and lets keyboard users trigger file upload', async () => {
+    const user = userEvent.setup();
+    installTalkDetailFetch();
+
+    renderDetailPage('/app/talks/talk-1/context');
+
+    const uploadButton = await screen.findByRole('button', {
+      name: 'Upload saved source files',
+    });
+    const fileInput = document.querySelector(
+      'input[type="file"]',
+    ) as HTMLInputElement | null;
+    if (!fileInput) {
+      throw new Error('Expected context file input');
+    }
+    const clickSpy = vi.fn();
+    fileInput.click = clickSpy;
+
+    uploadButton.focus();
+    fireEvent.keyDown(uploadButton, { key: 'Enter' });
+    expect(clickSpy).toHaveBeenCalledTimes(1);
+
+    await user.type(
+      screen.getByLabelText('Paste text snippet'),
+      'Bring these notes into the talk context.',
+    );
+    await user.click(screen.getByRole('button', { name: 'Add Text' }));
+
+    await waitFor(() => {
+      expect(screen.getByText('Pasted text source')).toBeTruthy();
+    });
+  });
+
   it('shows unsaved draft agents in the Talk tab and blocks send until agent changes are saved', async () => {
     const user = userEvent.setup();
 
@@ -1566,7 +1611,7 @@ describe('TalkDetailPage', () => {
           fileName: file.name,
           fileSize: file.size,
           mimeType: file.type,
-          extractionStatus: 'extracted',
+          extractionStatus: 'ready',
         });
       },
       onSendMessage: (body) => {
@@ -1624,6 +1669,102 @@ describe('TalkDetailPage', () => {
         attachmentIds: ['att-1'],
       }),
     );
+  });
+
+  it('shows an image preview chip for pending image attachments', async () => {
+    installTalkDetailFetch({
+      messages: [],
+      runs: [],
+      onUploadAttachment: (formData) => {
+        const file = formData.get('file');
+        if (!(file instanceof File)) {
+          throw new Error('Expected file in attachment upload payload');
+        }
+        return buildMessageAttachment({
+          id: 'att-image',
+          fileName: file.name,
+          fileSize: file.size,
+          mimeType: file.type,
+          extractionStatus: 'ready',
+        });
+      },
+    });
+
+    renderDetailPage('/app/talks/talk-1');
+    const composer = await screen.findByPlaceholderText(
+      'Send a message to this thread',
+    );
+    const workspace = composer.closest('.talk-workspace');
+    if (!workspace) {
+      throw new Error('Expected talk workspace wrapper');
+    }
+
+    const file = new File([Uint8Array.from([1, 2, 3])], 'diagram.png', {
+      type: 'image/png',
+    });
+    fireEvent.drop(workspace, { dataTransfer: createFileDataTransfer([file]) });
+
+    expect(await screen.findByAltText('diagram.png')).toBeTruthy();
+    expect(screen.getByText('diagram.png')).toBeTruthy();
+  });
+
+  it('blocks image sends for non-vision agents before submit', async () => {
+    const user = userEvent.setup();
+
+    installTalkDetailFetch({
+      messages: [],
+      runs: [],
+      aiAgents: {
+        ...buildAiAgentsData(),
+        claudeModelSuggestions: [
+          {
+            modelId: 'claude-sonnet-4-6',
+            displayName: 'Claude Sonnet 4.6',
+            contextWindowTokens: 200000,
+            defaultMaxOutputTokens: 4096,
+            supportsVision: false,
+          },
+        ],
+      },
+      onUploadAttachment: (formData) => {
+        const file = formData.get('file');
+        if (!(file instanceof File)) {
+          throw new Error('Expected file in attachment upload payload');
+        }
+        return buildMessageAttachment({
+          id: 'att-image',
+          fileName: file.name,
+          fileSize: file.size,
+          mimeType: file.type,
+          extractionStatus: 'ready',
+        });
+      },
+    });
+
+    renderDetailPage('/app/talks/talk-1');
+    const composer = await screen.findByPlaceholderText(
+      'Send a message to this thread',
+    );
+    const workspace = composer.closest('.talk-workspace');
+    if (!workspace) {
+      throw new Error('Expected talk workspace wrapper');
+    }
+
+    const file = new File([Uint8Array.from([1, 2, 3])], 'diagram.png', {
+      type: 'image/png',
+    });
+    fireEvent.drop(workspace, { dataTransfer: createFileDataTransfer([file]) });
+
+    const guardrail = await screen.findByText(
+      /Claude Sonnet 4\.6 .*does not support image attachments\. Switch to a vision-capable model or remove the images before sending\./,
+    );
+    expect(guardrail).toBeTruthy();
+    expect(guardrail.closest('[role="status"]')).toHaveAttribute(
+      'aria-live',
+      'polite',
+    );
+    await user.type(composer, 'Please inspect the image');
+    expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled();
   });
 
   it('renders concurrent live responses as separate streaming bubbles', async () => {
@@ -2464,6 +2605,9 @@ function buildContextSource(input: Partial<ContextSource> = {}): ContextSource {
     isTruncated: input.isTruncated ?? false,
     extractionError: input.extractionError ?? 'fetch_http_error: HTTP 403',
     mimeType: input.mimeType ?? null,
+    fileName: input.fileName ?? null,
+    fileSize: input.fileSize ?? null,
+    extractedAt: input.extractedAt ?? null,
     lastFetchedAt: input.lastFetchedAt ?? null,
     fetchStrategy: input.fetchStrategy ?? null,
     sortOrder: input.sortOrder ?? 0,
@@ -2591,12 +2735,14 @@ function buildAiAgentsData(): AiAgentsPageData {
         displayName: 'Claude Sonnet 4.6',
         contextWindowTokens: 200000,
         defaultMaxOutputTokens: 4096,
+        supportsVision: true,
       },
       {
         modelId: 'claude-opus-4-6',
         displayName: 'Claude Opus 4.6',
         contextWindowTokens: 200000,
         defaultMaxOutputTokens: 4096,
+        supportsVision: true,
       },
     ],
     additionalProviders: [
@@ -2619,6 +2765,7 @@ function buildAiAgentsData(): AiAgentsPageData {
             displayName: 'GPT-5 Mini',
             contextWindowTokens: 128000,
             defaultMaxOutputTokens: 4096,
+            supportsVision: true,
           },
         ],
       },
@@ -2665,6 +2812,12 @@ function installTalkDetailFetch(input?: {
   aiAgents?: AiAgentsPageData;
   onPutAgents?: (body: SavedTalkAgentRequest) => TalkAgent[];
   onGetContext?: () => TalkContext;
+  onCreateContextSource?: (body: {
+    sourceType: ContextSource['sourceType'];
+    title: string;
+    sourceUrl?: string | null;
+    extractedText?: string | null;
+  }) => ContextSource;
   onRetryContextSource?: (sourceId: string) => ContextSource;
   onUploadAttachment?: (formData: FormData) => TalkMessageAttachment;
   onSendMessage?: (body: {
@@ -3022,7 +3175,7 @@ function installTalkDetailFetch(input?: {
             fileName: file.name,
             fileSize: file.size,
             mimeType: file.type,
-            extractionStatus: 'extracted',
+            extractionStatus: 'ready',
           });
 
         return jsonResponse(201, {
@@ -3079,6 +3232,48 @@ function installTalkDetailFetch(input?: {
         return jsonResponse(200, {
           ok: true,
           data: input?.onGetContext?.() ?? context,
+        });
+      }
+
+      if (
+        path === '/api/v1/talks/talk-1/context/sources' &&
+        method === 'POST'
+      ) {
+        const body = JSON.parse(String(init?.body || '{}')) as {
+          sourceType?: ContextSource['sourceType'];
+          title?: string;
+          sourceUrl?: string | null;
+          extractedText?: string | null;
+        };
+        const created =
+          input?.onCreateContextSource?.({
+            sourceType: body.sourceType ?? 'url',
+            title: body.title?.trim() || 'New source',
+            sourceUrl: body.sourceUrl,
+            extractedText: body.extractedText,
+          }) ??
+          buildContextSource({
+            id: `source-${context.sources.length + 1}`,
+            sourceRef: `S${context.sources.length + 1}`,
+            sourceType: body.sourceType ?? 'url',
+            title: body.title?.trim() || 'New source',
+            sourceUrl:
+              body.sourceType === 'url'
+                ? (body.sourceUrl?.trim() ?? 'https://example.com/source')
+                : null,
+            status: body.sourceType === 'text' ? 'ready' : 'pending',
+            extractedTextLength:
+              body.sourceType === 'text'
+                ? (body.extractedText?.trim().length ?? 0)
+                : null,
+          });
+        context = {
+          ...context,
+          sources: [...context.sources, created],
+        };
+        return jsonResponse(201, {
+          ok: true,
+          data: { source: created },
         });
       }
 

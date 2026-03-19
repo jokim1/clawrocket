@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   _initTestDatabase,
   type ContextSourceSnapshot,
+  createTalkContextSource,
   upsertTalkStateEntry,
   updateSourceExtraction,
   upsertTalk,
@@ -437,16 +438,16 @@ describe('talk context routes', () => {
   // =========================================================================
 
   describe('sources', () => {
-    it('creates a text source with stable sourceRef', async () => {
+    it('creates a URL source with stable sourceRef', async () => {
       const res = await server.request(
         `/api/v1/talks/${TALK_ID}/context/sources`,
         {
           method: 'POST',
           headers: ownerAuth(),
           body: JSON.stringify({
-            sourceType: 'text',
+            sourceType: 'url',
             title: 'Meeting Notes',
-            extractedText: 'Some notes content here.',
+            sourceUrl: 'https://example.com/notes',
           }),
         },
       );
@@ -457,8 +458,8 @@ describe('talk context routes', () => {
         unknown
       >;
       expect(source.sourceRef).toBe('S1');
-      expect(source.sourceType).toBe('text');
-      expect(source.status).toBe('ready');
+      expect(source.sourceType).toBe('url');
+      expect(source.status).toBe('pending');
       expect(source.title).toBe('Meeting Notes');
     });
 
@@ -532,6 +533,27 @@ describe('talk context routes', () => {
       );
     });
 
+    it('creates a text source via API', async () => {
+      const res = await server.request(
+        `/api/v1/talks/${TALK_ID}/context/sources`,
+        {
+          method: 'POST',
+          headers: ownerAuth(),
+          body: JSON.stringify({
+            sourceType: 'text',
+            title: 'Text Source',
+            extractedText: 'Some content',
+          }),
+        },
+      );
+      expect(res.status).toBe(201);
+      const source = ((await json(res)).data as Record<string, unknown>)
+        .source as Record<string, unknown>;
+      expect(source.sourceType).toBe('text');
+      expect(source.status).toBe('ready');
+      expect(source.extractedTextLength).toBe('Some content'.length);
+    });
+
     it('rejects text source without content', async () => {
       const res = await server.request(
         `/api/v1/talks/${TALK_ID}/context/sources`,
@@ -540,14 +562,14 @@ describe('talk context routes', () => {
           headers: ownerAuth(),
           body: JSON.stringify({
             sourceType: 'text',
-            title: 'Empty',
-            extractedText: '',
+            title: 'Empty Text Source',
+            extractedText: '   ',
           }),
         },
       );
       expect(res.status).toBe(400);
       expect(((await json(res)).error as Record<string, string>).code).toBe(
-        'text_content_required',
+        'text_required',
       );
     });
 
@@ -591,9 +613,9 @@ describe('talk context routes', () => {
             method: 'POST',
             headers: ownerAuth(),
             body: JSON.stringify({
-              sourceType: 'text',
+              sourceType: 'url',
               title: `Source ${i + 1}`,
-              extractedText: `Content ${i + 1}`,
+              sourceUrl: `https://example.com/${i + 1}`,
             }),
           },
         );
@@ -615,9 +637,9 @@ describe('talk context routes', () => {
           method: 'POST',
           headers: ownerAuth(),
           body: JSON.stringify({
-            sourceType: 'text',
+            sourceType: 'url',
             title: 'Source 4',
-            extractedText: 'Content 4',
+            sourceUrl: 'https://example.com/4',
           }),
         },
       );
@@ -635,9 +657,9 @@ describe('talk context routes', () => {
             method: 'POST',
             headers: ownerAuth(),
             body: JSON.stringify({
-              sourceType: 'text',
+              sourceType: 'url',
               title: `Source ${i + 1}`,
-              extractedText: `Content ${i + 1}`,
+              sourceUrl: `https://example.com/${i + 1}`,
             }),
           },
         );
@@ -651,9 +673,9 @@ describe('talk context routes', () => {
           method: 'POST',
           headers: ownerAuth(),
           body: JSON.stringify({
-            sourceType: 'text',
+            sourceType: 'url',
             title: 'Source 21',
-            extractedText: 'Content 21',
+            sourceUrl: 'https://example.com/21',
           }),
         },
       );
@@ -670,9 +692,9 @@ describe('talk context routes', () => {
           method: 'POST',
           headers: ownerAuth(),
           body: JSON.stringify({
-            sourceType: 'text',
+            sourceType: 'url',
             title: 'Original',
-            extractedText: 'Some text',
+            sourceUrl: 'https://example.com/original',
             note: 'Initial note',
           }),
         },
@@ -733,7 +755,7 @@ describe('talk context routes', () => {
       expect(patched.extractedTextLength).toBe(10); // 'V2 content'.length
     });
 
-    it('truncates oversized text source content on create', async () => {
+    it('truncates oversized text source content on create via API', async () => {
       const longText = 'x'.repeat(60_000);
       const res = await server.request(
         `/api/v1/talks/${TALK_ID}/context/sources`,
@@ -747,10 +769,10 @@ describe('talk context routes', () => {
           }),
         },
       );
-
       expect(res.status).toBe(201);
       const source = ((await json(res)).data as Record<string, unknown>)
         .source as Record<string, unknown>;
+
       expect(source.isTruncated).toBe(true);
       expect(source.extractedTextLength).toBe(50_000);
       expect(source.status).toBe('ready');
@@ -790,6 +812,24 @@ describe('talk context routes', () => {
       expect(patched.isTruncated).toBe(true);
       expect(patched.extractedTextLength).toBe(50_000);
     });
+
+    it('marks file sources ready even when extraction yields no text', () => {
+      const source = createTalkContextSource({
+        talkId: TALK_ID,
+        sourceType: 'file',
+        title: 'Spreadsheet',
+        fileName: 'sheet.xlsx',
+        fileSize: 1234,
+        mimeType:
+          'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        storageKey: 'attachments/talk-ctx/sheet.xlsx',
+        extractedText: null,
+        createdBy: 'owner-1',
+      });
+
+      expect(source.status).toBe('ready');
+      expect(source.extractedTextLength).toBeNull();
+    });
   });
 
   // =========================================================================
@@ -822,9 +862,9 @@ describe('talk context routes', () => {
         method: 'POST',
         headers: ownerAuth(),
         body: JSON.stringify({
-          sourceType: 'text',
+          sourceType: 'url',
           title: 'Data dictionary',
-          extractedText: 'Revenue = total sales minus returns.',
+          sourceUrl: 'https://example.com/data-dictionary',
         }),
       });
       await server.request(`/api/v1/talks/${TALK_ID}/context/sources`, {
@@ -860,7 +900,7 @@ describe('talk context routes', () => {
       const sources = data.sources as Array<Record<string, unknown>>;
       expect(sources).toHaveLength(2);
       expect(sources[0].sourceRef).toBe('S1');
-      expect(sources[0].sourceType).toBe('text');
+      expect(sources[0].sourceType).toBe('url');
       expect(sources[1].sourceRef).toBe('S2');
       expect(sources[1].sourceType).toBe('url');
     });

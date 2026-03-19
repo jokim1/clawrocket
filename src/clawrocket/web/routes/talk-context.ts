@@ -1,22 +1,39 @@
+import { randomUUID } from 'crypto';
+
 import {
   createTalkContextRule,
   createTalkContextSource,
   deleteTalkContextRule,
   deleteTalkContextSource,
+  getContextSourceStorageKey,
+  getContextSourceWithContent,
   getTalkContext,
-  listTalkStateEntries,
   getTalkContextSourceById,
+  getTalkContextSourceCount,
   getTalkForUser,
-  markTalkContextSourcePending,
   listTalkContextRules,
+  listTalkStateEntries,
+  markTalkContextSourcePending,
   patchTalkContextRule,
   patchTalkContextSource,
   setTalkGoal,
   type ContextRuleSnapshot,
   type ContextSourceSnapshot,
-  type TalkStateEntrySnapshot,
   type TalkContextSnapshot,
+  type TalkStateEntrySnapshot,
 } from '../../db/index.js';
+import {
+  ALLOWED_ATTACHMENT_MIME_TYPES,
+  extractAttachmentText,
+  inferSupportedAttachmentMimeType,
+  isImageAttachmentMimeType,
+  MAX_ATTACHMENT_SIZE,
+} from '../../talks/attachment-extraction.js';
+import {
+  deleteAttachmentFile,
+  loadAttachmentFile,
+  saveAttachmentFile,
+} from '../../talks/attachment-storage.js';
 import { canEditTalk } from '../middleware/acl.js';
 import { ApiEnvelope, AuthContext } from '../types.js';
 
@@ -318,7 +335,7 @@ export function createTalkContextSourceRoute(input: {
   if (sourceType !== 'url' && sourceType !== 'text') {
     return badRequest(
       'invalid_source_type',
-      'Source type must be url or text.',
+      'Source type must be url or text. Use the upload endpoint for files.',
     );
   }
 
@@ -327,15 +344,15 @@ export function createTalkContextSourceRoute(input: {
     return badRequest('title_required', 'Source title is required.');
   }
 
-  if (sourceType === 'text' && !input.extractedText?.trim()) {
-    return badRequest(
-      'text_content_required',
-      'Text content is required for text sources.',
-    );
-  }
-
   if (sourceType === 'url' && !input.sourceUrl?.trim()) {
     return badRequest('url_required', 'A URL is required for URL sources.');
+  }
+
+  if (sourceType === 'text' && !input.extractedText?.trim()) {
+    return badRequest(
+      'text_required',
+      'Text content is required for text sources.',
+    );
   }
 
   try {
@@ -344,8 +361,9 @@ export function createTalkContextSourceRoute(input: {
       sourceType,
       title,
       note: input.note,
-      sourceUrl: input.sourceUrl,
-      extractedText: input.extractedText,
+      sourceUrl: sourceType === 'url' ? input.sourceUrl : null,
+      extractedText:
+        sourceType === 'text' ? (input.extractedText?.trim() ?? null) : null,
       createdBy: input.auth.userId,
     });
     return {
@@ -407,21 +425,29 @@ export function patchTalkContextSourceRoute(input: {
 // DELETE /talks/:talkId/context/sources/:sourceId
 // ---------------------------------------------------------------------------
 
-export function deleteTalkContextSourceRoute(input: {
+export async function deleteTalkContextSourceRoute(input: {
   auth: AuthContext;
   talkId: string;
   sourceId: string;
-}): {
+}): Promise<{
   statusCode: number;
   body: ApiEnvelope<{ deleted: true }>;
-} {
+}> {
   const talk = talkOrNull(input.talkId, input.auth.userId);
   if (!talk) return notFoundResponse('Talk not found.');
   const denied = requireEditAccess(input.talkId, input.auth);
   if (denied) return denied;
 
+  // Fetch storage key before deleting so we can clean up the file
+  const storageKey = getContextSourceStorageKey(input.sourceId, input.talkId);
+
   const deleted = deleteTalkContextSource(input.sourceId, input.talkId);
   if (!deleted) return notFoundResponse('Source not found.');
+
+  // Clean up file from disk if present
+  if (storageKey) {
+    await deleteAttachmentFile(storageKey);
+  }
 
   return {
     statusCode: 200,
@@ -461,5 +487,158 @@ export function retryTalkContextSourceRoute(input: {
   return {
     statusCode: 200,
     body: { ok: true, data: { source } },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// POST /talks/:talkId/context/sources/upload
+// ---------------------------------------------------------------------------
+
+export async function uploadTalkContextSourceRoute(input: {
+  auth: AuthContext;
+  talkId: string;
+  file: {
+    name: string;
+    data: Buffer;
+    type: string;
+  };
+  title?: string;
+}): Promise<{
+  statusCode: number;
+  body: ApiEnvelope<{ source: ContextSourceSnapshot }>;
+}> {
+  const talk = talkOrNull(input.talkId, input.auth.userId);
+  if (!talk) return notFoundResponse('Talk not found.');
+  const denied = requireEditAccess(input.talkId, input.auth);
+  if (denied) return denied;
+
+  // Check source count limit
+  const count = getTalkContextSourceCount(input.talkId);
+  if (count >= 20) {
+    return badRequest('source_limit', 'Maximum 20 saved sources per talk.');
+  }
+
+  const { file } = input;
+
+  // MIME inference with extension fallback
+  const mimeType = inferSupportedAttachmentMimeType(file.name, file.type);
+
+  // Validate MIME type — exclude images (handled by vision work)
+  if (
+    !mimeType ||
+    !ALLOWED_ATTACHMENT_MIME_TYPES.has(mimeType) ||
+    isImageAttachmentMimeType(mimeType)
+  ) {
+    return badRequest(
+      'unsupported_file_type',
+      `File type "${file.type || 'unknown'}" is not supported for context sources. Images are not accepted.`,
+    );
+  }
+
+  // Validate size
+  if (file.data.length > MAX_ATTACHMENT_SIZE) {
+    return badRequest(
+      'file_too_large',
+      `File exceeds maximum size of ${MAX_ATTACHMENT_SIZE / (1024 * 1024)} MB.`,
+    );
+  }
+
+  const sourceId = randomUUID();
+
+  // Save file to disk (uses attachments/ prefix for storage path)
+  const storageKey = await saveAttachmentFile(
+    sourceId,
+    input.talkId,
+    file.data,
+    file.name,
+  );
+
+  // Extract text via the good pipeline
+  let extractedText: string | null = null;
+  let extractionError: string | null = null;
+  try {
+    extractedText = await extractAttachmentText(file.data, mimeType, file.name);
+  } catch (err) {
+    extractionError =
+      err instanceof Error ? err.message : 'Unknown extraction error';
+  }
+
+  const title = input.title?.trim() || file.name;
+
+  const source = createTalkContextSource({
+    talkId: input.talkId,
+    sourceType: 'file',
+    title,
+    fileName: file.name,
+    fileSize: file.data.length,
+    mimeType,
+    storageKey,
+    extractedText,
+    extractionError,
+    createdBy: input.auth.userId,
+  });
+
+  return {
+    statusCode: 201,
+    body: { ok: true, data: { source } },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// GET /talks/:talkId/context/sources/:sourceId/content
+// ---------------------------------------------------------------------------
+
+export async function getTalkContextSourceContentRoute(input: {
+  auth: AuthContext;
+  talkId: string;
+  sourceId: string;
+}): Promise<
+  | { statusCode: number; body: ApiEnvelope<never> }
+  | {
+      statusCode: number;
+      body: Buffer | string;
+      headers: Record<string, string>;
+    }
+> {
+  const talk = talkOrNull(input.talkId, input.auth.userId);
+  if (!talk) return notFoundResponse('Talk not found.');
+
+  const source = getTalkContextSourceById(input.sourceId, input.talkId);
+  if (!source) return notFoundResponse('Source not found.');
+
+  // For file sources with a storage key, serve the raw file
+  const storageKey = getContextSourceStorageKey(input.sourceId, input.talkId);
+  if (source.sourceType === 'file' && storageKey) {
+    try {
+      const content = await loadAttachmentFile(storageKey);
+      return {
+        statusCode: 200,
+        body: content,
+        headers: {
+          'content-type': source.mimeType || 'application/octet-stream',
+          'content-length': String(content.byteLength),
+          'cache-control': 'private, max-age=31536000, immutable',
+          'content-disposition': `inline; filename="${(source.fileName || 'file').replaceAll('"', '')}"`,
+        },
+      };
+    } catch {
+      return notFoundResponse('Source file not found on disk.');
+    }
+  }
+
+  // For URL/text sources, return extracted text
+  const full = getContextSourceWithContent(input.sourceId, input.talkId);
+  if (!full?.extractedText) {
+    return notFoundResponse('No content available for this source.');
+  }
+
+  return {
+    statusCode: 200,
+    body: full.extractedText,
+    headers: {
+      'content-type': 'text/plain; charset=utf-8',
+      'content-length': String(Buffer.byteLength(full.extractedText, 'utf-8')),
+      'cache-control': 'private, no-cache',
+    },
   };
 }

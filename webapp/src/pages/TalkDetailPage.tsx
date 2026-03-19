@@ -109,6 +109,7 @@ import {
   TalkStateEntry,
   TalkThread,
   uploadTalkAttachment,
+  uploadTalkContextSource,
   testTalkChannelBinding,
   updateTalkProjectMount,
   updateTalkTools,
@@ -1552,6 +1553,21 @@ function buildAgentLabel(agent: Pick<TalkAgent, 'nickname' | 'role'>): string {
   return `${agent.nickname} (${formatTalkRole(agent.role)})`;
 }
 
+function isRenderableImageAttachment(mimeType: string): boolean {
+  return (
+    mimeType === 'image/png' ||
+    mimeType === 'image/jpeg' ||
+    mimeType === 'image/webp'
+  );
+}
+
+function buildTalkAttachmentContentUrl(
+  talkId: string,
+  attachmentId: string,
+): string {
+  return `/api/v1/talks/${encodeURIComponent(talkId)}/attachments/${encodeURIComponent(attachmentId)}/content`;
+}
+
 function getConfiguredProviders(
   data: AiAgentsPageData | null,
 ): AgentProviderCard[] {
@@ -1582,12 +1598,17 @@ function getModelSuggestionsForSource(input: {
   sourceKind: 'claude_default' | 'provider';
   providerId: string | null;
   aiAgents: AiAgentsPageData | null;
-}): Array<{ modelId: string; displayName: string }> {
+}): Array<{
+  modelId: string;
+  displayName: string;
+  supportsVision: boolean;
+}> {
   if (!input.aiAgents) return [];
   if (input.sourceKind === 'claude_default') {
     return input.aiAgents.claudeModelSuggestions.map((model) => ({
       modelId: model.modelId,
       displayName: model.displayName,
+      supportsVision: model.supportsVision === true,
     }));
   }
 
@@ -1597,7 +1618,25 @@ function getModelSuggestionsForSource(input: {
   return (provider?.modelSuggestions || []).map((model) => ({
     modelId: model.modelId,
     displayName: model.displayName,
+    supportsVision: model.supportsVision === true,
   }));
+}
+
+function talkAgentSupportsVision(
+  agent: Pick<TalkAgent, 'sourceKind' | 'providerId' | 'modelId'>,
+  aiAgents: AiAgentsPageData | null,
+): boolean {
+  const modelId = agent.modelId?.trim();
+  if (!modelId) return false;
+
+  const suggestions = getModelSuggestionsForSource({
+    sourceKind: agent.sourceKind,
+    providerId: agent.providerId,
+    aiAgents,
+  });
+  return suggestions.some(
+    (entry) => entry.modelId === modelId && entry.supportsVision,
+  );
 }
 
 function buildAutoNicknameBase(input: {
@@ -1829,6 +1868,9 @@ export function TalkDetailPage({
       file: File;
       fileName: string;
       fileSize: number;
+      mimeType: string;
+      isImage: boolean;
+      previewUrl?: string;
       status: 'uploading' | 'ready' | 'error';
       attachmentId?: string;
       errorMessage?: string;
@@ -1838,6 +1880,7 @@ export function TalkDetailPage({
   const timelineRef = useRef<HTMLDivElement | null>(null);
   const endRef = useRef<HTMLDivElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const pendingAttachmentsRef = useRef(pendingAttachments);
   const runContextPanelsRef = useRef<Record<string, RunContextPanelState>>({});
   const threadRefreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
     null,
@@ -1961,10 +2004,19 @@ export function TalkDetailPage({
   const [outputBodyDraft, setOutputBodyDraft] = useState('');
   const [goalDraft, setGoalDraft] = useState('');
   const [newRuleText, setNewRuleText] = useState('');
-  const [addSourceType, setAddSourceType] = useState<'text' | 'url'>('text');
-  const [addSourceTitle, setAddSourceTitle] = useState('');
   const [addSourceUrl, setAddSourceUrl] = useState('');
   const [addSourceText, setAddSourceText] = useState('');
+  const [addSourceTitle, setAddSourceTitle] = useState('');
+  const [contextUploadingFiles, setContextUploadingFiles] = useState<
+    Array<{
+      localId: string;
+      fileName: string;
+      status: 'uploading' | 'done' | 'error';
+      error?: string;
+    }>
+  >([]);
+  const [contextDropActive, setContextDropActive] = useState(false);
+  const contextFileInputRef = useRef<HTMLInputElement>(null);
   const [channelBindings, setChannelBindings] = useState<TalkChannelBinding[]>(
     [],
   );
@@ -2366,7 +2418,6 @@ export function TalkDetailPage({
     setOutputBodyDraft('');
     setGoalDraft('');
     setNewRuleText('');
-    setAddSourceType('text');
     setAddSourceTitle('');
     setAddSourceUrl('');
     setAddSourceText('');
@@ -2887,6 +2938,19 @@ export function TalkDetailPage({
       ),
     [selectedTargetAgents, talkAgentExecutionGuardrailsById],
   );
+  const pendingImageAttachments = useMemo(
+    () => pendingAttachments.filter((attachment) => attachment.isImage),
+    [pendingAttachments],
+  );
+  const selectedNonVisionAgents = useMemo(
+    () =>
+      pendingImageAttachments.length === 0
+        ? []
+        : selectedTargetAgents.filter(
+            (agent) => !talkAgentSupportsVision(agent, aiAgentsData),
+          ),
+    [aiAgentsData, pendingImageAttachments.length, selectedTargetAgents],
+  );
   const composerGuardrailMessage = useMemo(() => {
     if (selectedUnavailableAgents.length > 0) {
       const labels = selectedUnavailableAgents.map((agent) =>
@@ -2902,11 +2966,31 @@ export function TalkDetailPage({
       return `${summarizeAgentLabels(labels)} do not currently have a valid execution path. Adjust the selected agents before sending.`;
     }
 
+    if (selectedNonVisionAgents.length > 0) {
+      const labels = selectedNonVisionAgents.map((agent) =>
+        buildAgentLabel(agent),
+      );
+      if (labels.length === 1) {
+        return `${labels[0]} does not support image attachments. Switch to a vision-capable model or remove the images before sending.`;
+      }
+      return `${summarizeAgentLabels(labels)} do not support image attachments. Switch to vision-capable models or remove the images before sending.`;
+    }
+
     return null;
-  }, [selectedUnavailableAgents, talkAgentExecutionGuardrailsById]);
+  }, [
+    aiAgentsData,
+    selectedNonVisionAgents,
+    selectedUnavailableAgents,
+    talkAgentExecutionGuardrailsById,
+  ]);
   const selectedGuardrailAgentIds = useMemo(
-    () => new Set(selectedUnavailableAgents.map((agent) => agent.id)),
-    [selectedUnavailableAgents],
+    () =>
+      new Set(
+        [...selectedUnavailableAgents, ...selectedNonVisionAgents].map(
+          (agent) => agent.id,
+        ),
+      ),
+    [selectedNonVisionAgents, selectedUnavailableAgents],
   );
   const sendBlockedByGuardrail = Boolean(composerGuardrailMessage);
   const composerTargetHelp = useMemo(() => {
@@ -3793,28 +3877,108 @@ export function TalkDetailPage({
     }
   };
 
-  const handleAddSource = async () => {
-    if (!addSourceTitle.trim()) return;
+  const handleAddUrlSource = async () => {
+    const trimmedUrl = addSourceUrl.trim();
+    if (!trimmedUrl) return;
     setContextStatus({ status: 'saving' });
     try {
       const source = await createTalkContextSource({
         talkId,
-        sourceType: addSourceType,
-        title: addSourceTitle.trim(),
-        sourceUrl: addSourceType === 'url' ? addSourceUrl.trim() : undefined,
-        extractedText:
-          addSourceType === 'text' ? addSourceText.trim() : undefined,
+        sourceType: 'url',
+        title: addSourceTitle.trim() || trimmedUrl,
+        sourceUrl: trimmedUrl,
       });
       setContextSources((prev) => [...prev, source]);
       setAddSourceTitle('');
       setAddSourceUrl('');
-      setAddSourceText('');
       setContextStatus({ status: 'idle' });
     } catch (err) {
       setContextStatus({
         status: 'error',
         message: err instanceof Error ? err.message : 'Failed to add source.',
       });
+    }
+  };
+
+  const handleAddTextSource = async () => {
+    const trimmedText = addSourceText.trim();
+    if (!trimmedText) return;
+    setContextStatus({ status: 'saving' });
+    try {
+      const source = await createTalkContextSource({
+        talkId,
+        sourceType: 'text',
+        title: addSourceTitle.trim() || 'Pasted text source',
+        extractedText: trimmedText,
+      });
+      setContextSources((prev) => [...prev, source]);
+      setAddSourceTitle('');
+      setAddSourceText('');
+      setContextStatus({ status: 'idle' });
+    } catch (err) {
+      setContextStatus({
+        status: 'error',
+        message:
+          err instanceof Error ? err.message : 'Failed to add text source.',
+      });
+    }
+  };
+
+  const handleContextFilesSelected = async (files: FileList | File[]) => {
+    const fileArr = Array.from(files);
+    if (fileArr.length === 0) return;
+
+    const MAX_SIZE = 10 * 1024 * 1024;
+
+    for (const file of fileArr) {
+      const localId = `upload_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+
+      // Client-side size check
+      if (file.size > MAX_SIZE) {
+        setContextUploadingFiles((prev) => [
+          ...prev,
+          {
+            localId,
+            fileName: file.name,
+            status: 'error',
+            error: 'File exceeds 10 MB limit',
+          },
+        ]);
+        continue;
+      }
+
+      setContextUploadingFiles((prev) => [
+        ...prev,
+        { localId, fileName: file.name, status: 'uploading' },
+      ]);
+
+      try {
+        const source = await uploadTalkContextSource(talkId, file);
+        setContextSources((prev) => [...prev, source]);
+        setContextUploadingFiles((prev) =>
+          prev.map((f) =>
+            f.localId === localId ? { ...f, status: 'done' as const } : f,
+          ),
+        );
+        // Remove completed entry after a short delay
+        setTimeout(() => {
+          setContextUploadingFiles((prev) =>
+            prev.filter((f) => f.localId !== localId),
+          );
+        }, 1500);
+      } catch (err) {
+        setContextUploadingFiles((prev) =>
+          prev.map((f) =>
+            f.localId === localId
+              ? {
+                  ...f,
+                  status: 'error' as const,
+                  error: err instanceof Error ? err.message : 'Upload failed',
+                }
+              : f,
+          ),
+        );
+      }
     }
   };
 
@@ -4705,7 +4869,7 @@ export function TalkDetailPage({
   const ALLOWED_ATTACHMENT_EXTENSIONS =
     '.txt,.md,.csv,.html,.rtf,' +
     '.json,.xml,.yaml,.yml,.py,.js,.ts,.jsx,.tsx,.java,.c,.h,.cpp,.hpp,.go,.rs,.sh,.bash,.sql,.rb,.php,.swift,.kt,.lua,.r,.toml,.ini,.cfg,.env,.log,' +
-    '.pdf,.docx,.xlsx,.pptx';
+    '.pdf,.docx,.xlsx,.pptx,.png,.jpg,.jpeg,.webp';
   const ALLOWED_ATTACHMENT_MIMES = new Set([
     // Text-based (existing)
     'text/plain',
@@ -4738,9 +4902,32 @@ export function TalkDetailPage({
     'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
     'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
     'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+    'image/png',
+    'image/jpeg',
+    'image/webp',
+  ]);
+  const IMAGE_ATTACHMENT_MIMES = new Set([
+    'image/png',
+    'image/jpeg',
+    'image/webp',
   ]);
   const MAX_ATTACHMENT_SIZE = 10 * 1024 * 1024;
+  const MAX_IMAGE_ATTACHMENT_SIZE = 5 * 1024 * 1024;
   const MAX_ATTACHMENTS_PER_MESSAGE = 5;
+  const MAX_IMAGE_ATTACHMENTS_PER_MESSAGE = 3;
+
+  const inferAttachmentMimeType = (file: File): string => {
+    if (ALLOWED_ATTACHMENT_MIMES.has(file.type)) {
+      return file.type;
+    }
+    const lowerName = file.name.toLowerCase();
+    if (lowerName.endsWith('.png')) return 'image/png';
+    if (lowerName.endsWith('.jpg') || lowerName.endsWith('.jpeg')) {
+      return 'image/jpeg';
+    }
+    if (lowerName.endsWith('.webp')) return 'image/webp';
+    return file.type;
+  };
 
   const handleFilesSelected = async (files: FileList | File[]) => {
     if (!state.talk) return;
@@ -4755,25 +4942,48 @@ export function TalkDetailPage({
       return;
     }
 
+    const currentImageCount = pendingAttachments.filter(
+      (attachment) => attachment.isImage,
+    ).length;
+    const incomingImageCount = fileArray.filter((file) =>
+      IMAGE_ATTACHMENT_MIMES.has(inferAttachmentMimeType(file)),
+    ).length;
+    if (
+      currentImageCount + incomingImageCount >
+      MAX_IMAGE_ATTACHMENTS_PER_MESSAGE
+    ) {
+      dispatch({
+        type: 'SEND_FAILED',
+        message: `You can attach up to ${MAX_IMAGE_ATTACHMENTS_PER_MESSAGE} images per message.`,
+        lastDraft: draft,
+      });
+      return;
+    }
+
     for (const file of fileArray) {
-      if (!ALLOWED_ATTACHMENT_MIMES.has(file.type) && file.type !== '') {
+      const mimeType = inferAttachmentMimeType(file);
+      const isImage = IMAGE_ATTACHMENT_MIMES.has(mimeType);
+
+      if (!ALLOWED_ATTACHMENT_MIMES.has(mimeType) && file.type !== '') {
         dispatch({
           type: 'SEND_FAILED',
-          message: `File type "${file.type}" is not supported. Supported: text, markdown, CSV, HTML, RTF, PDF, DOCX, XLSX, PPTX, and common code/config files.`,
+          message: `File type "${file.type}" is not supported. Supported: text, markdown, CSV, HTML, RTF, PDF, DOCX, XLSX, PPTX, PNG, JPEG, WEBP, and common code/config files.`,
           lastDraft: draft,
         });
         continue;
       }
-      if (file.size > MAX_ATTACHMENT_SIZE) {
+      const maxSize = isImage ? MAX_IMAGE_ATTACHMENT_SIZE : MAX_ATTACHMENT_SIZE;
+      if (file.size > maxSize) {
         dispatch({
           type: 'SEND_FAILED',
-          message: `"${file.name}" exceeds the 10 MB size limit.`,
+          message: `"${file.name}" exceeds the ${maxSize / (1024 * 1024)} MB size limit.`,
           lastDraft: draft,
         });
         continue;
       }
 
       const localId = `local-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const previewUrl = isImage ? URL.createObjectURL(file) : undefined;
       setPendingAttachments((prev) => [
         ...prev,
         {
@@ -4781,6 +4991,9 @@ export function TalkDetailPage({
           file,
           fileName: file.name,
           fileSize: file.size,
+          mimeType,
+          isImage,
+          previewUrl,
           status: 'uploading',
         },
       ]);
@@ -4816,7 +5029,19 @@ export function TalkDetailPage({
   };
 
   const handleRemoveAttachment = (localId: string) => {
-    setPendingAttachments((prev) => prev.filter((a) => a.localId !== localId));
+    setPendingAttachments((prev) => {
+      const next: typeof prev = [];
+      for (const attachment of prev) {
+        if (attachment.localId === localId) {
+          if (attachment.previewUrl) {
+            URL.revokeObjectURL(attachment.previewUrl);
+          }
+          continue;
+        }
+        next.push(attachment);
+      }
+      return next;
+    });
   };
 
   const handleAttachButtonClick = () => {
@@ -4834,6 +5059,9 @@ export function TalkDetailPage({
 
   const [isDragOver, setIsDragOver] = useState(false);
   const dragCounterRef = useRef(0);
+  useEffect(() => {
+    pendingAttachmentsRef.current = pendingAttachments;
+  }, [pendingAttachments]);
 
   const handleDragEnter = (event: React.DragEvent) => {
     event.preventDefault();
@@ -4870,6 +5098,16 @@ export function TalkDetailPage({
       void handleFilesSelected(event.dataTransfer.files);
     }
   };
+
+  useEffect(() => {
+    return () => {
+      pendingAttachmentsRef.current.forEach((attachment) => {
+        if (attachment.previewUrl) {
+          URL.revokeObjectURL(attachment.previewUrl);
+        }
+      });
+    };
+  }, []);
 
   useEffect(() => {
     if (currentTab !== 'talk') {
@@ -5016,6 +5254,11 @@ export function TalkDetailPage({
           executorModel: run.executorModel,
         });
       }
+      pendingAttachments.forEach((attachment) => {
+        if (attachment.previewUrl) {
+          URL.revokeObjectURL(attachment.previewUrl);
+        }
+      });
       setDraft('');
       setPendingAttachments([]);
       dispatch({ type: 'SEND_CLEARED' });
@@ -6520,50 +6763,122 @@ export function TalkDetailPage({
                         </p>
                       </div>
                     </div>
-                    {contextSources.length > 0 ? (
-                      <ul style={{ listStyle: 'none', padding: 0 }}>
-                        {contextSources.map((source) => (
-                          <li
-                            key={source.id}
-                            style={{
-                              padding: '0.35rem 0',
-                              borderBottom: '1px solid var(--border, #eee)',
-                            }}
+
+                    {canEditAgents ? (
+                      <>
+                        <div
+                          className={`context-source-dropzone${contextDropActive ? ' context-source-dropzone-active' : ''}`}
+                          role="button"
+                          tabIndex={0}
+                          aria-label="Upload saved source files"
+                          onClick={() => contextFileInputRef.current?.click()}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter' || e.key === ' ') {
+                              e.preventDefault();
+                              contextFileInputRef.current?.click();
+                            }
+                          }}
+                          onDragOver={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            setContextDropActive(true);
+                          }}
+                          onDragLeave={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            setContextDropActive(false);
+                          }}
+                          onDrop={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            setContextDropActive(false);
+                            if (e.dataTransfer.files.length > 0)
+                              void handleContextFilesSelected(
+                                e.dataTransfer.files,
+                              );
+                          }}
+                        >
+                          <span>Drop files here or click to browse</span>
+                          <span className="context-source-dropzone-hint">
+                            PDF, DOCX, XLSX, text, code files up to 10 MB
+                          </span>
+                        </div>
+                        <input
+                          ref={contextFileInputRef}
+                          type="file"
+                          multiple
+                          style={{ display: 'none' }}
+                          accept=".pdf,.docx,.xlsx,.pptx,.txt,.md,.csv,.html,.json,.xml,.yaml,.yml,.py,.js,.ts,.jsx,.tsx,.java,.c,.h,.cpp,.hpp,.go,.rs,.sh,.sql,.rtf,.rb,.php,.swift,.kt,.lua,.r,.toml,.ini,.cfg,.log"
+                          onChange={(e) => {
+                            if (e.target.files && e.target.files.length > 0) {
+                              void handleContextFilesSelected(e.target.files);
+                              e.target.value = '';
+                            }
+                          }}
+                        />
+                      </>
+                    ) : null}
+
+                    {contextUploadingFiles.length > 0 ? (
+                      <div className="context-source-upload-progress">
+                        {contextUploadingFiles.map((f) => (
+                          <div
+                            key={f.localId}
+                            className="context-source-upload-item"
                           >
-                            <div
-                              style={{
-                                display: 'flex',
-                                alignItems: 'center',
-                                gap: '0.5rem',
-                              }}
-                            >
+                            <span>{f.fileName}</span>
+                            {f.status === 'uploading' ? (
+                              <span className="context-source-upload-status">
+                                Uploading...
+                              </span>
+                            ) : f.status === 'error' ? (
                               <span
-                                style={{
-                                  fontFamily: 'monospace',
-                                  fontSize: '0.75rem',
-                                  opacity: 0.6,
-                                }}
+                                className="context-source-upload-status"
+                                style={{ color: 'var(--danger-text, #a61b1b)' }}
                               >
+                                {f.error || 'Failed'}
+                              </span>
+                            ) : (
+                              <span
+                                className="context-source-upload-status"
+                                style={{ color: 'green' }}
+                              >
+                                Done
+                              </span>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    ) : null}
+
+                    {contextSources.length > 0 ? (
+                      <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
+                        {contextSources.map((source) => (
+                          <li key={source.id} className="context-source-item">
+                            <div className="context-source-item-row">
+                              <span className="context-source-ref">
                                 {source.sourceRef}
                               </span>
-                              <span
-                                style={{
-                                  fontSize: '0.7rem',
-                                  textTransform: 'uppercase',
-                                  opacity: 0.5,
-                                }}
-                              >
-                                [{source.sourceType}]
+                              <span className="context-source-type-badge">
+                                {source.sourceType === 'file'
+                                  ? 'FILE'
+                                  : source.sourceType === 'url'
+                                    ? 'URL'
+                                    : 'TEXT'}
                               </span>
                               <span style={{ flex: 1 }}>{source.title}</span>
+                              {source.sourceType === 'file' &&
+                              source.fileSize != null ? (
+                                <span className="context-source-file-meta">
+                                  {source.fileSize < 1024
+                                    ? `${source.fileSize} B`
+                                    : source.fileSize < 1024 * 1024
+                                      ? `${(source.fileSize / 1024).toFixed(1)} KB`
+                                      : `${(source.fileSize / (1024 * 1024)).toFixed(1)} MB`}
+                                </span>
+                              ) : null}
                               {source.fetchStrategy ? (
-                                <span
-                                  style={{
-                                    fontSize: '0.7rem',
-                                    textTransform: 'uppercase',
-                                    opacity: 0.6,
-                                  }}
-                                >
+                                <span className="context-source-file-meta">
                                   via {source.fetchStrategy}
                                 </span>
                               ) : null}
@@ -6638,34 +6953,31 @@ export function TalkDetailPage({
                           </li>
                         ))}
                       </ul>
-                    ) : (
+                    ) : contextUploadingFiles.length === 0 ? (
                       <p className="page-state">No sources yet.</p>
-                    )}
+                    ) : null}
 
-                    {/* Add source form (editors only) */}
                     {canEditAgents ? (
                       <div style={{ marginTop: '0.75rem' }}>
                         <div
                           className="connector-attach-row"
                           style={{ marginBottom: '0.5rem' }}
                         >
-                          <label>
-                            <span className="settings-label">Type</span>
-                            <select
-                              value={addSourceType}
-                              onChange={(e) =>
-                                setAddSourceType(
-                                  e.target.value as 'text' | 'url',
-                                )
-                              }
-                              disabled={contextStatus.status === 'saving'}
-                            >
-                              <option value="text">Text</option>
-                              <option value="url">URL</option>
-                            </select>
-                          </label>
                           <label style={{ flex: 1 }}>
-                            <span className="settings-label">Title</span>
+                            <span className="settings-label">URL</span>
+                            <input
+                              type="url"
+                              value={addSourceUrl}
+                              onChange={(e) => setAddSourceUrl(e.target.value)}
+                              placeholder="https://example.com/docs"
+                              disabled={contextStatus.status === 'saving'}
+                              style={{ width: '100%' }}
+                            />
+                          </label>
+                          <label>
+                            <span className="settings-label">
+                              Title (optional)
+                            </span>
                             <input
                               type="text"
                               value={addSourceTitle}
@@ -6678,45 +6990,43 @@ export function TalkDetailPage({
                             />
                           </label>
                         </div>
-                        {addSourceType === 'url' ? (
-                          <label
-                            style={{ display: 'block', marginBottom: '0.5rem' }}
-                          >
-                            <span className="settings-label">URL</span>
-                            <input
-                              type="url"
-                              value={addSourceUrl}
-                              onChange={(e) => setAddSourceUrl(e.target.value)}
-                              placeholder="https://example.com/docs"
-                              disabled={contextStatus.status === 'saving'}
-                              style={{ width: '100%' }}
-                            />
-                          </label>
-                        ) : (
-                          <label
-                            style={{ display: 'block', marginBottom: '0.5rem' }}
-                          >
-                            <span className="settings-label">Content</span>
-                            <textarea
-                              value={addSourceText}
-                              onChange={(e) => setAddSourceText(e.target.value)}
-                              placeholder="Paste text content here…"
-                              rows={4}
-                              disabled={contextStatus.status === 'saving'}
-                              style={{ width: '100%', resize: 'vertical' }}
-                            />
-                          </label>
-                        )}
                         <button
                           type="button"
                           className="secondary-btn"
-                          onClick={() => void handleAddSource()}
+                          onClick={() => void handleAddUrlSource()}
                           disabled={
                             contextStatus.status === 'saving' ||
-                            !addSourceTitle.trim()
+                            !addSourceUrl.trim()
                           }
                         >
-                          Add Source
+                          Add URL
+                        </button>
+                        <label
+                          style={{ display: 'block', marginTop: '0.75rem' }}
+                        >
+                          <span className="settings-label">
+                            Paste text snippet
+                          </span>
+                          <textarea
+                            value={addSourceText}
+                            onChange={(e) => setAddSourceText(e.target.value)}
+                            placeholder="Paste notes, source excerpts, or working context here…"
+                            rows={4}
+                            disabled={contextStatus.status === 'saving'}
+                            style={{ width: '100%', resize: 'vertical' }}
+                          />
+                        </label>
+                        <button
+                          type="button"
+                          className="secondary-btn"
+                          onClick={() => void handleAddTextSource()}
+                          disabled={
+                            contextStatus.status === 'saving' ||
+                            !addSourceText.trim()
+                          }
+                          style={{ marginTop: '0.5rem' }}
+                        >
+                          Add Text
                         </button>
                       </div>
                     ) : null}
@@ -9531,21 +9841,47 @@ export function TalkDetailPage({
                             message.attachments.length > 0 ? (
                               <div className="message-attachments">
                                 {message.attachments.map((att) => (
-                                  <span
+                                  <div
                                     key={att.id}
-                                    className="message-attachment-chip"
-                                    title={att.mimeType}
+                                    className="message-attachment-item"
                                   >
-                                    {att.fileName}
-                                    <span className="message-attachment-size">
-                                      {' '}
-                                      {att.fileSize < 1024
-                                        ? `${att.fileSize} B`
-                                        : att.fileSize < 1048576
-                                          ? `${(att.fileSize / 1024).toFixed(1)} KB`
-                                          : `${(att.fileSize / 1048576).toFixed(1)} MB`}
+                                    {isRenderableImageAttachment(
+                                      att.mimeType,
+                                    ) ? (
+                                      <a
+                                        href={buildTalkAttachmentContentUrl(
+                                          talkId,
+                                          att.id,
+                                        )}
+                                        target="_blank"
+                                        rel="noreferrer"
+                                        className="message-attachment-image-link"
+                                      >
+                                        <img
+                                          src={buildTalkAttachmentContentUrl(
+                                            talkId,
+                                            att.id,
+                                          )}
+                                          alt={att.fileName}
+                                          className="message-attachment-image"
+                                        />
+                                      </a>
+                                    ) : null}
+                                    <span
+                                      className="message-attachment-chip"
+                                      title={att.mimeType}
+                                    >
+                                      {att.fileName}
+                                      <span className="message-attachment-size">
+                                        {' '}
+                                        {att.fileSize < 1024
+                                          ? `${att.fileSize} B`
+                                          : att.fileSize < 1048576
+                                            ? `${(att.fileSize / 1024).toFixed(1)} KB`
+                                            : `${(att.fileSize / 1048576).toFixed(1)} MB`}
+                                      </span>
                                     </span>
-                                  </span>
+                                  </div>
                                 ))}
                               </div>
                             ) : null}
@@ -9709,6 +10045,7 @@ export function TalkDetailPage({
                     <div
                       className="inline-banner inline-banner-warning"
                       role="status"
+                      aria-live="polite"
                     >
                       {composerGuardrailMessage}
                     </div>
@@ -9742,6 +10079,13 @@ export function TalkDetailPage({
                               : att.fileName
                           }
                         >
+                          {att.isImage && att.previewUrl ? (
+                            <img
+                              src={att.previewUrl}
+                              alt={att.fileName}
+                              className="composer-attachment-preview"
+                            />
+                          ) : null}
                           <span className="composer-attachment-name">
                             {att.fileName}
                           </span>
