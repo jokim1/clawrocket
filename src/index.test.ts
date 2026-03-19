@@ -48,4 +48,16 @@ describe('runAgent', () => {
     expect(result).toBe('error');
     expect(runContainerAgent).not.toHaveBeenCalled();
   });
+
+  it('requires connected channels when web mode is disabled', async () => {
+    const { shouldRequireConnectedChannels } = await import('./index.js');
+
+    expect(shouldRequireConnectedChannels(false)).toBe(true);
+  });
+
+  it('allows web-only startup without connected channels when web mode is enabled', async () => {
+    const { shouldRequireConnectedChannels } = await import('./index.js');
+
+    expect(shouldRequireConnectedChannels(true)).toBe(false);
+  });
 });
