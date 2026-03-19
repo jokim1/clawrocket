@@ -134,6 +134,34 @@ describe('ai-agents routes', () => {
     expect(storedVerification?.status).toBe('verified');
   });
 
+  it('verifies Gemini credentials against the Google OpenAI-compatible endpoint', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+        expect(String(url)).toBe(
+          'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions',
+        );
+        expect(new Headers(init?.headers).get('authorization')).toBe(
+          'Bearer AIza-gemini-good',
+        );
+        return createOpenAiStreamResponse();
+      }),
+    );
+
+    const result = await putAiProviderCredentialRoute(auth, 'provider.gemini', {
+      apiKey: 'AIza-gemini-good',
+    });
+
+    expect(result.statusCode).toBe(200);
+    expect(result.body.ok).toBe(true);
+    if (!result.body.ok) {
+      throw new Error('Expected ok response');
+    }
+
+    expect(result.body.data.provider.hasCredential).toBe(true);
+    expect(result.body.data.provider.verificationStatus).toBe('verified');
+  });
+
   it('marks a provider invalid when upstream rejects the stored API key', async () => {
     seedProviderSecret('provider.nvidia', 'nvapi-bad-key');
     vi.stubGlobal(

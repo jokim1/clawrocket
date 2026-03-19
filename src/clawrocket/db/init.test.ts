@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { _initTestDatabase } from './index.js';
+import { _initTestDatabase, initClawrocketSchema } from './index.js';
 import { getDb } from '../../db.js';
 
 describe('clawrocket schema init', () => {
@@ -110,17 +110,29 @@ describe('clawrocket schema init', () => {
 
     const providers = db
       .prepare(
-        `SELECT id, name
+        `SELECT id, name, base_url
          FROM llm_providers
          WHERE id IN ('provider.openai', 'provider.gemini', 'provider.nvidia')
          ORDER BY id`,
       )
-      .all() as Array<{ id: string; name: string }>;
+      .all() as Array<{ id: string; name: string; base_url: string }>;
 
     expect(providers).toEqual([
-      { id: 'provider.gemini', name: 'Google / Gemini' },
-      { id: 'provider.nvidia', name: 'NVIDIA Kimi2.5' },
-      { id: 'provider.openai', name: 'OpenAI' },
+      {
+        id: 'provider.gemini',
+        name: 'Google / Gemini',
+        base_url: 'https://generativelanguage.googleapis.com/v1beta/openai',
+      },
+      {
+        id: 'provider.nvidia',
+        name: 'NVIDIA Kimi2.5',
+        base_url: 'https://integrate.api.nvidia.com/v1',
+      },
+      {
+        id: 'provider.openai',
+        name: 'OpenAI',
+        base_url: 'https://api.openai.com/v1',
+      },
     ]);
 
     const models = db
@@ -137,6 +149,31 @@ describe('clawrocket schema init', () => {
       { provider_id: 'provider.nvidia', model_id: 'moonshotai/kimi-k2.5' },
       { provider_id: 'provider.openai', model_id: 'gpt-5-mini' },
     ]);
+  });
+
+  it('repairs persisted builtin provider configuration on startup', () => {
+    _initTestDatabase();
+    const db = getDb();
+
+    db.prepare(
+      `UPDATE llm_providers
+       SET base_url = 'https://generativelanguage.googleapis.com/openai'
+       WHERE id = 'provider.gemini'`,
+    ).run();
+
+    initClawrocketSchema();
+
+    const geminiProvider = db
+      .prepare(
+        `SELECT base_url
+         FROM llm_providers
+         WHERE id = 'provider.gemini'`,
+      )
+      .get() as { base_url: string } | undefined;
+
+    expect(geminiProvider?.base_url).toBe(
+      'https://generativelanguage.googleapis.com/v1beta/openai',
+    );
   });
 
   it('seeds separate main and default Talk agents', () => {

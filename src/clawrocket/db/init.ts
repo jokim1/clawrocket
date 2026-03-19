@@ -155,7 +155,19 @@ function seedAdditionalProviders(database: Database.Database): void {
           absolute_timeout_ms, updated_at, updated_by
         )
         VALUES (?, ?, ?, ?, ?, ?, 1, 'none', ?, ?, ?, ?, NULL)
-        ON CONFLICT(id) DO NOTHING
+        ON CONFLICT(id) DO UPDATE SET
+          name = excluded.name,
+          provider_kind = excluded.provider_kind,
+          api_format = excluded.api_format,
+          base_url = excluded.base_url,
+          auth_scheme = excluded.auth_scheme,
+          enabled = excluded.enabled,
+          core_compatibility = excluded.core_compatibility,
+          response_start_timeout_ms = excluded.response_start_timeout_ms,
+          stream_idle_timeout_ms = excluded.stream_idle_timeout_ms,
+          absolute_timeout_ms = excluded.absolute_timeout_ms,
+          updated_at = excluded.updated_at,
+          updated_by = excluded.updated_by
       `,
       )
       .run(

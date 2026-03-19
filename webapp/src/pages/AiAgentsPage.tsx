@@ -53,6 +53,7 @@ const PROVIDER_DOCS_LABEL: Record<string, string> = {
 };
 
 const PROVIDER_KEY_PLACEHOLDER: Record<string, string> = {
+  'provider.gemini': 'AIza...',
   'provider.nvidia': 'nvapi-...',
 };
 
