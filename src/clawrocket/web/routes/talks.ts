@@ -74,6 +74,9 @@ interface SidebarTalkApiRecord {
   title: string | null;
   status: 'active' | 'paused' | 'archived';
   sortOrder: number;
+  lastMessageAt: string | null;
+  messageCount: number;
+  hasActiveRun: boolean;
 }
 
 interface TalkFolderApiRecord {
@@ -232,6 +235,9 @@ function toSidebarTalkApiRecord(
     title: talk.topic_title,
     status: talk.status,
     sortOrder: talk.sort_order,
+    lastMessageAt: talk.last_message_at,
+    messageCount: talk.message_count,
+    hasActiveRun: talk.has_active_run,
   };
 }
 

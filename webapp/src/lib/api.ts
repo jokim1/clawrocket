@@ -47,6 +47,9 @@ export type TalkSidebarTalk = {
   title: string;
   status: string;
   sortOrder: number;
+  lastMessageAt?: string | null;
+  messageCount?: number;
+  hasActiveRun?: boolean;
 };
 
 export type TalkSidebarFolder = {

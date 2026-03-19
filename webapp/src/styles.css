@@ -330,6 +330,22 @@ a {
     color 140ms ease;
 }
 
+.clawtalk-sidebar-tree-link-inner {
+  width: 100%;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.clawtalk-sidebar-tree-title-wrap {
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.32rem;
+}
+
 .clawtalk-sidebar-tree-link:hover {
   background: rgba(67, 104, 184, 0.08);
   color: #173a79;
@@ -345,6 +361,33 @@ a {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.clawtalk-sidebar-tree-title-responding {
+  font-style: italic;
+}
+
+.clawtalk-sidebar-activity-indicator {
+  flex: 0 0 auto;
+  color: #2b63d9;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.clawtalk-sidebar-unread-badge {
+  flex: 0 0 auto;
+  min-width: 1.35rem;
+  height: 1.35rem;
+  padding: 0 0.38rem;
+  border-radius: 999px;
+  background: #2b63d9;
+  color: #fff;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.72rem;
+  font-weight: 700;
+  line-height: 1;
 }
 
 .clawtalk-sidebar-talk-row-nested .clawtalk-sidebar-tree-link {

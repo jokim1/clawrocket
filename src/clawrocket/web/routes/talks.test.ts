@@ -333,6 +333,59 @@ describe('talk routes', () => {
     expect(body.data.thread.title).toBe('New Analysis Thread');
   });
 
+  it('includes active-run and message metrics in the talk sidebar tree', async () => {
+    createTalkMessage({
+      id: 'msg-sidebar-activity',
+      talkId: 'talk-owner',
+      threadId: 'thread-talk-owner',
+      role: 'assistant',
+      content: 'Latest update from the agent',
+      createdBy: 'owner-1',
+      createdAt: '2026-03-18T10:00:00.000Z',
+    });
+    createTalkRun({
+      id: 'run-sidebar-activity',
+      talk_id: 'talk-owner',
+      thread_id: 'thread-talk-owner',
+      requested_by: 'owner-1',
+      status: 'running',
+      trigger_message_id: 'msg-sidebar-activity',
+      job_id: null,
+      target_agent_id: 'ta-talk-owner',
+      idempotency_key: null,
+      response_group_id: null,
+      sequence_index: null,
+      executor_alias: 'direct_http',
+      executor_model: 'claude-opus-4-6',
+      source_binding_id: null,
+      source_external_message_id: null,
+      source_thread_key: null,
+      created_at: '2026-03-18T10:00:01.000Z',
+      started_at: '2026-03-18T10:00:02.000Z',
+      ended_at: null,
+      cancel_reason: null,
+    });
+
+    const res = await server.request('/api/v1/talks/sidebar', {
+      headers: {
+        Authorization: 'Bearer owner-token',
+      },
+    });
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as any;
+    expect(body.ok).toBe(true);
+    const talk = body.data.items.find(
+      (item: any) => item.type === 'talk' && item.id === 'talk-owner',
+    );
+    expect(talk).toMatchObject({
+      id: 'talk-owner',
+      messageCount: 1,
+      lastMessageAt: '2026-03-18T10:00:00.000Z',
+      hasActiveRun: true,
+    });
+  });
+
   it('infers talk thread titles from the first user message', async () => {
     enqueueTalkTurnAtomic({
       talkId: 'talk-owner',

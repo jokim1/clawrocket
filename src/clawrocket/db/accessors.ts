@@ -526,6 +526,9 @@ export interface TalkSidebarTalkRecord {
   updated_at: string;
   access_role: TalkAccessLevel;
   llm_policy: string | null;
+  last_message_at: string | null;
+  message_count: number;
+  has_active_run: boolean;
 }
 
 export interface TalkSidebarTreeRecord {
@@ -1337,12 +1340,85 @@ export function listTalkSidebarTreeForUser(
   const folders = listTalkFoldersForOwner(userId);
   // Sidebar trees stay intentionally small in v1; this ceiling avoids pulling an
   // unbounded root list while still covering normal usage comfortably.
-  const talks = listTalksForUser({
+  const rawTalks = listTalksForUser({
     userId,
     limit: 1000,
     offset: 0,
     status: 'active',
-  }) as TalkSidebarTalkRecord[];
+  });
+  const talkIds = rawTalks.map((talk) => talk.id);
+
+  const metricsByTalkId = new Map<
+    string,
+    {
+      lastMessageAt: string | null;
+      messageCount: number;
+      hasActiveRun: boolean;
+    }
+  >();
+
+  if (talkIds.length > 0) {
+    const placeholders = talkIds.map(() => '?').join(', ');
+    const messageRows = getDb()
+      .prepare(
+        `
+        SELECT talk_id, COUNT(*) AS message_count, MAX(created_at) AS last_message_at
+        FROM talk_messages
+        WHERE talk_id IN (${placeholders})
+        GROUP BY talk_id
+      `,
+      )
+      .all(...talkIds) as Array<{
+      talk_id: string;
+      message_count: number;
+      last_message_at: string | null;
+    }>;
+
+    for (const row of messageRows) {
+      metricsByTalkId.set(row.talk_id, {
+        lastMessageAt: row.last_message_at,
+        messageCount: row.message_count,
+        hasActiveRun: false,
+      });
+    }
+
+    const runRows = getDb()
+      .prepare(
+        `
+        SELECT talk_id, COUNT(*) AS active_run_count
+        FROM talk_runs
+        WHERE talk_id IN (${placeholders})
+          AND status IN ('queued', 'running', 'awaiting_confirmation')
+        GROUP BY talk_id
+      `,
+      )
+      .all(...talkIds) as Array<{
+      talk_id: string;
+      active_run_count: number;
+    }>;
+
+    for (const row of runRows) {
+      const current = metricsByTalkId.get(row.talk_id) ?? {
+        lastMessageAt: null,
+        messageCount: 0,
+        hasActiveRun: false,
+      };
+      metricsByTalkId.set(row.talk_id, {
+        ...current,
+        hasActiveRun: row.active_run_count > 0,
+      });
+    }
+  }
+
+  const talks = rawTalks.map(
+    (talk) =>
+      ({
+        ...talk,
+        last_message_at: metricsByTalkId.get(talk.id)?.lastMessageAt ?? null,
+        message_count: metricsByTalkId.get(talk.id)?.messageCount ?? 0,
+        has_active_run: metricsByTalkId.get(talk.id)?.hasActiveRun ?? false,
+      }) satisfies TalkSidebarTalkRecord,
+  );
   const rootTalks = talks
     .filter((talk) => talk.folder_id === null)
     .sort(
