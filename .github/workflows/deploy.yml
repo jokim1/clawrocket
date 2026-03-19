@@ -15,47 +15,22 @@ concurrency:
 jobs:
   deploy:
     name: Deploy Production
-    runs-on: ubuntu-latest
-    environment: production
+    runs-on: [self-hosted, Linux, X64, alienware-prod]
     timeout-minutes: 30
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Configure SSH
+      - name: Deploy on self-hosted production runner
         env:
-          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
-          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
-        run: |
-          set -euo pipefail
-          mkdir -p "$HOME/.ssh"
-          chmod 700 "$HOME/.ssh"
-          printf '%s\n' "$DEPLOY_SSH_KEY" > "$HOME/.ssh/id_ed25519"
-          chmod 600 "$HOME/.ssh/id_ed25519"
-          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
-          chmod 644 "$HOME/.ssh/known_hosts"
-
-      - name: Deploy to production host
-        env:
-          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
-          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
-          DEPLOY_PORT: ${{ vars.DEPLOY_PORT }}
           DEPLOY_PATH: ${{ vars.DEPLOY_PATH }}
           DEPLOY_SERVICE: ${{ vars.DEPLOY_SERVICE }}
         run: |
           set -euo pipefail
-          : "${DEPLOY_HOST:?Missing DEPLOY_HOST secret}"
-          : "${DEPLOY_USER:?Missing DEPLOY_USER secret}"
+          deploy_path="${DEPLOY_PATH:-/home/k1min8r/projects/clawrocket}"
+          deploy_service="${DEPLOY_SERVICE:-nanoclaw}"
 
-          remote_port="${DEPLOY_PORT:-22}"
-          remote_path="${DEPLOY_PATH:-/home/k1min8r/projects/clawrocket}"
-          remote_service="${DEPLOY_SERVICE:-nanoclaw}"
-
-          ssh \
-            -i "$HOME/.ssh/id_ed25519" \
-            -p "$remote_port" \
-            -o BatchMode=yes \
-            -o StrictHostKeyChecking=yes \
-            "${DEPLOY_USER}@${DEPLOY_HOST}" \
-            "DEPLOY_PATH='${remote_path}' DEPLOY_SERVICE='${remote_service}' DEPLOY_BRANCH='main' bash -s" \
-            < ops/deploy-production.sh
+          DEPLOY_PATH="$deploy_path" \
+          DEPLOY_SERVICE="$deploy_service" \
+          DEPLOY_BRANCH="main" \
+          bash ops/deploy-production.sh
