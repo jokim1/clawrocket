@@ -2004,20 +2004,6 @@ export function TalkDetailPage({
     [contextRules],
   );
 
-  const streamBadgeLabel = useMemo(() => {
-    switch (state.streamState) {
-      case 'connecting':
-        return 'Connecting';
-      case 'live':
-        return 'Live';
-      case 'reconnecting':
-        return 'Reconnecting';
-      case 'offline':
-      default:
-        return 'Offline';
-    }
-  }, [state.streamState]);
-
   const isNearBottom = useCallback((): boolean => {
     const container = timelineRef.current;
     if (!container) return true;
@@ -5909,9 +5895,7 @@ export function TalkDetailPage({
   }
 
   const talk = state.talk;
-  const displayedTitle = isRenaming
-    ? (renameDraft?.draft ?? '')
-    : titleOverride || talk.title;
+  const displayedTitle = titleOverride || talk.title;
 
   return (
     <section className="page-shell talk-detail-shell">
@@ -5959,13 +5943,17 @@ export function TalkDetailPage({
                 />
               ) : (
                 <h1 className="talk-title">
-                  {displayedTitle}
-                  <span className={`stream-badge stream-${state.streamState}`}>
-                    {streamBadgeLabel}
-                  </span>
+                  <button
+                    type="button"
+                    className="talk-title-button"
+                    onClick={() => onRenameDraftChange(talkId, displayedTitle)}
+                    aria-label="Rename talk title"
+                    title="Rename talk title"
+                  >
+                    {displayedTitle}
+                  </button>
                 </h1>
               )}
-              <p>Event-authoritative live timeline.</p>
               {effectiveAgents.length > 0 ? (
                 <div
                   className="talk-status-strip"
@@ -6111,7 +6099,11 @@ export function TalkDetailPage({
           </header>
         </div>
 
-        <div className="talk-workspace-scroll" ref={timelineRef}>
+        <div
+          className={`talk-workspace-scroll${
+            currentTab === 'talk' ? ' talk-workspace-scroll-talk' : ''
+          }`}
+        >
           {currentTab === 'agents' ? (
             <section className="talk-tab-panel" aria-label="Talk agents">
               <div className="agents-panel-header">

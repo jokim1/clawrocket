@@ -8,6 +8,7 @@ import {
   within,
 } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { useState } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 
@@ -186,6 +187,33 @@ describe('TalkDetailPage', () => {
 
     await waitFor(() => {
       expect(screen.getAllByText('Daily Cal news')).toHaveLength(2);
+    });
+  });
+
+  it('lets users rename the talk from the header and removes legacy header chrome', async () => {
+    const user = userEvent.setup();
+    const onRenameDraftCommit = vi.fn().mockResolvedValue(undefined);
+    installTalkDetailFetch();
+
+    renderDetailPageWithRenameHarness('/app/talks/talk-1', {
+      onRenameDraftCommit,
+    });
+
+    await screen.findByRole('heading', { name: /Cal Football/i });
+    expect(screen.queryByText('Event-authoritative live timeline.')).toBeNull();
+    expect(screen.queryByText(/^Live$/)).toBeNull();
+
+    await user.click(screen.getByRole('button', { name: 'Rename talk title' }));
+
+    const input = screen.getByRole('textbox', { name: 'Talk title' });
+    await user.clear(input);
+    await user.type(input, 'Golden Bears{Enter}');
+
+    await waitFor(() => {
+      expect(onRenameDraftCommit).toHaveBeenCalledWith(
+        'talk-1',
+        'Golden Bears',
+      );
     });
   });
 
@@ -1987,6 +2015,58 @@ function renderDetailPage(initialEntry: string): ReturnType<typeof render> {
       </Routes>
     </MemoryRouter>,
   );
+}
+
+function renderDetailPageWithRenameHarness(
+  initialEntry: string,
+  options?: {
+    onRenameDraftCommit?: (
+      talkId: string,
+      draft: string,
+    ) => Promise<void> | void;
+  },
+): ReturnType<typeof render> {
+  const onRenameDraftCommit =
+    options?.onRenameDraftCommit ?? vi.fn().mockResolvedValue(undefined);
+
+  function RenameHarness(): JSX.Element {
+    const [renameDraft, setRenameDraft] = useState<{
+      talkId: string;
+      draft: string;
+    } | null>(null);
+
+    return (
+      <MemoryRouter initialEntries={[initialEntry]}>
+        <Routes>
+          <Route
+            path="/app/talks/:talkId/*"
+            element={
+              <TalkDetailPage
+                onUnauthorized={vi.fn()}
+                renameDraft={renameDraft}
+                onRenameDraftChange={(talkId, draft) =>
+                  setRenameDraft({ talkId, draft })
+                }
+                onRenameDraftCancel={(talkId) =>
+                  setRenameDraft((current) =>
+                    current?.talkId === talkId ? null : current,
+                  )
+                }
+                onRenameDraftCommit={async (talkId, draft) => {
+                  await onRenameDraftCommit(talkId, draft);
+                  setRenameDraft((current) =>
+                    current?.talkId === talkId ? null : current,
+                  );
+                }}
+              />
+            }
+          />
+        </Routes>
+      </MemoryRouter>
+    );
+  }
+
+  return render(<RenameHarness />);
 }
 
 function buildTalk(): Talk {
