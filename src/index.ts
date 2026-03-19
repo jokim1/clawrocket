@@ -519,6 +519,10 @@ function ensureContainerSystemRunning(): boolean {
   }
 }
 
+export function shouldRequireConnectedChannels(webEnabled: boolean): boolean {
+  return !webEnabled;
+}
+
 async function main(): Promise<void> {
   const coordinator = new InstanceCoordinator({
     dataDir: DATA_DIR,
@@ -757,63 +761,68 @@ async function main(): Promise<void> {
       await channel.connect();
     }
     if (channels.length === 0) {
-      throw new Error('No channels connected');
-    }
+      if (shouldRequireConnectedChannels(WEB_ENABLED)) {
+        throw new Error('No channels connected');
+      }
+      logger.warn(
+        'No chat channels connected; continuing in web-only mode and skipping channel subsystems.',
+      );
+    } else {
+      if (channelIngressWorker) {
+        await channelIngressWorker.start();
+      }
+      if (channelDeliveryWorker) {
+        await channelDeliveryWorker.start();
+      }
 
-    if (channelIngressWorker) {
-      await channelIngressWorker.start();
-    }
-    if (channelDeliveryWorker) {
-      await channelDeliveryWorker.start();
-    }
+      // Initialize Telegram bot pool for agent teams
+      if (TELEGRAM_BOT_POOL.length > 0) {
+        await initBotPool(TELEGRAM_BOT_POOL);
+      }
 
-    // Initialize Telegram bot pool for agent teams
-    if (TELEGRAM_BOT_POOL.length > 0) {
-      await initBotPool(TELEGRAM_BOT_POOL);
+      // Start subsystems (independently of connection handler)
+      startSchedulerLoop({
+        registeredGroups: () => registeredGroups,
+        getSessions: () => sessions,
+        queue,
+        onProcess: (groupJid, proc, containerName, groupFolder) =>
+          queue.registerProcess(groupJid, proc, containerName, groupFolder),
+        sendMessage: async (jid, rawText) => {
+          const channel = findChannel(channels, jid);
+          if (!channel) {
+            logger.warn({ jid }, 'No channel owns JID, cannot send message');
+            return;
+          }
+          const text = formatOutbound(rawText);
+          if (text) await channel.sendMessage(jid, text);
+        },
+      });
+      startIpcWatcher({
+        sendMessage: (jid, text) => {
+          const channel = findChannel(channels, jid);
+          if (!channel) throw new Error(`No channel for JID: ${jid}`);
+          return channel.sendMessage(jid, text);
+        },
+        registeredGroups: () => registeredGroups,
+        registerGroup,
+        syncGroups: async (force: boolean) => {
+          await Promise.all(
+            channels
+              .filter((ch) => ch.syncGroups)
+              .map((ch) => ch.syncGroups!(force)),
+          );
+        },
+        getAvailableGroups,
+        writeGroupsSnapshot: (gf, im, ag, rj) =>
+          writeGroupsSnapshot(gf, im, ag, rj),
+      });
+      queue.setProcessMessagesFn(processGroupMessages);
+      recoverPendingMessages();
+      startMessageLoop().catch((err) => {
+        logger.fatal({ err }, 'Message loop crashed unexpectedly');
+        void gracefulShutdown('message_loop_crash', { exitCode: 1 });
+      });
     }
-
-    // Start subsystems (independently of connection handler)
-    startSchedulerLoop({
-      registeredGroups: () => registeredGroups,
-      getSessions: () => sessions,
-      queue,
-      onProcess: (groupJid, proc, containerName, groupFolder) =>
-        queue.registerProcess(groupJid, proc, containerName, groupFolder),
-      sendMessage: async (jid, rawText) => {
-        const channel = findChannel(channels, jid);
-        if (!channel) {
-          logger.warn({ jid }, 'No channel owns JID, cannot send message');
-          return;
-        }
-        const text = formatOutbound(rawText);
-        if (text) await channel.sendMessage(jid, text);
-      },
-    });
-    startIpcWatcher({
-      sendMessage: (jid, text) => {
-        const channel = findChannel(channels, jid);
-        if (!channel) throw new Error(`No channel for JID: ${jid}`);
-        return channel.sendMessage(jid, text);
-      },
-      registeredGroups: () => registeredGroups,
-      registerGroup,
-      syncGroups: async (force: boolean) => {
-        await Promise.all(
-          channels
-            .filter((ch) => ch.syncGroups)
-            .map((ch) => ch.syncGroups!(force)),
-        );
-      },
-      getAvailableGroups,
-      writeGroupsSnapshot: (gf, im, ag, rj) =>
-        writeGroupsSnapshot(gf, im, ag, rj),
-    });
-    queue.setProcessMessagesFn(processGroupMessages);
-    recoverPendingMessages();
-    startMessageLoop().catch((err) => {
-      logger.fatal({ err }, 'Message loop crashed unexpectedly');
-      void gracefulShutdown('message_loop_crash', { exitCode: 1 });
-    });
   } catch (error) {
     try {
       await gracefulShutdown('startup_failure', {
