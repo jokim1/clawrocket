@@ -47,15 +47,113 @@ type RenameDraft = {
   draft: string;
 } | null;
 
-const SIDEBAR_COLLAPSED_STORAGE_KEY = 'clawtalk.sidebarCollapsed';
+type TalkReadMarker = {
+  messageCount: number;
+  lastMessageAt: string | null;
+};
 
-function toSidebarTalk(talk: Talk): TalkSidebarTalk {
+type SidebarTalkView = TalkSidebarTalk & {
+  unreadCount: number;
+  isResponding: boolean;
+};
+
+type SidebarFolderView = Omit<TalkSidebarFolder, 'talks'> & {
+  talks: SidebarTalkView[];
+};
+
+type SidebarItemView = SidebarTalkView | SidebarFolderView;
+
+const SIDEBAR_COLLAPSED_STORAGE_KEY = 'clawtalk.sidebarCollapsed';
+const TALK_READ_MARKERS_STORAGE_KEY = 'clawtalk.talkReadMarkers';
+const SIDEBAR_REFRESH_INTERVAL_MS = 5_000;
+
+function readTalkReadMarkers(): Record<string, TalkReadMarker> {
+  if (typeof window === 'undefined') return {};
+  try {
+    const raw = window.localStorage.getItem(TALK_READ_MARKERS_STORAGE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as Record<
+      string,
+      { messageCount?: unknown; lastMessageAt?: unknown }
+    >;
+    return Object.fromEntries(
+      Object.entries(parsed).map(([talkId, marker]) => [
+        talkId,
+        {
+          messageCount:
+            typeof marker.messageCount === 'number' ? marker.messageCount : 0,
+          lastMessageAt:
+            typeof marker.lastMessageAt === 'string'
+              ? marker.lastMessageAt
+              : null,
+        },
+      ]),
+    );
+  } catch {
+    return {};
+  }
+}
+
+function flattenSidebarTalks(items: TalkSidebarItem[]): TalkSidebarTalk[] {
+  return items.flatMap((item) => (item.type === 'talk' ? [item] : item.talks));
+}
+
+function findSidebarTalk(
+  items: TalkSidebarItem[],
+  talkId: string,
+): TalkSidebarTalk | null {
+  return flattenSidebarTalks(items).find((talk) => talk.id === talkId) ?? null;
+}
+
+function computeUnreadCount(
+  talk: TalkSidebarTalk,
+  marker: TalkReadMarker | undefined,
+  isActive: boolean,
+): number {
+  if (isActive) return 0;
+  const messageCount = talk.messageCount ?? 0;
+  if (!marker) return 0;
+  return Math.max(0, messageCount - marker.messageCount);
+}
+
+function buildSidebarViewItems(
+  items: TalkSidebarItem[],
+  readMarkers: Record<string, TalkReadMarker>,
+  activeTalkId: string,
+): SidebarItemView[] {
+  const toViewTalk = (talk: TalkSidebarTalk): SidebarTalkView => ({
+    ...talk,
+    unreadCount: computeUnreadCount(
+      talk,
+      readMarkers[talk.id],
+      talk.id === activeTalkId,
+    ),
+    isResponding: !!talk.hasActiveRun,
+  });
+
+  return items.map((item) =>
+    item.type === 'talk'
+      ? toViewTalk(item)
+      : {
+          ...item,
+          talks: item.talks.map(toViewTalk),
+        },
+  );
+}
+
+function toSidebarTalk(
+  talk: Talk,
+  existing?: Partial<TalkSidebarTalk> | null,
+): TalkSidebarTalk {
   return {
     type: 'talk',
     id: talk.id,
     title: talk.title,
     status: talk.status,
     sortOrder: talk.sortOrder,
+    lastMessageAt: existing?.lastMessageAt ?? null,
+    messageCount: existing?.messageCount ?? 0,
+    hasActiveRun: existing?.hasActiveRun ?? false,
   };
 }
 
@@ -63,14 +161,15 @@ function updateSidebarTalk(
   items: TalkSidebarItem[],
   talk: Talk,
 ): TalkSidebarItem[] {
+  const currentTalk = findSidebarTalk(items, talk.id);
   return items.map((item) => {
     if (item.type === 'talk') {
-      return item.id === talk.id ? toSidebarTalk(talk) : item;
+      return item.id === talk.id ? toSidebarTalk(talk, currentTalk) : item;
     }
     return {
       ...item,
       talks: item.talks.map((child) =>
-        child.id === talk.id ? toSidebarTalk(talk) : child,
+        child.id === talk.id ? toSidebarTalk(talk, currentTalk) : child,
       ),
     };
   });
@@ -93,7 +192,7 @@ function insertTopLevelTalk(
   items: TalkSidebarItem[],
   talk: Talk,
 ): TalkSidebarItem[] {
-  return [toSidebarTalk(talk), ...items];
+  return [toSidebarTalk(talk, null), ...items];
 }
 
 function replaceSidebarFolder(
@@ -239,6 +338,9 @@ export function App() {
   const [sidebarError, setSidebarError] = useState<string | null>(null);
   const [renameDraft, setRenameDraft] = useState<RenameDraft>(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [talkReadMarkers, setTalkReadMarkers] = useState<
+    Record<string, TalkReadMarker>
+  >({});
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -246,6 +348,7 @@ export function App() {
     if (stored === 'true') {
       setSidebarCollapsed(true);
     }
+    setTalkReadMarkers(readTalkReadMarkers());
   }, []);
 
   useEffect(() => {
@@ -255,6 +358,14 @@ export function App() {
       sidebarCollapsed ? 'true' : 'false',
     );
   }, [sidebarCollapsed]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    window.localStorage.setItem(
+      TALK_READ_MARKERS_STORAGE_KEY,
+      JSON.stringify(talkReadMarkers),
+    );
+  }, [talkReadMarkers]);
 
   const refreshSession = useCallback(async () => {
     try {
@@ -317,6 +428,25 @@ export function App() {
     void refreshSidebar();
   }, [auth.status, refreshSidebar]);
 
+  useEffect(() => {
+    if (auth.status !== 'authenticated') return;
+    const refresh = () => void refreshSidebar();
+    const intervalId = window.setInterval(refresh, SIDEBAR_REFRESH_INTERVAL_MS);
+    const handleFocus = () => refresh();
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        refresh();
+      }
+    };
+    window.addEventListener('focus', handleFocus);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => {
+      window.clearInterval(intervalId);
+      window.removeEventListener('focus', handleFocus);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, [auth.status, refreshSidebar]);
+
   const handleCreateTalk = useCallback(async () => {
     const talk = await createTalk('');
     setSidebarItems((current) => insertTopLevelTalk(current, talk));
@@ -373,7 +503,10 @@ export function App() {
       const updated = await patchTalkMetadata(input);
       setSidebarItems((current) => {
         const without = removeSidebarTalk(current, updated.id);
-        const nextTalk = toSidebarTalk(updated);
+        const nextTalk = toSidebarTalk(
+          updated,
+          findSidebarTalk(current, updated.id),
+        );
         if (updated.folderId) {
           return without.map((item) =>
             item.type === 'folder' && item.id === updated.folderId
@@ -457,6 +590,10 @@ export function App() {
   const currentTalkId = location.pathname.startsWith('/app/talks/')
     ? decodeURIComponent(location.pathname.split('/')[3] || '')
     : '';
+  const sidebarViewItems = useMemo(
+    () => buildSidebarViewItems(sidebarItems, talkReadMarkers, currentTalkId),
+    [currentTalkId, sidebarItems, talkReadMarkers],
+  );
   const currentTalkTitle = currentTalkId
     ? findTalkTitle(sidebarItems, currentTalkId)
     : null;
@@ -464,6 +601,47 @@ export function App() {
     location.pathname.startsWith('/app/talks/') &&
     location.pathname !== '/app/talks';
   const isMainRoute = location.pathname.startsWith('/app/main');
+
+  useEffect(() => {
+    if (!sidebarItems.length) return;
+    setTalkReadMarkers((current) => {
+      let changed = false;
+      const next = { ...current };
+      for (const talk of flattenSidebarTalks(sidebarItems)) {
+        if (next[talk.id]) continue;
+        next[talk.id] = {
+          messageCount: talk.messageCount ?? 0,
+          lastMessageAt: talk.lastMessageAt ?? null,
+        };
+        changed = true;
+      }
+      return changed ? next : current;
+    });
+  }, [sidebarItems]);
+
+  useEffect(() => {
+    if (!currentTalkId) return;
+    const talk = findSidebarTalk(sidebarItems, currentTalkId);
+    if (!talk) return;
+    setTalkReadMarkers((current) => {
+      const nextMarker = {
+        messageCount: talk.messageCount ?? 0,
+        lastMessageAt: talk.lastMessageAt ?? null,
+      };
+      const previous = current[currentTalkId];
+      if (
+        previous &&
+        previous.messageCount === nextMarker.messageCount &&
+        previous.lastMessageAt === nextMarker.lastMessageAt
+      ) {
+        return current;
+      }
+      return {
+        ...current,
+        [currentTalkId]: nextMarker,
+      };
+    });
+  }, [currentTalkId, sidebarItems]);
 
   if (auth.status === 'loading') {
     return <main className="page-state">Checking session…</main>;
@@ -525,7 +703,7 @@ export function App() {
       </header>
       {!sidebarCollapsed ? (
         <ClawTalkSidebar
-          items={sidebarItems}
+          items={sidebarViewItems}
           loading={sidebarLoading}
           error={sidebarError}
           userRole={auth.user.role}

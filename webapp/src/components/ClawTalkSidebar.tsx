@@ -24,6 +24,18 @@ import { NavLink } from 'react-router-dom';
 
 import type { Talk, TalkSidebarFolder, TalkSidebarItem } from '../lib/api';
 
+type TalkSidebarTalkView = TalkSidebarItem & {
+  type: 'talk';
+  unreadCount?: number;
+  isResponding?: boolean;
+};
+
+type TalkSidebarFolderView = Omit<TalkSidebarFolder, 'talks'> & {
+  talks: TalkSidebarTalkView[];
+};
+
+type TalkSidebarItemView = TalkSidebarTalkView | TalkSidebarFolderView;
+
 type RenameDraft = {
   talkId: string;
   draft: string;
@@ -36,7 +48,7 @@ type MenuPosition = {
 };
 
 type Props = {
-  items: TalkSidebarItem[];
+  items: TalkSidebarItemView[];
   loading: boolean;
   error: string | null;
   userRole: string;
@@ -161,7 +173,7 @@ function DropZone({
 }
 
 function buildMoveTargets(
-  items: TalkSidebarItem[],
+  items: TalkSidebarItemView[],
 ): Array<{ id: string | null; label: string }> {
   return [
     { id: null, label: '(Top Level)' },
@@ -447,10 +459,7 @@ export function ClawTalkSidebar({
     }
   };
 
-  const renderTalkRow = (
-    talk: TalkSidebarItem & { type: 'talk' },
-    inFolder = false,
-  ) => {
+  const renderTalkRow = (talk: TalkSidebarTalkView, inFolder = false) => {
     const menuOpen = menuState?.type === 'talk' && menuState.talkId === talk.id;
     const renaming = renameDraft?.talkId === talk.id;
     const moveOpen = menuOpen && menuState.moveOpen;
@@ -472,10 +481,34 @@ export function ClawTalkSidebar({
                 `clawtalk-sidebar-tree-link${isActive ? ' active' : ''}`
               }
             >
-              <span className="clawtalk-sidebar-tree-title">
-                {renaming
-                  ? renameDraft.draft || 'Untitled talk'
-                  : talk.title || 'Untitled talk'}
+              <span className="clawtalk-sidebar-tree-link-inner">
+                <span className="clawtalk-sidebar-tree-title-wrap">
+                  {talk.isResponding ? (
+                    <span
+                      className="clawtalk-sidebar-activity-indicator"
+                      aria-label="Response in progress"
+                      title="Response in progress"
+                    >
+                      *
+                    </span>
+                  ) : null}
+                  <span
+                    className={`clawtalk-sidebar-tree-title${talk.isResponding ? ' clawtalk-sidebar-tree-title-responding' : ''}`}
+                  >
+                    {renaming
+                      ? renameDraft.draft || 'Untitled talk'
+                      : talk.title || 'Untitled talk'}
+                  </span>
+                </span>
+                {talk.unreadCount && talk.unreadCount > 0 ? (
+                  <span
+                    className="clawtalk-sidebar-unread-badge"
+                    aria-label={`${talk.unreadCount} unread messages`}
+                    title={`${talk.unreadCount} unread messages`}
+                  >
+                    {talk.unreadCount}
+                  </span>
+                ) : null}
               </span>
             </NavLink>
             <div className="clawtalk-sidebar-tree-actions">

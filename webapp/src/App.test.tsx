@@ -171,6 +171,58 @@ describe('App', () => {
     expect(screen.getByRole('link', { name: 'Home' })).toBeTruthy();
   });
 
+  it('shows talk activity and unread badges in the sidebar', async () => {
+    window.localStorage.setItem(
+      'clawtalk.talkReadMarkers',
+      JSON.stringify({
+        'talk-1': {
+          messageCount: 2,
+          lastMessageAt: '2026-03-18T09:00:00.000Z',
+        },
+      }),
+    );
+
+    mockFetchByPath({
+      '/api/v1/session/me': [
+        jsonResponse(200, {
+          ok: true,
+          data: {
+            user: {
+              id: 'u1',
+              email: 'owner@example.com',
+              displayName: 'Owner',
+              role: 'owner',
+            },
+          },
+        }),
+      ],
+      '/api/v1/talks/sidebar': [
+        jsonResponse(200, {
+          ok: true,
+          data: {
+            items: [
+              {
+                id: 'talk-1',
+                type: 'talk',
+                title: 'Family Planning',
+                status: 'active',
+                sortOrder: 0,
+                lastMessageAt: '2026-03-18T10:00:00.000Z',
+                messageCount: 5,
+                hasActiveRun: true,
+              },
+            ],
+          },
+        }),
+      ],
+    });
+
+    renderWithRouter('/app/talks');
+    await screen.findByRole('heading', { name: 'Talks' });
+    expect(screen.getByLabelText('Response in progress')).toBeTruthy();
+    expect(screen.getByLabelText('3 unread messages')).toBeTruthy();
+  });
+
   it('returns to sign-in when a later API call returns 401', async () => {
     mockFetchByPath({
       '/api/v1/session/me': [
