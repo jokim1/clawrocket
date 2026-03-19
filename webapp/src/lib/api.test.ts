@@ -198,7 +198,10 @@ describe('api auth retry behavior', () => {
     });
 
     const api = await loadApiModule();
-    const [talks, user] = await Promise.all([api.listTalks(), api.getSessionMe()]);
+    const [talks, user] = await Promise.all([
+      api.listTalks(),
+      api.getSessionMe(),
+    ]);
 
     expect(talks).toEqual([]);
     expect(user.email).toBe('owner@example.com');
@@ -403,7 +406,7 @@ describe('api auth retry behavior', () => {
                 fileName: file.name,
                 fileSize: file.size,
                 mimeType: file.type,
-                extractionStatus: 'extracted',
+                extractionStatus: 'ready',
               },
             },
           });

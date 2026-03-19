@@ -1,3 +1,5 @@
+import path from 'path';
+
 import { extractTextFromHtml } from './source-ingestion.js';
 
 // ---------------------------------------------------------------------------
@@ -45,8 +47,101 @@ export const ALLOWED_ATTACHMENT_MIME_TYPES = new Set([
   'application/vnd.openxmlformats-officedocument.presentationml.presentation',
 ]);
 
+const ALLOWED_IMAGE_ATTACHMENT_MIME_TYPES = new Set([
+  'image/png',
+  'image/jpeg',
+  'image/webp',
+]);
+
+const SUPPORTED_ATTACHMENT_EXTENSION_MIME_MAP: Record<string, string> = {
+  // Text-based
+  '.txt': 'text/plain',
+  '.md': 'text/markdown',
+  '.csv': 'text/csv',
+  '.html': 'text/html',
+  '.htm': 'text/html',
+  '.rtf': 'text/rtf',
+  // Code / structured data
+  '.json': 'application/json',
+  '.xml': 'application/xml',
+  '.yaml': 'text/yaml',
+  '.yml': 'text/yaml',
+  '.py': 'text/x-python',
+  '.js': 'text/javascript',
+  '.ts': 'text/typescript',
+  '.jsx': 'text/javascript',
+  '.tsx': 'text/typescript',
+  '.java': 'text/x-java',
+  '.c': 'text/x-c',
+  '.h': 'text/x-c',
+  '.cpp': 'text/x-c++',
+  '.hpp': 'text/x-c++',
+  '.go': 'text/x-go',
+  '.rs': 'text/x-rust',
+  '.sh': 'text/x-shellscript',
+  '.bash': 'text/x-shellscript',
+  '.sql': 'text/x-sql',
+  '.rb': 'text/plain',
+  '.php': 'text/plain',
+  '.swift': 'text/plain',
+  '.kt': 'text/plain',
+  '.lua': 'text/plain',
+  '.r': 'text/plain',
+  '.toml': 'text/plain',
+  '.ini': 'text/plain',
+  '.cfg': 'text/plain',
+  '.env': 'text/plain',
+  '.log': 'text/plain',
+  // Documents
+  '.pdf': 'application/pdf',
+  '.docx':
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  '.pptx':
+    'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  // Images recognized by the current Talk UI
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.webp': 'image/webp',
+};
+
 export const MAX_ATTACHMENT_SIZE = 10 * 1024 * 1024; // 10 MB
 export const MAX_ATTACHMENTS_PER_MESSAGE = 5;
+
+function normalizeMimeType(mimeType: string | null | undefined): string | null {
+  const trimmed = mimeType?.trim().toLowerCase();
+  return trimmed ? trimmed : null;
+}
+
+export function isImageAttachmentMimeType(mimeType: string): boolean {
+  const normalized = normalizeMimeType(mimeType);
+  return normalized
+    ? ALLOWED_IMAGE_ATTACHMENT_MIME_TYPES.has(normalized)
+    : false;
+}
+
+export function inferSupportedAttachmentMimeType(
+  fileName: string,
+  providedMimeType?: string | null,
+): string | null {
+  const normalized = normalizeMimeType(providedMimeType);
+  if (
+    normalized &&
+    (ALLOWED_ATTACHMENT_MIME_TYPES.has(normalized) ||
+      isImageAttachmentMimeType(normalized))
+  ) {
+    return normalized;
+  }
+
+  const ext = path.extname(fileName).toLowerCase();
+  if (ext) {
+    const inferred = SUPPORTED_ATTACHMENT_EXTENSION_MIME_MAP[ext];
+    if (inferred) return inferred;
+  }
+
+  return normalized;
+}
 
 // ---------------------------------------------------------------------------
 // Error

@@ -59,6 +59,7 @@ vi.mock('../../../mount-security.js', () => ({
 import { getDb } from '../../../db.js';
 import {
   _initTestDatabase,
+  createMessageAttachment,
   createTalkThread,
   createTalkMessage,
   createTalkRun,
@@ -66,12 +67,14 @@ import {
   getQueuedTalkRuns,
   getRunningTalkRun,
   getTalkExecutorSession,
+  linkAttachmentToMessage,
   upsertTalk,
   upsertTalkExecutorSession,
   upsertTalkLlmPolicy,
   upsertTalkMember,
   upsertUser,
   upsertWebSession,
+  updateAttachmentExtraction,
 } from '../../db/index.js';
 import { createRegisteredAgent } from '../../db/agent-accessors.js';
 import { ThreadTitleValidationError } from '../../db/thread-title-utils.js';
@@ -1449,6 +1452,65 @@ describe('talk routes', () => {
         displaySummary: 'Checking FTUE funnel',
       },
     });
+  });
+
+  it('serializes attachment extraction status using ready in talk message responses', async () => {
+    createTalkMessage({
+      id: 'msg-with-attachment',
+      talkId: 'talk-owner',
+      threadId: 'thread-talk-owner',
+      role: 'user',
+      content: 'See attachment',
+      createdBy: 'owner-1',
+      createdAt: '2026-03-07T01:05:00.000Z',
+    });
+
+    createMessageAttachment({
+      id: 'att-message-1',
+      talkId: 'talk-owner',
+      fileName: 'notes.txt',
+      fileSize: 5,
+      mimeType: 'text/plain',
+      storageKey: 'attachments/talk-owner/att-message-1.txt',
+      createdBy: 'owner-1',
+    });
+    expect(
+      linkAttachmentToMessage(
+        'att-message-1',
+        'msg-with-attachment',
+        'talk-owner',
+      ),
+    ).toBe(true);
+    updateAttachmentExtraction({
+      attachmentId: 'att-message-1',
+      extractedText: 'hello',
+      extractionStatus: 'ready',
+    });
+
+    const messagesRes = await server.request(
+      '/api/v1/talks/talk-owner/messages',
+      {
+        headers: {
+          Authorization: 'Bearer owner-token',
+        },
+      },
+    );
+
+    expect(messagesRes.status).toBe(200);
+    const messagesBody = (await messagesRes.json()) as any;
+    const message = messagesBody.data.messages.find(
+      (entry: any) => entry.id === 'msg-with-attachment',
+    );
+
+    expect(message.attachments).toEqual([
+      {
+        id: 'att-message-1',
+        fileName: 'notes.txt',
+        fileSize: 5,
+        mimeType: 'text/plain',
+        extractionStatus: 'ready',
+      },
+    ]);
   });
 
   it('deletes selected talk messages and clears the cached executor session', async () => {
