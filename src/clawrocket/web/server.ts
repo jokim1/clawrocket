@@ -162,12 +162,14 @@ import {
   deleteTalkContextRuleRoute,
   deleteTalkContextSourceRoute,
   getTalkContextRoute,
+  getTalkContextSourceContentRoute,
   getTalkStateRoute,
   listTalkContextRulesRoute,
   patchTalkContextRuleRoute,
   patchTalkContextSourceRoute,
   retryTalkContextSourceRoute,
   setTalkGoalRoute,
+  uploadTalkContextSourceRoute,
 } from './routes/talk-context.js';
 import {
   createTalkOutputRoute,
@@ -188,6 +190,7 @@ import {
   runTalkJobNowRoute,
 } from './routes/talk-jobs.js';
 import {
+  getTalkAttachmentContentRoute,
   listTalkAttachmentsRoute,
   uploadTalkAttachmentRoute,
 } from './routes/talk-attachments.js';
@@ -4482,6 +4485,93 @@ function buildApp(opts: WebServerOptions): Hono {
     });
   });
 
+  app.post('/api/v1/talks/:talkId/context/sources/upload', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+
+    const rateResult = checkRateLimit({
+      principalId: auth.userId,
+      bucket: 'write',
+    });
+    if (!rateResult.allowed) return rateLimitedResponse(c, rateResult);
+
+    const csrf = validateCsrfToken({
+      method: c.req.method,
+      authType: auth.authType,
+      cookieHeader: c.req.header('cookie'),
+      csrfHeader: c.req.header('x-csrf-token'),
+    });
+    if (!csrf.ok) {
+      return c.json(
+        { ok: false, error: { code: 'csrf_failed', message: csrf.reason } },
+        403,
+      );
+    }
+
+    const body = await c.req.parseBody();
+    const file = body['file'];
+    if (!file || !(file instanceof File)) {
+      return c.json(
+        {
+          ok: false,
+          error: { code: 'file_required', message: 'A file field is required' },
+        },
+        400,
+      );
+    }
+
+    const arrayBuffer = await file.arrayBuffer();
+    const title = typeof body['title'] === 'string' ? body['title'] : undefined;
+
+    const result = await uploadTalkContextSourceRoute({
+      auth,
+      talkId: c.req.param('talkId'),
+      file: {
+        name: file.name || 'unnamed',
+        data: Buffer.from(arrayBuffer),
+        type: file.type || 'application/octet-stream',
+      },
+      title,
+    });
+
+    return new Response(JSON.stringify(result.body), {
+      status: result.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
+  });
+
+  app.get(
+    '/api/v1/talks/:talkId/context/sources/:sourceId/content',
+    async (c) => {
+      const auth = requireAuth(c);
+      if (!auth) return unauthorized(c);
+
+      const rateResult = checkRateLimit({
+        principalId: auth.userId,
+        bucket: 'read',
+      });
+      if (!rateResult.allowed) return rateLimitedResponse(c, rateResult);
+
+      const result = await getTalkContextSourceContentRoute({
+        auth,
+        talkId: c.req.param('talkId'),
+        sourceId: c.req.param('sourceId'),
+      });
+
+      if ('headers' in result && result.headers) {
+        return new Response(result.body, {
+          status: result.statusCode,
+          headers: result.headers,
+        });
+      }
+
+      return new Response(JSON.stringify(result.body), {
+        status: result.statusCode,
+        headers: { 'content-type': 'application/json; charset=utf-8' },
+      });
+    },
+  );
+
   app.patch('/api/v1/talks/:talkId/context/sources/:sourceId', async (c) => {
     const auth = requireAuth(c);
     if (!auth) return unauthorized(c);
@@ -4573,7 +4663,7 @@ function buildApp(opts: WebServerOptions): Hono {
       );
     }
 
-    const result = deleteTalkContextSourceRoute({
+    const result = await deleteTalkContextSourceRoute({
       auth,
       talkId: c.req.param('talkId'),
       sourceId: c.req.param('sourceId'),
@@ -4708,6 +4798,38 @@ function buildApp(opts: WebServerOptions): Hono {
       headers: { 'content-type': 'application/json; charset=utf-8' },
     });
   });
+
+  app.get(
+    '/api/v1/talks/:talkId/attachments/:attachmentId/content',
+    async (c) => {
+      const auth = requireAuth(c);
+      if (!auth) return unauthorized(c);
+
+      const rateResult = checkRateLimit({
+        principalId: auth.userId,
+        bucket: 'read',
+      });
+      if (!rateResult.allowed) return rateLimitedResponse(c, rateResult);
+
+      const result = await getTalkAttachmentContentRoute({
+        auth,
+        talkId: c.req.param('talkId'),
+        attachmentId: c.req.param('attachmentId'),
+      });
+
+      if (Buffer.isBuffer(result.body) && 'headers' in result) {
+        return new Response(result.body, {
+          status: result.statusCode,
+          headers: result.headers,
+        });
+      }
+
+      return new Response(JSON.stringify(result.body), {
+        status: result.statusCode,
+        headers: { 'content-type': 'application/json; charset=utf-8' },
+      });
+    },
+  );
 
   app.put('/api/v1/talks/:talkId/agents', async (c) => {
     const auth = requireAuth(c);

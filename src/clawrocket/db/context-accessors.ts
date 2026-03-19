@@ -598,6 +598,7 @@ export function createTalkContextSource(input: {
   mimeType?: string | null;
   storageKey?: string | null;
   extractedText?: string | null;
+  extractionError?: string | null;
   createdBy: string;
 }): ContextSourceSnapshot {
   const count = getTalkContextSourceCount(input.talkId);
@@ -617,15 +618,20 @@ export function createTalkContextSource(input: {
   let isTruncated = 0;
   let extractedAt: string | null = null;
 
-  if (input.sourceType === 'text') {
-    // Text sources are immediately ready
+  if (input.sourceType === 'text' || input.sourceType === 'file') {
+    // Text and file sources with provided content are immediately ready
     extractedText = input.extractedText ?? null;
-    if (extractedText && extractedText.length > 50_000) {
-      extractedText = extractedText.slice(0, 50_000);
-      isTruncated = 1;
+    if (extractedText !== null) {
+      if (extractedText.length > 50_000) {
+        extractedText = extractedText.slice(0, 50_000);
+        isTruncated = 1;
+      }
+      status = 'ready';
+      extractedAt = now;
+    } else if (input.sourceType === 'file') {
+      status = input.extractionError ? 'failed' : 'ready';
+      extractedAt = now;
     }
-    status = 'ready';
-    extractedAt = now;
   }
 
   // Insert at end
@@ -645,7 +651,7 @@ export function createTalkContextSource(input: {
         last_fetched_at, extraction_error, fetch_strategy, is_truncated,
         created_at, updated_at, created_by
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, NULL, ?, ?, ?, ?)
     `,
     )
     .run(
@@ -664,6 +670,7 @@ export function createTalkContextSource(input: {
       input.storageKey ?? null,
       extractedText,
       extractedAt,
+      input.extractionError ?? null,
       isTruncated,
       now,
       now,
@@ -848,6 +855,28 @@ export function markTalkContextSourcePending(
   return toSourceSnapshot(row);
 }
 
+export function getContextSourceWithContent(
+  sourceId: string,
+  talkId: string,
+): ContextSourceWithContent | undefined {
+  const row = getDb()
+    .prepare(`SELECT * FROM talk_context_sources WHERE id = ? AND talk_id = ?`)
+    .get(sourceId, talkId) as TalkContextSourceRecord | undefined;
+  return row ? toSourceWithContent(row) : undefined;
+}
+
+export function getContextSourceStorageKey(
+  sourceId: string,
+  talkId: string,
+): string | null {
+  const row = getDb()
+    .prepare(
+      `SELECT storage_key FROM talk_context_sources WHERE id = ? AND talk_id = ?`,
+    )
+    .get(sourceId, talkId) as { storage_key: string | null } | undefined;
+  return row?.storage_key ?? null;
+}
+
 export function deleteTalkContextSource(
   sourceId: string,
   talkId: string,
@@ -862,7 +891,7 @@ export function deleteTalkContextSource(
 // Message attachment types
 // ---------------------------------------------------------------------------
 
-export type AttachmentExtractionStatus = 'pending' | 'extracted' | 'failed';
+export type AttachmentExtractionStatus = 'pending' | 'ready' | 'failed';
 
 export interface MessageAttachmentRecord {
   id: string;
@@ -980,6 +1009,20 @@ export function listMessageAttachments(
   return rows.map(toAttachmentSnapshot);
 }
 
+export function listMessageAttachmentRecords(
+  messageId: string,
+): MessageAttachmentRecord[] {
+  return getDb()
+    .prepare(
+      `
+      SELECT * FROM talk_message_attachments
+      WHERE message_id = ?
+      ORDER BY created_at ASC
+    `,
+    )
+    .all(messageId) as MessageAttachmentRecord[];
+}
+
 export function listTalkAttachments(talkId: string): AttachmentSnapshot[] {
   const rows = getDb()
     .prepare(
@@ -1009,7 +1052,7 @@ export function updateAttachmentExtraction(input: {
   attachmentId: string;
   extractedText?: string | null;
   extractionError?: string | null;
-  extractionStatus: 'extracted' | 'failed';
+  extractionStatus: 'ready' | 'failed';
 }): void {
   let text = input.extractedText ?? null;
   if (text && text.length > 50_000) {

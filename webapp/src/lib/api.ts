@@ -195,8 +195,11 @@ export type ContextSource = {
   title: string;
   note: string | null;
   sourceUrl: string | null;
+  fileName: string | null;
+  fileSize: number | null;
   status: 'pending' | 'ready' | 'failed';
   extractedTextLength: number | null;
+  extractedAt: string | null;
   isTruncated: boolean;
   extractionError: string | null;
   mimeType: string | null;
@@ -337,7 +340,7 @@ export type TalkMessageAttachment = {
   fileName: string;
   fileSize: number;
   mimeType: string;
-  extractionStatus: 'pending' | 'extracted' | 'failed';
+  extractionStatus: 'pending' | 'ready' | 'failed';
 };
 
 export type TalkMessage = {
@@ -694,6 +697,7 @@ export type AgentProviderCard = {
     contextWindowTokens: number;
     defaultMaxOutputTokens: number;
     supportsTools?: boolean;
+    supportsVision?: boolean;
   }>;
 };
 
@@ -705,6 +709,7 @@ export type AiAgentsPageData = {
     contextWindowTokens: number;
     defaultMaxOutputTokens: number;
     supportsTools?: boolean;
+    supportsVision?: boolean;
   }>;
   additionalProviders: AgentProviderCard[];
 };
@@ -736,6 +741,7 @@ export type TalkLlmProvider = {
     defaultMaxOutputTokens: number;
     enabled: boolean;
     supportsTools?: boolean;
+    supportsVision?: boolean;
   }>;
 };
 
@@ -2330,6 +2336,33 @@ export async function retryTalkContextSource(input: {
     },
   );
   return envelope.source;
+}
+
+export async function uploadTalkContextSource(
+  talkId: string,
+  file: File,
+  title?: string,
+): Promise<ContextSource> {
+  const formData = new FormData();
+  formData.append('file', file);
+  if (title) {
+    formData.append('title', title);
+  }
+  const envelope = await apiMutationRequest<{ source: ContextSource }>(
+    `/api/v1/talks/${encodeURIComponent(talkId)}/context/sources/upload`,
+    {
+      method: 'POST',
+      body: formData,
+    },
+  );
+  return envelope.source;
+}
+
+export function getContextSourceContentUrl(
+  talkId: string,
+  sourceId: string,
+): string {
+  return `/api/v1/talks/${encodeURIComponent(talkId)}/context/sources/${encodeURIComponent(sourceId)}/content`;
 }
 
 export async function updateDefaultClaudeModel(
