@@ -1234,7 +1234,29 @@ a {
 .talk-title {
   display: inline-flex;
   align-items: center;
-  gap: 0.55rem;
+  min-width: 0;
+}
+
+.talk-title-button {
+  border: none;
+  background: transparent;
+  padding: 0;
+  font: inherit;
+  color: #1d2433;
+  cursor: text;
+  text-align: left;
+  min-width: 0;
+}
+
+.talk-title-button:hover {
+  color: #1b4fc9;
+}
+
+.talk-title-button:focus-visible {
+  outline: none;
+  color: #1b4fc9;
+  box-shadow: 0 0 0 3px rgba(134, 174, 251, 0.2);
+  border-radius: 8px;
 }
 
 .stream-badge {
@@ -1463,7 +1485,7 @@ a {
   position: sticky;
   top: 0;
   z-index: 2;
-  padding: 1rem 1rem 0;
+  padding: 1rem 1rem 0.8rem;
   background: #fff;
   border-bottom: 1px solid #eef2fa;
 }
@@ -1476,6 +1498,11 @@ a {
   display: grid;
   align-content: start;
   gap: 1rem;
+}
+
+.talk-workspace-scroll-talk {
+  display: flex;
+  overflow: hidden;
 }
 
 .talk-workspace-composer {
@@ -1507,7 +1534,7 @@ a {
   display: flex;
   flex-wrap: wrap;
   gap: 0.55rem;
-  margin-top: 0.75rem;
+  margin-top: 0.45rem;
 }
 
 .talk-status-pill {
@@ -1588,7 +1615,7 @@ a {
   justify-content: space-between;
   gap: 0.85rem;
   flex-wrap: wrap;
-  margin-top: 0.85rem;
+  margin-top: 0.65rem;
 }
 
 .talk-tabs {
@@ -2476,6 +2503,11 @@ a {
     max-height: none;
   }
 
+  .talk-workspace-scroll-talk {
+    display: block;
+    overflow: visible;
+  }
+
   .talk-outputs-layout {
     grid-template-columns: 1fr;
   }
@@ -3139,6 +3171,7 @@ a {
 .talk-thread-shell {
   display: flex;
   width: 100%;
+  flex: 1;
   min-height: 0;
   gap: 0;
   border: 1px solid #d8dfec;
@@ -3151,10 +3184,12 @@ a {
   width: 280px;
   min-width: 220px;
   max-width: 320px;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   gap: 0.75rem;
   padding: 0.9rem;
+  overflow: hidden;
   border-right: 1px solid #e1e7f2;
   background: #f8f9fc;
 }
@@ -3286,8 +3321,10 @@ a {
 .talk-thread-detail {
   flex: 1;
   min-width: 0;
+  min-height: 0;
   display: flex;
   flex-direction: column;
+  overflow: hidden;
   background: #fff;
 }
 
