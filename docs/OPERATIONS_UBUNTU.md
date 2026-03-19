@@ -37,35 +37,50 @@ journalctl --user -u nanoclaw -f
 The workflow:
 
 - triggers on pushes to `main` (and can also be run manually)
-- SSHes to the Ubuntu host
-- runs the checked-in deploy script `ops/deploy-production.sh`
+- runs on a self-hosted GitHub Actions runner installed on the Ubuntu host
+- checks out the triggering commit only to source the checked-in deploy script
+- runs `ops/deploy-production.sh` locally against the production checkout
 - builds on the server
 - restarts `nanoclaw`
 - fails the deploy if local health checks do not pass
 
-### 3.1 GitHub production environment setup
+### 3.1 Self-hosted runner setup
 
-Create a GitHub environment named `production` and configure:
+For a private repository on GitHub Free, use a self-hosted runner instead of
+GitHub-hosted SSH deploys.
 
-Secrets:
+Install the runner on the production host as the same Unix user that owns the
+`nanoclaw` user service. For this repo, that should be `k1min8r`, not `root`.
 
-- `DEPLOY_HOST`
-- `DEPLOY_USER`
-- `DEPLOY_SSH_KEY`
-- `DEPLOY_KNOWN_HOSTS`
+Recommended runner location:
 
-Optional vars:
+```bash
+/home/k1min8r/actions-runner
+```
 
-- `DEPLOY_PORT` (defaults to `22`)
+Recommended labels:
+
+- `self-hosted`
+- `Linux`
+- `X64`
+- `alienware-prod`
+
+The runner should be installed as a persistent service so deploys continue to
+work across reboots.
+
+### 3.2 GitHub Actions repository variables
+
+Use repository-level `Settings -> Secrets and variables -> Actions`.
+
+Required/expected repository variables:
+
 - `DEPLOY_PATH` (defaults to `/home/k1min8r/projects/clawrocket`)
 - `DEPLOY_SERVICE` (defaults to `nanoclaw`)
 
-Recommended:
+No deploy SSH secrets are needed in this model because the workflow executes on
+the production host itself.
 
-- use environment protection rules if you want future manual approvals
-- generate `DEPLOY_KNOWN_HOSTS` with `ssh-keyscan -H <host>`
-
-### 3.2 Server prerequisites
+### 3.3 Server prerequisites
 
 Before enabling the workflow, confirm the production host already has:
 
@@ -75,7 +90,7 @@ Before enabling the workflow, confirm the production host already has:
 - Node/npm compatible with the repo
 - Cloudflare Tunnel already forwarding `clawtalk.app` to `127.0.0.1:3210`
 
-### 3.3 What the deploy script does
+### 3.4 What the deploy script does
 
 `ops/deploy-production.sh` is the source of truth for both automated and manual deploys.
 
@@ -92,7 +107,7 @@ It:
 
 ```bash
 cd ~/projects/clawrocket
-DEPLOY_PATH="$PWD" bash ops/deploy-production.sh
+DEPLOY_PATH="$PWD" DEPLOY_SERVICE=nanoclaw bash ops/deploy-production.sh
 ```
 
 Use this path when:
@@ -167,8 +182,8 @@ After signing in and sending a Talk message:
 
 ```bash
 journalctl --user -u nanoclaw -n 200 | rg -n "direct_http|talk_run_started|talk_run_completed|talk_run_failed"
-sqlite3 ~/projects/clawrocket/data/messages.db "SELECT status, created_at FROM talk_runs ORDER BY created_at DESC LIMIT 10;"
-sqlite3 ~/projects/clawrocket/data/messages.db "SELECT provider_id, model_id, status, failure_class FROM llm_attempts ORDER BY created_at DESC LIMIT 20;"
+sqlite3 ~/projects/clawrocket/store/messages.db "SELECT status, created_at FROM talk_runs ORDER BY created_at DESC LIMIT 10;"
+sqlite3 ~/projects/clawrocket/store/messages.db "SELECT provider_id, model_id, status, failure_class FROM llm_attempts ORDER BY created_at DESC LIMIT 20;"
 ```
 
 ## 10. Common Troubleshooting
