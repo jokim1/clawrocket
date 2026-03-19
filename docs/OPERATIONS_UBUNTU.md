@@ -29,23 +29,79 @@ journalctl --user -u nanoclaw -n 100
 journalctl --user -u nanoclaw -f
 ```
 
-## 3. Deploy Procedure
+## 3. Automated Deploys (Normal Path)
+
+`clawtalk.app` is intended to track `main` through the GitHub Actions deploy workflow in
+[.github/workflows/deploy.yml](../.github/workflows/deploy.yml).
+
+The workflow:
+
+- triggers on pushes to `main` (and can also be run manually)
+- SSHes to the Ubuntu host
+- runs the checked-in deploy script `ops/deploy-production.sh`
+- builds on the server
+- restarts `nanoclaw`
+- fails the deploy if local health checks do not pass
+
+### 3.1 GitHub production environment setup
+
+Create a GitHub environment named `production` and configure:
+
+Secrets:
+
+- `DEPLOY_HOST`
+- `DEPLOY_USER`
+- `DEPLOY_SSH_KEY`
+- `DEPLOY_KNOWN_HOSTS`
+
+Optional vars:
+
+- `DEPLOY_PORT` (defaults to `22`)
+- `DEPLOY_PATH` (defaults to `/home/k1min8r/projects/clawrocket`)
+- `DEPLOY_SERVICE` (defaults to `nanoclaw`)
+
+Recommended:
+
+- use environment protection rules if you want future manual approvals
+- generate `DEPLOY_KNOWN_HOSTS` with `ssh-keyscan -H <host>`
+
+### 3.2 Server prerequisites
+
+Before enabling the workflow, confirm the production host already has:
+
+- the repo cloned at the deploy path
+- the `nanoclaw` user service installed and working
+- `sudo loginctl enable-linger "$USER"` set for public mode
+- Node/npm compatible with the repo
+- Cloudflare Tunnel already forwarding `clawtalk.app` to `127.0.0.1:3210`
+
+### 3.3 What the deploy script does
+
+`ops/deploy-production.sh` is the source of truth for both automated and manual deploys.
+
+It:
+
+- fetches and hard-resets the checkout to `origin/main`
+- installs dependencies with `npm ci` where lockfiles exist
+- builds the server and webapp bundle
+- restarts `systemd --user` service `nanoclaw`
+- waits for `http://127.0.0.1:3210/api/v1/health` to succeed
+- exits non-zero and prints service logs if health checks fail
+
+## 4. Manual Deploy Procedure (Emergency Or Debugging)
 
 ```bash
 cd ~/projects/clawrocket
-git pull --ff-only origin main
-npm install
-npm run build
-systemctl --user restart nanoclaw
+DEPLOY_PATH="$PWD" bash ops/deploy-production.sh
 ```
 
-If the webapp bundle is part of the deploy:
+Use this path when:
 
-```bash
-npm run build:web
-```
+- GitHub Actions is unavailable
+- you need to redeploy the current `main` revision manually
+- you are debugging host-specific deployment failures
 
-## 4. Runtime Verification
+## 5. Runtime Verification
 
 ```bash
 systemctl --user status nanoclaw
@@ -59,7 +115,26 @@ Expected:
 - health returns `200`
 - one effective process owner for the active `DATA_DIR`
 
-## 5. Single-Instance Guidance
+## 6. Rollback
+
+Rollback is manual in v1.
+
+```bash
+cd ~/projects/clawrocket
+git log --oneline -n 5
+git reset --hard <previous-good-commit>
+npm ci
+npm --prefix webapp ci
+npm run build
+npm run build:web
+systemctl --user restart nanoclaw
+curl -fsS http://127.0.0.1:3210/api/v1/health
+```
+
+If `webapp/package-lock.json` is intentionally absent on a future branch, replace
+`npm --prefix webapp ci` with `npm --prefix webapp install`.
+
+## 7. Single-Instance Guidance
 
 ClawRocket now enforces one owner per `DATA_DIR`.
 
@@ -76,7 +151,7 @@ ls -la ~/projects/clawrocket/data/runtime/instance
 cat ~/projects/clawrocket/data/runtime/instance/owner.json
 ```
 
-## 6. Settings And Restart Support
+## 8. Settings And Restart Support
 
 The settings page can request restart only when the service environment includes:
 
@@ -86,7 +161,7 @@ CLAWROCKET_SELF_RESTART=1
 
 That is already present in the bundled Ubuntu service file.
 
-## 7. Talk Runtime Sanity Check
+## 9. Talk Runtime Sanity Check
 
 After signing in and sending a Talk message:
 
@@ -96,29 +171,33 @@ sqlite3 ~/projects/clawrocket/data/messages.db "SELECT status, created_at FROM t
 sqlite3 ~/projects/clawrocket/data/messages.db "SELECT provider_id, model_id, status, failure_class FROM llm_attempts ORDER BY created_at DESC LIMIT 20;"
 ```
 
-## 8. Common Troubleshooting
+## 10. Common Troubleshooting
 
 ### Health endpoint fails
+
 1. Check `systemctl --user status nanoclaw`
 2. Check recent logs
 3. Verify DB path permissions and container runtime availability
 
 ### Unexpected takeover or process replacement
+
 1. Check `owner.json`
 2. Check whether another manual process was started against the same checkout
 3. Prefer service-managed restarts instead of manual `node dist/index.js`
 
 ### Web bind issues
+
 1. Check who owns port `3210`
 2. Check whether another ClawRocket instance is already active
 3. Use service restart instead of starting parallel processes
 
 ### Talk runtime failures
+
 1. Verify Talk LLM settings in the admin UI
 2. Verify provider credentials and routes
 3. Inspect `llm_attempts` for failure class and fallback behavior
 
-## 9. Public Access (Cloudflare-First)
+## 11. Public Access (Cloudflare-First)
 
 Cloudflare Tunnel is the primary supported public deployment path for this batch.
 
