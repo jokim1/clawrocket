@@ -22,12 +22,14 @@ a {
 }
 
 .app-shell {
+  height: 100vh;
   min-height: 100vh;
   display: grid;
   grid-template-columns: 285px minmax(0, 1fr);
   grid-template-rows: auto minmax(0, 1fr);
   gap: 1rem;
   padding: 1rem;
+  overflow: hidden;
 }
 
 .app-shell-sidebar-collapsed {
@@ -526,6 +528,7 @@ a {
   display: flex;
   flex-direction: column;
   min-height: 0;
+  overflow: hidden;
 }
 
 .app-shell-sidebar-collapsed .app-main {
@@ -538,6 +541,7 @@ a {
   flex: 1;
   display: grid;
   align-content: start;
+  overflow: auto;
 }
 
 .app-main-content-talk {
@@ -2465,8 +2469,10 @@ a {
 
 @media (max-width: 960px) {
   .app-shell {
+    height: auto;
     grid-template-columns: 1fr;
     grid-template-rows: auto auto minmax(0, 1fr);
+    overflow: visible;
   }
 
   .clawtalk-sidebar {
