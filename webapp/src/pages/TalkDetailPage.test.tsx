@@ -118,7 +118,13 @@ describe('TalkDetailPage', () => {
     await screen.findByRole('heading', { name: 'Agents' });
     expect(screen.getByLabelText('Talk agents')).toBeTruthy();
 
-    await user.click(tabs.getByRole('link', { name: 'Data Connectors' }));
+    await user.click(tabs.getByRole('link', { name: 'Settings' }));
+    const settingsTabs = within(
+      screen.getByRole('navigation', { name: 'Talk settings sections' }),
+    );
+    await user.click(
+      settingsTabs.getByRole('link', { name: 'Data Connectors' }),
+    );
     await screen.findByRole('heading', { name: 'Data Connectors' });
     expect(screen.getByText('FTUE PostHog')).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Detach' })).toBeTruthy();
@@ -444,7 +450,7 @@ describe('TalkDetailPage', () => {
     expect(screen.getByText(/"winner": "Claude"/i)).toBeTruthy();
   });
 
-  it('creates, edits, and deletes outputs from the Outputs tab', async () => {
+  it('creates, edits, and deletes reports from the Reports tab', async () => {
     const user = userEvent.setup();
 
     installTalkDetailFetch({
@@ -460,8 +466,8 @@ describe('TalkDetailPage', () => {
 
     renderDetailPage('/app/talks/talk-1/outputs');
 
-    await screen.findByRole('heading', { name: 'Outputs' });
-    expect(screen.getByRole('button', { name: 'New Output' })).toBeTruthy();
+    await screen.findByRole('heading', { name: 'Reports' });
+    expect(screen.getByRole('button', { name: 'New Report' })).toBeTruthy();
     expect(screen.getByDisplayValue('Season Outlook')).toBeTruthy();
 
     const titleInput = screen.getByDisplayValue('Season Outlook');
@@ -470,17 +476,17 @@ describe('TalkDetailPage', () => {
     await user.type(titleInput, 'Updated Outlook');
     await user.clear(bodyInput);
     await user.type(bodyInput, 'Fresh body');
-    await user.click(screen.getByRole('button', { name: 'Save Output' }));
+    await user.click(screen.getByRole('button', { name: 'Save Report' }));
 
-    expect(await screen.findByText('Output saved.')).toBeTruthy();
+    expect(await screen.findByText('Report saved.')).toBeTruthy();
     expect(screen.getAllByText('Updated Outlook').length).toBeGreaterThan(0);
 
-    await user.click(screen.getByRole('button', { name: 'New Output' }));
-    expect(await screen.findByText('Output created.')).toBeTruthy();
-    expect(screen.getAllByText('Untitled Output').length).toBeGreaterThan(0);
+    await user.click(screen.getByRole('button', { name: 'New Report' }));
+    expect(await screen.findByText('Report created.')).toBeTruthy();
+    expect(screen.getAllByText('Untitled Report').length).toBeGreaterThan(0);
 
-    await user.click(screen.getByRole('button', { name: 'Delete Output' }));
-    expect(await screen.findByText('Output deleted.')).toBeTruthy();
+    await user.click(screen.getByRole('button', { name: 'Delete Report' }));
+    expect(await screen.findByText('Report deleted.')).toBeTruthy();
   });
 
   it('creates report jobs from the Jobs tab', async () => {
