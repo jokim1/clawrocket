@@ -60,6 +60,14 @@ describe('AiAgentsPage', () => {
       within(openAiCard).getByRole('link', { name: 'Get key from OpenAI' }),
     ).toHaveAttribute('href', 'https://platform.openai.com/api-keys');
 
+    const geminiCard = screen
+      .getByRole('heading', { name: 'Google / Gemini' })
+      .closest('article');
+    if (!geminiCard) {
+      throw new Error('Expected Gemini provider card');
+    }
+    expect(within(geminiCard).getByPlaceholderText('AIza...')).toBeTruthy();
+
     const nvidiaCard = screen
       .getByRole('heading', { name: 'NVIDIA Kimi2.5' })
       .closest('article');
@@ -559,7 +567,7 @@ function buildAiAgentsData(): AiAgentsPageData {
         name: 'Google / Gemini',
         providerKind: 'gemini',
         apiFormat: 'openai_chat_completions',
-        baseUrl: 'https://generativelanguage.googleapis.com/openai',
+        baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
         authScheme: 'bearer',
         enabled: true,
         hasCredential: false,

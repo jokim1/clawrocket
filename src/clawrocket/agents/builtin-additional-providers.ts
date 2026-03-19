@@ -47,7 +47,7 @@ export const BUILTIN_ADDITIONAL_PROVIDERS: BuiltinAdditionalProvider[] = [
     name: 'Google / Gemini',
     providerKind: 'gemini',
     apiFormat: 'openai_chat_completions',
-    baseUrl: 'https://generativelanguage.googleapis.com/openai',
+    baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
     authScheme: 'bearer',
     responseStartTimeoutMs: 90_000,
     streamIdleTimeoutMs: 20_000,
