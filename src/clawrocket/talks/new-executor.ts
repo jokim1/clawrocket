@@ -12,6 +12,7 @@
  */
 
 import { getDb } from '../../db.js';
+import { logger } from '../../logger.js';
 import {
   getRegisteredAgent,
   type EffectiveToolAccess,
@@ -31,6 +32,8 @@ import { parseConnectorToolName } from '../connectors/runtime.js';
 import {
   deleteTalkStateEntry,
   getTalkStateEntry,
+  listMessageAttachmentRecords,
+  type MessageAttachmentRecord,
   upsertTalkStateEntry,
   validateStateKey,
 } from '../db/context-accessors.js';
@@ -40,6 +43,7 @@ import {
   type ExecutionContext,
   type ExecutionEvent,
 } from '../agents/agent-router.js';
+import type { LlmContentBlock, LlmMessage } from '../agents/llm-client.js';
 import {
   getContainerAllowedTools,
   planExecution,
@@ -47,11 +51,14 @@ import {
 import { getMainAgent, resolvePrimaryAgent } from '../agents/agent-registry.js';
 import { resolveValidatedProjectMountPath } from '../agents/project-mounts.js';
 import { executeContainerAgentTurn } from '../agents/container-turn-executor.js';
+import { modelSupportsVision } from '../llm/capabilities.js';
 import type { TalkPersonaRole } from '../llm/types.js';
 import { executeWebFetch, executeWebSearch } from '../tools/web-tools.js';
 import { loadTalkContext } from './context-loader.js';
 import { executeGoogleDriveTalkTool } from './google-drive-tools.js';
 import { executeTalkOutputTool } from './output-tools.js';
+import { isImageAttachmentMimeType } from './attachment-extraction.js';
+import { loadAttachmentFile } from './attachment-storage.js';
 import {
   TalkExecutorError,
   type TalkJobExecutionPolicy,
@@ -210,19 +217,32 @@ export function buildToolExecutor(
       const attachmentRow = getDb()
         .prepare(
           `
-        SELECT extracted_text
+        SELECT extracted_text, mime_type, file_name
         FROM talk_message_attachments
         WHERE id = ? AND talk_id = ?
       `,
         )
         .get(attachmentId, talkId) as
-        | { extracted_text: string | null }
+        | {
+            extracted_text: string | null;
+            mime_type: string;
+            file_name: string;
+          }
         | undefined;
 
       if (!attachmentRow) {
         return {
           result: `Attachment ${attachmentId} not found`,
           isError: true,
+        };
+      }
+
+      if (
+        !attachmentRow.extracted_text &&
+        isImageAttachmentMimeType(attachmentRow.mime_type)
+      ) {
+        return {
+          result: `[Image attachment "${attachmentRow.file_name}" cannot be read as text. Vision input delivery is not yet implemented in this tool path.]`,
         };
       }
 
@@ -514,8 +534,16 @@ const CHARS_TO_TOKENS = 0.25;
 const ORDERED_USER_MESSAGE_RESERVE_TOKENS = 1024;
 const MAX_ORDERED_PRIOR_OUTPUT_TOKENS = 12000;
 const MAX_ORDERED_PRIOR_OUTPUT_CONTEXT_SHARE = 0.15;
+const MAX_INLINE_TEXT_ATTACHMENT_CHARS = 16_000;
+const DIRECT_HISTORY_ATTACHMENT_RESERVE_TOKENS = 2_048;
+const MAX_DIRECT_HISTORY_ATTACHMENT_TOKENS = 8_000;
+const MAX_DIRECT_HISTORY_ATTACHMENT_CONTEXT_SHARE = 0.1;
+const MAX_DIRECT_HISTORY_IMAGE_MESSAGES = 3;
+const MAX_DIRECT_HISTORY_IMAGE_BYTES = 15 * 1024 * 1024;
 const TRUNCATED_CONTEXT_SUFFIX = '\n\n[truncated for context window]';
 const OMITTED_CONTEXT_MARKER = '[omitted due to context window]';
+const ATTACHMENT_BUDGET_OMISSION_MESSAGE =
+  'omitted from earlier conversation context due to prompt budget.';
 
 type PriorOrderedOutput = {
   sequenceIndex: number;
@@ -680,19 +708,19 @@ function buildOrderedUserMessage(input: {
   return sections.join('\n\n');
 }
 
-function buildStepUserMessage(input: {
+function buildStepUserMessageText(input: {
   triggerContent: string;
   estimatedContextTokens: number;
   modelContextWindow: number;
   responseGroupId?: string | null;
   sequenceIndex?: number | null;
-}): { userMessage: string; isSynthesis: boolean } {
+}): { userMessageText: string; isSynthesis: boolean } {
   if (
     !input.responseGroupId ||
     typeof input.sequenceIndex !== 'number' ||
     input.sequenceIndex <= 0
   ) {
-    return { userMessage: input.triggerContent, isSynthesis: false };
+    return { userMessageText: input.triggerContent, isSynthesis: false };
   }
 
   const priorOutputs = listPriorOrderedOutputs(
@@ -700,7 +728,7 @@ function buildStepUserMessage(input: {
     input.sequenceIndex,
   );
   if (priorOutputs.length === 0) {
-    return { userMessage: input.triggerContent, isSynthesis: false };
+    return { userMessageText: input.triggerContent, isSynthesis: false };
   }
 
   const maxSequenceIndex = getOrderedGroupMaxSequence(input.responseGroupId);
@@ -715,7 +743,7 @@ function buildStepUserMessage(input: {
   });
 
   return {
-    userMessage: buildOrderedUserMessage({
+    userMessageText: buildOrderedUserMessage({
       originalQuestion: input.triggerContent,
       priorOutputs,
       isSynthesis,
@@ -723,6 +751,494 @@ function buildStepUserMessage(input: {
     }),
     isSynthesis,
   };
+}
+
+type DirectPromptAttachment =
+  | {
+      originalKind: 'image';
+      kind: 'image';
+      id: string;
+      fileName: string;
+      fileSize: number;
+      mimeType: string;
+      base64Data: string;
+    }
+  | {
+      originalKind: 'image' | 'text';
+      kind: 'text';
+      id: string;
+      fileName: string;
+      fileSize: number;
+      mimeType: string;
+      text: string | null;
+      omittedDueToBudget?: boolean;
+    };
+
+type TextAttachmentExcerpt = {
+  text: string | null;
+  usedChars: number;
+  omittedDueToBudget: boolean;
+};
+
+type DirectHistoryAttachmentBudget = {
+  remainingImageBytes: number;
+  remainingTextChars: number;
+};
+
+function formatAttachmentSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  const kib = bytes / 1024;
+  if (kib < 1024) return `${kib.toFixed(kib >= 10 ? 0 : 1)} KB`;
+  const mib = kib / 1024;
+  return `${mib.toFixed(mib >= 10 ? 0 : 1)} MB`;
+}
+
+function buildTextAttachmentExcerpt(input: {
+  attachmentId: string;
+  fileName: string;
+  extractionStatus: 'pending' | 'ready' | 'failed';
+  extractedText: string | null;
+  extractionError: string | null;
+  maxChars?: number;
+}): TextAttachmentExcerpt {
+  const maxChars = Math.max(
+    0,
+    Math.min(
+      MAX_INLINE_TEXT_ATTACHMENT_CHARS,
+      input.maxChars ?? MAX_INLINE_TEXT_ATTACHMENT_CHARS,
+    ),
+  );
+
+  if (maxChars <= 0) {
+    return {
+      text: null,
+      usedChars: 0,
+      omittedDueToBudget: true,
+    };
+  }
+
+  const formatNote = (text: string): TextAttachmentExcerpt => {
+    const bounded = truncateForContextWindow(text, maxChars);
+    return {
+      text: bounded,
+      usedChars: bounded.length,
+      omittedDueToBudget: false,
+    };
+  };
+
+  if (input.extractionStatus === 'failed') {
+    return formatNote(
+      `Attachment text extraction failed for "${input.fileName}". ${
+        input.extractionError || 'Unknown extraction error.'
+      }`,
+    );
+  }
+  if (input.extractionStatus === 'pending') {
+    return formatNote(
+      `Attachment text extraction is still pending for "${input.fileName}".`,
+    );
+  }
+  if (!input.extractedText?.trim()) {
+    return formatNote(
+      `No extracted text is available for "${input.fileName}".`,
+    );
+  }
+  if (input.extractedText.length <= maxChars) {
+    return {
+      text: input.extractedText,
+      usedChars: input.extractedText.length,
+      omittedDueToBudget: false,
+    };
+  }
+
+  const suffix = `\n\n[Excerpt truncated. Use read_attachment("${input.attachmentId}") for the full content.]`;
+  if (maxChars <= suffix.length) {
+    const boundedSuffix = suffix.slice(0, maxChars);
+    return {
+      text: boundedSuffix,
+      usedChars: boundedSuffix.length,
+      omittedDueToBudget: false,
+    };
+  }
+
+  const excerpt = `${input.extractedText
+    .slice(0, maxChars - suffix.length)
+    .trimEnd()}${suffix}`;
+  return {
+    text: excerpt,
+    usedChars: excerpt.length,
+    omittedDueToBudget: false,
+  };
+}
+
+function computeHistoryAttachmentTextBudgetChars(input: {
+  modelContextWindow: number;
+  estimatedContextTokens: number;
+  userMessageText: string;
+}): number {
+  const promptTokens = estimateTokens(input.userMessageText);
+  const cappedPromptShare = Math.floor(
+    input.modelContextWindow * MAX_DIRECT_HISTORY_ATTACHMENT_CONTEXT_SHARE,
+  );
+  const promptBudgetTokens = Math.min(
+    MAX_DIRECT_HISTORY_ATTACHMENT_TOKENS,
+    cappedPromptShare,
+  );
+  const remainingTokens =
+    input.modelContextWindow -
+    input.estimatedContextTokens -
+    DIRECT_HISTORY_ATTACHMENT_RESERVE_TOKENS -
+    promptTokens;
+  return tokenBudgetToCharBudget(
+    Math.max(0, Math.min(promptBudgetTokens, remainingTokens)),
+  );
+}
+
+function hasImageAttachments(rows: MessageAttachmentRecord[]): boolean {
+  return rows.some((row) => isImageAttachmentMimeType(row.mime_type));
+}
+
+function buildHistoryAttachmentRowsByMessageId(input: {
+  history: LlmMessage[];
+  historyMessageIds: string[];
+  currentTriggerMessageId: string;
+}): Map<string, MessageAttachmentRecord[]> {
+  const byMessageId = new Map<string, MessageAttachmentRecord[]>();
+
+  for (let index = 0; index < input.history.length; index += 1) {
+    const message = input.history[index]!;
+    const messageId = input.historyMessageIds[index];
+    if (
+      message.role !== 'user' ||
+      !messageId ||
+      messageId === input.currentTriggerMessageId
+    ) {
+      continue;
+    }
+
+    const rows = listMessageAttachmentRecords(messageId);
+    if (rows.length > 0) {
+      byMessageId.set(messageId, rows);
+    }
+  }
+
+  return byMessageId;
+}
+
+function selectRecentHistoryImageMessageIds(input: {
+  history: LlmMessage[];
+  historyMessageIds: string[];
+  attachmentRowsByMessageId: Map<string, MessageAttachmentRecord[]>;
+}): Set<string> {
+  const selected = new Set<string>();
+
+  for (
+    let index = input.history.length - 1;
+    index >= 0 && selected.size < MAX_DIRECT_HISTORY_IMAGE_MESSAGES;
+    index -= 1
+  ) {
+    const message = input.history[index]!;
+    const messageId = input.historyMessageIds[index];
+    if (message.role !== 'user' || !messageId) {
+      continue;
+    }
+    const rows = input.attachmentRowsByMessageId.get(messageId);
+    if (!rows || !hasImageAttachments(rows)) {
+      continue;
+    }
+    selected.add(messageId);
+  }
+
+  return selected;
+}
+
+async function loadDirectPromptAttachments(input: {
+  attachmentRows: MessageAttachmentRecord[];
+  includeImages?: boolean;
+  historyBudget?: DirectHistoryAttachmentBudget;
+}): Promise<DirectPromptAttachment[]> {
+  const attachments: DirectPromptAttachment[] = [];
+
+  for (const row of input.attachmentRows) {
+    if (isImageAttachmentMimeType(row.mime_type)) {
+      if (input.includeImages === false) {
+        attachments.push({
+          originalKind: 'image',
+          kind: 'text',
+          id: row.id,
+          fileName: row.file_name || 'image',
+          fileSize: row.file_size,
+          mimeType: row.mime_type,
+          text: null,
+          omittedDueToBudget: true,
+        });
+        continue;
+      }
+
+      if (
+        input.historyBudget &&
+        row.file_size > input.historyBudget.remainingImageBytes
+      ) {
+        attachments.push({
+          originalKind: 'image',
+          kind: 'text',
+          id: row.id,
+          fileName: row.file_name || 'image',
+          fileSize: row.file_size,
+          mimeType: row.mime_type,
+          text: null,
+          omittedDueToBudget: true,
+        });
+        continue;
+      }
+
+      try {
+        const buffer = await loadAttachmentFile(row.storage_key);
+        if (input.historyBudget) {
+          input.historyBudget.remainingImageBytes = Math.max(
+            0,
+            input.historyBudget.remainingImageBytes - row.file_size,
+          );
+        }
+        attachments.push({
+          originalKind: 'image',
+          kind: 'image',
+          id: row.id,
+          fileName: row.file_name || 'image',
+          fileSize: row.file_size,
+          mimeType: row.mime_type,
+          base64Data: buffer.toString('base64'),
+        });
+        continue;
+      } catch (error) {
+        logger.warn(
+          {
+            err: error,
+            attachmentId: row.id,
+            messageId: row.message_id,
+            talkId: row.talk_id,
+            storageKey: row.storage_key,
+          },
+          'Failed to load image attachment for direct vision input',
+        );
+        attachments.push({
+          originalKind: 'image',
+          kind: 'text',
+          id: row.id,
+          fileName: row.file_name || 'image',
+          fileSize: row.file_size,
+          mimeType: row.mime_type,
+          text: `Image attachment "${row.file_name || row.id}" could not be loaded for vision input.`,
+        });
+        continue;
+      }
+    }
+
+    const excerpt = buildTextAttachmentExcerpt({
+      attachmentId: row.id,
+      fileName: row.file_name || row.id,
+      extractionStatus: row.extraction_status,
+      extractedText: row.extracted_text,
+      extractionError: row.extraction_error,
+      maxChars: input.historyBudget?.remainingTextChars,
+    });
+    if (input.historyBudget) {
+      input.historyBudget.remainingTextChars = Math.max(
+        0,
+        input.historyBudget.remainingTextChars - excerpt.usedChars,
+      );
+    }
+    attachments.push({
+      originalKind: 'text',
+      kind: 'text',
+      id: row.id,
+      fileName: row.file_name || 'attachment',
+      fileSize: row.file_size,
+      mimeType: row.mime_type,
+      text: excerpt.text,
+      omittedDueToBudget: excerpt.omittedDueToBudget,
+    });
+  }
+
+  return attachments;
+}
+
+function messageContentToPlainText(content: LlmMessage['content']): string {
+  if (typeof content === 'string') return content;
+  return content
+    .filter(
+      (block): block is Extract<LlmContentBlock, { type: 'text' }> =>
+        block.type === 'text',
+    )
+    .map((block) => block.text)
+    .join('\n');
+}
+
+async function buildAttachmentAwareMessageContent(input: {
+  attachmentRows: MessageAttachmentRecord[];
+  userMessageText: string;
+  attachmentHeading: string;
+  includeImages?: boolean;
+  historyBudget?: DirectHistoryAttachmentBudget;
+}): Promise<LlmMessage['content']> {
+  const attachments = await loadDirectPromptAttachments({
+    attachmentRows: input.attachmentRows,
+    includeImages: input.includeImages,
+    historyBudget: input.historyBudget,
+  });
+  if (attachments.length === 0) {
+    return input.userMessageText;
+  }
+
+  const blocks: LlmContentBlock[] = [];
+  const summaryLines = attachments.map((attachment) => {
+    const size = formatAttachmentSize(attachment.fileSize);
+    if (attachment.originalKind === 'image') {
+      if (attachment.kind === 'image') {
+        return `- [${attachment.id}] ${attachment.fileName} (${attachment.mimeType}, ${size}) — image included below.`;
+      }
+      if (attachment.omittedDueToBudget) {
+        return `- [${attachment.id}] ${attachment.fileName} (${attachment.mimeType}, ${size}) — ${ATTACHMENT_BUDGET_OMISSION_MESSAGE}`;
+      }
+      return `- [${attachment.id}] ${attachment.fileName} (${attachment.mimeType}, ${size}) — image note included below.`;
+    }
+    if (attachment.omittedDueToBudget) {
+      return `- [${attachment.id}] ${attachment.fileName} (${attachment.mimeType}, ${size}) — ${ATTACHMENT_BUDGET_OMISSION_MESSAGE}`;
+    }
+    return `- [${attachment.id}] ${attachment.fileName} (${attachment.mimeType}, ${size}) — text excerpt included below.`;
+  });
+
+  blocks.push({
+    type: 'text',
+    text: [
+      input.userMessageText.trim() ||
+        'The user attached files without additional text.',
+      input.attachmentHeading,
+      ...summaryLines,
+    ].join('\n\n'),
+  });
+
+  for (const attachment of attachments) {
+    if (attachment.kind === 'image') {
+      blocks.push({
+        type: 'text',
+        text: `Image attachment [${attachment.id}] "${attachment.fileName}":`,
+      });
+      blocks.push({
+        type: 'image',
+        mimeType: attachment.mimeType,
+        data: attachment.base64Data,
+        detail: 'auto',
+      });
+      continue;
+    }
+
+    if (!attachment.text?.trim()) {
+      continue;
+    }
+
+    blocks.push({
+      type: 'text',
+      text: `Attachment [${attachment.id}] "${attachment.fileName}":\n${attachment.text}`,
+    });
+  }
+
+  return blocks;
+}
+
+async function buildDirectHistoryMessages(input: {
+  history: LlmMessage[];
+  historyMessageIds: string[];
+  currentTriggerMessageId: string;
+  attachmentRowsByMessageId: Map<string, MessageAttachmentRecord[]>;
+  imageMessageIdsToHydrate: Set<string>;
+  modelContextWindow: number;
+  estimatedContextTokens: number;
+  userMessageText: string;
+}): Promise<LlmMessage[]> {
+  const next: LlmMessage[] = [];
+  const rehydratedContentByMessageId = new Map<string, LlmMessage['content']>();
+  const historyBudget: DirectHistoryAttachmentBudget = {
+    remainingImageBytes: MAX_DIRECT_HISTORY_IMAGE_BYTES,
+    remainingTextChars: computeHistoryAttachmentTextBudgetChars({
+      modelContextWindow: input.modelContextWindow,
+      estimatedContextTokens: input.estimatedContextTokens,
+      userMessageText: input.userMessageText,
+    }),
+  };
+
+  for (let index = input.history.length - 1; index >= 0; index -= 1) {
+    const message = input.history[index]!;
+    const messageId = input.historyMessageIds[index];
+    if (
+      message.role !== 'user' ||
+      !messageId ||
+      messageId === input.currentTriggerMessageId
+    ) {
+      continue;
+    }
+
+    const attachmentRows = input.attachmentRowsByMessageId.get(messageId);
+    if (!attachmentRows || attachmentRows.length === 0) {
+      continue;
+    }
+
+    rehydratedContentByMessageId.set(
+      messageId,
+      await buildAttachmentAwareMessageContent({
+        attachmentRows,
+        userMessageText: messageContentToPlainText(message.content),
+        attachmentHeading: 'Message attachments:',
+        includeImages: input.imageMessageIdsToHydrate.has(messageId),
+        historyBudget,
+      }),
+    );
+  }
+
+  for (let index = 0; index < input.history.length; index += 1) {
+    const message = input.history[index]!;
+    const messageId = input.historyMessageIds[index];
+    const rehydratedContent = messageId
+      ? rehydratedContentByMessageId.get(messageId)
+      : undefined;
+    next.push(
+      rehydratedContent === undefined
+        ? message
+        : {
+            ...message,
+            content: rehydratedContent,
+          },
+    );
+  }
+
+  return next;
+}
+
+function assertVisionSupportForConversationImages(input: {
+  agent: RegisteredAgentRecord;
+  currentAttachmentRows: MessageAttachmentRecord[];
+  historyImageMessageIdsToHydrate: Set<string>;
+}): void {
+  const includesCurrentImages = hasImageAttachments(
+    input.currentAttachmentRows,
+  );
+  const includesHistoryImages = input.historyImageMessageIdsToHydrate.size > 0;
+
+  if (!includesCurrentImages && !includesHistoryImages) {
+    return;
+  }
+
+  if (modelSupportsVision(input.agent.provider_id, input.agent.model_id)) {
+    return;
+  }
+
+  const scope = includesCurrentImages
+    ? 'this message includes image attachments'
+    : 'recent conversation context includes image attachments';
+  throw new TalkExecutorError(
+    'MODEL_VISION_UNSUPPORTED',
+    `The selected model "${input.agent.model_id}" does not support vision, but ${scope}. Choose a vision-capable model or remove the images.`,
+  );
 }
 
 function buildResponseMetadataJson(input: {
@@ -790,7 +1306,7 @@ export class CleanTalkExecutor implements TalkExecutor {
         history: contextPackage.history,
       };
 
-      const orderedStep = buildStepUserMessage({
+      const orderedStep = buildStepUserMessageText({
         triggerContent: input.triggerContent,
         estimatedContextTokens: contextPackage.estimatedTokens,
         modelContextWindow,
@@ -828,7 +1344,7 @@ export class CleanTalkExecutor implements TalkExecutor {
           userId: input.requestedBy,
           agent: resolvedAgent,
           promptLabel: 'talk',
-          userMessage: orderedStep.userMessage,
+          userMessage: orderedStep.userMessageText,
           signal,
           allowedTools: getContainerAllowedTools({
             effectiveTools: scopedEffectiveTools,
@@ -892,10 +1408,50 @@ export class CleanTalkExecutor implements TalkExecutor {
         signal,
         jobPolicy,
       );
+      const currentAttachmentRows = listMessageAttachmentRecords(
+        input.triggerMessageId,
+      );
+      const historyAttachmentRowsByMessageId =
+        buildHistoryAttachmentRowsByMessageId({
+          history: context.history,
+          historyMessageIds: contextPackage.metadata.historyMessageIds,
+          currentTriggerMessageId: input.triggerMessageId,
+        });
+      const historyImageMessageIdsToHydrate =
+        selectRecentHistoryImageMessageIds({
+          history: context.history,
+          historyMessageIds: contextPackage.metadata.historyMessageIds,
+          attachmentRowsByMessageId: historyAttachmentRowsByMessageId,
+        });
+
+      assertVisionSupportForConversationImages({
+        agent: resolvedAgent,
+        currentAttachmentRows,
+        historyImageMessageIdsToHydrate,
+      });
+
+      const directHistory = await buildDirectHistoryMessages({
+        history: context.history,
+        historyMessageIds: contextPackage.metadata.historyMessageIds,
+        currentTriggerMessageId: input.triggerMessageId,
+        attachmentRowsByMessageId: historyAttachmentRowsByMessageId,
+        imageMessageIdsToHydrate: historyImageMessageIdsToHydrate,
+        modelContextWindow,
+        estimatedContextTokens: contextPackage.estimatedTokens,
+        userMessageText: orderedStep.userMessageText,
+      });
+      const directUserMessage = await buildAttachmentAwareMessageContent({
+        attachmentRows: currentAttachmentRows,
+        userMessageText: orderedStep.userMessageText,
+        attachmentHeading: 'Current message attachments:',
+      });
       const result = await executeWithAgent(
         resolvedAgent.id,
-        context,
-        orderedStep.userMessage,
+        {
+          ...context,
+          history: directHistory,
+        },
+        directUserMessage,
         {
           runId: input.runId,
           userId: input.requestedBy,

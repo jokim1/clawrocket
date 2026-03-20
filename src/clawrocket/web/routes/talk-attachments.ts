@@ -17,9 +17,13 @@ import {
 } from '../../talks/attachment-storage.js';
 import {
   ALLOWED_ATTACHMENT_MIME_TYPES,
+  ALLOWED_UPLOAD_ATTACHMENT_MIME_TYPES,
+  ALLOWED_IMAGE_ATTACHMENT_MIME_TYPES,
   MAX_ATTACHMENT_SIZE,
+  MAX_IMAGE_ATTACHMENT_SIZE,
   extractAttachmentText,
   inferSupportedAttachmentMimeType,
+  isImageAttachmentMimeType,
 } from '../../talks/attachment-extraction.js';
 
 // ---------------------------------------------------------------------------
@@ -102,18 +106,21 @@ export async function uploadTalkAttachmentRoute(input: {
   const mimeType = inferSupportedAttachmentMimeType(file.name, file.type);
 
   // Validate MIME type
-  if (!mimeType || !ALLOWED_ATTACHMENT_MIME_TYPES.has(mimeType)) {
+  if (!mimeType || !ALLOWED_UPLOAD_ATTACHMENT_MIME_TYPES.has(mimeType)) {
     return badRequest(
       'unsupported_file_type',
-      `File type "${file.type || 'unknown'}" is not supported. Allowed: ${[...ALLOWED_ATTACHMENT_MIME_TYPES].join(', ')}`,
+      `File type "${file.type || 'unknown'}" is not supported. Allowed: ${[...ALLOWED_ATTACHMENT_MIME_TYPES, ...ALLOWED_IMAGE_ATTACHMENT_MIME_TYPES].join(', ')}`,
     );
   }
 
   // Validate file size
-  if (file.data.length > MAX_ATTACHMENT_SIZE) {
+  const maxSize = isImageAttachmentMimeType(mimeType)
+    ? MAX_IMAGE_ATTACHMENT_SIZE
+    : MAX_ATTACHMENT_SIZE;
+  if (file.data.length > maxSize) {
     return badRequest(
       'file_too_large',
-      `File exceeds maximum size of ${MAX_ATTACHMENT_SIZE / (1024 * 1024)} MB`,
+      `File exceeds maximum size of ${maxSize / (1024 * 1024)} MB`,
     );
   }
 
@@ -138,25 +145,33 @@ export async function uploadTalkAttachmentRoute(input: {
     createdBy: input.auth.userId,
   });
 
-  // Extract text synchronously (files are ≤10 MB, extraction is fast enough)
-  try {
-    const extractedText = await extractAttachmentText(
-      file.data,
-      mimeType,
-      file.name,
-    );
+  // Extract text synchronously for text/document files. Images skip extraction.
+  if (isImageAttachmentMimeType(mimeType)) {
     updateAttachmentExtraction({
       attachmentId,
-      extractedText,
+      extractedText: null,
       extractionStatus: 'ready',
     });
-  } catch (err) {
-    updateAttachmentExtraction({
-      attachmentId,
-      extractionError:
-        err instanceof Error ? err.message : 'Unknown extraction error',
-      extractionStatus: 'failed',
-    });
+  } else {
+    try {
+      const extractedText = await extractAttachmentText(
+        file.data,
+        mimeType,
+        file.name,
+      );
+      updateAttachmentExtraction({
+        attachmentId,
+        extractedText,
+        extractionStatus: 'ready',
+      });
+    } catch (err) {
+      updateAttachmentExtraction({
+        attachmentId,
+        extractionError:
+          err instanceof Error ? err.message : 'Unknown extraction error',
+        extractionStatus: 'failed',
+      });
+    }
   }
 
   const updated = getMessageAttachmentById(attachmentId, input.talkId);

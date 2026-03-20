@@ -96,6 +96,71 @@ describe('talk attachment routes', () => {
     expect(body.data.attachment.extractedTextLength).toBeGreaterThan(0);
   });
 
+  it('accepts PNG image uploads for vision-capable talks', async () => {
+    const form = new FormData();
+    form.append(
+      'file',
+      new File([Uint8Array.from([137, 80, 78, 71])], 'screenshot.png', {
+        type: 'image/png',
+      }),
+    );
+
+    const res = await server.request(
+      '/api/v1/talks/talk-attachments/attachments',
+      {
+        method: 'POST',
+        headers: auth('owner-token'),
+        body: form,
+      },
+    );
+
+    expect(res.status).toBe(201);
+    const body = (await res.json()) as {
+      ok: true;
+      data: {
+        attachment: {
+          mimeType: string;
+          extractionStatus: 'pending' | 'ready' | 'failed';
+          extractedTextLength: number | null;
+        };
+      };
+    };
+    expect(body.data.attachment.mimeType).toBe('image/png');
+    expect(body.data.attachment.extractionStatus).toBe('ready');
+    expect(body.data.attachment.extractedTextLength).toBeNull();
+  });
+
+  it('enforces the 5 MB image upload limit on the backend', async () => {
+    const form = new FormData();
+    form.append(
+      'file',
+      new File(
+        [new Uint8Array(5 * 1024 * 1024 + 1)],
+        'oversized-screenshot.png',
+        {
+          type: 'image/png',
+        },
+      ),
+    );
+
+    const res = await server.request(
+      '/api/v1/talks/talk-attachments/attachments',
+      {
+        method: 'POST',
+        headers: auth('owner-token'),
+        body: form,
+      },
+    );
+
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as {
+      ok: false;
+      error: { code: string; message: string };
+    };
+    expect(body.error.code).toBe('file_too_large');
+    expect(body.error.message).toContain('5 MB');
+  });
+
   it('serves raw attachment content with inline headers', async () => {
     const upload = await uploadTextAttachment();
     const attachmentId = upload.data.attachment.id;
