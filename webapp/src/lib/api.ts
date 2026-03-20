@@ -121,12 +121,25 @@ export type ChannelTarget = {
   updatedAt: string;
 };
 
+export type BindingDiagnosisAction = {
+  label: string;
+  type: 'retry' | 'unquarantine' | 'test' | 'dismiss';
+};
+
+export type BindingDiagnosis = {
+  status: 'ok' | 'warning' | 'error' | 'quarantined' | 'paused';
+  headline: string;
+  detail: string | null;
+  action: BindingDiagnosisAction | null;
+};
+
 export type TalkChannelBinding = {
   id: string;
   talkId: string;
   connectionId: string;
   platform: 'telegram' | 'slack';
   connectionDisplayName: string;
+  connectionHealthStatus: string;
   targetKind: string;
   targetId: string;
   displayName: string;
@@ -142,8 +155,15 @@ export type TalkChannelBinding = {
   maxDeferredAgeMinutes: number;
   pendingIngressCount: number;
   deferredIngressCount: number;
+  deadLetterCount: number;
+  unresolvedIngressCount: number;
+  lastIngressAt: string | null;
+  lastDeliveryAt: string | null;
   lastIngressReasonCode: string | null;
   lastDeliveryReasonCode: string | null;
+  healthQuarantined: boolean;
+  healthQuarantineCode: string | null;
+  diagnosis: BindingDiagnosis;
 };
 
 export type ChannelQueueFailure = {
@@ -320,17 +340,19 @@ export type TalkThread = {
   talkId: string;
   title: string | null;
   isDefault: boolean;
+  isPinned: boolean;
   createdAt: string;
   updatedAt: string;
   messageCount: number;
   lastMessageAt: string | null;
 };
 
-export type TalkThreadTitleUpdate = {
+export type TalkThreadUpdate = {
   id: string;
   talkId: string;
-  title: string;
+  title: string | null;
   isDefault: boolean;
+  isPinned: boolean;
   createdAt: string;
   updatedAt: string;
 };
@@ -1121,6 +1143,7 @@ export async function listTalkThreads(talkId: string): Promise<TalkThread[]> {
       talk_id: string;
       title: string | null;
       is_default: number;
+      is_pinned: number;
       created_at: string;
       updated_at: string;
       message_count: number;
@@ -1132,6 +1155,7 @@ export async function listTalkThreads(talkId: string): Promise<TalkThread[]> {
     talkId: thread.talk_id,
     title: thread.title,
     isDefault: thread.is_default === 1,
+    isPinned: thread.is_pinned === 1,
     createdAt: thread.created_at,
     updatedAt: thread.updated_at,
     messageCount: thread.message_count,
@@ -1149,6 +1173,7 @@ export async function createTalkThread(input: {
       talk_id: string;
       title: string | null;
       is_default: number;
+      is_pinned: number;
       created_at: string;
       updated_at: string;
       message_count?: number;
@@ -1167,6 +1192,7 @@ export async function createTalkThread(input: {
     talkId: envelope.thread.talk_id,
     title: envelope.thread.title,
     isDefault: envelope.thread.is_default === 1,
+    isPinned: envelope.thread.is_pinned === 1,
     createdAt: envelope.thread.created_at,
     updatedAt: envelope.thread.updated_at,
     messageCount: envelope.thread.message_count ?? 0,
@@ -1174,16 +1200,18 @@ export async function createTalkThread(input: {
   };
 }
 
-export async function updateTalkThreadTitle(input: {
+export async function updateTalkThread(input: {
   talkId: string;
   threadId: string;
-  title: string;
-}): Promise<TalkThreadTitleUpdate> {
+  title?: string;
+  pinned?: boolean;
+}): Promise<TalkThreadUpdate> {
   const envelope = await apiMutationRequest<{
     id: string;
     talk_id: string;
-    title: string;
+    title: string | null;
     is_default: number;
+    is_pinned: number;
     created_at: string;
     updated_at: string;
   }>(
@@ -1191,7 +1219,10 @@ export async function updateTalkThreadTitle(input: {
     {
       method: 'PATCH',
       includeJson: true,
-      body: JSON.stringify({ title: input.title }),
+      body: JSON.stringify({
+        ...(input.title !== undefined ? { title: input.title } : {}),
+        ...(input.pinned !== undefined ? { pinned: input.pinned } : {}),
+      }),
     },
   );
   return {
@@ -1199,9 +1230,22 @@ export async function updateTalkThreadTitle(input: {
     talkId: envelope.talk_id,
     title: envelope.title,
     isDefault: envelope.is_default === 1,
+    isPinned: envelope.is_pinned === 1,
     createdAt: envelope.created_at,
     updatedAt: envelope.updated_at,
   };
+}
+
+export async function deleteTalkThread(input: {
+  talkId: string;
+  threadId: string;
+}): Promise<void> {
+  await apiMutationRequest<{ deleted: true }>(
+    `/api/v1/talks/${encodeURIComponent(input.talkId)}/threads/${encodeURIComponent(input.threadId)}`,
+    {
+      method: 'DELETE',
+    },
+  );
 }
 
 export async function listTalkMessages(
@@ -1925,6 +1969,40 @@ export async function testTalkChannelBinding(input: {
   );
 }
 
+export async function unquarantineTalkChannelBinding(input: {
+  talkId: string;
+  bindingId: string;
+}): Promise<{ unquarantined: boolean }> {
+  return apiMutationRequest<{ unquarantined: boolean }>(
+    `/api/v1/talks/${encodeURIComponent(input.talkId)}/channels/${encodeURIComponent(input.bindingId)}/unquarantine`,
+    {
+      method: 'POST',
+    },
+  );
+}
+
+export async function retryTalkChannelDeliveryFailuresCapped(input: {
+  talkId: string;
+  bindingId: string;
+  maxAgeMins?: number;
+  maxCount?: number;
+}): Promise<{ retried: number; tooOld: number; totalRemaining: number }> {
+  return apiMutationRequest<{
+    retried: number;
+    tooOld: number;
+    totalRemaining: number;
+  }>(
+    `/api/v1/talks/${encodeURIComponent(input.talkId)}/channels/${encodeURIComponent(input.bindingId)}/retry-failures`,
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        maxAgeMins: input.maxAgeMins,
+        maxCount: input.maxCount,
+      }),
+    },
+  );
+}
+
 export async function listTalkChannelIngressFailures(input: {
   talkId: string;
   bindingId: string;
@@ -2491,6 +2569,7 @@ export async function restartService(): Promise<{
 export type MainThreadSummary = {
   threadId: string;
   title: string | null;
+  isPinned: boolean;
   lastMessageAt: string;
   messageCount: number;
 };
@@ -2541,16 +2620,33 @@ export async function postMainMessage(input: {
   });
 }
 
-export async function updateMainThreadTitle(input: {
+export async function updateMainThread(input: {
   threadId: string;
-  title: string;
-}): Promise<{ threadId: string; title: string }> {
-  return apiMutationRequest<{ threadId: string; title: string }>(
+  title?: string;
+  pinned?: boolean;
+}): Promise<{ threadId: string; title: string | null; isPinned: boolean }> {
+  return apiMutationRequest<{
+    threadId: string;
+    title: string | null;
+    isPinned: boolean;
+  }>(
     `/api/v1/main/threads/${encodeURIComponent(input.threadId)}`,
     {
       method: 'PATCH',
       includeJson: true,
-      body: JSON.stringify({ title: input.title }),
+      body: JSON.stringify({
+        ...(input.title !== undefined ? { title: input.title } : {}),
+        ...(input.pinned !== undefined ? { pinned: input.pinned } : {}),
+      }),
+    },
+  );
+}
+
+export async function deleteMainThread(threadId: string): Promise<void> {
+  await apiMutationRequest<{ deleted: true }>(
+    `/api/v1/main/threads/${encodeURIComponent(threadId)}`,
+    {
+      method: 'DELETE',
     },
   );
 }

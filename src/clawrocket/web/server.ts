@@ -129,12 +129,16 @@ import {
   getEffectiveToolsRoute,
 } from './routes/user-settings.js';
 import {
+  deleteMainThreadRoute,
   listMainThreadsRoute,
   getMainThreadRoute,
   patchMainThreadRoute,
   postMainMessageRoute,
 } from './routes/main-channel.js';
-import { patchTalkThreadRoute } from './routes/talk-threads.js';
+import {
+  deleteTalkThreadRoute,
+  patchTalkThreadRoute,
+} from './routes/talk-threads.js';
 import {
   attachTalkDataConnectorRoute,
   createDataConnectorRoute,
@@ -200,6 +204,8 @@ import {
   patchTalkChannelRoute,
   deleteTalkChannelRoute,
   testTalkChannelBindingRoute,
+  unquarantineTalkChannelBindingRoute,
+  retryTalkChannelDeliveryFailuresCappedRoute,
   listTalkChannelIngressFailuresRoute,
   retryTalkChannelIngressFailureRoute,
   deleteTalkChannelIngressFailureRoute,
@@ -1443,6 +1449,34 @@ function buildApp(opts: WebServerOptions): Hono {
       c.req.param('threadId'),
       payload.data,
     );
+    return new Response(JSON.stringify(result.body), {
+      status: result.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
+  });
+
+  app.delete('/api/v1/main/threads/:threadId', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+    const rateResult = checkRateLimit({
+      principalId: auth.userId,
+      bucket: 'write',
+    });
+    if (!rateResult.allowed) return rateLimitedResponse(c, rateResult);
+    const csrf = validateCsrfToken({
+      method: c.req.method,
+      authType: auth.authType,
+      cookieHeader: c.req.header('cookie'),
+      csrfHeader: c.req.header('x-csrf-token'),
+    });
+    if (!csrf.ok) {
+      return c.json(
+        { ok: false, error: { code: 'csrf_failed', message: csrf.reason } },
+        403,
+      );
+    }
+
+    const result = deleteMainThreadRoute(auth, c.req.param('threadId'));
     return new Response(JSON.stringify(result.body), {
       status: result.statusCode,
       headers: { 'content-type': 'application/json; charset=utf-8' },
@@ -2788,7 +2822,9 @@ function buildApp(opts: WebServerOptions): Hono {
     }
 
     const bodyText = await c.req.text();
-    const payload = parseJsonPayload<{ title?: unknown }>(bodyText);
+    const payload = parseJsonPayload<{ title?: unknown; pinned?: unknown }>(
+      bodyText,
+    );
     if (!payload.ok) {
       return c.json(
         { ok: false, error: { code: 'invalid_json', message: payload.error } },
@@ -2800,6 +2836,54 @@ function buildApp(opts: WebServerOptions): Hono {
       talkId,
       threadId,
       body: payload.data,
+    });
+    return new Response(JSON.stringify(result.body), {
+      status: result.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
+  });
+
+  app.delete('/api/v1/talks/:talkId/threads/:threadId', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+
+    const rateResult = checkRateLimit({ userId: auth.userId, bucket: 'write' });
+    if (!rateResult.allowed) {
+      return rateLimitedResponse(c, rateResult);
+    }
+
+    const csrf = validateCsrfToken({
+      method: c.req.method,
+      authType: auth.authType,
+      cookieHeader: c.req.header('cookie'),
+      csrfHeader: c.req.header('x-csrf-token'),
+    });
+    if (!csrf.ok) {
+      return c.json(
+        { ok: false, error: { code: 'csrf_failed', message: csrf.reason } },
+        403,
+      );
+    }
+
+    const talkId = safeDecodePathSegment(c.req.param('talkId'));
+    const threadId = safeDecodePathSegment(c.req.param('threadId'));
+    if (!talkId || !threadId) {
+      return c.json(
+        {
+          ok: false,
+          error: {
+            code: 'invalid_talk_id',
+            message: 'Invalid Talk or thread ID',
+          },
+        },
+        400,
+      );
+    }
+
+    const result = deleteTalkThreadRoute({
+      auth,
+      talkId,
+      threadId,
     });
     return new Response(JSON.stringify(result.body), {
       status: result.statusCode,
@@ -3066,6 +3150,81 @@ function buildApp(opts: WebServerOptions): Hono {
       headers: { 'content-type': 'application/json; charset=utf-8' },
     });
   });
+
+  app.post(
+    '/api/v1/talks/:talkId/channels/:bindingId/unquarantine',
+    async (c) => {
+      const auth = requireAuth(c);
+      if (!auth) return unauthorized(c);
+      const talkId = safeDecodePathSegment(c.req.param('talkId'));
+      if (!talkId) {
+        return c.json(
+          {
+            ok: false,
+            error: {
+              code: 'invalid_talk_id',
+              message: 'Talk ID path segment is not valid URL encoding',
+            },
+          },
+          400,
+        );
+      }
+      const result = await unquarantineTalkChannelBindingRoute({
+        auth,
+        talkId,
+        bindingId: c.req.param('bindingId'),
+        sendTestMessage: opts.sendChannelTestMessage,
+      });
+      return new Response(JSON.stringify(result.body), {
+        status: result.statusCode,
+        headers: { 'content-type': 'application/json; charset=utf-8' },
+      });
+    },
+  );
+
+  app.post(
+    '/api/v1/talks/:talkId/channels/:bindingId/retry-failures',
+    async (c) => {
+      const auth = requireAuth(c);
+      if (!auth) return unauthorized(c);
+      const talkId = safeDecodePathSegment(c.req.param('talkId'));
+      if (!talkId) {
+        return c.json(
+          {
+            ok: false,
+            error: {
+              code: 'invalid_talk_id',
+              message: 'Talk ID path segment is not valid URL encoding',
+            },
+          },
+          400,
+        );
+      }
+      const body = (await c.req.json().catch(() => ({}))) as Record<
+        string,
+        unknown
+      >;
+      const rawMaxAge = Number(body.maxAgeMins);
+      const rawMaxCount = Number(body.maxCount);
+      const maxAgeMins =
+        Number.isFinite(rawMaxAge) && rawMaxAge > 0 ? rawMaxAge : undefined;
+      const maxCount =
+        Number.isFinite(rawMaxCount) && rawMaxCount > 0
+          ? rawMaxCount
+          : undefined;
+      const result = retryTalkChannelDeliveryFailuresCappedRoute({
+        auth,
+        talkId,
+        bindingId: c.req.param('bindingId'),
+        maxAgeMins,
+        maxCount,
+      });
+      return new Response(JSON.stringify(result.body), {
+        status: result.statusCode,
+        headers: { 'content-type': 'application/json; charset=utf-8' },
+      });
+    },
+  );
 
   app.get(
     '/api/v1/talks/:talkId/channels/:bindingId/ingress-failures',

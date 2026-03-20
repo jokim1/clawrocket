@@ -599,6 +599,7 @@ function createClawrocketSchema(database: Database.Database): void {
       health_status TEXT NOT NULL DEFAULT 'healthy',
       last_health_check_at TEXT,
       last_health_error TEXT,
+      consecutive_probe_failures INTEGER NOT NULL DEFAULT 0,
       config_json TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
@@ -684,6 +685,7 @@ function createClawrocketSchema(database: Database.Database): void {
       title TEXT,
       is_default INTEGER NOT NULL DEFAULT 0,
       is_internal INTEGER NOT NULL DEFAULT 0,
+      is_pinned INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
@@ -694,6 +696,7 @@ function createClawrocketSchema(database: Database.Database): void {
       thread_id TEXT PRIMARY KEY,
       user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
       title TEXT,
+      is_pinned INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
@@ -927,6 +930,13 @@ function createClawrocketSchema(database: Database.Database): void {
       allowed_senders_json TEXT,
       rate_limit_json TEXT,
       active INTEGER NOT NULL DEFAULT 1,
+      last_ingress_at TEXT,
+      last_delivery_at TEXT,
+      last_delivery_error_code TEXT,
+      last_delivery_error_detail TEXT,
+      last_delivery_error_at TEXT,
+      health_quarantined INTEGER NOT NULL DEFAULT 0,
+      health_quarantine_code TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       created_by TEXT REFERENCES users(id),
@@ -1185,6 +1195,9 @@ function createClawrocketSchema(database: Database.Database): void {
   migrateBackfillThreads(database);
   migrateEnforceThreadIdsNotNull(database);
   migrateGoogleToolingTables(database);
+
+  migrateChannelBindingHealthColumns(database);
+  migrateConnectionProbeFailuresColumn(database);
 
   migrateMainAgentToAnthropic(database);
 
@@ -1688,6 +1701,16 @@ function migrateAddMissingColumns(database: Database.Database): void {
     {
       table: 'talk_threads',
       column: 'is_internal',
+      definition: 'INTEGER NOT NULL DEFAULT 0',
+    },
+    {
+      table: 'talk_threads',
+      column: 'is_pinned',
+      definition: 'INTEGER NOT NULL DEFAULT 0',
+    },
+    {
+      table: 'main_threads',
+      column: 'is_pinned',
       definition: 'INTEGER NOT NULL DEFAULT 0',
     },
   ];
@@ -2804,6 +2827,46 @@ function migrateMainAgentToAnthropic(database: Database.Database): void {
        WHERE id = 'agent.main'`,
     )
     .run(getSeedClaudeModel(database), new Date().toISOString());
+}
+
+/**
+ * talk_channel_bindings: add health/operability columns.
+ * Idempotent: skips if columns already exist.
+ */
+function migrateChannelBindingHealthColumns(database: Database.Database): void {
+  const columns = database
+    .prepare(`PRAGMA table_info(talk_channel_bindings)`)
+    .all() as Array<{ name: string }>;
+  if (columns.length === 0) return;
+  if (columns.some((c) => c.name === 'health_quarantined')) return;
+
+  database.exec(`
+    ALTER TABLE talk_channel_bindings ADD COLUMN last_ingress_at TEXT;
+    ALTER TABLE talk_channel_bindings ADD COLUMN last_delivery_at TEXT;
+    ALTER TABLE talk_channel_bindings ADD COLUMN last_delivery_error_code TEXT;
+    ALTER TABLE talk_channel_bindings ADD COLUMN last_delivery_error_detail TEXT;
+    ALTER TABLE talk_channel_bindings ADD COLUMN last_delivery_error_at TEXT;
+    ALTER TABLE talk_channel_bindings ADD COLUMN health_quarantined INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE talk_channel_bindings ADD COLUMN health_quarantine_code TEXT;
+  `);
+}
+
+/**
+ * channel_connections: add consecutive_probe_failures column.
+ * Idempotent: skips if column already exists.
+ */
+function migrateConnectionProbeFailuresColumn(
+  database: Database.Database,
+): void {
+  const columns = database
+    .prepare(`PRAGMA table_info(channel_connections)`)
+    .all() as Array<{ name: string }>;
+  if (columns.length === 0) return;
+  if (columns.some((c) => c.name === 'consecutive_probe_failures')) return;
+
+  database.exec(`
+    ALTER TABLE channel_connections ADD COLUMN consecutive_probe_failures INTEGER NOT NULL DEFAULT 0;
+  `);
 }
 
 export function initClawrocketSchema(): void {

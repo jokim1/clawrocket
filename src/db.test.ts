@@ -31,12 +31,15 @@ import {
   createTalk,
   createTalkMessage,
   createTalkRun,
+  deleteMainThread,
   deleteTalkMessagesAtomic,
   enqueueChannelTurnAtomic,
+  enqueueMainTurnAtomic,
   enqueueTalkTurnAtomic as enqueueTalkTurnAtomicRaw,
   ensureSystemManagedTelegramConnection,
   failInterruptedRunsOnStartup,
   failRunAndPromoteNextAtomic,
+  deleteTalkThread,
   deleteTalkExecutorSession,
   getIdempotencyCache,
   getOutboxEventsForTopics,
@@ -48,11 +51,14 @@ import {
   getTalkForUser,
   getTalkLlmPolicyByTalkId,
   getTalkRunById,
+  getOrCreateDefaultThread,
   hasActiveTalkRuns,
   searchChannelTargets,
   getUserById,
   listTalkMessages,
+  listTalkThreads,
   listTalksForUser,
+  MainThreadBusyError,
   markTalkRunStatus,
   normalizeTalkListPage,
   pruneEventOutbox,
@@ -62,6 +68,8 @@ import {
   setTalkRunExecutorProfile,
   upsertSettingValue,
   updateTalkProjectPath,
+  updateTalkThreadMetadata,
+  ThreadDeleteConflictError,
   upsertTalk,
   upsertChannelTarget,
   upsertTalkExecutorSession,
@@ -1554,6 +1562,71 @@ describe('phase 0 schema and reliability tables', () => {
     expect(getTalkRunById('run-atomic-awaiting')?.status).toBe('cancelled');
   });
 
+  it('blocks deleting a main thread while a run is awaiting confirmation', () => {
+    upsertUser({
+      id: 'owner-1',
+      email: 'owner@example.com',
+      displayName: 'Owner',
+      role: 'owner',
+    });
+
+    enqueueMainTurnAtomic({
+      threadId: 'main-thread-awaiting-delete',
+      userId: 'owner-1',
+      content: 'Need approval before deleting',
+      messageId: 'main-msg-awaiting-delete',
+      runId: 'main-run-awaiting-delete',
+    });
+    markTalkRunStatus(
+      'main-run-awaiting-delete',
+      'awaiting_confirmation',
+      null,
+      null,
+      '2024-01-01T00:00:47.500Z',
+    );
+
+    expect(() =>
+      deleteMainThread({
+        threadId: 'main-thread-awaiting-delete',
+        userId: 'owner-1',
+      }),
+    ).toThrow(ThreadDeleteConflictError);
+  });
+
+  it('treats awaiting confirmation main runs as busy when enqueueing another turn', () => {
+    upsertUser({
+      id: 'owner-1',
+      email: 'owner@example.com',
+      displayName: 'Owner',
+      role: 'owner',
+    });
+
+    enqueueMainTurnAtomic({
+      threadId: 'main-thread-awaiting-busy',
+      userId: 'owner-1',
+      content: 'First main turn',
+      messageId: 'main-msg-awaiting-busy-1',
+      runId: 'main-run-awaiting-busy-1',
+    });
+    markTalkRunStatus(
+      'main-run-awaiting-busy-1',
+      'awaiting_confirmation',
+      null,
+      null,
+      '2024-01-01T00:00:47.600Z',
+    );
+
+    expect(() =>
+      enqueueMainTurnAtomic({
+        threadId: 'main-thread-awaiting-busy',
+        userId: 'owner-1',
+        content: 'Second main turn',
+        messageId: 'main-msg-awaiting-busy-2',
+        runId: 'main-run-awaiting-busy-2',
+      }),
+    ).toThrow(MainThreadBusyError);
+  });
+
   it('cancels only the requested thread when sibling threads still have active work', () => {
     const threadA = createTalkThread({ talkId: 'talk-1', title: 'Thread A' });
     const threadB = createTalkThread({ talkId: 'talk-1', title: 'Thread B' });
@@ -1607,6 +1680,132 @@ describe('phase 0 schema and reliability tables', () => {
       runIds: ['run-thread-a'],
       threadIds: [threadA.id],
     });
+  });
+
+  it('sorts pinned talk threads ahead of newer unpinned threads', () => {
+    upsertUser({
+      id: 'owner-1',
+      email: 'owner@example.com',
+      displayName: 'Owner',
+      role: 'owner',
+    });
+    upsertTalk({
+      id: 'talk-threads',
+      ownerId: 'owner-1',
+      topicTitle: 'Thread sorting',
+    });
+
+    const older = createTalkThread({ talkId: 'talk-threads', title: 'Older' });
+    const newer = createTalkThread({ talkId: 'talk-threads', title: 'Newer' });
+    createTalkMessage({
+      id: 'msg-older-thread',
+      talkId: 'talk-threads',
+      threadId: older.id,
+      role: 'user',
+      content: 'older',
+      createdBy: 'owner-1',
+      createdAt: '2026-03-18T11:00:00.000Z',
+    });
+    createTalkMessage({
+      id: 'msg-newer-thread',
+      talkId: 'talk-threads',
+      threadId: newer.id,
+      role: 'user',
+      content: 'newer',
+      createdBy: 'owner-1',
+      createdAt: '2026-03-18T12:00:00.000Z',
+    });
+
+    updateTalkThreadMetadata({
+      talkId: 'talk-threads',
+      threadId: older.id,
+      pinned: true,
+    });
+
+    const threads = listTalkThreads('talk-threads');
+    expect(threads[0]?.id).toBe(older.id);
+    expect(threads[0]?.is_pinned).toBe(1);
+  });
+
+  it('deletes a talk thread and its associated rows', () => {
+    upsertUser({
+      id: 'owner-1',
+      email: 'owner@example.com',
+      displayName: 'Owner',
+      role: 'owner',
+    });
+    upsertTalk({
+      id: 'talk-delete',
+      ownerId: 'owner-1',
+      topicTitle: 'Thread delete',
+    });
+
+    const thread = createTalkThread({ talkId: 'talk-delete', title: 'Delete' });
+    createTalkMessage({
+      id: 'msg-thread-delete',
+      talkId: 'talk-delete',
+      threadId: thread.id,
+      role: 'user',
+      content: 'hello',
+      createdBy: 'owner-1',
+      createdAt: '2026-03-18T12:00:00.000Z',
+    });
+    createTalkRun({
+      id: 'run-thread-delete',
+      talk_id: 'talk-delete',
+      requested_by: 'owner-1',
+      status: 'completed',
+      trigger_message_id: 'msg-thread-delete',
+      job_id: null,
+      target_agent_id: null,
+      executor_alias: null,
+      executor_model: null,
+      thread_id: thread.id,
+      idempotency_key: null,
+      response_group_id: null,
+      sequence_index: null,
+      source_binding_id: null,
+      source_external_message_id: null,
+      source_thread_key: null,
+      created_at: '2026-03-18T12:00:00.000Z',
+      started_at: '2026-03-18T12:00:01.000Z',
+      ended_at: '2026-03-18T12:00:02.000Z',
+      cancel_reason: null,
+    });
+
+    const deleted = deleteTalkThread({
+      talkId: 'talk-delete',
+      threadId: thread.id,
+    });
+
+    expect(deleted).toBe(true);
+    expect(
+      listTalkThreads('talk-delete').map((entry) => entry.id),
+    ).not.toContain(thread.id);
+    expect(getTalkRunById('run-thread-delete')).toBeNull();
+  });
+
+  it('rejects deleting the default talk thread', () => {
+    upsertUser({
+      id: 'owner-1',
+      email: 'owner@example.com',
+      displayName: 'Owner',
+      role: 'owner',
+    });
+    upsertTalk({
+      id: 'talk-default-delete',
+      ownerId: 'owner-1',
+      topicTitle: 'Default thread',
+    });
+
+    const defaultThreadId = getOrCreateDefaultThread('talk-default-delete');
+
+    expect(() =>
+      deleteTalkThread({
+        talkId: 'talk-default-delete',
+        threadId: defaultThreadId,
+      }),
+    ).toThrow(ThreadDeleteConflictError);
   });
 
   // it('supersedes pending confirmations when cancelling awaiting confirmation runs', () => {

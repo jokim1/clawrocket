@@ -45,6 +45,7 @@ export interface ChannelConnectionRecord {
   health_status: ChannelHealthStatus;
   last_health_check_at: string | null;
   last_health_error: string | null;
+  consecutive_probe_failures: number;
   config_json: string | null;
   created_at: string;
   updated_at: string;
@@ -71,6 +72,13 @@ export interface TalkChannelBindingRecord {
   target_id: string;
   display_name: string;
   active: number;
+  last_ingress_at: string | null;
+  last_delivery_at: string | null;
+  last_delivery_error_code: string | null;
+  last_delivery_error_detail: string | null;
+  last_delivery_error_at: string | null;
+  health_quarantined: number;
+  health_quarantine_code: string | null;
   created_at: string;
   updated_at: string;
   created_by: string | null;
@@ -103,6 +111,8 @@ export interface TalkChannelBindingWithPolicyRecord
   connection_health_status: ChannelHealthStatus;
   pending_ingress_count: number;
   deferred_ingress_count: number;
+  dead_letter_count: number;
+  unresolved_ingress_count: number;
   last_ingress_reason_code: string | null;
   last_delivery_reason_code: string | null;
 }
@@ -116,6 +126,8 @@ export interface ChannelDeliveryBindingStateRecord {
   id: string;
   active: number;
   connection_enabled: number;
+  health_quarantined: number;
+  connection_health_status: ChannelHealthStatus;
 }
 
 export interface ResolvedTalkChannelBindingRecord extends TalkChannelBindingWithPolicyRecord {
@@ -335,6 +347,16 @@ const HYDRATED_TALK_CHANNEL_BINDING_SELECT = `
       WHERE q.binding_id = b.id AND q.status = 'deferred'
     ) AS deferred_ingress_count,
     (
+      SELECT COUNT(*)
+      FROM channel_delivery_outbox q
+      WHERE q.binding_id = b.id AND q.status = 'dead_letter'
+    ) AS dead_letter_count,
+    (
+      SELECT COUNT(*)
+      FROM channel_ingress_queue q
+      WHERE q.binding_id = b.id AND q.status IN ('deferred', 'dead_letter')
+    ) AS unresolved_ingress_count,
+    (
       SELECT q.reason_code
       FROM channel_ingress_queue q
       WHERE q.binding_id = b.id
@@ -440,7 +462,9 @@ export function getChannelDeliveryBindingState(
       SELECT
         b.id,
         b.active,
-        c.enabled AS connection_enabled
+        c.enabled AS connection_enabled,
+        b.health_quarantined,
+        c.health_status AS connection_health_status
       FROM talk_channel_bindings b
       JOIN channel_connections c ON c.id = b.connection_id
       WHERE b.id = ?
@@ -482,6 +506,8 @@ export function getResolvedTalkChannelBinding(input: {
         c.config_json,
         0 AS pending_ingress_count,
         0 AS deferred_ingress_count,
+        0 AS dead_letter_count,
+        0 AS unresolved_ingress_count,
         NULL AS last_ingress_reason_code,
         NULL AS last_delivery_reason_code
       FROM talk_channel_bindings b
@@ -1322,6 +1348,23 @@ export function enqueueChannelTurnAtomic(input: {
   return tx();
 }
 
+export function rollbackDeliveryAttemptCount(
+  rowId: string,
+  now?: string,
+): void {
+  const timestamp = normalizeTimestamp(now);
+  getDb()
+    .prepare(
+      `
+      UPDATE channel_delivery_outbox
+      SET attempt_count = MAX(0, attempt_count - 1),
+          updated_at = ?
+      WHERE id = ?
+    `,
+    )
+    .run(timestamp, rowId);
+}
+
 export function resetChannelDeliverySendingOnStartup(now?: string): void {
   const currentNow = normalizeTimestamp(now);
   getDb()
@@ -1495,4 +1538,247 @@ export function deleteChannelDeliveryOutboxRow(rowId: string): boolean {
       .prepare(`DELETE FROM channel_delivery_outbox WHERE id = ?`)
       .run(rowId).changes === 1
   );
+}
+
+// ---------------------------------------------------------------------------
+// Quarantine helpers
+// ---------------------------------------------------------------------------
+
+export function quarantineBinding(
+  bindingId: string,
+  code: string,
+  now?: string,
+): void {
+  const timestamp = normalizeTimestamp(now);
+  getDb()
+    .prepare(
+      `
+      UPDATE talk_channel_bindings
+      SET health_quarantined = 1,
+          health_quarantine_code = ?,
+          updated_at = ?
+      WHERE id = ?
+    `,
+    )
+    .run(code, timestamp, bindingId);
+}
+
+export function clearBindingQuarantine(bindingId: string, now?: string): void {
+  const timestamp = normalizeTimestamp(now);
+  getDb()
+    .prepare(
+      `
+      UPDATE talk_channel_bindings
+      SET health_quarantined = 0,
+          health_quarantine_code = NULL,
+          updated_at = ?
+      WHERE id = ?
+    `,
+    )
+    .run(timestamp, bindingId);
+}
+
+// ---------------------------------------------------------------------------
+// Binding delivery/ingress result helpers
+// ---------------------------------------------------------------------------
+
+export function updateBindingDeliveryResult(
+  bindingId: string,
+  result: {
+    lastDeliveryAt?: string;
+    errorCode?: string | null;
+    errorDetail?: string | null;
+    errorAt?: string | null;
+  },
+  now?: string,
+): void {
+  const timestamp = normalizeTimestamp(now);
+  if (result.lastDeliveryAt) {
+    // Successful delivery — clear error fields
+    getDb()
+      .prepare(
+        `
+        UPDATE talk_channel_bindings
+        SET last_delivery_at = ?,
+            last_delivery_error_code = NULL,
+            last_delivery_error_detail = NULL,
+            last_delivery_error_at = NULL,
+            updated_at = ?
+        WHERE id = ?
+      `,
+      )
+      .run(result.lastDeliveryAt, timestamp, bindingId);
+  } else {
+    // Failed delivery — record error
+    getDb()
+      .prepare(
+        `
+        UPDATE talk_channel_bindings
+        SET last_delivery_error_code = ?,
+            last_delivery_error_detail = ?,
+            last_delivery_error_at = ?,
+            updated_at = ?
+        WHERE id = ?
+      `,
+      )
+      .run(
+        result.errorCode || null,
+        result.errorDetail || null,
+        result.errorAt || timestamp,
+        timestamp,
+        bindingId,
+      );
+  }
+}
+
+export function updateBindingLastIngressAt(
+  bindingId: string,
+  ingressAt: string,
+  now?: string,
+): void {
+  const timestamp = normalizeTimestamp(now);
+  getDb()
+    .prepare(
+      `
+      UPDATE talk_channel_bindings
+      SET last_ingress_at = ?,
+          updated_at = ?
+      WHERE id = ?
+    `,
+    )
+    .run(ingressAt, timestamp, bindingId);
+}
+
+// ---------------------------------------------------------------------------
+// Connection probe result helper
+// ---------------------------------------------------------------------------
+
+export function updateConnectionProbeResult(
+  connectionId: string,
+  success: boolean,
+  errorDetail?: string,
+  now?: string,
+): void {
+  const timestamp = normalizeTimestamp(now);
+  if (success) {
+    getDb()
+      .prepare(
+        `
+        UPDATE channel_connections
+        SET health_status = 'healthy',
+            consecutive_probe_failures = 0,
+            last_health_check_at = ?,
+            last_health_error = NULL,
+            updated_at = ?
+        WHERE id = ?
+      `,
+      )
+      .run(timestamp, timestamp, connectionId);
+  } else {
+    // Increment failures and derive status
+    const current = getDb()
+      .prepare(
+        `SELECT consecutive_probe_failures FROM channel_connections WHERE id = ?`,
+      )
+      .get(connectionId) as { consecutive_probe_failures: number } | undefined;
+    const failures = (current?.consecutive_probe_failures ?? 0) + 1;
+    let healthStatus: ChannelHealthStatus;
+    if (failures >= 3) {
+      healthStatus = 'disconnected';
+    } else {
+      healthStatus = 'degraded';
+    }
+    getDb()
+      .prepare(
+        `
+        UPDATE channel_connections
+        SET health_status = ?,
+            consecutive_probe_failures = ?,
+            last_health_check_at = ?,
+            last_health_error = ?,
+            updated_at = ?
+        WHERE id = ?
+      `,
+      )
+      .run(
+        healthStatus,
+        failures,
+        timestamp,
+        errorDetail || null,
+        timestamp,
+        connectionId,
+      );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Age-capped retry helper for dead-lettered delivery rows
+// ---------------------------------------------------------------------------
+
+export function retryChannelDeliveryFailuresCapped(input: {
+  bindingId: string;
+  maxAgeMins?: number;
+  maxCount?: number;
+  now?: string;
+}): { retried: number; tooOld: number; totalRemaining: number } {
+  const currentNow = normalizeTimestamp(input.now);
+  const maxAge = Math.max(1, Math.floor(input.maxAgeMins ?? 60));
+  const maxCount = Math.max(1, Math.floor(input.maxCount ?? 10));
+  const cutoff = new Date(
+    new Date(currentNow).getTime() - maxAge * 60_000,
+  ).toISOString();
+
+  const tx = getDb().transaction(() => {
+    const rows = getDb()
+      .prepare(
+        `
+        SELECT id, created_at
+        FROM channel_delivery_outbox
+        WHERE binding_id = ?
+          AND status = 'dead_letter'
+        ORDER BY created_at DESC
+      `,
+      )
+      .all(input.bindingId) as Array<{ id: string; created_at: string }>;
+
+    let retried = 0;
+    let tooOld = 0;
+    for (const row of rows) {
+      if (row.created_at < cutoff) {
+        tooOld++;
+        continue;
+      }
+      if (retried >= maxCount) break;
+      getDb()
+        .prepare(
+          `
+          UPDATE channel_delivery_outbox
+          SET status = 'pending',
+              reason_code = NULL,
+              reason_detail = NULL,
+              available_at = ?,
+              updated_at = ?
+          WHERE id = ?
+        `,
+        )
+        .run(currentNow, currentNow, row.id);
+      retried++;
+    }
+    const remaining =
+      (
+        getDb()
+          .prepare(
+            `
+          SELECT COUNT(*) AS count
+          FROM channel_delivery_outbox
+          WHERE binding_id = ? AND status = 'dead_letter'
+        `,
+          )
+          .get(input.bindingId) as { count: number }
+      )?.count ?? 0;
+
+    return { retried, tooOld, totalRemaining: remaining };
+  });
+
+  return tx();
 }

@@ -4,6 +4,7 @@ import {
   countRecentChannelIngressEvents,
   enqueueChannelIngressEvent,
   getResolvedTalkChannelBinding,
+  updateBindingLastIngressAt,
   type ResolvedTalkChannelBindingRecord,
   upsertChannelTarget,
 } from '../db/index.js';
@@ -48,6 +49,9 @@ function passesResponseGate(
   }
   if (binding.active !== 1) {
     return { accepted: false, reason: 'binding_inactive' };
+  }
+  if (binding.health_quarantined === 1) {
+    return { accepted: false, reason: 'binding_quarantined' };
   }
   if (binding.response_mode === 'off') {
     return { accepted: false, reason: 'response_mode_off' };
@@ -152,6 +156,7 @@ export class TalkChannelRouter {
 
     if (queued.status === 'queued') {
       this.ingressWorker.wake();
+      updateBindingLastIngressAt(binding.id, event.timestamp);
       logger.info(
         {
           bindingId: binding.id,

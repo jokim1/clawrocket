@@ -1,11 +1,13 @@
 import { randomUUID } from 'crypto';
 import {
   canUserAccessMainThread,
+  deleteMainThread,
   enqueueMainTurnAtomic,
   getMainThreadTitle,
   listMainThreadsForUser,
   MainThreadBusyError,
-  updateMainThreadTitle,
+  ThreadDeleteConflictError,
+  updateMainThreadMetadata,
 } from '../../db/index.js';
 import {
   ThreadTitleValidationError,
@@ -21,6 +23,7 @@ import type { AuthContext, ApiEnvelope } from '../types.js';
 interface ThreadSummary {
   threadId: string;
   title: string | null;
+  isPinned: boolean;
   lastMessageAt: string;
   messageCount: number;
 }
@@ -35,6 +38,7 @@ export function listMainThreadsRoute(auth: AuthContext): {
     const threads: ThreadSummary[] = rows.map((row) => ({
       threadId: row.thread_id,
       title: row.title,
+      isPinned: row.is_pinned === 1,
       lastMessageAt: row.last_message_at,
       messageCount: row.message_count,
     }));
@@ -292,15 +296,17 @@ export function postMainMessageRoute(
 
 interface PatchMainThreadBody {
   title?: unknown;
+  pinned?: unknown;
 }
 
 interface PatchMainThreadResponse {
   threadId: string;
-  title: string;
+  title: string | null;
+  isPinned: boolean;
 }
 
 interface PatchMainThreadDeps {
-  updateMainThreadTitle?: typeof updateMainThreadTitle;
+  updateMainThreadMetadata?: typeof updateMainThreadMetadata;
 }
 
 export function patchMainThreadRoute(
@@ -312,25 +318,57 @@ export function patchMainThreadRoute(
   statusCode: number;
   body: ApiEnvelope<PatchMainThreadResponse>;
 } {
-  let title: string;
-  try {
-    title = validateEditableThreadTitle(
-      typeof body.title === 'string' ? body.title : null,
-    );
-  } catch (err) {
-    if (err instanceof ThreadTitleValidationError) {
+  if (body.title === undefined && body.pinned === undefined) {
+    return {
+      statusCode: 400,
+      body: {
+        ok: false,
+        error: {
+          code: 'invalid_input',
+          message: 'At least one of title or pinned is required',
+        },
+      },
+    };
+  }
+
+  let title: string | undefined;
+  if (body.title !== undefined) {
+    try {
+      title = validateEditableThreadTitle(
+        typeof body.title === 'string' ? body.title : null,
+      );
+    } catch (err) {
+      if (err instanceof ThreadTitleValidationError) {
+        return {
+          statusCode: 400,
+          body: {
+            ok: false,
+            error: {
+              code: 'invalid_input',
+              message: err.message,
+            },
+          },
+        };
+      }
+      throw err;
+    }
+  }
+
+  let pinned: boolean | undefined;
+  if (body.pinned !== undefined) {
+    if (typeof body.pinned !== 'boolean') {
       return {
         statusCode: 400,
         body: {
           ok: false,
           error: {
             code: 'invalid_input',
-            message: err.message,
+            message: 'pinned must be a boolean',
           },
         },
       };
     }
-    throw err;
+    pinned = body.pinned;
   }
 
   if (!canUserAccessMainThread(threadId, auth.userId)) {
@@ -347,10 +385,13 @@ export function patchMainThreadRoute(
   }
 
   try {
-    const updated = (deps?.updateMainThreadTitle ?? updateMainThreadTitle)({
+    const updated = (
+      deps?.updateMainThreadMetadata ?? updateMainThreadMetadata
+    )({
       threadId,
       userId: auth.userId,
-      title,
+      ...(title !== undefined ? { title } : {}),
+      ...(pinned !== undefined ? { pinned } : {}),
     });
     if (!updated) {
       return {
@@ -372,6 +413,7 @@ export function patchMainThreadRoute(
         data: {
           threadId: updated.thread_id,
           title: updated.title,
+          isPinned: updated.is_pinned === 1,
         },
       },
     };
@@ -395,6 +437,86 @@ export function patchMainThreadRoute(
         error: {
           code: 'internal_error',
           message: `Failed to update thread title: ${String(err)}`,
+        },
+      },
+    };
+  }
+}
+
+interface DeleteMainThreadResponse {
+  deleted: true;
+}
+
+interface DeleteMainThreadDeps {
+  deleteMainThread?: typeof deleteMainThread;
+}
+
+export function deleteMainThreadRoute(
+  auth: AuthContext,
+  threadId: string,
+  deps?: DeleteMainThreadDeps,
+): {
+  statusCode: number;
+  body: ApiEnvelope<DeleteMainThreadResponse>;
+} {
+  if (!canUserAccessMainThread(threadId, auth.userId)) {
+    return {
+      statusCode: 404,
+      body: {
+        ok: false,
+        error: {
+          code: 'not_found',
+          message: `Thread '${threadId}' not found`,
+        },
+      },
+    };
+  }
+
+  try {
+    const deleted = (deps?.deleteMainThread ?? deleteMainThread)({
+      threadId,
+      userId: auth.userId,
+    });
+    if (!deleted) {
+      return {
+        statusCode: 404,
+        body: {
+          ok: false,
+          error: {
+            code: 'not_found',
+            message: `Thread '${threadId}' not found`,
+          },
+        },
+      };
+    }
+
+    return {
+      statusCode: 200,
+      body: {
+        ok: true,
+        data: { deleted: true },
+      },
+    };
+  } catch (err) {
+    if (err instanceof ThreadDeleteConflictError) {
+      return {
+        statusCode: 409,
+        body: {
+          ok: false,
+          error: {
+            code: err.code,
+            message: err.message,
+          },
+        },
+      };
+    }
+    return {
+      statusCode: 500,
+      body: {
+        ok: false,
+        error: {
+          code: 'internal_error',
+          message: `Failed to delete thread: ${String(err)}`,
         },
       },
     };

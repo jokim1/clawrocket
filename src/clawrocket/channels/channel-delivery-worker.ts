@@ -1,14 +1,22 @@
 import {
+  clearBindingQuarantine,
   claimNextChannelDeliveryRow,
   getChannelDeliveryBindingState,
   markChannelDeliveryRetryOrDeadLetter,
   markChannelDeliverySent,
+  quarantineBinding,
   resetChannelDeliverySendingOnStartup,
+  rollbackDeliveryAttemptCount,
+  updateBindingDeliveryResult,
 } from '../db/index.js';
+import { ChannelDeliveryError } from './channel-errors.js';
 import { logger } from '../../logger.js';
 import { WakeablePollLoop } from './wakeable-poll-loop.js';
 
-const RETRY_BACKOFF_MS = [2_000, 10_000, 30_000, 120_000, 600_000] as const;
+const TRANSIENT_BACKOFF_MS = [2_000, 10_000, 30_000, 120_000, 600_000] as const;
+const RATE_LIMIT_BACKOFF_MS = [
+  5_000, 30_000, 60_000, 120_000, 600_000,
+] as const;
 
 export interface ChannelDeliveryWorkerOptions {
   sendText: (targetId: string, text: string) => Promise<void>;
@@ -74,35 +82,126 @@ export class ChannelDeliveryWorker {
       return;
     }
 
+    // Quarantined bindings should not attempt delivery
+    if (bindingState.health_quarantined === 1) {
+      markChannelDeliveryRetryOrDeadLetter({
+        rowId: row.id,
+        deadLetter: true,
+        reasonCode: 'binding_quarantined',
+        reasonDetail:
+          'Binding is quarantined due to persistent delivery failures',
+      });
+      return;
+    }
+
+    // Connection unreachable — defer, don't dead-letter (connection may recover).
+    // Roll back the attempt_count that claimNextChannelDeliveryRow incremented,
+    // since no actual send was attempted — otherwise a prolonged outage exhausts
+    // the retry budget without ever trying to deliver.
+    if (bindingState.connection_health_status === 'disconnected') {
+      rollbackDeliveryAttemptCount(row.id);
+      markChannelDeliveryRetryOrDeadLetter({
+        rowId: row.id,
+        deadLetter: false,
+        reasonCode: 'connection_unreachable',
+        reasonDetail:
+          'Connection health probe indicates the platform is unreachable',
+        availableAt: new Date(Date.now() + 30_000).toISOString(),
+      });
+      return;
+    }
+
     const payload = JSON.parse(row.payload_json) as { content: string };
     try {
       await this.options.sendText(row.target_id, payload.content);
       markChannelDeliverySent(row.id);
+      const now = new Date().toISOString();
+      updateBindingDeliveryResult(row.binding_id, {
+        lastDeliveryAt: now,
+      });
+      // If binding was quarantined before (shouldn't reach here normally,
+      // but handle re-quarantine clearing on successful test-send paths)
+      if (bindingState.health_quarantined === 1) {
+        clearBindingQuarantine(row.binding_id);
+      }
     } catch (error) {
+      const deliveryError =
+        error instanceof ChannelDeliveryError
+          ? error
+          : new ChannelDeliveryError(
+              error instanceof Error
+                ? error.message
+                : 'Channel delivery failed',
+              'transient',
+              'unknown',
+            );
+
+      const now = new Date().toISOString();
+
+      if (deliveryError.kind === 'permanent') {
+        // Dead-letter immediately and quarantine the binding
+        markChannelDeliveryRetryOrDeadLetter({
+          rowId: row.id,
+          deadLetter: true,
+          reasonCode: deliveryError.code,
+          reasonDetail: deliveryError.message,
+        });
+        quarantineBinding(row.binding_id, deliveryError.code);
+        updateBindingDeliveryResult(row.binding_id, {
+          errorCode: deliveryError.code,
+          errorDetail: deliveryError.message,
+          errorAt: now,
+        });
+        logger.warn(
+          {
+            rowId: row.id,
+            bindingId: row.binding_id,
+            code: deliveryError.code,
+          },
+          'Permanent delivery failure — binding quarantined',
+        );
+        return;
+      }
+
+      const backoffSchedule =
+        deliveryError.kind === 'rate_limited'
+          ? RATE_LIMIT_BACKOFF_MS
+          : TRANSIENT_BACKOFF_MS;
+
       const backoff =
-        RETRY_BACKOFF_MS[
+        backoffSchedule[
           Math.max(
             0,
-            Math.min(RETRY_BACKOFF_MS.length - 1, row.attempt_count - 1),
+            Math.min(backoffSchedule.length - 1, row.attempt_count - 1),
           )
         ];
-      const deadLetter = row.attempt_count >= RETRY_BACKOFF_MS.length;
+      const deadLetter = row.attempt_count >= backoffSchedule.length;
+
       markChannelDeliveryRetryOrDeadLetter({
         rowId: row.id,
         deadLetter,
         reasonCode: deadLetter
           ? 'delivery_retries_exhausted'
-          : 'delivery_transient_failure',
-        reasonDetail:
-          error instanceof Error ? error.message : 'Channel delivery failed',
+          : deliveryError.kind === 'rate_limited'
+            ? 'delivery_rate_limited'
+            : 'delivery_transient_failure',
+        reasonDetail: deliveryError.message,
         availableAt: new Date(Date.now() + backoff).toISOString(),
       });
+
+      updateBindingDeliveryResult(row.binding_id, {
+        errorCode: deliveryError.code,
+        errorDetail: deliveryError.message,
+        errorAt: now,
+      });
+
       if (!deadLetter) {
         logger.warn(
           {
             rowId: row.id,
             bindingId: row.binding_id,
             attempt: row.attempt_count,
+            kind: deliveryError.kind,
           },
           'Scheduled channel delivery retry',
         );

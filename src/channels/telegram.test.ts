@@ -67,6 +67,17 @@ vi.mock('grammy', () => ({
 
     stop() {}
   },
+  Api: class MockApi {},
+  GrammyError: class MockGrammyError extends Error {
+    error_code: number;
+    description: string;
+    constructor(message: string, errorCode: number, description: string) {
+      super(message);
+      this.name = 'GrammyError';
+      this.error_code = errorCode;
+      this.description = description;
+    }
+  },
 }));
 
 import { TelegramChannel, TelegramChannelOpts } from './telegram.js';
@@ -798,7 +809,7 @@ describe('TelegramChannel', () => {
       expect(currentBot().api.sendMessage).toHaveBeenCalledTimes(1);
     });
 
-    it('handles send failure gracefully', async () => {
+    it('throws ChannelDeliveryError on send failure', async () => {
       const opts = createTestOpts();
       const channel = new TelegramChannel('test-token', opts);
       await channel.connect();
@@ -807,20 +818,19 @@ describe('TelegramChannel', () => {
         new Error('Network error'),
       );
 
-      // Should not throw
       await expect(
         channel.sendMessage('tg:100200300', 'Will fail'),
-      ).resolves.toBeUndefined();
+      ).rejects.toThrow('Network error');
     });
 
-    it('does nothing when bot is not initialized', async () => {
+    it('throws when bot is not initialized', async () => {
       const opts = createTestOpts();
       const channel = new TelegramChannel('test-token', opts);
 
       // Don't connect — bot is null
-      await channel.sendMessage('tg:100200300', 'No bot');
-
-      // No error, no API call
+      await expect(
+        channel.sendMessage('tg:100200300', 'No bot'),
+      ).rejects.toThrow('Telegram bot not initialized');
     });
   });
 

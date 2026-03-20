@@ -18,17 +18,20 @@ import {
 import { useNavigate, useParams } from 'react-router-dom';
 
 import {
+  deleteMainThread,
   ApiError,
   getMainThread,
   listMainThreads,
   postMainMessage,
   UnauthorizedError,
-  updateMainThreadTitle,
+  updateMainThread,
   type MainThreadMessage,
   type MainThreadSummary,
 } from '../lib/api';
 import { stripInternalAssistantText } from '../lib/assistantText';
 import { InlineEditableTitle } from '../components/InlineEditableTitle';
+import { ThreadContextMenu } from '../components/ThreadContextMenu';
+import { ThreadRowTitleEditor } from '../components/ThreadRowTitleEditor';
 import { ThreadStartButton } from '../components/ThreadStartButton';
 import {
   displayThreadTitle,
@@ -78,7 +81,12 @@ type MainAction =
   | { type: 'THREADS_ERROR'; message: string }
   | { type: 'THREAD_REMOVED'; threadId: string }
   | { type: 'THREAD_SELECTED'; threadId: string }
-  | { type: 'THREAD_TITLE_UPDATED'; threadId: string; title: string }
+  | {
+      type: 'THREAD_UPDATED';
+      threadId: string;
+      title: string | null;
+      isPinned: boolean;
+    }
   | { type: 'MESSAGES_LOADING' }
   | { type: 'MESSAGES_LOADED'; messages: MainThreadMessage[] }
   | { type: 'MESSAGES_ERROR'; message: string }
@@ -121,6 +129,32 @@ function createInitialState(): MainState {
 
 const SCROLL_STICK_THRESHOLD_PX = 120;
 const MAIN_MESSAGE_MAX_CHARS = 20_000;
+
+function sortMainThreads(threads: MainThreadSummary[]): MainThreadSummary[] {
+  return [...threads].sort((left, right) => {
+    if (left.isPinned !== right.isPinned) {
+      return Number(right.isPinned) - Number(left.isPinned);
+    }
+    const delta =
+      new Date(right.lastMessageAt).getTime() -
+      new Date(left.lastMessageAt).getTime();
+    if (Number.isFinite(delta) && delta !== 0) return delta;
+    return right.lastMessageAt.localeCompare(left.lastMessageAt);
+  });
+}
+
+function ThreadPinIcon(): JSX.Element {
+  return (
+    <span className="thread-pin-icon" aria-hidden="true">
+      <svg viewBox="0 0 16 16" focusable="false">
+        <path
+          d="M10.9 1.8a.75.75 0 0 1 1.06 0l2.24 2.24a.75.75 0 0 1 0 1.06L12.7 6.6v2.02a.75.75 0 0 1-.22.53L9.9 11.73v2.77a.75.75 0 0 1-1.28.53l-1.8-1.8a.75.75 0 0 1-.22-.53v-.97H5.6a.75.75 0 0 1-.53-.22l-1.8-1.8a.75.75 0 0 1 .53-1.28h2.77l2.58-2.58a.75.75 0 0 1 .53-.22h2.02l1.2-1.2-1.18-1.18-1.2 1.2H8.5a.75.75 0 0 1-.53-.22L6.3 2.56a.75.75 0 0 1 0-1.06l1.8-1.8a.75.75 0 0 1 1.06 0l1.74 1.74h.02Z"
+          fill="currentColor"
+        />
+      </svg>
+    </span>
+  );
+}
 
 // ============================================================================
 // Reducer
@@ -169,12 +203,16 @@ function mainReducer(state: MainState, action: MainAction): MainState {
         messagesError: null,
         liveResponses: {},
       };
-    case 'THREAD_TITLE_UPDATED':
+    case 'THREAD_UPDATED':
       return {
         ...state,
         threads: state.threads.map((thread) =>
           thread.threadId === action.threadId
-            ? { ...thread, title: action.title }
+            ? {
+                ...thread,
+                title: action.title,
+                isPinned: action.isPinned,
+              }
             : thread,
         ),
       };
@@ -233,6 +271,7 @@ function mainReducer(state: MainState, action: MainAction): MainState {
                 action.message.role === 'user'
                   ? inferThreadTitleFromContent(action.message.content)
                   : null,
+              isPinned: false,
               lastMessageAt: ts,
               messageCount: 1,
             },
@@ -383,6 +422,12 @@ export function MainChannelPage({
   const endRef = useRef<HTMLDivElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const activeThreadIdRef = useRef<string | null>(state.activeThreadId);
+  const [editingThreadId, setEditingThreadId] = useState<string | null>(null);
+  const [threadMenu, setThreadMenu] = useState<{
+    threadId: string;
+    x: number;
+    y: number;
+  } | null>(null);
 
   // ── Auto-scroll ──
   const isNearBottom = useCallback(() => {
@@ -572,6 +617,7 @@ export function MainChannelPage({
             threadSummary: {
               threadId: result.threadId,
               title: result.title || inferThreadTitleFromContent(content),
+              isPinned: false,
               lastMessageAt: new Date().toISOString(),
               messageCount: 1,
             },
@@ -672,12 +718,7 @@ export function MainChannelPage({
 
   // ── Sorted threads (most recent first) ──
   const sortedThreads = useMemo(
-    () =>
-      [...state.threads].sort(
-        (a, b) =>
-          new Date(b.lastMessageAt).getTime() -
-          new Date(a.lastMessageAt).getTime(),
-      ),
+    () => sortMainThreads(state.threads),
     [state.threads],
   );
   const activeThread = useMemo(
@@ -687,20 +728,36 @@ export function MainChannelPage({
       ) || null,
     [sortedThreads, state.activeThreadId],
   );
+  const menuThread = useMemo(
+    () =>
+      threadMenu
+        ? state.threads.find((thread) => thread.threadId === threadMenu.threadId) ||
+          null
+        : null,
+    [state.threads, threadMenu],
+  );
 
-  const handleRenameThread = useCallback(
-    async (title: string) => {
-      if (!state.activeThreadId) return;
+  const updateThreadMetadata = useCallback(
+    async (
+      threadId: string,
+      patch: {
+        title?: string;
+        pinned?: boolean;
+      },
+    ) => {
       try {
-        const updated = await updateMainThreadTitle({
-          threadId: state.activeThreadId,
-          title,
+        const updated = await updateMainThread({
+          threadId,
+          ...patch,
         });
         dispatch({
-          type: 'THREAD_TITLE_UPDATED',
+          type: 'THREAD_UPDATED',
           threadId: updated.threadId,
           title: updated.title,
+          isPinned: updated.isPinned,
         });
+        dispatch({ type: 'SEND_CLEARED' });
+        return updated;
       } catch (err) {
         if (err instanceof UnauthorizedError) {
           onUnauthorized();
@@ -708,7 +765,52 @@ export function MainChannelPage({
         throw err;
       }
     },
-    [onUnauthorized, state.activeThreadId],
+    [onUnauthorized],
+  );
+
+  const handleRenameThread = useCallback(
+    async (threadId: string, title: string) => {
+      await updateThreadMetadata(threadId, { title });
+      setEditingThreadId((current) => (current === threadId ? null : current));
+    },
+    [updateThreadMetadata],
+  );
+
+  const handleDeleteThread = useCallback(
+    async (thread: MainThreadSummary) => {
+      const confirmed = window.confirm(
+        `Delete "${displayThreadTitle(thread.title)}"? This will permanently remove the thread and its messages.`,
+      );
+      if (!confirmed) return;
+      try {
+        await deleteMainThread(thread.threadId);
+        const remaining = sortMainThreads(
+          state.threads.filter(
+            (candidate) => candidate.threadId !== thread.threadId,
+          ),
+        );
+        dispatch({ type: 'THREAD_REMOVED', threadId: thread.threadId });
+        setEditingThreadId((current) =>
+          current === thread.threadId ? null : current,
+        );
+        if (state.activeThreadId === thread.threadId) {
+          navigate(
+            remaining[0] ? `/app/main/${remaining[0].threadId}` : '/app/main',
+          );
+        }
+      } catch (err) {
+        if (err instanceof UnauthorizedError) {
+          onUnauthorized();
+          return;
+        }
+        dispatch({
+          type: 'THREADS_ERROR',
+          message:
+            err instanceof Error ? err.message : 'Failed to delete thread.',
+        });
+      }
+    },
+    [navigate, onUnauthorized, state.activeThreadId, state.threads],
   );
 
   const hasActiveThread = !!routeThreadId;
@@ -733,24 +835,72 @@ export function MainChannelPage({
         ) : (
           <ul className="main-thread-items">
             {sortedThreads.map((thread) => (
-              <li key={thread.threadId}>
-                <button
-                  type="button"
-                  className={`main-thread-item${
-                    thread.threadId === state.activeThreadId
-                      ? ' main-thread-item-active'
-                      : ''
-                  }`}
-                  onClick={() => selectThread(thread.threadId)}
-                >
-                  <span className="main-thread-item-title">
-                    {displayThreadTitle(thread.title)}
-                  </span>
-                  <span className="main-thread-item-meta">
-                    {thread.messageCount} msg ·{' '}
-                    {formatRelativeTime(thread.lastMessageAt)}
-                  </span>
-                </button>
+              <li
+                key={thread.threadId}
+                onContextMenu={(event) => {
+                  event.preventDefault();
+                  setThreadMenu({
+                    threadId: thread.threadId,
+                    x: event.clientX,
+                    y: event.clientY,
+                  });
+                }}
+              >
+                {editingThreadId === thread.threadId ? (
+                  <div
+                    className={`main-thread-item${
+                      thread.threadId === state.activeThreadId
+                        ? ' main-thread-item-active'
+                        : ''
+                    } main-thread-item-editing`}
+                  >
+                    <ThreadRowTitleEditor
+                      title={displayThreadTitle(thread.title)}
+                      isEditing={true}
+                      onSave={(title) =>
+                        handleRenameThread(thread.threadId, title)
+                      }
+                      onCancel={() => setEditingThreadId(null)}
+                      staticClassName="main-thread-item-title"
+                      inputClassName="thread-row-title-input"
+                      errorClassName="thread-row-title-error"
+                      leadingVisual={
+                        thread.isPinned ? <ThreadPinIcon /> : undefined
+                      }
+                    />
+                    <span className="main-thread-item-meta">
+                      {thread.messageCount} msg ·{' '}
+                      {formatRelativeTime(thread.lastMessageAt)}
+                    </span>
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    className={`main-thread-item${
+                      thread.threadId === state.activeThreadId
+                        ? ' main-thread-item-active'
+                        : ''
+                    }`}
+                    onClick={() => selectThread(thread.threadId)}
+                  >
+                    <ThreadRowTitleEditor
+                      title={displayThreadTitle(thread.title)}
+                      isEditing={false}
+                      onSave={() => undefined}
+                      onCancel={() => undefined}
+                      staticClassName="main-thread-item-title"
+                      inputClassName="thread-row-title-input"
+                      errorClassName="thread-row-title-error"
+                      leadingVisual={
+                        thread.isPinned ? <ThreadPinIcon /> : undefined
+                      }
+                    />
+                    <span className="main-thread-item-meta">
+                      {thread.messageCount} msg ·{' '}
+                      {formatRelativeTime(thread.lastMessageAt)}
+                    </span>
+                  </button>
+                )}
               </li>
             ))}
           </ul>
@@ -765,7 +915,9 @@ export function MainChannelPage({
               activeThread ? (
                 <InlineEditableTitle
                   title={displayThreadTitle(activeThread.title)}
-                  onSave={handleRenameThread}
+                  onSave={(title) =>
+                    handleRenameThread(activeThread.threadId, title)
+                  }
                   buttonClassName="thread-detail-title-button"
                   inputClassName="thread-detail-title-input"
                   errorClassName="thread-detail-title-error"
@@ -867,6 +1019,29 @@ export function MainChannelPage({
         </form>
         {state.sendState === 'error' && state.sendError ? (
           <p className="main-send-error">{state.sendError}</p>
+        ) : null}
+        {threadMenu && menuThread ? (
+          <ThreadContextMenu
+            x={threadMenu.x}
+            y={threadMenu.y}
+            isPinned={menuThread.isPinned}
+            onClose={() => setThreadMenu(null)}
+            onRename={() => setEditingThreadId(menuThread.threadId)}
+            onTogglePin={() => {
+              void updateThreadMetadata(menuThread.threadId, {
+                pinned: !menuThread.isPinned,
+              }).catch((err) => {
+                dispatch({
+                  type: 'THREADS_ERROR',
+                  message:
+                    err instanceof Error
+                      ? err.message
+                      : 'Failed to update thread.',
+                });
+              });
+            }}
+            onDelete={() => void handleDeleteThread(menuThread)}
+          />
         ) : null}
       </div>
     </div>
