@@ -47,10 +47,15 @@ export const ALLOWED_ATTACHMENT_MIME_TYPES = new Set([
   'application/vnd.openxmlformats-officedocument.presentationml.presentation',
 ]);
 
-const ALLOWED_IMAGE_ATTACHMENT_MIME_TYPES = new Set([
+export const ALLOWED_IMAGE_ATTACHMENT_MIME_TYPES = new Set([
   'image/png',
   'image/jpeg',
   'image/webp',
+]);
+
+export const ALLOWED_UPLOAD_ATTACHMENT_MIME_TYPES = new Set([
+  ...ALLOWED_ATTACHMENT_MIME_TYPES,
+  ...ALLOWED_IMAGE_ATTACHMENT_MIME_TYPES,
 ]);
 
 const SUPPORTED_ATTACHMENT_EXTENSION_MIME_MAP: Record<string, string> = {
@@ -107,6 +112,7 @@ const SUPPORTED_ATTACHMENT_EXTENSION_MIME_MAP: Record<string, string> = {
 };
 
 export const MAX_ATTACHMENT_SIZE = 10 * 1024 * 1024; // 10 MB
+export const MAX_IMAGE_ATTACHMENT_SIZE = 5 * 1024 * 1024; // 5 MB
 export const MAX_ATTACHMENTS_PER_MESSAGE = 5;
 
 function normalizeMimeType(mimeType: string | null | undefined): string | null {
@@ -126,11 +132,7 @@ export function inferSupportedAttachmentMimeType(
   providedMimeType?: string | null,
 ): string | null {
   const normalized = normalizeMimeType(providedMimeType);
-  if (
-    normalized &&
-    (ALLOWED_ATTACHMENT_MIME_TYPES.has(normalized) ||
-      isImageAttachmentMimeType(normalized))
-  ) {
+  if (normalized && ALLOWED_UPLOAD_ATTACHMENT_MIME_TYPES.has(normalized)) {
     return normalized;
   }
 

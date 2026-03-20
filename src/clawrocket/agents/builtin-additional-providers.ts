@@ -6,6 +6,7 @@ export interface BuiltinAdditionalProviderModel {
   contextWindowTokens: number;
   defaultMaxOutputTokens: number;
   defaultTtftTimeoutMs: number;
+  supportsVision?: boolean;
 }
 
 export interface BuiltinAdditionalProvider {
@@ -39,6 +40,7 @@ export const BUILTIN_ADDITIONAL_PROVIDERS: BuiltinAdditionalProvider[] = [
         contextWindowTokens: 128_000,
         defaultMaxOutputTokens: 4_096,
         defaultTtftTimeoutMs: 30_000,
+        supportsVision: true,
       },
     ],
   },
@@ -59,6 +61,7 @@ export const BUILTIN_ADDITIONAL_PROVIDERS: BuiltinAdditionalProvider[] = [
         contextWindowTokens: 1_000_000,
         defaultMaxOutputTokens: 8_192,
         defaultTtftTimeoutMs: 45_000,
+        supportsVision: true,
       },
     ],
   },
@@ -79,6 +82,7 @@ export const BUILTIN_ADDITIONAL_PROVIDERS: BuiltinAdditionalProvider[] = [
         contextWindowTokens: 262_144,
         defaultMaxOutputTokens: 16_384,
         defaultTtftTimeoutMs: 60_000,
+        supportsVision: true,
       },
     ],
   },

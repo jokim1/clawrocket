@@ -13,6 +13,7 @@ import {
   decryptProviderSecret,
   encryptProviderSecret,
 } from '../../llm/provider-secret-store.js';
+import { resolveModelCapabilities } from '../../llm/capabilities.js';
 import type { ApiEnvelope, AuthContext } from '../types.js';
 
 type AdditionalProviderVerificationStatus =
@@ -29,6 +30,7 @@ type ClaudeModelSuggestion = {
   contextWindowTokens: number;
   defaultMaxOutputTokens: number;
   supportsTools: boolean;
+  supportsVision: boolean;
 };
 
 export type AgentProviderCard = {
@@ -49,6 +51,8 @@ export type AgentProviderCard = {
     displayName: string;
     contextWindowTokens: number;
     defaultMaxOutputTokens: number;
+    supportsTools: boolean;
+    supportsVision: boolean;
   }>;
 };
 
@@ -140,13 +144,20 @@ function getClaudeModelSuggestions(): ClaudeModelSuggestion[] {
     default_max_output_tokens: number;
   }>;
 
-  return rows.map((row) => ({
-    modelId: row.model_id,
-    displayName: row.display_name,
-    contextWindowTokens: row.context_window_tokens,
-    defaultMaxOutputTokens: row.default_max_output_tokens,
-    supportsTools: true,
-  }));
+  return rows.map((row) => {
+    const capabilities = resolveModelCapabilities({
+      providerId: 'provider.anthropic',
+      modelId: row.model_id,
+    });
+    return {
+      modelId: row.model_id,
+      displayName: row.display_name,
+      contextWindowTokens: row.context_window_tokens,
+      defaultMaxOutputTokens: row.default_max_output_tokens,
+      supportsTools: capabilities.supports_tools,
+      supportsVision: capabilities.supports_vision,
+    };
+  });
 }
 
 function getSavedDefaultClaudeModelId(): string | null {
@@ -277,12 +288,20 @@ function buildAdditionalProviderCards(): AgentProviderCard[] {
           ? (verification?.last_error ?? null)
           : null,
       modelSuggestions: (modelsByProvider.get(provider.id) ?? []).map(
-        (model) => ({
-          modelId: model.model_id,
-          displayName: model.display_name,
-          contextWindowTokens: model.context_window_tokens,
-          defaultMaxOutputTokens: model.default_max_output_tokens,
-        }),
+        (model) => {
+          const capabilities = resolveModelCapabilities({
+            providerId: provider.id,
+            modelId: model.model_id,
+          });
+          return {
+            modelId: model.model_id,
+            displayName: model.display_name,
+            contextWindowTokens: model.context_window_tokens,
+            defaultMaxOutputTokens: model.default_max_output_tokens,
+            supportsTools: capabilities.supports_tools,
+            supportsVision: capabilities.supports_vision,
+          };
+        },
       ),
     };
   });

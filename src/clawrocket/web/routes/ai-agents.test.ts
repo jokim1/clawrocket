@@ -93,6 +93,51 @@ describe('ai-agents routes', () => {
     expect(
       result.body.data.additionalProviders.map((provider) => provider.id),
     ).toEqual(['provider.openai', 'provider.gemini', 'provider.nvidia']);
+    expect(result.body.data.claudeModelSuggestions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          modelId: 'claude-sonnet-4-6',
+          supportsTools: true,
+          supportsVision: true,
+        }),
+        expect.objectContaining({
+          modelId: 'claude-opus-4-6',
+          supportsTools: true,
+          supportsVision: true,
+        }),
+      ]),
+    );
+    expect(result.body.data.additionalProviders).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: 'provider.openai',
+          modelSuggestions: [
+            expect.objectContaining({
+              modelId: 'gpt-5-mini',
+              supportsVision: true,
+            }),
+          ],
+        }),
+        expect.objectContaining({
+          id: 'provider.gemini',
+          modelSuggestions: [
+            expect.objectContaining({
+              modelId: 'gemini-2.5-flash',
+              supportsVision: true,
+            }),
+          ],
+        }),
+        expect.objectContaining({
+          id: 'provider.nvidia',
+          modelSuggestions: [
+            expect.objectContaining({
+              modelId: 'moonshotai/kimi-k2.5',
+              supportsVision: true,
+            }),
+          ],
+        }),
+      ]),
+    );
   });
 
   it('saves and verifies an OpenAI credential through the direct-http client', async () => {

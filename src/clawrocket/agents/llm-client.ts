@@ -55,6 +55,12 @@ export interface LlmMessage {
 
 export type LlmContentBlock =
   | { type: 'text'; text: string }
+  | {
+      type: 'image';
+      mimeType: string;
+      data: string;
+      detail?: 'auto' | 'low' | 'high';
+    }
   | { type: 'tool_use'; id: string; name: string; input: unknown }
   | {
       type: 'tool_result';
@@ -132,6 +138,14 @@ interface AnthropicMessage {
 type AnthropicContent =
   | { type: 'text'; text: string }
   | {
+      type: 'image';
+      source: {
+        type: 'base64';
+        media_type: string;
+        data: string;
+      };
+    }
+  | {
       type: 'tool_use';
       id: string;
       name: string;
@@ -156,7 +170,7 @@ interface AnthropicToolDefinition {
 
 interface OpenAiMessage {
   role: 'user' | 'assistant' | 'system' | 'tool';
-  content?: string | null;
+  content?: string | OpenAiContentPart[] | null;
   tool_calls?: Array<{
     id: string;
     type: 'function';
@@ -164,6 +178,16 @@ interface OpenAiMessage {
   }>;
   tool_call_id?: string;
 }
+
+type OpenAiContentPart =
+  | { type: 'text'; text: string }
+  | {
+      type: 'image_url';
+      image_url: {
+        url: string;
+        detail?: 'auto' | 'low' | 'high';
+      };
+    };
 
 interface OpenAiToolDefinition {
   type: 'function';
@@ -177,6 +201,42 @@ interface OpenAiToolDefinition {
 // =============================================================================
 // HELPER FUNCTIONS
 // =============================================================================
+
+function contentToPlainText(content: string | LlmContentBlock[]): string {
+  if (typeof content === 'string') return content;
+  return content
+    .filter(
+      (block): block is Extract<LlmContentBlock, { type: 'text' }> =>
+        block.type === 'text',
+    )
+    .map((block) => block.text)
+    .join('');
+}
+
+function toOpenAiUserContentParts(
+  content: string | LlmContentBlock[],
+): string | OpenAiContentPart[] {
+  if (typeof content === 'string') {
+    return content;
+  }
+
+  const parts: OpenAiContentPart[] = [];
+  for (const block of content) {
+    if (block.type === 'text') {
+      parts.push({ type: 'text', text: block.text });
+    } else if (block.type === 'image') {
+      parts.push({
+        type: 'image_url',
+        image_url: {
+          url: `data:${block.mimeType};base64,${block.data}`,
+          ...(block.detail ? { detail: block.detail } : {}),
+        },
+      });
+    }
+  }
+
+  return parts;
+}
 
 /**
  * Build authorization headers based on the authentication scheme.
@@ -405,7 +465,8 @@ function buildAnthropicRequest(
 
   for (const msg of messages) {
     if (msg.role === 'system') {
-      systemText += (systemText ? '\n\n' : '') + msg.content;
+      const plainText = contentToPlainText(msg.content);
+      systemText += (systemText ? '\n\n' : '') + plainText;
     } else if (msg.role === 'assistant') {
       const content: AnthropicContent[] = [];
       if (typeof msg.content === 'string') {
@@ -455,6 +516,15 @@ function buildAnthropicRequest(
         for (const block of msg.content) {
           if (block.type === 'text') {
             content.push({ type: 'text', text: block.text });
+          } else if (block.type === 'image') {
+            content.push({
+              type: 'image',
+              source: {
+                type: 'base64',
+                media_type: block.mimeType,
+                data: block.data,
+              },
+            });
           }
         }
       }
@@ -502,7 +572,7 @@ function buildOpenAiRequest(
     if (msg.role === 'system') {
       conversationMessages.push({
         role: 'system',
-        content: typeof msg.content === 'string' ? msg.content : '',
+        content: contentToPlainText(msg.content),
       });
     } else if (msg.role === 'assistant') {
       if (typeof msg.content === 'string') {
@@ -537,12 +607,12 @@ function buildOpenAiRequest(
       conversationMessages.push({
         role: 'tool',
         tool_call_id: msg.toolCallId || '',
-        content: typeof msg.content === 'string' ? msg.content : '',
+        content: contentToPlainText(msg.content),
       });
     } else if (msg.role === 'user') {
       conversationMessages.push({
         role: 'user',
-        content: typeof msg.content === 'string' ? msg.content : '',
+        content: toOpenAiUserContentParts(msg.content),
       });
     }
   }

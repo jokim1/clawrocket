@@ -143,7 +143,7 @@ export const ALWAYS_ALLOWED_CONTEXT_TOOLS = new Set([
 export async function executeWithAgent(
   agentId: string,
   context: ExecutionContext | null,
-  userMessage: string,
+  userMessage: string | LlmContentBlock[],
   options: {
     runId: string;
     userId: string;

@@ -17,10 +17,13 @@ vi.mock('../agents/project-mounts.js', () => ({
 import { getDb } from '../../db.js';
 import {
   _initTestDatabase,
+  createMessageAttachment,
   createTalkMessage,
   createTalkOutput,
   createTalkRun,
+  linkAttachmentToMessage,
   upsertTalk,
+  updateAttachmentExtraction,
   upsertUser,
 } from '../db/index.js';
 import { executeWithAgent } from '../agents/agent-router.js';
@@ -28,6 +31,8 @@ import { planExecution } from '../agents/execution-planner.js';
 import { executeContainerAgentTurn } from '../agents/container-turn-executor.js';
 import { resolveValidatedProjectMountPath } from '../agents/project-mounts.js';
 import { buildToolExecutor, CleanTalkExecutor } from './new-executor.js';
+import * as attachmentStorage from './attachment-storage.js';
+import { saveAttachmentFile } from './attachment-storage.js';
 import type { TalkExecutionEvent } from './executor.js';
 
 const TALK_ID = 'talk-clean-exec';
@@ -280,6 +285,695 @@ describe('CleanTalkExecutor', () => {
       )
       .get('run-talk-1') as { count: number };
     expect(llmAttempts.count).toBe(0);
+  });
+
+  it('passes current-message attachments to direct agents as multimodal content', async () => {
+    const now = new Date().toISOString();
+    createTalkMessage({
+      id: 'msg-user-attachments',
+      talkId: TALK_ID,
+      threadId: THREAD_ID,
+      role: 'user',
+      content: 'Compare the attached notes and screenshot.',
+      createdBy: 'owner-1',
+      createdAt: now,
+    });
+
+    const textStorageKey = await saveAttachmentFile(
+      'att-text-1',
+      TALK_ID,
+      Buffer.from('Quarterly revenue grew 18%.'),
+      'notes.txt',
+    );
+    createMessageAttachment({
+      id: 'att-text-1',
+      talkId: TALK_ID,
+      fileName: 'notes.txt',
+      fileSize: Buffer.byteLength('Quarterly revenue grew 18%.'),
+      mimeType: 'text/plain',
+      storageKey: textStorageKey,
+      createdBy: 'owner-1',
+    });
+    expect(
+      linkAttachmentToMessage('att-text-1', 'msg-user-attachments', TALK_ID),
+    ).toBe(true);
+    updateAttachmentExtraction({
+      attachmentId: 'att-text-1',
+      extractedText: 'Quarterly revenue grew 18%.',
+      extractionStatus: 'ready',
+    });
+
+    const imageBytes = Buffer.from([137, 80, 78, 71]);
+    const imageStorageKey = await saveAttachmentFile(
+      'att-image-1',
+      TALK_ID,
+      imageBytes,
+      'dashboard.png',
+    );
+    createMessageAttachment({
+      id: 'att-image-1',
+      talkId: TALK_ID,
+      fileName: 'dashboard.png',
+      fileSize: imageBytes.byteLength,
+      mimeType: 'image/png',
+      storageKey: imageStorageKey,
+      createdBy: 'owner-1',
+    });
+    expect(
+      linkAttachmentToMessage('att-image-1', 'msg-user-attachments', TALK_ID),
+    ).toBe(true);
+    updateAttachmentExtraction({
+      attachmentId: 'att-image-1',
+      extractedText: null,
+      extractionStatus: 'ready',
+    });
+
+    vi.mocked(executeWithAgent).mockImplementation(
+      async (agentId, context, userMessage) => {
+        expect(context).not.toBeNull();
+        expect(agentId).toBe('agent.main');
+        expect(Array.isArray(userMessage)).toBe(true);
+        const blocks = userMessage as Array<
+          | { type: 'text'; text: string }
+          | { type: 'image'; mimeType: string; data: string }
+        >;
+        expect(
+          blocks.some(
+            (block) =>
+              block.type === 'text' &&
+              block.text.includes('Current message attachments:'),
+          ),
+        ).toBe(true);
+        expect(
+          blocks.some(
+            (block) =>
+              block.type === 'text' &&
+              block.text.includes('Quarterly revenue grew 18%.'),
+          ),
+        ).toBe(true);
+        expect(
+          blocks.some(
+            (block) =>
+              block.type === 'image' &&
+              block.mimeType === 'image/png' &&
+              block.data === imageBytes.toString('base64'),
+          ),
+        ).toBe(true);
+
+        return {
+          content: 'Compared both attachments.',
+          agentId,
+          providerId: 'provider.anthropic',
+          modelId: 'claude-sonnet-4-6',
+          usage: {
+            inputTokens: 20,
+            outputTokens: 10,
+            estimatedCostUsd: 0,
+          },
+        };
+      },
+    );
+
+    const executor = new CleanTalkExecutor();
+    const result = await executor.execute(
+      {
+        runId: 'run-talk-attachments',
+        talkId: TALK_ID,
+        threadId: THREAD_ID,
+        requestedBy: 'owner-1',
+        triggerMessageId: 'msg-user-attachments',
+        triggerContent: 'Compare the attached notes and screenshot.',
+      },
+      new AbortController().signal,
+    );
+
+    expect(result.content).toBe('Compared both attachments.');
+  });
+
+  it('rehydrates prior user image attachments into direct-model history', async () => {
+    createTalkMessage({
+      id: 'msg-user-history-image',
+      talkId: TALK_ID,
+      threadId: THREAD_ID,
+      role: 'user',
+      content: 'See the earlier dashboard screenshot.',
+      createdBy: 'owner-1',
+      createdAt: '2026-03-01T00:00:00.000Z',
+    });
+    const historyImageBytes = Buffer.from([137, 80, 78, 71, 1]);
+    const historyImageStorageKey = await saveAttachmentFile(
+      'att-history-image-1',
+      TALK_ID,
+      historyImageBytes,
+      'earlier-dashboard.png',
+    );
+    createMessageAttachment({
+      id: 'att-history-image-1',
+      talkId: TALK_ID,
+      fileName: 'earlier-dashboard.png',
+      fileSize: historyImageBytes.byteLength,
+      mimeType: 'image/png',
+      storageKey: historyImageStorageKey,
+      createdBy: 'owner-1',
+    });
+    expect(
+      linkAttachmentToMessage(
+        'att-history-image-1',
+        'msg-user-history-image',
+        TALK_ID,
+      ),
+    ).toBe(true);
+    updateAttachmentExtraction({
+      attachmentId: 'att-history-image-1',
+      extractedText: null,
+      extractionStatus: 'ready',
+    });
+
+    createTalkMessage({
+      id: 'msg-user-followup-image',
+      talkId: TALK_ID,
+      threadId: THREAD_ID,
+      role: 'user',
+      content: 'What stands out in the earlier screenshot?',
+      createdBy: 'owner-1',
+      createdAt: '2026-03-01T00:00:01.000Z',
+    });
+
+    vi.mocked(executeWithAgent).mockImplementation(
+      async (agentId, context, userMessage) => {
+        expect(agentId).toBe('agent.main');
+        expect(userMessage).toBe('What stands out in the earlier screenshot?');
+        expect(
+          context?.history.some(
+            (message) =>
+              Array.isArray(message.content) &&
+              message.content.some(
+                (block) =>
+                  block.type === 'image' &&
+                  block.mimeType === 'image/png' &&
+                  block.data === historyImageBytes.toString('base64'),
+              ),
+          ),
+        ).toBe(true);
+
+        return {
+          content: 'The trend line bends upward.',
+          agentId,
+          providerId: 'provider.anthropic',
+          modelId: 'claude-sonnet-4-6',
+        };
+      },
+    );
+
+    const executor = new CleanTalkExecutor();
+    const result = await executor.execute(
+      {
+        runId: 'run-talk-history-image',
+        talkId: TALK_ID,
+        threadId: THREAD_ID,
+        requestedBy: 'owner-1',
+        triggerMessageId: 'msg-user-followup-image',
+        triggerContent: 'What stands out in the earlier screenshot?',
+      },
+      new AbortController().signal,
+    );
+
+    expect(result.content).toBe('The trend line bends upward.');
+  });
+
+  it('limits history image rehydration to the most recent image-bearing messages', async () => {
+    const imageSpecs = [
+      {
+        messageId: 'msg-user-history-image-1',
+        attachmentId: 'att-history-image-limit-1',
+        fileName: 'oldest.png',
+        content: 'Oldest screenshot.',
+        createdAt: '2026-03-02T00:00:00.000Z',
+        bytes: Buffer.from([137, 80, 78, 71, 1]),
+      },
+      {
+        messageId: 'msg-user-history-image-2',
+        attachmentId: 'att-history-image-limit-2',
+        fileName: 'older.png',
+        content: 'Older screenshot.',
+        createdAt: '2026-03-02T00:00:01.000Z',
+        bytes: Buffer.from([137, 80, 78, 71, 2]),
+      },
+      {
+        messageId: 'msg-user-history-image-3',
+        attachmentId: 'att-history-image-limit-3',
+        fileName: 'newer.png',
+        content: 'Newer screenshot.',
+        createdAt: '2026-03-02T00:00:02.000Z',
+        bytes: Buffer.from([137, 80, 78, 71, 3]),
+      },
+      {
+        messageId: 'msg-user-history-image-4',
+        attachmentId: 'att-history-image-limit-4',
+        fileName: 'newest.png',
+        content: 'Newest screenshot.',
+        createdAt: '2026-03-02T00:00:03.000Z',
+        bytes: Buffer.from([137, 80, 78, 71, 4]),
+      },
+    ] as const;
+
+    for (const spec of imageSpecs) {
+      createTalkMessage({
+        id: spec.messageId,
+        talkId: TALK_ID,
+        threadId: THREAD_ID,
+        role: 'user',
+        content: spec.content,
+        createdBy: 'owner-1',
+        createdAt: spec.createdAt,
+      });
+      const storageKey = await saveAttachmentFile(
+        spec.attachmentId,
+        TALK_ID,
+        spec.bytes,
+        spec.fileName,
+      );
+      createMessageAttachment({
+        id: spec.attachmentId,
+        talkId: TALK_ID,
+        fileName: spec.fileName,
+        fileSize: spec.bytes.byteLength,
+        mimeType: 'image/png',
+        storageKey,
+        createdBy: 'owner-1',
+      });
+      expect(
+        linkAttachmentToMessage(spec.attachmentId, spec.messageId, TALK_ID),
+      ).toBe(true);
+      updateAttachmentExtraction({
+        attachmentId: spec.attachmentId,
+        extractedText: null,
+        extractionStatus: 'ready',
+      });
+    }
+
+    createTalkMessage({
+      id: 'msg-user-history-image-limit-followup',
+      talkId: TALK_ID,
+      threadId: THREAD_ID,
+      role: 'user',
+      content: 'Compare the recent screenshots.',
+      createdBy: 'owner-1',
+      createdAt: '2026-03-02T00:00:04.000Z',
+    });
+
+    vi.mocked(executeWithAgent).mockImplementation(
+      async (agentId, context, userMessage) => {
+        expect(agentId).toBe('agent.main');
+        expect(userMessage).toBe('Compare the recent screenshots.');
+
+        const historyContents = (context?.history || []).map((message) =>
+          typeof message.content === 'string'
+            ? message.content
+            : message.content
+                .filter(
+                  (
+                    block,
+                  ): block is Extract<
+                    (typeof message.content)[number],
+                    { type: 'text' }
+                  > => block.type === 'text',
+                )
+                .map((block) => block.text)
+                .join('\n'),
+        );
+        const historyImageBlocks = (context?.history || []).flatMap(
+          (message) =>
+            Array.isArray(message.content)
+              ? message.content.filter(
+                  (
+                    block,
+                  ): block is Extract<
+                    (typeof message.content)[number],
+                    { type: 'image' }
+                  > => block.type === 'image',
+                )
+              : [],
+        );
+
+        expect(historyImageBlocks).toHaveLength(3);
+        expect(
+          historyImageBlocks.some(
+            (block) => block.data === imageSpecs[0].bytes.toString('base64'),
+          ),
+        ).toBe(false);
+        expect(
+          historyImageBlocks.some(
+            (block) => block.data === imageSpecs[1].bytes.toString('base64'),
+          ),
+        ).toBe(true);
+        expect(
+          historyImageBlocks.some(
+            (block) => block.data === imageSpecs[2].bytes.toString('base64'),
+          ),
+        ).toBe(true);
+        expect(
+          historyImageBlocks.some(
+            (block) => block.data === imageSpecs[3].bytes.toString('base64'),
+          ),
+        ).toBe(true);
+        expect(
+          historyContents.some(
+            (text) =>
+              text.includes('oldest.png') &&
+              text.includes(
+                'omitted from earlier conversation context due to prompt budget',
+              ),
+          ),
+        ).toBe(true);
+
+        return {
+          content: 'Compared the recent screenshots.',
+          agentId,
+          providerId: 'provider.anthropic',
+          modelId: 'claude-sonnet-4-6',
+        };
+      },
+    );
+
+    await new CleanTalkExecutor().execute(
+      {
+        runId: 'run-talk-history-image-limit',
+        talkId: TALK_ID,
+        threadId: THREAD_ID,
+        requestedBy: 'owner-1',
+        triggerMessageId: 'msg-user-history-image-limit-followup',
+        triggerContent: 'Compare the recent screenshots.',
+      },
+      new AbortController().signal,
+    );
+  });
+
+  it('budgets history text attachment excerpts toward the most recent messages', async () => {
+    getDb()
+      .prepare(
+        `
+        UPDATE llm_provider_models
+        SET context_window_tokens = 8192
+        WHERE provider_id = 'provider.anthropic' AND model_id = 'claude-sonnet-4-6'
+      `,
+      )
+      .run();
+
+    const textSpecs = [
+      {
+        messageId: 'msg-user-history-text-1',
+        attachmentId: 'att-history-text-1',
+        fileName: 'older.txt',
+        content: 'Use the older note if needed.',
+        createdAt: '2026-03-03T00:00:00.000Z',
+        extractedText: 'OLDER-SEGMENT '.repeat(1400),
+      },
+      {
+        messageId: 'msg-user-history-text-2',
+        attachmentId: 'att-history-text-2',
+        fileName: 'newer.txt',
+        content: 'Use the newer note if needed.',
+        createdAt: '2026-03-03T00:00:01.000Z',
+        extractedText: 'NEWER-SEGMENT '.repeat(1400),
+      },
+    ] as const;
+
+    for (const spec of textSpecs) {
+      const fileBytes = Buffer.from(spec.extractedText, 'utf-8');
+      createTalkMessage({
+        id: spec.messageId,
+        talkId: TALK_ID,
+        threadId: THREAD_ID,
+        role: 'user',
+        content: spec.content,
+        createdBy: 'owner-1',
+        createdAt: spec.createdAt,
+      });
+      const storageKey = await saveAttachmentFile(
+        spec.attachmentId,
+        TALK_ID,
+        fileBytes,
+        spec.fileName,
+      );
+      createMessageAttachment({
+        id: spec.attachmentId,
+        talkId: TALK_ID,
+        fileName: spec.fileName,
+        fileSize: fileBytes.byteLength,
+        mimeType: 'text/plain',
+        storageKey,
+        createdBy: 'owner-1',
+      });
+      expect(
+        linkAttachmentToMessage(spec.attachmentId, spec.messageId, TALK_ID),
+      ).toBe(true);
+      updateAttachmentExtraction({
+        attachmentId: spec.attachmentId,
+        extractedText: spec.extractedText,
+        extractionStatus: 'ready',
+      });
+    }
+
+    createTalkMessage({
+      id: 'msg-user-history-text-followup',
+      talkId: TALK_ID,
+      threadId: THREAD_ID,
+      role: 'user',
+      content: 'What changed between the notes?',
+      createdBy: 'owner-1',
+      createdAt: '2026-03-03T00:00:02.000Z',
+    });
+
+    vi.mocked(executeWithAgent).mockImplementation(
+      async (_agentId, context) => {
+        const historyContents = (context?.history || []).map((message) =>
+          typeof message.content === 'string'
+            ? message.content
+            : message.content
+                .filter(
+                  (
+                    block,
+                  ): block is Extract<
+                    (typeof message.content)[number],
+                    { type: 'text' }
+                  > => block.type === 'text',
+                )
+                .map((block) => block.text)
+                .join('\n'),
+        );
+
+        const newerHistoryEntry =
+          historyContents.find((text) => text.includes('newer.txt')) || '';
+        const olderHistoryEntry =
+          historyContents.find((text) => text.includes('older.txt')) || '';
+
+        expect(newerHistoryEntry).toContain('NEWER-SEGMENT');
+        expect(
+          olderHistoryEntry.includes(
+            'omitted from earlier conversation context due to prompt budget',
+          ) || olderHistoryEntry.length === 0,
+        ).toBe(true);
+        expect(olderHistoryEntry).not.toContain('OLDER-SEGMENT');
+
+        return {
+          content: 'The newer note adds the latest changes.',
+          agentId: 'agent.main',
+          providerId: 'provider.anthropic',
+          modelId: 'claude-sonnet-4-6',
+        };
+      },
+    );
+
+    await new CleanTalkExecutor().execute(
+      {
+        runId: 'run-talk-history-text-budget',
+        talkId: TALK_ID,
+        threadId: THREAD_ID,
+        requestedBy: 'owner-1',
+        triggerMessageId: 'msg-user-history-text-followup',
+        triggerContent: 'What changed between the notes?',
+      },
+      new AbortController().signal,
+    );
+  });
+
+  it('sanitizes image load failures before passing degradation notes to the model', async () => {
+    createTalkMessage({
+      id: 'msg-user-broken-image',
+      talkId: TALK_ID,
+      threadId: THREAD_ID,
+      role: 'user',
+      content: 'Describe the broken screenshot.',
+      createdBy: 'owner-1',
+      createdAt: '2026-03-04T00:00:00.000Z',
+    });
+
+    const imageBytes = Buffer.from([137, 80, 78, 71, 9]);
+    const storageKey = await saveAttachmentFile(
+      'att-broken-image',
+      TALK_ID,
+      imageBytes,
+      'broken.png',
+    );
+    createMessageAttachment({
+      id: 'att-broken-image',
+      talkId: TALK_ID,
+      fileName: 'broken.png',
+      fileSize: imageBytes.byteLength,
+      mimeType: 'image/png',
+      storageKey,
+      createdBy: 'owner-1',
+    });
+    expect(
+      linkAttachmentToMessage(
+        'att-broken-image',
+        'msg-user-broken-image',
+        TALK_ID,
+      ),
+    ).toBe(true);
+    updateAttachmentExtraction({
+      attachmentId: 'att-broken-image',
+      extractedText: null,
+      extractionStatus: 'ready',
+    });
+
+    const loadAttachmentSpy = vi
+      .spyOn(attachmentStorage, 'loadAttachmentFile')
+      .mockRejectedValueOnce(
+        new Error('ENOENT: missing /private/tmp/secret/broken.png'),
+      );
+
+    vi.mocked(executeWithAgent).mockImplementation(
+      async (_agentId, _context, userMessage) => {
+        const promptText =
+          typeof userMessage === 'string'
+            ? userMessage
+            : userMessage
+                .filter(
+                  (
+                    block,
+                  ): block is Extract<
+                    (typeof userMessage)[number],
+                    { type: 'text' }
+                  > => block.type === 'text',
+                )
+                .map((block) => block.text)
+                .join('\n');
+        expect(promptText).toContain(
+          'Image attachment "broken.png" could not be loaded for vision input.',
+        );
+        expect(promptText).not.toContain('/private/tmp/secret/broken.png');
+
+        return {
+          content: 'The screenshot could not be loaded.',
+          agentId: 'agent.main',
+          providerId: 'provider.anthropic',
+          modelId: 'claude-sonnet-4-6',
+        };
+      },
+    );
+
+    await new CleanTalkExecutor().execute(
+      {
+        runId: 'run-talk-broken-image',
+        talkId: TALK_ID,
+        threadId: THREAD_ID,
+        requestedBy: 'owner-1',
+        triggerMessageId: 'msg-user-broken-image',
+        triggerContent: 'Describe the broken screenshot.',
+      },
+      new AbortController().signal,
+    );
+
+    loadAttachmentSpy.mockRestore();
+  });
+
+  it('rejects direct image-bearing turns for models without vision support', async () => {
+    createTalkMessage({
+      id: 'msg-user-text-only-image',
+      talkId: TALK_ID,
+      threadId: THREAD_ID,
+      role: 'user',
+      content: 'Analyze this screenshot.',
+      createdBy: 'owner-1',
+      createdAt: '2026-03-05T00:00:00.000Z',
+    });
+
+    const imageBytes = Buffer.from([137, 80, 78, 71, 10]);
+    const storageKey = await saveAttachmentFile(
+      'att-text-only-image',
+      TALK_ID,
+      imageBytes,
+      'text-only.png',
+    );
+    createMessageAttachment({
+      id: 'att-text-only-image',
+      talkId: TALK_ID,
+      fileName: 'text-only.png',
+      fileSize: imageBytes.byteLength,
+      mimeType: 'image/png',
+      storageKey,
+      createdBy: 'owner-1',
+    });
+    expect(
+      linkAttachmentToMessage(
+        'att-text-only-image',
+        'msg-user-text-only-image',
+        TALK_ID,
+      ),
+    ).toBe(true);
+    updateAttachmentExtraction({
+      attachmentId: 'att-text-only-image',
+      extractedText: null,
+      extractionStatus: 'ready',
+    });
+
+    getDb()
+      .prepare(
+        `
+        UPDATE registered_agents
+        SET provider_id = ?, model_id = ?
+        WHERE id = ?
+      `,
+      )
+      .run('provider.openai', 'gpt-text-only', 'agent.main');
+
+    vi.mocked(planExecution).mockReturnValue({
+      backend: 'direct_http',
+      routeReason: 'normal',
+      effectiveTools: [],
+      providerId: 'provider.openai',
+      modelId: 'gpt-text-only',
+      binding: {
+        providerConfig: {
+          providerId: 'provider.openai',
+          baseUrl: 'https://api.openai.com/v1',
+          apiFormat: 'openai_chat_completions',
+          authScheme: 'bearer',
+        },
+        secret: { apiKey: 'sk-openai-test' },
+      },
+    });
+
+    await expect(
+      new CleanTalkExecutor().execute(
+        {
+          runId: 'run-talk-text-only-image',
+          talkId: TALK_ID,
+          threadId: THREAD_ID,
+          requestedBy: 'owner-1',
+          triggerMessageId: 'msg-user-text-only-image',
+          triggerContent: 'Analyze this screenshot.',
+        },
+        new AbortController().signal,
+      ),
+    ).rejects.toMatchObject({
+      code: 'MODEL_VISION_UNSUPPORTED',
+      message:
+        'The selected model "gpt-text-only" does not support vision, but this message includes image attachments. Choose a vision-capable model or remove the images.',
+    });
+    expect(executeWithAgent).not.toHaveBeenCalled();
   });
 
   it('routes container-backed talk turns through the stateless adapter', async () => {
@@ -732,10 +1426,24 @@ describe('CleanTalkExecutor', () => {
 
     vi.mocked(executeWithAgent).mockImplementation(
       async (_agentId, _context, userMessage) => {
-        expect(userMessage).toContain(
+        const promptText =
+          typeof userMessage === 'string'
+            ? userMessage
+            : userMessage
+                .filter(
+                  (
+                    block,
+                  ): block is Extract<
+                    (typeof userMessage)[number],
+                    { type: 'text' }
+                  > => block.type === 'text',
+                )
+                .map((block) => block.text)
+                .join('\n');
+        expect(promptText).toContain(
           '[Nanoclaw]\nFirst supporting point.\n\nSecond supporting point.',
         );
-        expect(userMessage.match(/\[Nanoclaw\]/g)).toHaveLength(1);
+        expect(promptText.match(/\[Nanoclaw\]/g)).toHaveLength(1);
 
         return {
           content: 'Independent second-pass analysis.',

@@ -977,6 +977,46 @@ describe('context-loader', () => {
       expect(result.isError).toBe(true);
       expect(result.result).toContain('not found');
     });
+
+    it('returns a descriptive message for image attachments without extracted text', async () => {
+      const now = new Date().toISOString();
+      insertTalkMessage({
+        id: 'msg-image-1',
+        role: 'user',
+        content: 'See screenshot',
+        createdAt: now,
+      });
+      getDb()
+        .prepare(
+          `INSERT INTO talk_message_attachments (
+            id, talk_id, message_id, file_name, mime_type, storage_key, extracted_text, created_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          'att-image-1',
+          TALK_ID,
+          'msg-image-1',
+          'screenshot.png',
+          'image/png',
+          'store/att-image-1',
+          null,
+          now,
+        );
+
+      const executor = buildToolExecutor(
+        TALK_ID,
+        'owner-1',
+        'run-test',
+        AbortSignal.timeout(5000),
+      );
+      const result = await executor('read_attachment', {
+        attachmentId: 'att-image-1',
+      });
+
+      expect(result.isError).toBeFalsy();
+      expect(result.result).toContain('cannot be read as text');
+      expect(result.result).toContain('screenshot.png');
+    });
   });
 
   describe('buildToolExecutor (google_drive_read)', () => {
