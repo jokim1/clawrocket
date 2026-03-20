@@ -2961,8 +2961,7 @@ function buildApp(opts: WebServerOptions): Hono {
           ok: false,
           error: {
             code: 'invalid_connection_id',
-            message:
-              'Connection ID path segment is not valid URL encoding',
+            message: 'Connection ID path segment is not valid URL encoding',
           },
         },
         400,
