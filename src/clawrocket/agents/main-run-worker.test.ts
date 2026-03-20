@@ -7,6 +7,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { getDb } from '../../db.js';
 import {
   _initTestDatabase,
+  createMessage,
   enqueueMainTurnAtomic,
   getOutboxEventsForTopics,
   getTalkRunById,
@@ -161,6 +162,64 @@ describe('MainRunWorker integration', () => {
       (e) => e.event_type === 'main_response_completed',
     );
     expect(terminal).toBeTruthy();
+  });
+
+  it('refreshes the persisted thread summary after a completed run', async () => {
+    const threadId = 'thread-summary-metadata';
+
+    const now = new Date().toISOString();
+    getDb()
+      .prepare(
+        `
+        INSERT INTO main_threads (thread_id, user_id, created_at, updated_at)
+        VALUES (?, ?, ?, ?)
+      `,
+      )
+      .run(threadId, USER_A, now, now);
+
+    for (let index = 1; index <= 13; index += 1) {
+      createMessage({
+        id: `seed-msg-${String(index).padStart(2, '0')}`,
+        talkId: null,
+        threadId,
+        role: index % 2 === 0 ? 'assistant' : 'user',
+        content:
+          index === 1
+            ? 'Important earlier fact: the launch code is Atlas.'
+            : `Seed thread message ${index}`,
+        createdBy: index % 2 === 0 ? null : USER_A,
+        createdAt: new Date(Date.UTC(2026, 0, 1, 0, 0, index)).toISOString(),
+      });
+    }
+
+    const { runId } = enqueueTurn(threadId);
+
+    const worker = new MainRunWorker({
+      pollMs: 10,
+      maxConcurrency: 1,
+      executor: createMockExecutor('Summary refreshed'),
+    });
+    await worker.start();
+
+    await waitForRunTerminal(runId);
+    await worker.stop();
+
+    const summaryRow = getDb()
+      .prepare(
+        `
+        SELECT summary_text, covers_through_message_id
+        FROM main_thread_summaries
+        WHERE thread_id = ?
+      `,
+      )
+      .get(threadId) as
+      | {
+          summary_text: string;
+          covers_through_message_id: string | null;
+        }
+      | undefined;
+    expect(summaryRow?.summary_text).toContain('Atlas');
+    expect(summaryRow?.covers_through_message_id).toBeTruthy();
   });
 
   it('sanitizes internal tags from both streamed deltas and stored content', async () => {

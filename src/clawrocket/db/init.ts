@@ -609,12 +609,22 @@ function createClawrocketSchema(database: Database.Database): void {
     CREATE UNIQUE INDEX IF NOT EXISTS idx_channel_connections_platform_account
       ON channel_connections(platform, account_key);
 
+    CREATE TABLE IF NOT EXISTS channel_connection_secrets (
+      connection_id TEXT PRIMARY KEY REFERENCES channel_connections(id) ON DELETE CASCADE,
+      ciphertext TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      updated_by TEXT REFERENCES users(id)
+    );
+
     CREATE TABLE IF NOT EXISTS channel_targets (
       connection_id TEXT NOT NULL REFERENCES channel_connections(id) ON DELETE CASCADE,
       target_kind TEXT NOT NULL,
       target_id TEXT NOT NULL,
       display_name TEXT NOT NULL,
       metadata_json TEXT,
+      approved INTEGER NOT NULL DEFAULT 0,
+      registered_at TEXT,
+      registered_by TEXT REFERENCES users(id),
       last_seen_at TEXT NOT NULL,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
@@ -702,6 +712,13 @@ function createClawrocketSchema(database: Database.Database): void {
     );
     CREATE INDEX IF NOT EXISTS idx_main_threads_user_id_updated_at
       ON main_threads(user_id, updated_at);
+
+    CREATE TABLE IF NOT EXISTS main_thread_summaries (
+      thread_id TEXT PRIMARY KEY REFERENCES main_threads(thread_id) ON DELETE CASCADE,
+      summary_text TEXT NOT NULL,
+      covers_through_message_id TEXT REFERENCES talk_messages(id) ON DELETE SET NULL,
+      updated_at TEXT NOT NULL
+    );
 
     CREATE TABLE IF NOT EXISTS talk_tool_grants (
       talk_id TEXT NOT NULL REFERENCES talks(id) ON DELETE CASCADE,
@@ -1186,6 +1203,7 @@ function createClawrocketSchema(database: Database.Database): void {
   migrateTalkChannelPoliciesTable(database);
   migrateTalkChannelBindingsTable(database);
   migrateTalksTable(database);
+  migrateMainThreadSummariesTable(database);
 
   // ---------------------------------------------------------------------------
   // Phase 4 — Thread formalization.
@@ -1198,6 +1216,8 @@ function createClawrocketSchema(database: Database.Database): void {
 
   migrateChannelBindingHealthColumns(database);
   migrateConnectionProbeFailuresColumn(database);
+  migrateChannelConnectionSecretsTable(database);
+  migrateChannelTargetRegistryColumns(database);
 
   migrateMainAgentToAnthropic(database);
 
@@ -1890,6 +1910,74 @@ function migrateTalkMessageAttachmentsTable(database: Database.Database): void {
 
     DROP TABLE talk_message_attachments_mig;
   `);
+}
+
+function migrateMainThreadSummariesTable(database: Database.Database): void {
+  const columns = database
+    .prepare(`PRAGMA table_info(main_thread_summaries)`)
+    .all() as Array<{ name: string }>;
+  if (columns.length === 0) return;
+
+  const foreignKeys = database
+    .prepare(`PRAGMA foreign_key_list(main_thread_summaries)`)
+    .all() as Array<{
+    table: string;
+    from: string;
+    on_delete: string;
+  }>;
+  const coverageForeignKey = foreignKeys.find(
+    (foreignKey) =>
+      foreignKey.table === 'talk_messages' &&
+      foreignKey.from === 'covers_through_message_id',
+  );
+  if (coverageForeignKey?.on_delete?.toUpperCase() === 'SET NULL') {
+    return;
+  }
+
+  const foreignKeysEnabled =
+    Number(database.pragma('foreign_keys', { simple: true })) !== 0;
+  if (foreignKeysEnabled) {
+    database.pragma('foreign_keys = OFF');
+  }
+
+  try {
+    database.exec(`
+      CREATE TABLE main_thread_summaries_mig AS
+        SELECT * FROM main_thread_summaries;
+
+      DROP TABLE main_thread_summaries;
+
+      CREATE TABLE main_thread_summaries (
+        thread_id TEXT PRIMARY KEY REFERENCES main_threads(thread_id) ON DELETE CASCADE,
+        summary_text TEXT NOT NULL,
+        covers_through_message_id TEXT REFERENCES talk_messages(id) ON DELETE SET NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      INSERT INTO main_thread_summaries (
+        thread_id, summary_text, covers_through_message_id, updated_at
+      )
+      SELECT
+        backup.thread_id,
+        backup.summary_text,
+        CASE
+          WHEN talk_messages.id IS NOT NULL THEN backup.covers_through_message_id
+          ELSE NULL
+        END,
+        backup.updated_at
+      FROM main_thread_summaries_mig AS backup
+      INNER JOIN main_threads
+        ON main_threads.thread_id = backup.thread_id
+      LEFT JOIN talk_messages
+        ON talk_messages.id = backup.covers_through_message_id;
+
+      DROP TABLE main_thread_summaries_mig;
+    `);
+  } finally {
+    if (foreignKeysEnabled) {
+      database.pragma('foreign_keys = ON');
+    }
+  }
 }
 
 /**
@@ -2867,6 +2955,44 @@ function migrateConnectionProbeFailuresColumn(
   database.exec(`
     ALTER TABLE channel_connections ADD COLUMN consecutive_probe_failures INTEGER NOT NULL DEFAULT 0;
   `);
+}
+
+function migrateChannelConnectionSecretsTable(
+  database: Database.Database,
+): void {
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS channel_connection_secrets (
+      connection_id TEXT PRIMARY KEY REFERENCES channel_connections(id) ON DELETE CASCADE,
+      ciphertext TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      updated_by TEXT REFERENCES users(id)
+    );
+  `);
+}
+
+function migrateChannelTargetRegistryColumns(
+  database: Database.Database,
+): void {
+  const columns = database
+    .prepare(`PRAGMA table_info(channel_targets)`)
+    .all() as Array<{ name: string }>;
+  if (columns.length === 0) return;
+
+  if (!columns.some((column) => column.name === 'approved')) {
+    database.exec(`
+      ALTER TABLE channel_targets ADD COLUMN approved INTEGER NOT NULL DEFAULT 0;
+    `);
+  }
+  if (!columns.some((column) => column.name === 'registered_at')) {
+    database.exec(`
+      ALTER TABLE channel_targets ADD COLUMN registered_at TEXT;
+    `);
+  }
+  if (!columns.some((column) => column.name === 'registered_by')) {
+    database.exec(`
+      ALTER TABLE channel_targets ADD COLUMN registered_by TEXT REFERENCES users(id);
+    `);
+  }
 }
 
 export function initClawrocketSchema(): void {

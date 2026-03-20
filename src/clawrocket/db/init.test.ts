@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
-import { _initTestDatabase, initClawrocketSchema } from './index.js';
+import {
+  _initTestDatabase,
+  createMessage,
+  initClawrocketSchema,
+  upsertUser,
+} from './index.js';
 import { getDb } from '../../db.js';
 
 describe('clawrocket schema init', () => {
@@ -217,5 +222,126 @@ describe('clawrocket schema init', () => {
         value: 'agent.main',
       },
     ]);
+  });
+
+  it('defines main_thread_summaries coverage with ON DELETE SET NULL', () => {
+    _initTestDatabase();
+    const db = getDb();
+
+    const foreignKeys = db
+      .prepare(`PRAGMA foreign_key_list('main_thread_summaries')`)
+      .all() as Array<{
+      table: string;
+      from: string;
+      on_delete: string;
+    }>;
+
+    expect(foreignKeys).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          table: 'talk_messages',
+          from: 'covers_through_message_id',
+          on_delete: 'SET NULL',
+        }),
+      ]),
+    );
+  });
+
+  it('migrates stale main_thread_summaries coverage markers to null', () => {
+    _initTestDatabase();
+    const db = getDb();
+    const now = new Date().toISOString();
+
+    upsertUser({
+      id: 'owner-1',
+      email: 'owner@example.com',
+      displayName: 'Owner',
+      role: 'owner',
+    });
+
+    db.prepare(
+      `
+      INSERT INTO main_threads (thread_id, user_id, created_at, updated_at)
+      VALUES (?, ?, ?, ?)
+    `,
+    ).run('thread-main-summary-migration', 'owner-1', now, now);
+
+    createMessage({
+      id: 'msg-main-summary-1',
+      talkId: null,
+      threadId: 'thread-main-summary-migration',
+      role: 'user',
+      content: 'Original covered message',
+      createdBy: 'owner-1',
+      createdAt: now,
+    });
+
+    db.prepare(
+      `
+      INSERT INTO main_thread_summaries (
+        thread_id, summary_text, covers_through_message_id, updated_at
+      ) VALUES (?, ?, ?, ?)
+    `,
+    ).run(
+      'thread-main-summary-migration',
+      'Persisted summary text',
+      'msg-main-summary-1',
+      now,
+    );
+
+    db.exec(`
+      CREATE TABLE main_thread_summaries_legacy AS
+        SELECT * FROM main_thread_summaries;
+      DROP TABLE main_thread_summaries;
+      CREATE TABLE main_thread_summaries (
+        thread_id TEXT PRIMARY KEY REFERENCES main_threads(thread_id) ON DELETE CASCADE,
+        summary_text TEXT NOT NULL,
+        covers_through_message_id TEXT REFERENCES talk_messages(id),
+        updated_at TEXT NOT NULL
+      );
+      INSERT INTO main_thread_summaries
+      SELECT * FROM main_thread_summaries_legacy;
+      DROP TABLE main_thread_summaries_legacy;
+    `);
+
+    db.pragma('foreign_keys = OFF');
+    db.prepare(`DELETE FROM talk_messages WHERE id = ?`).run(
+      'msg-main-summary-1',
+    );
+    db.pragma('foreign_keys = ON');
+
+    initClawrocketSchema();
+
+    const migratedRow = db
+      .prepare(
+        `
+        SELECT covers_through_message_id
+        FROM main_thread_summaries
+        WHERE thread_id = ?
+      `,
+      )
+      .get('thread-main-summary-migration') as
+      | { covers_through_message_id: string | null }
+      | undefined;
+
+    expect(migratedRow?.covers_through_message_id).toBeNull();
+
+    const foreignKeys = db
+      .prepare(`PRAGMA foreign_key_list('main_thread_summaries')`)
+      .all() as Array<{
+      table: string;
+      from: string;
+      on_delete: string;
+    }>;
+
+    expect(foreignKeys).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          table: 'talk_messages',
+          from: 'covers_through_message_id',
+          on_delete: 'SET NULL',
+        }),
+      ]),
+    );
   });
 });
