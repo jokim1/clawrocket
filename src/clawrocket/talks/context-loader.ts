@@ -712,6 +712,21 @@ function assembleSystemPrompt(
   return parts.join('\n\n');
 }
 
+const MAX_OMITTED_KEYS_SHOWN = 5;
+
+function buildOmissionNote(
+  omittedCount: number,
+  omittedKeys: string[],
+): string {
+  const shownKeys = omittedKeys.slice(0, MAX_OMITTED_KEYS_SHOWN);
+  const extra = omittedKeys.length - shownKeys.length;
+  const keyList =
+    shownKeys.join(', ') + (extra > 0 ? `, +${extra} more` : '');
+  return `- ${omittedCount} state entr${
+    omittedCount === 1 ? 'y' : 'ies'
+  } omitted (keys: ${keyList}). Use read_state(key) to fetch them.`;
+}
+
 function buildStateSnapshot(
   entries: Array<{
     key: string;
@@ -746,13 +761,13 @@ function buildStateSnapshot(
     updatedAt: string;
   }> = [];
   let usedTokens = estimateTokens('**State Snapshot:**\n');
-  let omitted = 0;
+  const omittedKeys: string[] = [];
 
   for (const entry of entries) {
     const line = `- ${entry.key} (v${entry.version}, updated ${entry.updatedAt}): ${JSON.stringify(entry.value)}`;
     const lineTokens = estimateTokens(line);
     if (usedTokens + lineTokens > budgetTokens) {
-      omitted += 1;
+      omittedKeys.push(entry.key);
       continue;
     }
     lines.push(line);
@@ -761,27 +776,39 @@ function buildStateSnapshot(
   }
 
   if (lines.length === 0) {
+    const omissionNote = buildOmissionNote(entries.length, omittedKeys);
+    const omissionTokens = estimateTokens(omissionNote);
+    const noteToUse =
+      usedTokens + omissionTokens <= budgetTokens
+        ? omissionNote
+        : `- ${entries.length} state entr${
+            entries.length === 1 ? 'y' : 'ies'
+          } omitted. Use read_state(key) to fetch them.`;
     return {
-      promptText: `**State Snapshot:**\n${entries.length} state entr${
-        entries.length === 1 ? 'y' : 'ies'
-      } omitted to stay within context budget.`,
+      promptText: `**State Snapshot:**\n${noteToUse}`,
       includedEntries: [],
       omittedCount: entries.length,
     };
   }
 
-  if (omitted > 0) {
-    lines.push(
-      `- ${omitted} additional state entr${
-        omitted === 1 ? 'y' : 'ies'
-      } omitted to stay within context budget.`,
-    );
+  if (omittedKeys.length > 0) {
+    const omissionNote = buildOmissionNote(omittedKeys.length, omittedKeys);
+    const omissionTokens = estimateTokens(omissionNote);
+    if (usedTokens + omissionTokens <= budgetTokens) {
+      lines.push(omissionNote);
+    } else {
+      lines.push(
+        `- ${omittedKeys.length} additional state entr${
+          omittedKeys.length === 1 ? 'y' : 'ies'
+        } omitted. Use read_state(key) to fetch them.`,
+      );
+    }
   }
 
   return {
     promptText: `**State Snapshot:**\n${lines.join('\n')}`,
     includedEntries,
-    omittedCount: omitted,
+    omittedCount: omittedKeys.length,
   };
 }
 
@@ -830,31 +857,68 @@ function buildContextTools(
     ...buildGoogleDriveContextTools({ talkId, userId }),
   ];
 
-  if (!jobPolicy || jobPolicy.allowStateMutation) {
-    tools.push({
-      name: 'update_state',
-      description:
-        'Persist a structured JSON state entry for this Talk using compare-and-swap versioning. Create new keys with expectedVersion 0. Update existing keys with their current version from the state snapshot. On conflict, the tool returns the current stored value as an error so you can retry.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          key: {
-            type: 'string',
-            description: 'State entry key',
-          },
-          value: {
-            description:
-              'JSON value to store for this key. Can be an object, array, string, number, boolean, or null.',
-          },
-          expectedVersion: {
-            type: 'number',
-            description:
-              'Use 0 to create a new key. For updates, use the current version from the state snapshot.',
-          },
+  tools.push({
+    name: 'read_state',
+    description:
+      'Read a single Talk state entry by key. Returns the current value and version. Use this to fetch entries omitted from the snapshot, or to get the latest value before an update.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        key: {
+          type: 'string',
+          description: 'State entry key to read',
         },
-        required: ['key', 'value', 'expectedVersion'],
       },
-    });
+      required: ['key'],
+    },
+  });
+
+  if (!jobPolicy || jobPolicy.allowStateMutation) {
+    tools.push(
+      {
+        name: 'update_state',
+        description:
+          'Persist a structured JSON state entry for this Talk using compare-and-swap versioning. Create new keys with expectedVersion 0. Update existing keys with their current version from the state snapshot. On conflict, the tool returns the current stored value as an error so you can retry.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            key: {
+              type: 'string',
+              description: 'State entry key',
+            },
+            value: {
+              description:
+                'JSON value to store for this key. Can be an object, array, string, number, boolean, or null.',
+            },
+            expectedVersion: {
+              type: 'number',
+              description:
+                'Use 0 to create a new key. For updates, use the current version from the state snapshot.',
+            },
+          },
+          required: ['key', 'value', 'expectedVersion'],
+        },
+      },
+      {
+        name: 'delete_state',
+        description:
+          'Delete a Talk state entry by key using compare-and-swap versioning. Provide the current version to prevent accidental deletes of stale data.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            key: {
+              type: 'string',
+              description: 'State entry key to delete',
+            },
+            expectedVersion: {
+              type: 'number',
+              description: 'Current version of the entry',
+            },
+          },
+          required: ['key', 'expectedVersion'],
+        },
+      },
+    );
   }
 
   if (!jobPolicy || jobPolicy.allowWeb) {

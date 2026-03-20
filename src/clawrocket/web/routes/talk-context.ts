@@ -5,6 +5,7 @@ import {
   createTalkContextSource,
   deleteTalkContextRule,
   deleteTalkContextSource,
+  forceDeleteTalkStateEntry,
   getContextSourceStorageKey,
   getContextSourceWithContent,
   getTalkContext,
@@ -17,6 +18,7 @@ import {
   patchTalkContextRule,
   patchTalkContextSource,
   setTalkGoal,
+  validateStateKey,
   type ContextRuleSnapshot,
   type ContextSourceSnapshot,
   type TalkContextSnapshot,
@@ -182,6 +184,35 @@ export function getTalkStateRoute(input: {
   return {
     statusCode: 200,
     body: { ok: true, data: { entries: listTalkStateEntries(input.talkId) } },
+  };
+}
+
+export function deleteTalkStateEntryRoute(input: {
+  auth: AuthContext;
+  talkId: string;
+  key: string;
+}): {
+  statusCode: number;
+  body: ApiEnvelope<{ deleted: true }>;
+} {
+  const talk = talkOrNull(input.talkId, input.auth.userId);
+  if (!talk) return notFoundResponse('Talk not found.');
+  const denied = requireEditAccess(input.talkId, input.auth);
+  if (denied) return denied;
+
+  try {
+    validateStateKey(input.key);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Invalid key.';
+    return badRequest('invalid_key', message);
+  }
+
+  const deleted = forceDeleteTalkStateEntry(input.talkId, input.key);
+  if (!deleted) return notFoundResponse('State entry not found.');
+
+  return {
+    statusCode: 200,
+    body: { ok: true, data: { deleted: true } },
   };
 }
 

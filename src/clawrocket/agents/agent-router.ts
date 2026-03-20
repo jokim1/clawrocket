@@ -111,6 +111,12 @@ export interface AgentExecutionResult {
   };
 }
 
+export const ALWAYS_ALLOWED_CONTEXT_TOOLS = new Set([
+  'read_context_source',
+  'read_attachment',
+  'read_state',
+]);
+
 // ---------------------------------------------------------------------------
 // Main Execution Function
 // ---------------------------------------------------------------------------
@@ -223,12 +229,12 @@ export async function executeWithAgent(
 
   /**
    * Check whether a tool is permitted for this agent.
-   * - Context-internal tools (read_context_source, read_attachment) are always allowed.
+   * - Context-internal tools in ALWAYS_ALLOWED_CONTEXT_TOOLS are always allowed.
    * - Connector tools (connector_*) are allowed if the 'connectors' family is enabled.
    * - All other tools are allowed only if they appear in enabledToolNames.
    */
   function isToolPermitted(toolName: string): boolean {
-    if (toolName === 'read_context_source' || toolName === 'read_attachment') {
+    if (ALWAYS_ALLOWED_CONTEXT_TOOLS.has(toolName)) {
       return true; // Always allowed — Talk-internal context access
     }
     if (toolName.startsWith('connector_')) {

@@ -431,6 +431,50 @@ describe('talk context routes', () => {
       expect(entries[0]?.key).toBe('newer');
       expect(entries[1]?.key).toBe('older');
     });
+
+    it('DELETE /state/:key removes an existing entry', async () => {
+      upsertTalkStateEntry({
+        talkId: TALK_ID,
+        key: 'delete_me',
+        value: 'temporary',
+        expectedVersion: 0,
+        updatedByUserId: 'owner-1',
+      });
+
+      const res = await server.request(
+        `/api/v1/talks/${TALK_ID}/state/${encodeURIComponent('delete_me')}`,
+        { method: 'DELETE', headers: ownerAuth() },
+      );
+      expect(res.status).toBe(200);
+      const body = await json(res);
+      expect(body.ok).toBe(true);
+      expect((body.data as Record<string, unknown>).deleted).toBe(true);
+
+      const listRes = await server.request(`/api/v1/talks/${TALK_ID}/state`, {
+        method: 'GET',
+        headers: ownerAuth(),
+      });
+      const listBody = await json(listRes);
+      expect((listBody.data as Record<string, unknown>).entries).toEqual([]);
+    });
+
+    it('DELETE /state/:key returns 404 for missing key', async () => {
+      const res = await server.request(
+        `/api/v1/talks/${TALK_ID}/state/${encodeURIComponent('no_such_key')}`,
+        { method: 'DELETE', headers: ownerAuth() },
+      );
+      expect(res.status).toBe(404);
+    });
+
+    it('DELETE /state/:key returns 400 for invalid key pattern', async () => {
+      const res = await server.request(
+        `/api/v1/talks/${TALK_ID}/state/${encodeURIComponent('has spaces')}`,
+        { method: 'DELETE', headers: ownerAuth() },
+      );
+      expect(res.status).toBe(400);
+      const body = await json(res);
+      expect((body.error as Record<string, string>).code).toBe('invalid_key');
+    });
   });
 
   // =========================================================================

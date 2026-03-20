@@ -53,6 +53,7 @@ import {
   deleteTalkContextSource,
   deleteTalkOutput,
   deleteTalkJob,
+  deleteTalkStateEntry,
   detachTalkDataConnector,
   expandUserGoogleScopes,
   getAiAgents,
@@ -1388,6 +1389,64 @@ function formatDateTime(value: string | null): string {
   return parsed.toLocaleString();
 }
 
+const STATE_JSON_TRUNCATE_LENGTH = 2000;
+
+function TalkStateCard({
+  entry,
+  canDelete,
+  onDelete,
+}: {
+  entry: TalkStateEntry;
+  canDelete: boolean;
+  onDelete: () => void;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const jsonText = JSON.stringify(entry.value, null, 2);
+  const isTruncated = jsonText.length > STATE_JSON_TRUNCATE_LENGTH;
+  const displayText =
+    isTruncated && !expanded
+      ? jsonText.slice(0, STATE_JSON_TRUNCATE_LENGTH)
+      : jsonText;
+
+  return (
+    <article className="talk-llm-card talk-state-card">
+      <div className="connector-card-header">
+        <div>
+          <h3>{entry.key}</h3>
+          <p className="talk-llm-meta">
+            Version {entry.version} · Updated {formatDateTime(entry.updatedAt)}
+          </p>
+        </div>
+        {canDelete ? (
+          <button
+            className="btn btn-sm btn-danger"
+            onClick={onDelete}
+            title="Delete state entry"
+          >
+            &times;
+          </button>
+        ) : null}
+      </div>
+      {entry.updatedByRunId ? (
+        <p className="talk-llm-meta">
+          Updated by run <code>{entry.updatedByRunId}</code>
+        </p>
+      ) : null}
+      {entry.updatedByUserId ? (
+        <p className="talk-llm-meta">
+          Updated by user <code>{entry.updatedByUserId}</code>
+        </p>
+      ) : null}
+      <pre className="talk-state-json">{displayText}</pre>
+      {isTruncated ? (
+        <button className="btn btn-sm" onClick={() => setExpanded(!expanded)}>
+          {expanded ? 'Show less' : 'Show full value'}
+        </button>
+      ) : null}
+    </article>
+  );
+}
+
 function sortThreads(threads: TalkThread[]): TalkThread[] {
   return [...threads].sort((left, right) => {
     const leftAt = left.lastMessageAt || left.createdAt;
@@ -2189,12 +2248,23 @@ export function TalkDetailPage({
       if (options?.showLoading) {
         setTalkStateStatus({ status: 'loading' });
       }
-      const entries = await getTalkState(talkId);
-      setTalkStateEntries(entries);
-      setTalkStateLoaded(true);
-      setTalkStateStatus({ status: 'idle' });
+      try {
+        const entries = await getTalkState(talkId);
+        setTalkStateEntries(entries);
+        setTalkStateLoaded(true);
+        setTalkStateStatus({ status: 'idle' });
+      } catch (err) {
+        if (err instanceof UnauthorizedError) {
+          handleUnauthorized();
+          return;
+        }
+        setTalkStateStatus({
+          status: 'error',
+          message: err instanceof Error ? err.message : 'Failed to load state.',
+        });
+      }
     },
-    [talkId],
+    [handleUnauthorized, talkId],
   );
 
   const loadOutputDetail = useCallback(
@@ -3568,7 +3638,7 @@ export function TalkDetailPage({
   ]);
 
   useEffect(() => {
-    if (state.kind !== 'ready' || currentTab !== 'state' || talkStateLoaded) {
+    if (state.kind !== 'ready' || currentTab !== 'state') {
       return;
     }
 
@@ -3576,19 +3646,11 @@ export function TalkDetailPage({
 
     const loadState = async () => {
       try {
-        await refreshTalkStateEntries({ showLoading: true });
-        if (cancelled) return;
+        await refreshTalkStateEntries({ showLoading: !talkStateLoaded });
       } catch (err) {
+        if (cancelled) return;
         if (err instanceof UnauthorizedError) {
           handleUnauthorized();
-          return;
-        }
-        if (!cancelled) {
-          setTalkStateStatus({
-            status: 'error',
-            message:
-              err instanceof Error ? err.message : 'Failed to load state.',
-          });
         }
       }
     };
@@ -7233,51 +7295,59 @@ export function TalkDetailPage({
 
           {currentTab === 'state' ? (
             <section className="talk-tab-panel" aria-label="Talk state">
-              {talkStateStatus.status === 'loading' ? (
+              {talkStateStatus.status === 'loading' && !talkStateLoaded ? (
                 <p className="page-state">Loading state…</p>
-              ) : talkStateStatus.status === 'error' ? (
-                <p className="page-state error">{talkStateStatus.message}</p>
               ) : (
                 <>
                   <div className="agents-panel-header">
                     <h2>State</h2>
+                    <button
+                      className="btn btn-sm"
+                      onClick={() => {
+                        void refreshTalkStateEntries({ showLoading: false });
+                      }}
+                    >
+                      Refresh
+                    </button>
                   </div>
+                  {talkStateStatus.status === 'error' ? (
+                    <p className="page-state error">
+                      {talkStateStatus.message}
+                    </p>
+                  ) : null}
                   <p className="policy-muted">
-                    Structured Talk state is written by direct-executor agents
-                    using compare-and-swap updates. This view is read-only in
-                    Phase 6.
+                    Structured Talk state entries. Agents read and write these
+                    via compare-and-swap updates.
                   </p>
                   {talkStateEntries.length > 0 ? (
                     <div className="talk-state-list">
                       {talkStateEntries.map((entry) => (
-                        <article
+                        <TalkStateCard
                           key={entry.id}
-                          className="talk-llm-card talk-state-card"
-                        >
-                          <div className="connector-card-header">
-                            <div>
-                              <h3>{entry.key}</h3>
-                              <p className="talk-llm-meta">
-                                Version {entry.version} · Updated{' '}
-                                {formatDateTime(entry.updatedAt)}
-                              </p>
-                            </div>
-                          </div>
-                          {entry.updatedByRunId ? (
-                            <p className="talk-llm-meta">
-                              Updated by run <code>{entry.updatedByRunId}</code>
-                            </p>
-                          ) : null}
-                          {entry.updatedByUserId ? (
-                            <p className="talk-llm-meta">
-                              Updated by user{' '}
-                              <code>{entry.updatedByUserId}</code>
-                            </p>
-                          ) : null}
-                          <pre className="talk-state-json">
-                            {JSON.stringify(entry.value, null, 2)}
-                          </pre>
-                        </article>
+                          entry={entry}
+                          canDelete={canEditAgents}
+                          onDelete={async () => {
+                            try {
+                              await deleteTalkStateEntry(talkId, entry.key);
+                              setTalkStateStatus({ status: 'idle' });
+                              setTalkStateEntries((prev) =>
+                                prev.filter((e) => e.id !== entry.id),
+                              );
+                            } catch (err) {
+                              if (err instanceof UnauthorizedError) {
+                                handleUnauthorized();
+                                return;
+                              }
+                              setTalkStateStatus({
+                                status: 'error',
+                                message:
+                                  err instanceof Error
+                                    ? err.message
+                                    : 'Failed to delete state entry.',
+                              });
+                            }
+                          }}
+                        />
                       ))}
                     </div>
                   ) : (

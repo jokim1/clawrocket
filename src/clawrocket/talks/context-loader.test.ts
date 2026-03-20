@@ -534,7 +534,7 @@ describe('context-loader', () => {
 
       expect(ctx.systemPrompt).toContain('**State Snapshot:**');
       expect(ctx.systemPrompt).toMatch(
-        /omitted to stay within context budget/i,
+        /omitted.*Use read_state\(key\) to fetch them/i,
       );
     });
 
@@ -1327,6 +1327,83 @@ describe('context-loader', () => {
 
       expect(result.isError).toBe(true);
       expect(result.result).toContain('not available');
+    });
+  });
+
+  describe('read_state and delete_state tool definitions', () => {
+    it('read_state tool is always present regardless of job policy', async () => {
+      const ctx = await loadTalkContext(TALK_ID, 128000, null, null, null, {
+        jobPolicy: {
+          jobId: 'job-1',
+          allowedConnectorIds: [],
+          allowedChannelBindingIds: [],
+          allowWeb: false,
+          allowStateMutation: false,
+          allowOutputWrite: false,
+        },
+      });
+
+      const toolNames = ctx.contextTools.map((t) => t.name);
+      expect(toolNames).toContain('read_state');
+    });
+
+    it('delete_state tool is present when allowStateMutation is true', async () => {
+      const ctx = await loadTalkContext(TALK_ID, 128000);
+
+      const toolNames = ctx.contextTools.map((t) => t.name);
+      expect(toolNames).toContain('delete_state');
+      expect(toolNames).toContain('update_state');
+    });
+
+    it('delete_state tool is absent when allowStateMutation is false', async () => {
+      const ctx = await loadTalkContext(TALK_ID, 128000, null, null, null, {
+        jobPolicy: {
+          jobId: 'job-1',
+          allowedConnectorIds: [],
+          allowedChannelBindingIds: [],
+          allowWeb: false,
+          allowStateMutation: false,
+          allowOutputWrite: false,
+        },
+      });
+
+      const toolNames = ctx.contextTools.map((t) => t.name);
+      expect(toolNames).not.toContain('delete_state');
+      expect(toolNames).not.toContain('update_state');
+    });
+
+    it('omission note includes key names when entries are omitted', async () => {
+      for (let i = 0; i < 20; i += 1) {
+        upsertTalkStateEntry({
+          talkId: TALK_ID,
+          key: `omit_key_${i}`,
+          value: { payload: 'x'.repeat(1200) },
+          expectedVersion: 0,
+        });
+      }
+
+      const ctx = await loadTalkContext(TALK_ID, 128000);
+      expect(ctx.systemPrompt).toContain('**State Snapshot:**');
+      expect(ctx.systemPrompt).toMatch(/keys:.*omit_key_/);
+      expect(ctx.systemPrompt).toContain('read_state(key)');
+    });
+
+    it('omission note shows +N more for more than five omitted keys', async () => {
+      for (let i = 0; i < 16; i += 1) {
+        upsertTalkStateEntry({
+          talkId: TALK_ID,
+          key: `bulk_${i}`,
+          value: { payload: 'x'.repeat(1200) },
+          expectedVersion: 0,
+        });
+      }
+
+      const ctx = await loadTalkContext(TALK_ID, 128000);
+
+      expect(ctx.contextSnapshot.stateSnapshot.omittedCount).toBeGreaterThan(5);
+      const omissionMatch = ctx.systemPrompt.match(/\+(\d+) more/);
+      expect(omissionMatch).not.toBeNull();
+      expect(Number(omissionMatch![1])).toBeGreaterThan(0);
     });
   });
 });

@@ -4,6 +4,11 @@ import {
   _initTestDatabase,
   createTalkRun,
   createTalkThread,
+  deleteTalkStateEntry,
+  forceDeleteTalkStateEntry,
+  MAX_STATE_ENTRIES_PER_TALK,
+  MAX_STATE_KEY_LENGTH,
+  MAX_STATE_VALUE_BYTES,
   upsertTalk,
   upsertTalkStateEntry,
   upsertUser,
@@ -166,5 +171,176 @@ describe('context-accessors state', () => {
         updatedByRunId: 'run-1',
       }),
     ).toThrow(/expectedVersion 0/i);
+  });
+
+  it('rejects a key exceeding the length limit', () => {
+    const longKey = 'a'.repeat(MAX_STATE_KEY_LENGTH + 1);
+    expect(() =>
+      upsertTalkStateEntry({
+        talkId: TALK_ID,
+        key: longKey,
+        value: 'test',
+        expectedVersion: 0,
+      }),
+    ).toThrow(/exceeds.*character limit/i);
+  });
+
+  it('rejects a key with invalid characters', () => {
+    expect(() =>
+      upsertTalkStateEntry({
+        talkId: TALK_ID,
+        key: 'has spaces',
+        value: 'test',
+        expectedVersion: 0,
+      }),
+    ).toThrow(/must contain only/i);
+  });
+
+  it('rejects a key starting with a hyphen', () => {
+    expect(() =>
+      upsertTalkStateEntry({
+        talkId: TALK_ID,
+        key: '-bad-start',
+        value: 'test',
+        expectedVersion: 0,
+      }),
+    ).toThrow(/must contain only/i);
+  });
+
+  it('rejects a value exceeding the byte limit', () => {
+    const bigValue = 'x'.repeat(MAX_STATE_VALUE_BYTES + 1);
+    expect(() =>
+      upsertTalkStateEntry({
+        talkId: TALK_ID,
+        key: 'big_value',
+        value: bigValue,
+        expectedVersion: 0,
+      }),
+    ).toThrow(/exceeds 20 KB/i);
+  });
+
+  it('rejects creating entries past the per-talk limit', () => {
+    for (let i = 0; i < MAX_STATE_ENTRIES_PER_TALK; i += 1) {
+      const result = upsertTalkStateEntry({
+        talkId: TALK_ID,
+        key: `key_${i}`,
+        value: i,
+        expectedVersion: 0,
+      });
+      expect(result.ok).toBe(true);
+    }
+
+    expect(() =>
+      upsertTalkStateEntry({
+        talkId: TALK_ID,
+        key: 'one_too_many',
+        value: 'overflow',
+        expectedVersion: 0,
+      }),
+    ).toThrow(/Maximum.*state entries/i);
+  });
+
+  it('deletes an entry with matching version', () => {
+    const created = upsertTalkStateEntry({
+      talkId: TALK_ID,
+      key: 'to_delete',
+      value: 'temp',
+      expectedVersion: 0,
+    });
+    expect(created.ok).toBe(true);
+
+    const result = deleteTalkStateEntry({
+      talkId: TALK_ID,
+      key: 'to_delete',
+      expectedVersion: 1,
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.deleted).toBe(true);
+    }
+  });
+
+  it('returns conflict when delete version mismatches', () => {
+    upsertTalkStateEntry({
+      talkId: TALK_ID,
+      key: 'conflict_del',
+      value: 'v1',
+      expectedVersion: 0,
+    });
+    upsertTalkStateEntry({
+      talkId: TALK_ID,
+      key: 'conflict_del',
+      value: 'v2',
+      expectedVersion: 1,
+    });
+
+    const result = deleteTalkStateEntry({
+      talkId: TALK_ID,
+      key: 'conflict_del',
+      expectedVersion: 1,
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.current.version).toBe(2);
+    }
+  });
+
+  it('throws when deleting a missing key', () => {
+    expect(() =>
+      deleteTalkStateEntry({
+        talkId: TALK_ID,
+        key: 'does_not_exist',
+        expectedVersion: 1,
+      }),
+    ).toThrow(/does not exist/i);
+  });
+
+  it('throws when deleting with a negative expectedVersion', () => {
+    upsertTalkStateEntry({
+      talkId: TALK_ID,
+      key: 'neg_ver_del',
+      value: 'test',
+      expectedVersion: 0,
+    });
+    expect(() =>
+      deleteTalkStateEntry({
+        talkId: TALK_ID,
+        key: 'neg_ver_del',
+        expectedVersion: -1,
+      }),
+    ).toThrow(/non-negative integer/i);
+  });
+
+  it('throws when deleting with a non-integer expectedVersion', () => {
+    upsertTalkStateEntry({
+      talkId: TALK_ID,
+      key: 'float_ver_del',
+      value: 'test',
+      expectedVersion: 0,
+    });
+    expect(() =>
+      deleteTalkStateEntry({
+        talkId: TALK_ID,
+        key: 'float_ver_del',
+        expectedVersion: 1.5,
+      }),
+    ).toThrow(/non-negative integer/i);
+  });
+
+  it('force-deletes an entry without CAS', () => {
+    upsertTalkStateEntry({
+      talkId: TALK_ID,
+      key: 'force_del',
+      value: 'temp',
+      expectedVersion: 0,
+    });
+
+    const deleted = forceDeleteTalkStateEntry(TALK_ID, 'force_del');
+    expect(deleted).toBe(true);
+  });
+
+  it('returns false when force-deleting a missing key', () => {
+    const deleted = forceDeleteTalkStateEntry(TALK_ID, 'nope_key');
+    expect(deleted).toBe(false);
   });
 });
