@@ -335,9 +335,10 @@ export function buildToolExecutor(
       }
 
       try {
+        const validatedKey = validateStateKey(rawKey);
         const result = deleteTalkStateEntry({
           talkId,
-          key: rawKey,
+          key: validatedKey,
           expectedVersion,
         });
 
@@ -352,7 +353,7 @@ export function buildToolExecutor(
         }
 
         return {
-          result: JSON.stringify({ deleted: true, key: rawKey.trim() }),
+          result: JSON.stringify({ deleted: true, key: validatedKey }),
         };
       } catch (error) {
         return {

@@ -3754,7 +3754,7 @@ function buildApp(opts: WebServerOptions): Hono {
     const result = deleteTalkStateEntryRoute({
       auth,
       talkId: c.req.param('talkId'),
-      key: decodeURIComponent(c.req.param('key')),
+      key: c.req.param('key'),
     });
     return new Response(JSON.stringify(result.body), {
       status: result.statusCode,

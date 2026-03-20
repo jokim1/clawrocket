@@ -608,6 +608,33 @@ describe('TalkDetailPage', () => {
     expect(screen.getByText('keeper')).toBeTruthy();
   });
 
+  it('does not delete a state entry when confirmation is cancelled', async () => {
+    const user = userEvent.setup();
+    vi.stubGlobal('confirm', vi.fn(() => false));
+
+    installTalkDetailFetch({
+      stateEntries: [
+        buildTalkStateEntry({
+          id: 'state-c1',
+          key: 'ephemeral',
+          value: 'temp',
+          version: 1,
+        }),
+      ],
+    });
+
+    renderDetailPage('/app/talks/talk-1/state');
+
+    await screen.findByRole('heading', { name: 'State' });
+    expect(screen.getByText('ephemeral')).toBeTruthy();
+
+    await user.click(screen.getByTitle('Delete state entry'));
+
+    await waitFor(() => {
+      expect(screen.getByText('ephemeral')).toBeTruthy();
+    });
+  });
+
   it('shows an error when deleting a state entry fails', async () => {
     const user = userEvent.setup();
 

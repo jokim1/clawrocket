@@ -3642,30 +3642,8 @@ export function TalkDetailPage({
       return;
     }
 
-    let cancelled = false;
-
-    const loadState = async () => {
-      try {
-        await refreshTalkStateEntries({ showLoading: !talkStateLoaded });
-      } catch (err) {
-        if (cancelled) return;
-        if (err instanceof UnauthorizedError) {
-          handleUnauthorized();
-        }
-      }
-    };
-
-    void loadState();
-    return () => {
-      cancelled = true;
-    };
-  }, [
-    currentTab,
-    handleUnauthorized,
-    refreshTalkStateEntries,
-    state.kind,
-    talkStateLoaded,
-  ]);
+    void refreshTalkStateEntries({ showLoading: !talkStateLoaded });
+  }, [currentTab, refreshTalkStateEntries, state.kind, talkStateLoaded]);
 
   useEffect(() => {
     if (
@@ -7327,6 +7305,10 @@ export function TalkDetailPage({
                           entry={entry}
                           canDelete={canEditAgents}
                           onDelete={async () => {
+                            const confirmed = window.confirm(
+                              `Delete state entry "${entry.key}"? This cannot be undone.`,
+                            );
+                            if (!confirmed) return;
                             try {
                               await deleteTalkStateEntry(talkId, entry.key);
                               setTalkStateStatus({ status: 'idle' });
