@@ -333,7 +333,6 @@ describe('MainChannelPage', () => {
           within(button).queryByText('Older'),
       );
     expect(olderThread).toBeTruthy();
-    fireEvent.mouseDown(olderThread!, { button: 2, clientX: 24, clientY: 36 });
     fireEvent.contextMenu(olderThread!, { clientX: 24, clientY: 36 });
     await user.click(screen.getByRole('menuitem', { name: 'Pin' }));
 
@@ -408,11 +407,6 @@ describe('MainChannelPage', () => {
           within(button).queryByText('Delete me'),
       );
     expect(deleteThreadButton).toBeTruthy();
-    fireEvent.mouseDown(deleteThreadButton!, {
-      button: 2,
-      clientX: 24,
-      clientY: 36,
-    });
     fireEvent.contextMenu(deleteThreadButton!, { clientX: 24, clientY: 36 });
     await user.click(screen.getByRole('menuitem', { name: 'Delete thread' }));
 

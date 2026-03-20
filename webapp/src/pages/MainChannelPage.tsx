@@ -8,7 +8,6 @@
 
 import {
   FormEvent,
-  type MouseEvent as ReactMouseEvent,
   useCallback,
   useEffect,
   useMemo,
@@ -668,20 +667,11 @@ export function MainChannelPage({
     [],
   );
 
-  const handleThreadSecondaryClick = useCallback(
-    (threadId: string) => (event: ReactMouseEvent<HTMLElement>) => {
-      if (event.button !== 2) return;
-      event.preventDefault();
-      event.stopPropagation();
-      openThreadMenu(threadId, event.clientX, event.clientY);
-    },
-    [openThreadMenu],
-  );
-
   const handleThreadContextMenu = useCallback(
-    (threadId: string) => (event: ReactMouseEvent<HTMLElement>) => {
+    (event: React.MouseEvent<HTMLElement>) => {
+      const threadId = event.currentTarget.dataset.threadId;
+      if (!threadId) return;
       event.preventDefault();
-      event.stopPropagation();
       openThreadMenu(threadId, event.clientX, event.clientY);
     },
     [openThreadMenu],
@@ -870,8 +860,8 @@ export function MainChannelPage({
                         ? ' main-thread-item-active'
                         : ''
                     } main-thread-item-editing`}
-                    onMouseDown={handleThreadSecondaryClick(thread.threadId)}
-                    onContextMenu={handleThreadContextMenu(thread.threadId)}
+                    data-thread-id={thread.threadId}
+                    onContextMenu={handleThreadContextMenu}
                   >
                     <ThreadRowTitleEditor
                       title={displayThreadTitle(thread.title)}
@@ -900,9 +890,9 @@ export function MainChannelPage({
                         ? ' main-thread-item-active'
                         : ''
                     }`}
+                    data-thread-id={thread.threadId}
                     onClick={() => selectThread(thread.threadId)}
-                    onMouseDown={handleThreadSecondaryClick(thread.threadId)}
-                    onContextMenu={handleThreadContextMenu(thread.threadId)}
+                    onContextMenu={handleThreadContextMenu}
                   >
                     <ThreadRowTitleEditor
                       title={displayThreadTitle(thread.title)}
