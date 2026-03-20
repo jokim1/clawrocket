@@ -2154,6 +2154,16 @@ export async function getTalkState(talkId: string): Promise<TalkStateEntry[]> {
   return envelope.entries;
 }
 
+export async function deleteTalkStateEntry(
+  talkId: string,
+  key: string,
+): Promise<void> {
+  await apiMutationRequest<{ deleted: true }>(
+    `/api/v1/talks/${encodeURIComponent(talkId)}/state/${encodeURIComponent(key)}`,
+    { method: 'DELETE' },
+  );
+}
+
 export async function listTalkOutputs(
   talkId: string,
 ): Promise<TalkOutputSummary[]> {

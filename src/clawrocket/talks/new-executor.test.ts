@@ -977,10 +977,231 @@ describe('CleanTalkExecutor', () => {
     expect(stateUpdate.isError).toBe(true);
     expect(stateUpdate.result).toContain('update_state is not available');
 
+    const stateDelete = await executeTool('delete_state', {
+      key: 'focus',
+      expectedVersion: 1,
+    });
+    expect(stateDelete.isError).toBe(true);
+    expect(stateDelete.result).toContain('delete_state is not available');
+
     const webSearch = await executeTool('web_search', {
       query: 'cal football',
     });
     expect(webSearch.isError).toBe(true);
     expect(webSearch.result).toContain('web_search is not available');
+  });
+
+  describe('read_state tool', () => {
+    function makeExecutor() {
+      const now = new Date().toISOString();
+      createTalkRun({
+        id: 'run-read-state',
+        talk_id: TALK_ID,
+        thread_id: THREAD_ID,
+        requested_by: 'owner-1',
+        status: 'running',
+        trigger_message_id: null,
+        target_agent_id: null,
+        idempotency_key: null,
+        response_group_id: null,
+        sequence_index: null,
+        executor_alias: null,
+        executor_model: null,
+        source_binding_id: null,
+        source_external_message_id: null,
+        source_thread_key: null,
+        created_at: now,
+        started_at: now,
+        ended_at: null,
+        cancel_reason: null,
+      });
+      return buildToolExecutor(
+        TALK_ID,
+        'owner-1',
+        'run-read-state',
+        new AbortController().signal,
+      );
+    }
+
+    it('returns an existing state entry', async () => {
+      const { upsertTalkStateEntry } =
+        await import('../db/context-accessors.js');
+      upsertTalkStateEntry({
+        talkId: TALK_ID,
+        key: 'read_me',
+        value: { data: 42 },
+        expectedVersion: 0,
+      });
+      const exec = makeExecutor();
+      const result = await exec('read_state', { key: 'read_me' });
+      expect(result.isError).toBeUndefined();
+      const parsed = JSON.parse(result.result);
+      expect(parsed.key).toBe('read_me');
+      expect(parsed.value).toEqual({ data: 42 });
+    });
+
+    it('returns isError for missing key', async () => {
+      const exec = makeExecutor();
+      const result = await exec('read_state', { key: 'nonexistent' });
+      expect(result.isError).toBe(true);
+      expect(result.result).toContain('does not exist');
+    });
+
+    it('returns isError for empty key', async () => {
+      const exec = makeExecutor();
+      const result = await exec('read_state', { key: '' });
+      expect(result.isError).toBe(true);
+    });
+
+    it('returns isError for invalid key pattern', async () => {
+      const exec = makeExecutor();
+      const result = await exec('read_state', { key: 'has spaces' });
+      expect(result.isError).toBe(true);
+      expect(result.result).toContain('must contain only');
+    });
+  });
+
+  describe('delete_state tool', () => {
+    function makeExecutor() {
+      const now = new Date().toISOString();
+      createTalkRun({
+        id: 'run-del-state',
+        talk_id: TALK_ID,
+        thread_id: THREAD_ID,
+        requested_by: 'owner-1',
+        status: 'running',
+        trigger_message_id: null,
+        target_agent_id: null,
+        idempotency_key: null,
+        response_group_id: null,
+        sequence_index: null,
+        executor_alias: null,
+        executor_model: null,
+        source_binding_id: null,
+        source_external_message_id: null,
+        source_thread_key: null,
+        created_at: now,
+        started_at: now,
+        ended_at: null,
+        cancel_reason: null,
+      });
+      return buildToolExecutor(
+        TALK_ID,
+        'owner-1',
+        'run-del-state',
+        new AbortController().signal,
+      );
+    }
+
+    it('deletes an entry with matching version', async () => {
+      const { upsertTalkStateEntry } =
+        await import('../db/context-accessors.js');
+      upsertTalkStateEntry({
+        talkId: TALK_ID,
+        key: 'del_me',
+        value: 'temp',
+        expectedVersion: 0,
+      });
+      const exec = makeExecutor();
+      const result = await exec('delete_state', {
+        key: 'del_me',
+        expectedVersion: 1,
+      });
+      expect(result.isError).toBeUndefined();
+      const parsed = JSON.parse(result.result);
+      expect(parsed.deleted).toBe(true);
+    });
+
+    it('returns conflict on version mismatch', async () => {
+      const { upsertTalkStateEntry } =
+        await import('../db/context-accessors.js');
+      upsertTalkStateEntry({
+        talkId: TALK_ID,
+        key: 'conflict_key',
+        value: 'v1',
+        expectedVersion: 0,
+      });
+      upsertTalkStateEntry({
+        talkId: TALK_ID,
+        key: 'conflict_key',
+        value: 'v2',
+        expectedVersion: 1,
+      });
+      const exec = makeExecutor();
+      const result = await exec('delete_state', {
+        key: 'conflict_key',
+        expectedVersion: 1,
+      });
+      expect(result.isError).toBe(true);
+      const parsed = JSON.parse(result.result);
+      expect(parsed.conflict).toBe(true);
+    });
+  });
+
+  describe('update_state tool limits', () => {
+    function makeExecutor() {
+      const now = new Date().toISOString();
+      createTalkRun({
+        id: 'run-state-limits',
+        talk_id: TALK_ID,
+        thread_id: THREAD_ID,
+        requested_by: 'owner-1',
+        status: 'running',
+        trigger_message_id: null,
+        target_agent_id: null,
+        idempotency_key: null,
+        response_group_id: null,
+        sequence_index: null,
+        executor_alias: null,
+        executor_model: null,
+        source_binding_id: null,
+        source_external_message_id: null,
+        source_thread_key: null,
+        created_at: now,
+        started_at: now,
+        ended_at: null,
+        cancel_reason: null,
+      });
+      return buildToolExecutor(
+        TALK_ID,
+        'owner-1',
+        'run-state-limits',
+        new AbortController().signal,
+      );
+    }
+
+    it('returns error for key exceeding length limit', async () => {
+      const exec = makeExecutor();
+      const longKey = 'a'.repeat(81);
+      const result = await exec('update_state', {
+        key: longKey,
+        value: 'test',
+        expectedVersion: 0,
+      });
+      expect(result.isError).toBe(true);
+      expect(result.result).toContain('character limit');
+    });
+
+    it('returns error for value exceeding size limit', async () => {
+      const exec = makeExecutor();
+      const result = await exec('update_state', {
+        key: 'big',
+        value: 'x'.repeat(21000),
+        expectedVersion: 0,
+      });
+      expect(result.isError).toBe(true);
+      expect(result.result).toContain('20 KB');
+    });
+
+    it('returns error for invalid key pattern', async () => {
+      const exec = makeExecutor();
+      const result = await exec('update_state', {
+        key: 'has spaces',
+        value: 'ok',
+        expectedVersion: 0,
+      });
+      expect(result.isError).toBe(true);
+      expect(result.result).toContain('must contain only');
+    });
   });
 });

@@ -1,6 +1,34 @@
 import { randomUUID } from 'crypto';
 
 import { getDb } from '../../db.js';
+import { logger } from '../../logger.js';
+
+// ---------------------------------------------------------------------------
+// State entry limits
+// ---------------------------------------------------------------------------
+
+export const MAX_STATE_ENTRIES_PER_TALK = 30;
+export const MAX_STATE_KEY_LENGTH = 80;
+export const MAX_STATE_VALUE_BYTES = 20_000; // 20 KB
+export const STATE_KEY_PATTERN = /^[a-zA-Z0-9_][a-zA-Z0-9_.:-]*$/;
+
+export function validateStateKey(key: string): string {
+  const trimmed = key.trim();
+  if (!trimmed) {
+    throw new Error('State key is required');
+  }
+  if (trimmed.length > MAX_STATE_KEY_LENGTH) {
+    throw new Error(
+      `State key exceeds ${MAX_STATE_KEY_LENGTH}-character limit`,
+    );
+  }
+  if (!STATE_KEY_PATTERN.test(trimmed)) {
+    throw new Error(
+      'State key must contain only letters, digits, underscores, dots, colons, or hyphens, and must start with a letter, digit, or underscore.',
+    );
+  }
+  return trimmed;
+}
 
 // ---------------------------------------------------------------------------
 // Types
@@ -135,6 +163,10 @@ export type TalkStateWriteResult =
       current: TalkStateEntrySnapshot;
     };
 
+export type TalkStateDeleteResult =
+  | { ok: true; deleted: true }
+  | { ok: false; current: TalkStateEntrySnapshot };
+
 // ---------------------------------------------------------------------------
 // Conversions
 // ---------------------------------------------------------------------------
@@ -184,10 +216,14 @@ function toSourceWithContent(
   };
 }
 
-function parseStateValue(valueJson: string): unknown {
+function parseStateValue(valueJson: string, key?: string): unknown {
   try {
     return JSON.parse(valueJson);
   } catch {
+    logger.warn(
+      { key, byteLength: Buffer.byteLength(valueJson, 'utf8') },
+      'Corrupt state JSON',
+    );
     return valueJson;
   }
 }
@@ -196,7 +232,7 @@ function toStateSnapshot(row: TalkStateEntryRecord): TalkStateEntrySnapshot {
   return {
     id: row.id,
     key: row.key,
-    value: parseStateValue(row.value_json),
+    value: parseStateValue(row.value_json, row.key),
     version: row.version,
     updatedAt: row.updated_at,
     updatedByUserId: row.updated_by_user_id,
@@ -416,6 +452,15 @@ export function getTalkStateEntry(
   return row ? toStateSnapshot(row) : undefined;
 }
 
+export function getTalkStateEntryCount(talkId: string): number {
+  const row = getDb()
+    .prepare(
+      `SELECT COUNT(*) AS count FROM talk_state_entries WHERE talk_id = ?`,
+    )
+    .get(talkId) as { count: number };
+  return row.count;
+}
+
 export function upsertTalkStateEntry(input: {
   talkId: string;
   key: string;
@@ -424,12 +469,14 @@ export function upsertTalkStateEntry(input: {
   updatedByUserId?: string | null;
   updatedByRunId?: string | null;
 }): TalkStateWriteResult {
-  const key = input.key.trim();
-  if (!key) {
-    throw new Error('State key is required');
-  }
+  const key = validateStateKey(input.key);
   if (!Number.isInteger(input.expectedVersion) || input.expectedVersion < 0) {
     throw new Error('expectedVersion must be a non-negative integer');
+  }
+
+  const valueJson = JSON.stringify(input.value ?? null);
+  if (Buffer.byteLength(valueJson, 'utf8') > MAX_STATE_VALUE_BYTES) {
+    throw new Error('State value exceeds 20 KB limit');
   }
 
   const existingRow = getDb()
@@ -442,13 +489,19 @@ export function upsertTalkStateEntry(input: {
     )
     .get(input.talkId, key) as TalkStateEntryRecord | undefined;
 
-  const valueJson = JSON.stringify(input.value ?? null);
   const now = new Date().toISOString();
 
   if (!existingRow) {
     if (input.expectedVersion !== 0) {
       throw new Error(
         `State entry "${key}" does not exist. Create it with expectedVersion 0.`,
+      );
+    }
+
+    const count = getTalkStateEntryCount(input.talkId);
+    if (count >= MAX_STATE_ENTRIES_PER_TALK) {
+      throw new Error(
+        `Maximum ${MAX_STATE_ENTRIES_PER_TALK} state entries per talk`,
       );
     }
 
@@ -508,6 +561,52 @@ export function upsertTalkStateEntry(input: {
     .prepare(`SELECT * FROM talk_state_entries WHERE id = ?`)
     .get(existingRow.id) as TalkStateEntryRecord;
   return { ok: true, entry: toStateSnapshot(updated) };
+}
+
+export function deleteTalkStateEntry(input: {
+  talkId: string;
+  key: string;
+  expectedVersion: number;
+}): TalkStateDeleteResult {
+  const key = validateStateKey(input.key);
+  if (!Number.isInteger(input.expectedVersion) || input.expectedVersion < 0) {
+    throw new Error('expectedVersion must be a non-negative integer');
+  }
+
+  const existingRow = getDb()
+    .prepare(
+      `
+      SELECT * FROM talk_state_entries
+      WHERE talk_id = ? AND key = ?
+      LIMIT 1
+    `,
+    )
+    .get(input.talkId, key) as TalkStateEntryRecord | undefined;
+
+  if (!existingRow) {
+    throw new Error(`State entry "${key}" does not exist.`);
+  }
+
+  if (existingRow.version !== input.expectedVersion) {
+    return { ok: false, current: toStateSnapshot(existingRow) };
+  }
+
+  getDb()
+    .prepare(`DELETE FROM talk_state_entries WHERE id = ? AND version = ?`)
+    .run(existingRow.id, input.expectedVersion);
+
+  return { ok: true, deleted: true };
+}
+
+export function forceDeleteTalkStateEntry(
+  talkId: string,
+  key: string,
+): boolean {
+  const validatedKey = validateStateKey(key);
+  const result = getDb()
+    .prepare(`DELETE FROM talk_state_entries WHERE talk_id = ? AND key = ?`)
+    .run(talkId, validatedKey);
+  return result.changes > 0;
 }
 
 // ---------------------------------------------------------------------------

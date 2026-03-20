@@ -165,6 +165,7 @@ import {
   createTalkContextSourceRoute,
   deleteTalkContextRuleRoute,
   deleteTalkContextSourceRoute,
+  deleteTalkStateEntryRoute,
   getTalkContextRoute,
   getTalkContextSourceContentRoute,
   getTalkStateRoute,
@@ -3877,6 +3878,42 @@ function buildApp(opts: WebServerOptions): Hono {
     const result = getTalkStateRoute({
       auth,
       talkId: c.req.param('talkId'),
+    });
+    return new Response(JSON.stringify(result.body), {
+      status: result.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
+  });
+
+  app.delete('/api/v1/talks/:talkId/state/:key', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+
+    const rateResult = checkRateLimit({
+      principalId: auth.userId,
+      bucket: 'write',
+    });
+    if (!rateResult.allowed) {
+      return rateLimitedResponse(c, rateResult);
+    }
+
+    const csrf = validateCsrfToken({
+      method: c.req.method,
+      authType: auth.authType,
+      cookieHeader: c.req.header('cookie'),
+      csrfHeader: c.req.header('x-csrf-token'),
+    });
+    if (!csrf.ok) {
+      return c.json(
+        { ok: false, error: { code: 'csrf_failed', message: csrf.reason } },
+        403,
+      );
+    }
+
+    const result = deleteTalkStateEntryRoute({
+      auth,
+      talkId: c.req.param('talkId'),
+      key: c.req.param('key'),
     });
     return new Response(JSON.stringify(result.body), {
       status: result.statusCode,

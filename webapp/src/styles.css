@@ -1924,6 +1924,8 @@ a {
   background: #0f172a;
   color: #e2e8f0;
   overflow-x: auto;
+  overflow-y: auto;
+  max-height: 20rem;
   font-size: 0.85rem;
 }
 

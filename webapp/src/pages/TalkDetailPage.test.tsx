@@ -569,6 +569,263 @@ describe('TalkDetailPage', () => {
     expect(screen.getByText(/"winner": "Claude"/i)).toBeTruthy();
   });
 
+  it('re-fetches state entries when switching back to the State tab', async () => {
+    const user = userEvent.setup();
+    let fetchCount = 0;
+
+    installTalkDetailFetch({
+      stateEntries: [
+        buildTalkStateEntry({
+          id: 'state-a',
+          key: 'counter',
+          value: 1,
+          version: 1,
+        }),
+      ],
+    });
+
+    const originalFetch = globalThis.fetch;
+    const wrappedFetch: typeof globalThis.fetch = async (input, init) => {
+      const url = typeof input === 'string' ? input : (input as Request).url;
+      if (url.includes('/state') && (init?.method ?? 'GET') === 'GET') {
+        fetchCount += 1;
+      }
+      return originalFetch(input, init);
+    };
+    globalThis.fetch = wrappedFetch;
+
+    renderDetailPage('/app/talks/talk-1/state');
+
+    await screen.findByRole('heading', { name: 'State' });
+    expect(screen.getByText('counter')).toBeTruthy();
+    const firstFetchCount = fetchCount;
+
+    const topTabs = within(
+      screen.getByRole('navigation', { name: 'Talk sections' }),
+    );
+    await user.click(topTabs.getByRole('link', { name: 'Talk' }));
+    await screen.findByPlaceholderText('Send a message to this thread');
+
+    await user.click(topTabs.getByRole('link', { name: 'Settings' }));
+    const settingsTabs = within(
+      await screen.findByRole('navigation', {
+        name: 'Talk settings sections',
+      }),
+    );
+    await user.click(settingsTabs.getByRole('link', { name: 'State' }));
+    await screen.findByRole('heading', { name: 'State' });
+
+    expect(fetchCount).toBeGreaterThan(firstFetchCount);
+
+    globalThis.fetch = originalFetch;
+  });
+
+  it('Refresh button reloads state entries', async () => {
+    const user = userEvent.setup();
+    let stateFetchCount = 0;
+
+    installTalkDetailFetch({
+      stateEntries: [
+        buildTalkStateEntry({
+          id: 'state-r',
+          key: 'progress',
+          value: 'step-1',
+          version: 1,
+        }),
+      ],
+    });
+
+    const originalFetch = globalThis.fetch;
+    const wrappedFetch: typeof globalThis.fetch = async (input, init) => {
+      const url = typeof input === 'string' ? input : (input as Request).url;
+      const method =
+        init?.method ??
+        (input instanceof Request ? input.method : undefined) ??
+        'GET';
+      if (url.includes('/api/v1/talks/talk-1/state') && method === 'GET') {
+        stateFetchCount += 1;
+        if (stateFetchCount >= 2) {
+          return jsonResponse(200, {
+            ok: true,
+            data: {
+              entries: [
+                buildTalkStateEntry({
+                  id: 'state-r',
+                  key: 'progress',
+                  value: 'step-2',
+                  version: 2,
+                }),
+              ],
+            },
+          });
+        }
+      }
+      return originalFetch(input, init);
+    };
+    globalThis.fetch = wrappedFetch;
+
+    renderDetailPage('/app/talks/talk-1/state');
+
+    await screen.findByRole('heading', { name: 'State' });
+    expect(screen.getByText('progress')).toBeTruthy();
+
+    await user.click(screen.getByRole('button', { name: 'Refresh' }));
+
+    await waitFor(() => {
+      expect(screen.getByText(/Version 2/i)).toBeTruthy();
+      expect(screen.getByText(/"step-2"/i)).toBeTruthy();
+    });
+    expect(stateFetchCount).toBeGreaterThan(1);
+
+    globalThis.fetch = originalFetch;
+  });
+
+  it('delete button removes a state entry', async () => {
+    const user = userEvent.setup();
+
+    installTalkDetailFetch({
+      stateEntries: [
+        buildTalkStateEntry({
+          id: 'state-d1',
+          key: 'ephemeral',
+          value: 'temp',
+          version: 1,
+        }),
+        buildTalkStateEntry({
+          id: 'state-d2',
+          key: 'keeper',
+          value: 'permanent',
+          version: 2,
+        }),
+      ],
+    });
+
+    renderDetailPage('/app/talks/talk-1/state');
+
+    await screen.findByRole('heading', { name: 'State' });
+    expect(screen.getByText('ephemeral')).toBeTruthy();
+    expect(screen.getByText('keeper')).toBeTruthy();
+
+    const deleteButtons = screen.getAllByTitle('Delete state entry');
+    await user.click(deleteButtons[0]);
+
+    await waitFor(() => {
+      expect(screen.queryByText('ephemeral')).toBeNull();
+    });
+    expect(screen.getByText('keeper')).toBeTruthy();
+  });
+
+  it('does not delete a state entry when confirmation is cancelled', async () => {
+    const user = userEvent.setup();
+    vi.stubGlobal('confirm', vi.fn(() => false));
+
+    installTalkDetailFetch({
+      stateEntries: [
+        buildTalkStateEntry({
+          id: 'state-c1',
+          key: 'ephemeral',
+          value: 'temp',
+          version: 1,
+        }),
+      ],
+    });
+
+    renderDetailPage('/app/talks/talk-1/state');
+
+    await screen.findByRole('heading', { name: 'State' });
+    expect(screen.getByText('ephemeral')).toBeTruthy();
+
+    await user.click(screen.getByTitle('Delete state entry'));
+
+    await waitFor(() => {
+      expect(screen.getByText('ephemeral')).toBeTruthy();
+    });
+  });
+
+  it('shows an error when deleting a state entry fails', async () => {
+    const user = userEvent.setup();
+
+    installTalkDetailFetch({
+      stateEntries: [
+        buildTalkStateEntry({
+          id: 'state-f1',
+          key: 'ephemeral',
+          value: 'temp',
+          version: 1,
+        }),
+      ],
+    });
+
+    const originalFetch = globalThis.fetch;
+    const wrappedFetch: typeof globalThis.fetch = async (input, init) => {
+      const url = typeof input === 'string' ? input : (input as Request).url;
+      const method =
+        init?.method ??
+        (input instanceof Request ? input.method : undefined) ??
+        'GET';
+      if (
+        url.endsWith('/api/v1/talks/talk-1/state/ephemeral') &&
+        method === 'DELETE'
+      ) {
+        return jsonResponse(500, {
+          ok: false,
+          error: {
+            code: 'server_error',
+            message: 'Delete failed.',
+          },
+        });
+      }
+      return originalFetch(input, init);
+    };
+    globalThis.fetch = wrappedFetch;
+
+    renderDetailPage('/app/talks/talk-1/state');
+
+    await screen.findByRole('heading', { name: 'State' });
+    expect(screen.getByText('ephemeral')).toBeTruthy();
+
+    await user.click(screen.getByTitle('Delete state entry'));
+
+    await waitFor(() => {
+      expect(screen.getByText('Delete failed.')).toBeTruthy();
+    });
+    expect(screen.getByText('ephemeral')).toBeTruthy();
+
+    globalThis.fetch = originalFetch;
+  });
+
+  it('truncates long state values and expands on click', async () => {
+    const user = userEvent.setup();
+    const longValue = 'x'.repeat(3000);
+
+    installTalkDetailFetch({
+      stateEntries: [
+        buildTalkStateEntry({
+          id: 'state-long',
+          key: 'big_data',
+          value: longValue,
+          version: 1,
+        }),
+      ],
+    });
+
+    renderDetailPage('/app/talks/talk-1/state');
+
+    await screen.findByRole('heading', { name: 'State' });
+
+    const expandButton = await screen.findByRole('button', {
+      name: 'Show full value',
+    });
+    expect(expandButton).toBeTruthy();
+
+    const pre = screen.getByText(/^"xxxx/);
+    expect(pre.textContent!.length).toBeLessThan(longValue.length + 10);
+
+    await user.click(expandButton);
+
+    expect(screen.getByRole('button', { name: 'Show less' })).toBeTruthy();
+  });
+
   it('creates, edits, and deletes reports from the Reports tab', async () => {
     const user = userEvent.setup();
 
@@ -3441,6 +3698,24 @@ function installTalkDetailFetch(input?: {
           ok: true,
           data: { entries: stateEntries },
         });
+      }
+
+      if (
+        /\/api\/v1\/talks\/talk-1\/state\/[^/]+$/.test(path) &&
+        method === 'DELETE'
+      ) {
+        const key = decodeURIComponent(
+          path.split('/api/v1/talks/talk-1/state/')[1],
+        );
+        const before = stateEntries.length;
+        stateEntries = stateEntries.filter((entry) => entry.key !== key);
+        if (stateEntries.length === before) {
+          return jsonResponse(404, {
+            ok: false,
+            error: { code: 'not_found', message: 'State entry not found.' },
+          });
+        }
+        return jsonResponse(200, { ok: true, data: { deleted: true } });
       }
 
       if (path === '/api/v1/talks/talk-1/outputs' && method === 'GET') {

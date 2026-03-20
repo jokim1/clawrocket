@@ -28,7 +28,12 @@ import {
   type ToolExecutionContext,
 } from '../connectors/tool-executors.js';
 import { parseConnectorToolName } from '../connectors/runtime.js';
-import { upsertTalkStateEntry } from '../db/context-accessors.js';
+import {
+  deleteTalkStateEntry,
+  getTalkStateEntry,
+  upsertTalkStateEntry,
+  validateStateKey,
+} from '../db/context-accessors.js';
 import { setTalkRunMetadataJson } from '../db/accessors.js';
 import {
   executeWithAgent,
@@ -224,6 +229,29 @@ export function buildToolExecutor(
       return { result: attachmentRow.extracted_text || '' };
     }
 
+    if (toolName === 'read_state') {
+      const rawKey = args.key as string | undefined;
+      if (!rawKey?.trim()) {
+        return { result: 'Error: key parameter required', isError: true };
+      }
+      try {
+        const validatedKey = validateStateKey(rawKey);
+        const entry = getTalkStateEntry(talkId, validatedKey);
+        if (!entry) {
+          return {
+            result: `State entry "${validatedKey}" does not exist.`,
+            isError: true,
+          };
+        }
+        return { result: JSON.stringify(entry) };
+      } catch (error) {
+        return {
+          result: error instanceof Error ? error.message : String(error),
+          isError: true,
+        };
+      }
+    }
+
     if (toolName === 'update_state') {
       if (jobPolicy && !jobPolicy.allowStateMutation) {
         return {
@@ -271,6 +299,60 @@ export function buildToolExecutor(
 
         return {
           result: JSON.stringify(result.entry),
+        };
+      } catch (error) {
+        return {
+          result: error instanceof Error ? error.message : String(error),
+          isError: true,
+        };
+      }
+    }
+
+    if (toolName === 'delete_state') {
+      if (jobPolicy && !jobPolicy.allowStateMutation) {
+        return {
+          result: 'Error: delete_state is not available for scheduled job runs',
+          isError: true,
+        };
+      }
+      const rawKey = args.key as string | undefined;
+      const expectedVersion = args.expectedVersion;
+
+      if (!rawKey?.trim()) {
+        return { result: 'Error: key parameter required', isError: true };
+      }
+      if (
+        typeof expectedVersion !== 'number' ||
+        !Number.isInteger(expectedVersion) ||
+        expectedVersion < 0
+      ) {
+        return {
+          result:
+            'Error: expectedVersion must be a non-negative integer number',
+          isError: true,
+        };
+      }
+
+      try {
+        const validatedKey = validateStateKey(rawKey);
+        const result = deleteTalkStateEntry({
+          talkId,
+          key: validatedKey,
+          expectedVersion,
+        });
+
+        if (!result.ok) {
+          return {
+            result: JSON.stringify({
+              conflict: true,
+              current: result.current,
+            }),
+            isError: true,
+          };
+        }
+
+        return {
+          result: JSON.stringify({ deleted: true, key: validatedKey }),
         };
       } catch (error) {
         return {
