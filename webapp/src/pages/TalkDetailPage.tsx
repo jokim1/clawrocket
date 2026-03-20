@@ -49,6 +49,7 @@ import {
   deleteTalkChannelDeliveryFailure,
   deleteTalkChannelIngressFailure,
   deleteTalkMessages,
+  deleteTalkThread,
   deleteTalkContextRule,
   deleteTalkContextSource,
   deleteTalkOutput,
@@ -111,10 +112,12 @@ import {
   uploadTalkAttachment,
   uploadTalkContextSource,
   testTalkChannelBinding,
+  unquarantineTalkChannelBinding,
+  retryTalkChannelDeliveryFailuresCapped,
   updateTalkProjectMount,
   updateTalkTools,
   updateTalkAgents,
-  updateTalkThreadTitle,
+  updateTalkThread,
   pauseTalkJob,
   resumeTalkJob,
   runTalkJobNow,
@@ -123,6 +126,8 @@ import {
   UnauthorizedError,
 } from '../lib/api';
 import { InlineEditableTitle } from '../components/InlineEditableTitle';
+import { ThreadContextMenu } from '../components/ThreadContextMenu';
+import { ThreadRowTitleEditor } from '../components/ThreadRowTitleEditor';
 import { ThreadStartButton } from '../components/ThreadStartButton';
 import { TalkHistoryEditor } from '../components/TalkHistoryEditor';
 import { stripInternalAssistantText } from '../lib/assistantText';
@@ -1390,12 +1395,76 @@ function formatDateTime(value: string | null): string {
 
 function sortThreads(threads: TalkThread[]): TalkThread[] {
   return [...threads].sort((left, right) => {
+    if (left.isPinned !== right.isPinned) {
+      return Number(right.isPinned) - Number(left.isPinned);
+    }
     const leftAt = left.lastMessageAt || left.createdAt;
     const rightAt = right.lastMessageAt || right.createdAt;
     const delta = Date.parse(rightAt) - Date.parse(leftAt);
     if (Number.isFinite(delta) && delta !== 0) return delta;
     return rightAt.localeCompare(leftAt);
   });
+}
+
+function ThreadPinIcon(): JSX.Element {
+  return (
+    <span className="thread-pin-icon" aria-hidden="true">
+      <svg viewBox="0 0 16 16" focusable="false">
+        <path
+          d="M10.9 1.8a.75.75 0 0 1 1.06 0l2.24 2.24a.75.75 0 0 1 0 1.06L12.7 6.6v2.02a.75.75 0 0 1-.22.53L9.9 11.73v2.77a.75.75 0 0 1-1.28.53l-1.8-1.8a.75.75 0 0 1-.22-.53v-.97H5.6a.75.75 0 0 1-.53-.22l-1.8-1.8a.75.75 0 0 1 .53-1.28h2.77l2.58-2.58a.75.75 0 0 1 .53-.22h2.02l1.2-1.2-1.18-1.18-1.2 1.2H8.5a.75.75 0 0 1-.53-.22L6.3 2.56a.75.75 0 0 1 0-1.06l1.8-1.8a.75.75 0 0 1 1.06 0l1.74 1.74h.02Z"
+          fill="currentColor"
+        />
+      </svg>
+    </span>
+  );
+}
+
+function ComposerAttachIcon(): JSX.Element {
+  return (
+    <svg viewBox="0 0 16 16" focusable="false" aria-hidden="true">
+      <path
+        d="M9.95 3.05a2.75 2.75 0 0 1 3.89 3.89L7.42 13.37a4 4 0 1 1-5.66-5.66l6.19-6.19a2.5 2.5 0 1 1 3.53 3.53L5.64 10.9a1.25 1.25 0 1 1-1.77-1.77l5.13-5.13"
+        fill="none"
+        stroke="currentColor"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth="1.4"
+      />
+    </svg>
+  );
+}
+
+function ComposerCancelRunsIcon(): JSX.Element {
+  return (
+    <svg viewBox="0 0 16 16" focusable="false" aria-hidden="true">
+      <circle
+        cx="8"
+        cy="8"
+        r="5.25"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.4"
+      />
+      <path
+        d="M5.4 5.4 10.6 10.6M10.6 5.4 5.4 10.6"
+        fill="none"
+        stroke="currentColor"
+        strokeLinecap="round"
+        strokeWidth="1.4"
+      />
+    </svg>
+  );
+}
+
+function ComposerSendIcon(): JSX.Element {
+  return (
+    <svg viewBox="0 0 16 16" focusable="false" aria-hidden="true">
+      <path
+        d="M2 13.2 14 8 2 2.8l1.53 4.08L9.2 8l-5.67 1.12L2 13.2Z"
+        fill="currentColor"
+      />
+    </svg>
+  );
 }
 
 function formatThreadLabel(thread: TalkThread): string {
@@ -1551,6 +1620,10 @@ function parseChannelTargetKey(
 
 function buildAgentLabel(agent: Pick<TalkAgent, 'nickname' | 'role'>): string {
   return `${agent.nickname} (${formatTalkRole(agent.role)})`;
+}
+
+function buildAgentChipLabel(agent: Pick<TalkAgent, 'nickname'>): string {
+  return agent.nickname;
 }
 
 function isRenderableImageAttachment(mimeType: string): boolean {
@@ -1851,6 +1924,12 @@ export function TalkDetailPage({
     loading: true,
     error: null,
   });
+  const [editingThreadId, setEditingThreadId] = useState<string | null>(null);
+  const [threadMenu, setThreadMenu] = useState<{
+    threadId: string;
+    x: number;
+    y: number;
+  } | null>(null);
   const [runContextPanels, setRunContextPanels] = useState<
     Record<string, RunContextPanelState>
   >({});
@@ -3020,27 +3099,46 @@ export function TalkDetailPage({
     () => sortedThreads.find((thread) => thread.id === activeThreadId) || null,
     [activeThreadId, sortedThreads],
   );
-  const handleRenameActiveThread = useCallback(
-    async (title: string) => {
-      if (state.kind !== 'ready' || !state.talk || !activeThread) return;
+  const menuThread = useMemo(
+    () =>
+      threadMenu
+        ? threadState.threads.find((thread) => thread.id === threadMenu.threadId) ||
+          null
+        : null,
+    [threadMenu, threadState.threads],
+  );
+  const updateThreadMetadata = useCallback(
+    async (
+      threadId: string,
+      patch: {
+        title?: string;
+        pinned?: boolean;
+      },
+    ) => {
+      if (state.kind !== 'ready' || !state.talk) {
+        throw new Error('Talk not ready.');
+      }
       try {
-        const updated = await updateTalkThreadTitle({
+        const updated = await updateTalkThread({
           talkId: state.talk.id,
-          threadId: activeThread.id,
-          title,
+          threadId,
+          ...patch,
         });
         setThreadState((current) => ({
           ...current,
+          error: null,
           threads: current.threads.map((thread) =>
             thread.id === updated.id
               ? {
                   ...thread,
                   title: updated.title,
+                  isPinned: updated.isPinned,
                   updatedAt: updated.updatedAt,
                 }
               : thread,
           ),
         }));
+        return updated;
       } catch (err) {
         if (err instanceof UnauthorizedError) {
           handleUnauthorized();
@@ -3048,7 +3146,71 @@ export function TalkDetailPage({
         throw err;
       }
     },
-    [activeThread, handleUnauthorized, state],
+    [handleUnauthorized, state],
+  );
+  const handleRenameThread = useCallback(
+    async (threadId: string, title: string) => {
+      await updateThreadMetadata(threadId, { title });
+      setEditingThreadId((current) => (current === threadId ? null : current));
+    },
+    [updateThreadMetadata],
+  );
+  const handleDeleteThread = useCallback(
+    async (thread: TalkThread) => {
+      if (state.kind !== 'ready' || !state.talk) return;
+      const confirmed = window.confirm(
+        `Delete "${formatThreadLabel(thread)}"? This will permanently remove the thread and its messages.`,
+      );
+      if (!confirmed) return;
+      try {
+        await deleteTalkThread({
+          talkId: state.talk.id,
+          threadId: thread.id,
+        });
+        const remaining = sortThreads(
+          threadState.threads.filter((candidate) => candidate.id !== thread.id),
+        );
+        setThreadState((current) => ({
+          ...current,
+          error: null,
+          threads: current.threads.filter(
+            (candidate) => candidate.id !== thread.id,
+          ),
+        }));
+        setEditingThreadId((current) => (current === thread.id ? null : current));
+        if (activeThreadId === thread.id) {
+          const fallbackThreadId = remaining[0]?.id || null;
+          if (fallbackThreadId) {
+            navigate(buildThreadHref(talkId, fallbackThreadId, currentTab));
+          }
+        }
+      } catch (err) {
+        if (err instanceof UnauthorizedError) {
+          handleUnauthorized();
+          return;
+        }
+        setThreadState((current) => ({
+          ...current,
+          error: err instanceof Error ? err.message : 'Failed to delete thread.',
+        }));
+      }
+    },
+    [
+      activeThreadId,
+      currentTab,
+      handleUnauthorized,
+      navigate,
+      state,
+      talkId,
+      threadState.threads,
+    ],
+  );
+  const handleRenameActiveThread = useCallback(
+    async (title: string) => {
+      if (!activeThread) return;
+      await handleRenameThread(activeThread.id, title);
+    },
+    [activeThread, handleRenameThread],
   );
   const runHistory = useMemo(
     () =>
@@ -6170,46 +6332,168 @@ export function TalkDetailPage({
         <div className="talk-workspace-header">
           <header className="page-header talk-page-header">
             <div className="talk-page-heading">
-              {isRenaming ? (
-                <input
-                  ref={titleInputRef}
-                  className="talk-title-input"
-                  type="text"
-                  value={renameDraft?.draft ?? ''}
-                  onChange={(event) =>
-                    onRenameDraftChange(talkId, event.target.value)
-                  }
-                  onKeyDown={async (event) => {
-                    if (event.key === 'Enter') {
-                      event.preventDefault();
-                      await onRenameDraftCommit(
+              <div className="talk-page-topbar">
+                {isRenaming ? (
+                  <input
+                    ref={titleInputRef}
+                    className="talk-title-input"
+                    type="text"
+                    value={renameDraft?.draft ?? ''}
+                    onChange={(event) =>
+                      onRenameDraftChange(talkId, event.target.value)
+                    }
+                    onKeyDown={async (event) => {
+                      if (event.key === 'Enter') {
+                        event.preventDefault();
+                        await onRenameDraftCommit(
+                          talkId,
+                          renameDraft?.draft ?? '',
+                        );
+                      }
+                      if (event.key === 'Escape') {
+                        event.preventDefault();
+                        onRenameDraftCancel(talkId);
+                      }
+                    }}
+                    onBlur={() => {
+                      void onRenameDraftCommit(
                         talkId,
                         renameDraft?.draft ?? '',
                       );
-                    }
-                    if (event.key === 'Escape') {
-                      event.preventDefault();
-                      onRenameDraftCancel(talkId);
-                    }
-                  }}
-                  onBlur={() => {
-                    void onRenameDraftCommit(talkId, renameDraft?.draft ?? '');
-                  }}
-                  aria-label="Talk title"
-                />
-              ) : (
-                <h1 className="talk-title">
-                  <button
-                    type="button"
-                    className="talk-title-button"
-                    onClick={() => onRenameDraftChange(talkId, displayedTitle)}
-                    aria-label="Rename talk title"
-                    title="Rename talk title"
-                  >
-                    {displayedTitle}
-                  </button>
-                </h1>
-              )}
+                    }}
+                    aria-label="Talk title"
+                  />
+                ) : (
+                  <h1 className="talk-title">
+                    <button
+                      type="button"
+                      className="talk-title-button"
+                      onClick={() =>
+                        onRenameDraftChange(talkId, displayedTitle)
+                      }
+                      aria-label="Rename talk title"
+                      title="Rename talk title"
+                    >
+                      {displayedTitle}
+                    </button>
+                  </h1>
+                )}
+                <div className="talk-tabs-stack">
+                  <div className="talk-tabs-row">
+                    <nav className="talk-tabs" aria-label="Talk sections">
+                      <Link
+                        to={threadAwareTalkTabHref}
+                        className={`talk-tab ${currentTab === 'talk' ? 'talk-tab-active' : ''}`}
+                      >
+                        Talk
+                      </Link>
+                      <Link
+                        to={agentsTabHref}
+                        className={`talk-tab ${currentTab === 'agents' ? 'talk-tab-active' : ''}`}
+                      >
+                        Agents
+                      </Link>
+                      <Link
+                        to={jobsTabHref}
+                        className={`talk-tab ${currentTab === 'jobs' ? 'talk-tab-active' : ''}`}
+                      >
+                        Jobs
+                      </Link>
+                      <Link
+                        to={settingsTabHref}
+                        className={`talk-tab ${isSettingsTab ? 'talk-tab-active' : ''}`}
+                      >
+                        Settings
+                      </Link>
+                      <Link
+                        to={outputsTabHref}
+                        className={`talk-tab ${currentTab === 'outputs' ? 'talk-tab-active' : ''}`}
+                      >
+                        Reports
+                      </Link>
+                      <Link
+                        to={runsTabHref}
+                        className={`talk-tab ${currentTab === 'runs' ? 'talk-tab-active' : ''}`}
+                      >
+                        Run History
+                      </Link>
+                    </nav>
+                    {showOrchestrationSelector ? (
+                      <label className="talk-orchestration-picker">
+                        <span>Response mode</span>
+                        <select
+                          value={orchestrationMode}
+                          onChange={(event) =>
+                            void handleOrchestrationModeChange(
+                              event.target.value as 'ordered' | 'panel',
+                            )
+                          }
+                          disabled={orchestrationState.status === 'saving'}
+                        >
+                          <option value="ordered">Ordered Responses</option>
+                          <option value="panel">
+                            Parallel Responses (Quick)
+                          </option>
+                        </select>
+                      </label>
+                    ) : null}
+                    <Link to="/app/talks" className="talk-page-back-link">
+                      Back
+                    </Link>
+                  </div>
+                  {isSettingsTab ? (
+                    <div className="talk-subtabs-row">
+                      <nav
+                        className="talk-tabs talk-subtabs"
+                        aria-label="Talk settings sections"
+                      >
+                        <Link
+                          to={contextTabHref}
+                          className={`talk-tab ${currentTab === 'context' ? 'talk-tab-active' : ''}`}
+                        >
+                          Context
+                        </Link>
+                        <Link
+                          to={rulesTabHref}
+                          className={`talk-tab ${currentTab === 'rules' ? 'talk-tab-active' : ''}`}
+                        >
+                          Rules
+                          <span
+                            className="talk-tab-badge"
+                            aria-label={`${activeRuleCount} active rules`}
+                          >
+                            {activeRuleCount}
+                          </span>
+                        </Link>
+                        <Link
+                          to={toolsTabHref}
+                          className={`talk-tab ${currentTab === 'tools' ? 'talk-tab-active' : ''}`}
+                        >
+                          Tools
+                        </Link>
+                        <Link
+                          to={stateTabHref}
+                          className={`talk-tab ${currentTab === 'state' ? 'talk-tab-active' : ''}`}
+                        >
+                          State
+                        </Link>
+                        <Link
+                          to={channelsTabHref}
+                          className={`talk-tab ${currentTab === 'channels' ? 'talk-tab-active' : ''}`}
+                        >
+                          Channels
+                        </Link>
+                        <Link
+                          to={connectorsTabHref}
+                          className={`talk-tab ${currentTab === 'data-connectors' ? 'talk-tab-active' : ''}`}
+                        >
+                          Data Connectors
+                        </Link>
+                      </nav>
+                    </div>
+                  ) : null}
+                </div>
+              </div>
               {effectiveAgents.length > 0 ? (
                 <div
                   className="talk-status-strip"
@@ -6246,118 +6530,6 @@ export function TalkDetailPage({
                   })}
                 </div>
               ) : null}
-              <div className="talk-tabs-stack">
-                <div className="talk-tabs-row">
-                  <nav className="talk-tabs" aria-label="Talk sections">
-                    <Link
-                      to={threadAwareTalkTabHref}
-                      className={`talk-tab ${currentTab === 'talk' ? 'talk-tab-active' : ''}`}
-                    >
-                      Talk
-                    </Link>
-                    <Link
-                      to={agentsTabHref}
-                      className={`talk-tab ${currentTab === 'agents' ? 'talk-tab-active' : ''}`}
-                    >
-                      Agents
-                    </Link>
-                    <Link
-                      to={jobsTabHref}
-                      className={`talk-tab ${currentTab === 'jobs' ? 'talk-tab-active' : ''}`}
-                    >
-                      Jobs
-                    </Link>
-                    <Link
-                      to={settingsTabHref}
-                      className={`talk-tab ${isSettingsTab ? 'talk-tab-active' : ''}`}
-                    >
-                      Settings
-                    </Link>
-                    <Link
-                      to={outputsTabHref}
-                      className={`talk-tab ${currentTab === 'outputs' ? 'talk-tab-active' : ''}`}
-                    >
-                      Reports
-                    </Link>
-                    <Link
-                      to={runsTabHref}
-                      className={`talk-tab ${currentTab === 'runs' ? 'talk-tab-active' : ''}`}
-                    >
-                      Run History
-                    </Link>
-                  </nav>
-                  {showOrchestrationSelector ? (
-                    <label className="talk-orchestration-picker">
-                      <span>Response mode</span>
-                      <select
-                        value={orchestrationMode}
-                        onChange={(event) =>
-                          void handleOrchestrationModeChange(
-                            event.target.value as 'ordered' | 'panel',
-                          )
-                        }
-                        disabled={orchestrationState.status === 'saving'}
-                      >
-                        <option value="ordered">Ordered Responses</option>
-                        <option value="panel">
-                          Parallel Responses (Quick)
-                        </option>
-                      </select>
-                    </label>
-                  ) : null}
-                </div>
-                {isSettingsTab ? (
-                  <div className="talk-subtabs-row">
-                    <nav
-                      className="talk-tabs talk-subtabs"
-                      aria-label="Talk settings sections"
-                    >
-                      <Link
-                        to={contextTabHref}
-                        className={`talk-tab ${currentTab === 'context' ? 'talk-tab-active' : ''}`}
-                      >
-                        Context
-                      </Link>
-                      <Link
-                        to={rulesTabHref}
-                        className={`talk-tab ${currentTab === 'rules' ? 'talk-tab-active' : ''}`}
-                      >
-                        Rules
-                        <span
-                          className="talk-tab-badge"
-                          aria-label={`${activeRuleCount} active rules`}
-                        >
-                          {activeRuleCount}
-                        </span>
-                      </Link>
-                      <Link
-                        to={toolsTabHref}
-                        className={`talk-tab ${currentTab === 'tools' ? 'talk-tab-active' : ''}`}
-                      >
-                        Tools
-                      </Link>
-                      <Link
-                        to={stateTabHref}
-                        className={`talk-tab ${currentTab === 'state' ? 'talk-tab-active' : ''}`}
-                      >
-                        State
-                      </Link>
-                      <Link
-                        to={channelsTabHref}
-                        className={`talk-tab ${currentTab === 'channels' ? 'talk-tab-active' : ''}`}
-                      >
-                        Channels
-                      </Link>
-                      <Link
-                        to={connectorsTabHref}
-                        className={`talk-tab ${currentTab === 'data-connectors' ? 'talk-tab-active' : ''}`}
-                      >
-                        Data Connectors
-                      </Link>
-                    </nav>
-                  </div>
-                ) : null}
-              </div>
               {showOrchestrationSelector ? (
                 <p className="policy-muted talk-orchestration-hint">
                   Ordered mode is the default for synthesis-focused multi-agent
@@ -6370,7 +6542,6 @@ export function TalkDetailPage({
                 </p>
               ) : null}
             </div>
-            <Link to="/app/talks">Back</Link>
           </header>
         </div>
 
@@ -8608,7 +8779,7 @@ export function TalkDetailPage({
           {currentTab === 'channels' ? (
             <section className="talk-tab-panel" aria-label="Talk channels">
               <div className="agents-panel-header">
-                <h2>Channel Bindings</h2>
+                <h2>Connected Channels</h2>
               </div>
               <p className="policy-muted">
                 Bind this talk to external channels so inbound Telegram messages
@@ -8959,51 +9130,136 @@ export function TalkDetailPage({
                       >
                         <div className="connector-card-header">
                           <div>
-                            <h3>{binding.displayName}</h3>
-                            <p className="talk-llm-meta">
-                              {formatChannelPlatform(binding.platform)} ·{' '}
-                              {binding.targetKind} ·{' '}
-                              <code>{binding.targetId}</code>
+                            <h3>
+                              [{formatChannelPlatform(binding.platform)}]{' '}
+                              {binding.displayName}
+                            </h3>
+                            <p className="talk-llm-meta channel-diagnosis-headline">
+                              <span
+                                className={`channel-status-dot channel-status-${binding.diagnosis.status}`}
+                                aria-label={binding.diagnosis.status}
+                              />
+                              {binding.diagnosis.headline}
                             </p>
                           </div>
                           <span
-                            className={
-                              binding.active
-                                ? 'talk-agent-chip talk-agent-chip-success'
-                                : 'talk-agent-chip'
-                            }
+                            className={`talk-agent-chip ${
+                              binding.diagnosis.status === 'ok'
+                                ? 'talk-agent-chip-success'
+                                : binding.diagnosis.status === 'warning'
+                                  ? 'talk-agent-chip-warning'
+                                  : binding.diagnosis.status === 'error' ||
+                                      binding.diagnosis.status === 'quarantined'
+                                    ? 'talk-agent-chip-error'
+                                    : ''
+                            }`}
                           >
-                            {binding.active ? 'Active' : 'Inactive'}
+                            {binding.diagnosis.status === 'paused'
+                              ? 'Paused'
+                              : binding.diagnosis.status === 'quarantined'
+                                ? 'Quarantined'
+                                : binding.active
+                                  ? 'Active'
+                                  : 'Inactive'}
                           </span>
                         </div>
+                        {binding.diagnosis.detail ? (
+                          <p className="policy-muted" style={{ margin: '0 0 8px' }}>
+                            {binding.diagnosis.detail}
+                          </p>
+                        ) : null}
+                        {binding.diagnosis.action ? (
+                          <div style={{ marginBottom: 8 }}>
+                            <button
+                              className="btn btn-sm"
+                              disabled={channelStatus.status === 'saving'}
+                              onClick={async () => {
+                                try {
+                                  if (
+                                    binding.diagnosis.action?.type ===
+                                    'unquarantine'
+                                  ) {
+                                    setChannelStatus({
+                                      status: 'saving',
+                                      message: 'Testing connection…',
+                                    });
+                                    await unquarantineTalkChannelBinding({
+                                      talkId: binding.talkId,
+                                      bindingId: binding.id,
+                                    });
+                                    setChannelStatus({
+                                      status: 'success',
+                                      message: 'Binding reconnected.',
+                                    });
+                                  } else if (
+                                    binding.diagnosis.action?.type === 'retry'
+                                  ) {
+                                    setChannelStatus({
+                                      status: 'saving',
+                                      message: 'Retrying failures…',
+                                    });
+                                    await retryTalkChannelDeliveryFailuresCapped(
+                                      {
+                                        talkId: binding.talkId,
+                                        bindingId: binding.id,
+                                      },
+                                    );
+                                    setChannelStatus({
+                                      status: 'success',
+                                      message: 'Retried failed deliveries.',
+                                    });
+                                  } else if (
+                                    binding.diagnosis.action?.type === 'test'
+                                  ) {
+                                    setChannelStatus({
+                                      status: 'saving',
+                                      message: 'Sending test…',
+                                    });
+                                    await testTalkChannelBinding({
+                                      talkId: binding.talkId,
+                                      bindingId: binding.id,
+                                    });
+                                    setChannelStatus({
+                                      status: 'success',
+                                      message: 'Test message sent.',
+                                    });
+                                  }
+                                  reloadTalkChannels();
+                                } catch (err) {
+                                  setChannelStatus({
+                                    status: 'error',
+                                    message:
+                                      err instanceof Error
+                                        ? err.message
+                                        : 'Action failed.',
+                                  });
+                                }
+                              }}
+                            >
+                              {binding.diagnosis.action.label}
+                            </button>
+                          </div>
+                        ) : null}
                         <div className="connector-meta-grid">
                           <div>
                             <strong>Connection</strong>
                             <p>{binding.connectionDisplayName}</p>
                           </div>
                           <div>
-                            <strong>Pending ingress</strong>
+                            <strong>Pending</strong>
                             <p>{binding.pendingIngressCount}</p>
                           </div>
                           <div>
-                            <strong>Deferred ingress</strong>
+                            <strong>Waiting</strong>
                             <p>{binding.deferredIngressCount}</p>
                           </div>
                           <div>
-                            <strong>Last ingress issue</strong>
-                            <p>
-                              {formatChannelReasonCode(
-                                binding.lastIngressReasonCode,
-                              )}
-                            </p>
+                            <strong>Failed deliveries</strong>
+                            <p>{binding.deadLetterCount}</p>
                           </div>
                           <div>
-                            <strong>Last delivery issue</strong>
-                            <p>
-                              {formatChannelReasonCode(
-                                binding.lastDeliveryReasonCode,
-                              )}
-                            </p>
+                            <strong>Unresolved inbound</strong>
+                            <p>{binding.unresolvedIngressCount}</p>
                           </div>
                         </div>
                         <div className="connector-attach-row">
@@ -9708,27 +9964,79 @@ export function TalkDetailPage({
                 ) : (
                   <ul className="talk-thread-items">
                     {sortedThreads.map((thread) => (
-                      <li key={thread.id}>
-                        <button
-                          type="button"
-                          className={`talk-thread-item${
-                            thread.id === activeThreadId
-                              ? ' talk-thread-item-active'
-                              : ''
-                          }`}
-                          onClick={() => handleSelectThread(thread.id)}
-                        >
-                          <span className="talk-thread-item-title">
-                            {formatThreadLabel(thread)}
-                          </span>
-                          <span className="talk-thread-item-meta">
-                            {thread.messageCount} message
-                            {thread.messageCount === 1 ? '' : 's'} ·{' '}
-                            {formatDateTime(
-                              thread.lastMessageAt || thread.createdAt,
-                            )}
-                          </span>
-                        </button>
+                      <li
+                        key={thread.id}
+                        onContextMenu={(event) => {
+                          if (!canEditAgents) return;
+                          event.preventDefault();
+                          setThreadMenu({
+                            threadId: thread.id,
+                            x: event.clientX,
+                            y: event.clientY,
+                          });
+                        }}
+                      >
+                        {editingThreadId === thread.id ? (
+                          <div
+                            className={`talk-thread-item${
+                              thread.id === activeThreadId
+                                ? ' talk-thread-item-active'
+                                : ''
+                            } talk-thread-item-editing`}
+                          >
+                            <ThreadRowTitleEditor
+                              title={formatThreadLabel(thread)}
+                              isEditing={true}
+                              onSave={(title) =>
+                                handleRenameThread(thread.id, title)
+                              }
+                              onCancel={() => setEditingThreadId(null)}
+                              staticClassName="talk-thread-item-title"
+                              inputClassName="thread-row-title-input"
+                              errorClassName="thread-row-title-error"
+                              leadingVisual={
+                                thread.isPinned ? <ThreadPinIcon /> : undefined
+                              }
+                            />
+                            <span className="talk-thread-item-meta">
+                              {thread.messageCount} message
+                              {thread.messageCount === 1 ? '' : 's'} ·{' '}
+                              {formatDateTime(
+                                thread.lastMessageAt || thread.createdAt,
+                              )}
+                            </span>
+                          </div>
+                        ) : (
+                          <button
+                            type="button"
+                            className={`talk-thread-item${
+                              thread.id === activeThreadId
+                                ? ' talk-thread-item-active'
+                                : ''
+                            }`}
+                            onClick={() => handleSelectThread(thread.id)}
+                          >
+                            <ThreadRowTitleEditor
+                              title={formatThreadLabel(thread)}
+                              isEditing={false}
+                              onSave={() => undefined}
+                              onCancel={() => undefined}
+                              staticClassName="talk-thread-item-title"
+                              inputClassName="thread-row-title-input"
+                              errorClassName="thread-row-title-error"
+                              leadingVisual={
+                                thread.isPinned ? <ThreadPinIcon /> : undefined
+                              }
+                            />
+                            <span className="talk-thread-item-meta">
+                              {thread.messageCount} message
+                              {thread.messageCount === 1 ? '' : 's'} ·{' '}
+                              {formatDateTime(
+                                thread.lastMessageAt || thread.createdAt,
+                              )}
+                            </span>
+                          </button>
+                        )}
                       </li>
                     ))}
                   </ul>
@@ -9736,238 +10044,242 @@ export function TalkDetailPage({
               </aside>
 
               <div className="talk-thread-detail">
-                <div className="talk-thread-detail-header">
-                  <div>
-                    {activeThread ? (
-                      <InlineEditableTitle
-                        title={formatThreadLabel(activeThread)}
-                        onSave={handleRenameActiveThread}
-                        buttonClassName="thread-detail-title-button"
-                        inputClassName="thread-detail-title-input"
-                        errorClassName="thread-detail-title-error"
-                      />
-                    ) : (
-                      <h2>New thread</h2>
-                    )}
-                    <p className="policy-muted">
-                      Use <code>/edit</code> or the button here to remove old
-                      messages from this thread.
-                    </p>
-                  </div>
-                  <button
-                    type="button"
-                    className="secondary-btn"
-                    onClick={openHistoryEditor}
-                    disabled={!canEditHistory}
-                  >
-                    Edit history
-                  </button>
-                </div>
-
-                {activeOrderedProgress ? (
-                  <div className="talk-ordered-progress" role="status">
-                    {activeOrderedProgress.label}
-                  </div>
-                ) : null}
-
                 <div
                   ref={timelineRef}
-                  className="timeline talk-thread-timeline"
+                  className="talk-thread-scroll"
                   aria-label="Talk timeline"
                 >
-                  {state.messagesLoading ? (
-                    <p className="page-state">Loading thread…</p>
-                  ) : !activeThread ? (
-                    <p className="page-state">No thread selected.</p>
-                  ) : talkTimeline.length === 0 ? (
-                    <div className="talk-onboarding-banner">
-                      <p>
-                        This Talk is using the default agent with all tools
-                        enabled.{' '}
-                        <Link
-                          to={agentsTabHref}
-                          className="talk-onboarding-link"
-                        >
-                          Customize →
-                        </Link>
+                  <div className="talk-thread-detail-header">
+                    <div>
+                      {activeThread ? (
+                        <InlineEditableTitle
+                          title={formatThreadLabel(activeThread)}
+                          onSave={handleRenameActiveThread}
+                          buttonClassName="thread-detail-title-button"
+                          inputClassName="thread-detail-title-input"
+                          errorClassName="thread-detail-title-error"
+                        />
+                      ) : (
+                        <h2>New thread</h2>
+                      )}
+                      <p className="policy-muted">
+                        Use <code>/edit</code> or the button here to remove old
+                        messages from this thread.
                       </p>
-                      <p className="page-state">No messages yet.</p>
                     </div>
-                  ) : (
-                    talkTimeline.map((entry) => {
-                      if (entry.kind === 'message') {
-                        const { message } = entry;
-                        const isSynthesis =
-                          message.metadata?.isSynthesis === true;
-                        const agentLabel =
-                          (message.agentId &&
-                            agentLabelById[message.agentId]) ||
-                          message.agentNickname ||
-                          null;
-                        const runContextPanel = message.runId
-                          ? runContextPanels[message.runId]
-                          : null;
-                        return (
-                          <article
-                            key={entry.key}
-                            id={`message-${message.id}`}
-                            ref={(element) =>
-                              setMessageElementRef(message.id, element)
-                            }
-                            className={`message message-${message.role}${
-                              isSynthesis ? ' message-synthesis' : ''
-                            }`}
+                    <button
+                      type="button"
+                      className="secondary-btn"
+                      onClick={openHistoryEditor}
+                      disabled={!canEditHistory}
+                    >
+                      Edit history
+                    </button>
+                  </div>
+
+                  {activeOrderedProgress ? (
+                    <div className="talk-ordered-progress" role="status">
+                      {activeOrderedProgress.label}
+                    </div>
+                  ) : null}
+
+                  <div className="timeline talk-thread-timeline">
+                    {state.messagesLoading ? (
+                      <p className="page-state">Loading thread…</p>
+                    ) : !activeThread ? (
+                      <p className="page-state">No thread selected.</p>
+                    ) : talkTimeline.length === 0 ? (
+                      <div className="talk-onboarding-banner">
+                        <p>
+                          This Talk is using the default agent with all tools
+                          enabled.{' '}
+                          <Link
+                            to={agentsTabHref}
+                            className="talk-onboarding-link"
                           >
-                            <header>
-                              <strong>
-                                {agentLabel ? `${agentLabel} · ` : ''}
-                                {message.role}
-                              </strong>
-                              {isSynthesis ? (
-                                <span className="message-synthesis-badge">
-                                  Synthesis
-                                </span>
-                              ) : null}
-                              <time>
-                                {new Date(message.createdAt).toLocaleString()}
-                              </time>
-                            </header>
-                            <p>
-                              {message.role === 'assistant'
-                                ? stripInternalAssistantText(message.content)
-                                : message.content}
-                            </p>
-                            {message.attachments &&
-                            message.attachments.length > 0 ? (
-                              <div className="message-attachments">
-                                {message.attachments.map((att) => (
-                                  <div
-                                    key={att.id}
-                                    className="message-attachment-item"
-                                  >
-                                    {isRenderableImageAttachment(
-                                      att.mimeType,
-                                    ) ? (
-                                      <a
-                                        href={buildTalkAttachmentContentUrl(
-                                          talkId,
-                                          att.id,
-                                        )}
-                                        target="_blank"
-                                        rel="noreferrer"
-                                        className="message-attachment-image-link"
-                                      >
-                                        <img
-                                          src={buildTalkAttachmentContentUrl(
+                            Customize →
+                          </Link>
+                        </p>
+                        <p className="page-state">No messages yet.</p>
+                      </div>
+                    ) : (
+                      talkTimeline.map((entry) => {
+                        if (entry.kind === 'message') {
+                          const { message } = entry;
+                          const isSynthesis =
+                            message.metadata?.isSynthesis === true;
+                          const agentLabel =
+                            (message.agentId &&
+                              agentLabelById[message.agentId]) ||
+                            message.agentNickname ||
+                            null;
+                          const runContextPanel = message.runId
+                            ? runContextPanels[message.runId]
+                            : null;
+                          return (
+                            <article
+                              key={entry.key}
+                              id={`message-${message.id}`}
+                              ref={(element) =>
+                                setMessageElementRef(message.id, element)
+                              }
+                              className={`message message-${message.role}${
+                                isSynthesis ? ' message-synthesis' : ''
+                              }`}
+                            >
+                              <header>
+                                <strong>
+                                  {agentLabel ? `${agentLabel} · ` : ''}
+                                  {message.role}
+                                </strong>
+                                {isSynthesis ? (
+                                  <span className="message-synthesis-badge">
+                                    Synthesis
+                                  </span>
+                                ) : null}
+                                <time>
+                                  {new Date(message.createdAt).toLocaleString()}
+                                </time>
+                              </header>
+                              <p>
+                                {message.role === 'assistant'
+                                  ? stripInternalAssistantText(message.content)
+                                  : message.content}
+                              </p>
+                              {message.attachments &&
+                              message.attachments.length > 0 ? (
+                                <div className="message-attachments">
+                                  {message.attachments.map((att) => (
+                                    <div
+                                      key={att.id}
+                                      className="message-attachment-item"
+                                    >
+                                      {isRenderableImageAttachment(
+                                        att.mimeType,
+                                      ) ? (
+                                        <a
+                                          href={buildTalkAttachmentContentUrl(
                                             talkId,
                                             att.id,
                                           )}
-                                          alt={att.fileName}
-                                          className="message-attachment-image"
-                                        />
-                                      </a>
-                                    ) : null}
-                                    <span
-                                      className="message-attachment-chip"
-                                      title={att.mimeType}
-                                    >
-                                      {att.fileName}
-                                      <span className="message-attachment-size">
-                                        {' '}
-                                        {att.fileSize < 1024
-                                          ? `${att.fileSize} B`
-                                          : att.fileSize < 1048576
-                                            ? `${(att.fileSize / 1024).toFixed(1)} KB`
-                                            : `${(att.fileSize / 1048576).toFixed(1)} MB`}
-                                      </span>
-                                    </span>
-                                  </div>
-                                ))}
-                              </div>
-                            ) : null}
-                            {message.role === 'assistant' && message.runId ? (
-                              <div className="run-context-block">
-                                <button
-                                  type="button"
-                                  className="secondary-btn message-context-toggle"
-                                  onClick={() =>
-                                    void handleToggleRunContext(message.runId!)
-                                  }
-                                >
-                                  {runContextPanel?.status === 'loading'
-                                    ? 'Loading context…'
-                                    : runContextPanel?.open
-                                      ? 'Hide context'
-                                      : 'Context used'}
-                                </button>
-                                {runContextPanel?.open ? (
-                                  <section
-                                    className="run-context-panel"
-                                    aria-label="Run context used"
-                                  >
-                                    {runContextPanel.status === 'loading' ? (
-                                      <p className="run-context-note">
-                                        Loading context snapshot…
-                                      </p>
-                                    ) : runContextPanel.status === 'error' ? (
-                                      <p
-                                        className="run-context-note"
-                                        role="alert"
+                                          target="_blank"
+                                          rel="noreferrer"
+                                          className="message-attachment-image-link"
+                                        >
+                                          <img
+                                            src={buildTalkAttachmentContentUrl(
+                                              talkId,
+                                              att.id,
+                                            )}
+                                            alt={att.fileName}
+                                            className="message-attachment-image"
+                                          />
+                                        </a>
+                                      ) : null}
+                                      <span
+                                        className="message-attachment-chip"
+                                        title={att.mimeType}
                                       >
-                                        {runContextPanel.message ||
-                                          'Failed to load run context.'}
-                                      </p>
-                                    ) : runContextPanel.snapshot ? (
-                                      renderRunContextSnapshot(
-                                        runContextPanel.snapshot,
+                                        {att.fileName}
+                                        <span className="message-attachment-size">
+                                          {' '}
+                                          {att.fileSize < 1024
+                                            ? `${att.fileSize} B`
+                                            : att.fileSize < 1048576
+                                              ? `${(att.fileSize / 1024).toFixed(1)} KB`
+                                              : `${(att.fileSize / 1048576).toFixed(1)} MB`}
+                                        </span>
+                                      </span>
+                                    </div>
+                                  ))}
+                                </div>
+                              ) : null}
+                              {message.role === 'assistant' && message.runId ? (
+                                <div className="run-context-block">
+                                  <button
+                                    type="button"
+                                    className="secondary-btn message-context-toggle"
+                                    onClick={() =>
+                                      void handleToggleRunContext(
+                                        message.runId!,
                                       )
-                                    ) : (
-                                      <p className="run-context-note">
-                                        No saved context snapshot is available
-                                        for this run.
-                                      </p>
-                                    )}
-                                  </section>
-                                ) : null}
-                              </div>
+                                    }
+                                  >
+                                    {runContextPanel?.status === 'loading'
+                                      ? 'Loading context…'
+                                      : runContextPanel?.open
+                                        ? 'Hide context'
+                                        : 'Context used'}
+                                  </button>
+                                  {runContextPanel?.open ? (
+                                    <section
+                                      className="run-context-panel"
+                                      aria-label="Run context used"
+                                    >
+                                      {runContextPanel.status === 'loading' ? (
+                                        <p className="run-context-note">
+                                          Loading context snapshot…
+                                        </p>
+                                      ) : runContextPanel.status === 'error' ? (
+                                        <p
+                                          className="run-context-note"
+                                          role="alert"
+                                        >
+                                          {runContextPanel.message ||
+                                            'Failed to load run context.'}
+                                        </p>
+                                      ) : runContextPanel.snapshot ? (
+                                        renderRunContextSnapshot(
+                                          runContextPanel.snapshot,
+                                        )
+                                      ) : (
+                                        <p className="run-context-note">
+                                          No saved context snapshot is available
+                                          for this run.
+                                        </p>
+                                      )}
+                                    </section>
+                                  ) : null}
+                                </div>
+                              ) : null}
+                            </article>
+                          );
+                        }
+
+                        const { response } = entry;
+                        const label =
+                          (response.agentId &&
+                            agentLabelById[response.agentId]) ||
+                          response.agentNickname ||
+                          'Assistant';
+                        return (
+                          <article
+                            key={entry.key}
+                            className={`message message-assistant message-live${
+                              response.terminalStatus === 'failed'
+                                ? ' message-error'
+                                : ''
+                            }`}
+                          >
+                            <header>
+                              <strong>{label}</strong>
+                              <time>
+                                {response.terminalStatus === 'failed'
+                                  ? 'Failed'
+                                  : 'Streaming…'}
+                              </time>
+                            </header>
+                            <p>{response.text || 'Thinking…'}</p>
+                            {response.errorMessage ? (
+                              <p className="run-history-error">
+                                {response.errorMessage}
+                              </p>
                             ) : null}
                           </article>
                         );
-                      }
-
-                      const { response } = entry;
-                      const label =
-                        (response.agentId &&
-                          agentLabelById[response.agentId]) ||
-                        response.agentNickname ||
-                        'Assistant';
-                      return (
-                        <article
-                          key={entry.key}
-                          className={`message message-assistant message-live${
-                            response.terminalStatus === 'failed'
-                              ? ' message-error'
-                              : ''
-                          }`}
-                        >
-                          <header>
-                            <strong>{label}</strong>
-                            <time>
-                              {response.terminalStatus === 'failed'
-                                ? 'Failed'
-                                : 'Streaming…'}
-                            </time>
-                          </header>
-                          <p>{response.text || 'Thinking…'}</p>
-                          {response.errorMessage ? (
-                            <p className="run-history-error">
-                              {response.errorMessage}
-                            </p>
-                          ) : null}
-                        </article>
-                      );
-                    })
-                  )}
+                      })
+                    )}
+                  </div>
 
                   {state.hasUnreadBelow ? (
                     <button
@@ -10019,13 +10331,18 @@ export function TalkDetailPage({
                           onClick={() => handleToggleTarget(agent.id)}
                           disabled={state.sendState.status === 'posting'}
                           aria-pressed={selected}
+                          aria-label={
+                            agent.isPrimary
+                              ? `${buildAgentLabel(agent)} Primary`
+                              : buildAgentLabel(agent)
+                          }
                           title={guardrail?.message || undefined}
                         >
                           <span
                             className={`talk-status-dot talk-status-dot-${agent.health}`}
                             aria-hidden="true"
                           />
-                          <span>{buildAgentLabel(agent)}</span>
+                          <span>{buildAgentChipLabel(agent)}</span>
                           {guardrail?.badgeLabel ? (
                             <span
                               className={`talk-status-constraint talk-status-constraint-${guardrail.kind}`}
@@ -10040,7 +10357,12 @@ export function TalkDetailPage({
                       );
                     })}
                   </div>
-                  <p className="composer-target-help">{composerTargetHelp}</p>
+                  <div className="composer-meta-row">
+                    <p className="composer-target-help">{composerTargetHelp}</p>
+                    <span className="composer-count">
+                      {draft.length}/{TALK_MESSAGE_MAX_CHARS}
+                    </span>
+                  </div>
                   {composerGuardrailMessage ? (
                     <div
                       className="inline-banner inline-banner-warning"
@@ -10051,116 +10373,129 @@ export function TalkDetailPage({
                     </div>
                   ) : null}
 
-                  <textarea
-                    ref={textareaRef}
-                    value={draft}
-                    onChange={(event) => handleDraftChange(event.target.value)}
-                    onKeyDown={handleComposerKeyDown}
-                    placeholder="Send a message to this thread"
-                    rows={3}
-                    maxLength={TALK_MESSAGE_MAX_CHARS}
-                    disabled={
-                      state.sendState.status === 'posting' ||
-                      activeRound ||
-                      hasUnsavedAgentChanges ||
-                      !activeThreadId
-                    }
-                  />
-
-                  {pendingAttachments.length > 0 ? (
-                    <div className="composer-attachments">
-                      {pendingAttachments.map((att) => (
-                        <span
-                          key={att.localId}
-                          className={`composer-attachment-chip composer-attachment-${att.status}`}
-                          title={
-                            att.status === 'error'
-                              ? att.errorMessage
-                              : att.fileName
-                          }
-                        >
-                          {att.isImage && att.previewUrl ? (
-                            <img
-                              src={att.previewUrl}
-                              alt={att.fileName}
-                              className="composer-attachment-preview"
-                            />
-                          ) : null}
-                          <span className="composer-attachment-name">
-                            {att.fileName}
-                          </span>
-                          {att.status === 'uploading' ? (
-                            <span className="composer-attachment-status">
-                              {' '}
-                              uploading…
-                            </span>
-                          ) : null}
-                          {att.status === 'error' ? (
-                            <span className="composer-attachment-status">
-                              {' '}
-                              failed
-                            </span>
-                          ) : null}
-                          <button
-                            type="button"
-                            className="composer-attachment-remove"
-                            onClick={() => handleRemoveAttachment(att.localId)}
-                            aria-label={`Remove ${att.fileName}`}
-                          >
-                            ×
-                          </button>
-                        </span>
-                      ))}
-                    </div>
-                  ) : null}
-
-                  <div className="composer-controls">
-                    <span className="composer-count">
-                      {draft.length}/{TALK_MESSAGE_MAX_CHARS}
-                    </span>
-                    <button
-                      type="button"
-                      className="secondary-btn composer-attach-btn"
-                      onClick={handleAttachButtonClick}
+                  <div className="composer-input-shell">
+                    <textarea
+                      ref={textareaRef}
+                      value={draft}
+                      onChange={(event) =>
+                        handleDraftChange(event.target.value)
+                      }
+                      onKeyDown={handleComposerKeyDown}
+                      placeholder="Send a message to this thread"
+                      rows={3}
+                      maxLength={TALK_MESSAGE_MAX_CHARS}
                       disabled={
                         state.sendState.status === 'posting' ||
                         activeRound ||
                         hasUnsavedAgentChanges ||
                         !activeThreadId
                       }
-                      title="Attach files"
-                    >
-                      Attach
-                    </button>
-                    <button
-                      type="submit"
-                      className="primary-btn"
-                      disabled={
-                        state.sendState.status === 'posting' ||
-                        activeRound ||
-                        hasUnsavedAgentChanges ||
-                        !activeThreadId ||
-                        sendBlockedByGuardrail
-                      }
-                    >
-                      {state.sendState.status === 'posting'
-                        ? 'Sending…'
-                        : 'Send'}
-                    </button>
-                    {canEditAgents ? (
+                    />
+
+                    {pendingAttachments.length > 0 ? (
+                      <div className="composer-attachments">
+                        {pendingAttachments.map((att) => (
+                          <span
+                            key={att.localId}
+                            className={`composer-attachment-chip composer-attachment-${att.status}`}
+                            title={
+                              att.status === 'error'
+                                ? att.errorMessage
+                                : att.fileName
+                            }
+                          >
+                            {att.isImage && att.previewUrl ? (
+                              <img
+                                src={att.previewUrl}
+                                alt={att.fileName}
+                                className="composer-attachment-preview"
+                              />
+                            ) : null}
+                            <span className="composer-attachment-name">
+                              {att.fileName}
+                            </span>
+                            {att.status === 'uploading' ? (
+                              <span className="composer-attachment-status">
+                                {' '}
+                                uploading…
+                              </span>
+                            ) : null}
+                            {att.status === 'error' ? (
+                              <span className="composer-attachment-status">
+                                {' '}
+                                failed
+                              </span>
+                            ) : null}
+                            <button
+                              type="button"
+                              className="composer-attachment-remove"
+                              onClick={() => handleRemoveAttachment(att.localId)}
+                              aria-label={`Remove ${att.fileName}`}
+                            >
+                              ×
+                            </button>
+                          </span>
+                        ))}
+                      </div>
+                    ) : null}
+
+                    <div className="composer-controls">
+                      <div className="composer-tool-buttons">
+                        <button
+                          type="button"
+                          className="composer-icon-btn composer-attach-btn"
+                          onClick={handleAttachButtonClick}
+                          disabled={
+                            state.sendState.status === 'posting' ||
+                            activeRound ||
+                            hasUnsavedAgentChanges ||
+                            !activeThreadId
+                          }
+                          aria-label="Attach"
+                          title="Attach files"
+                        >
+                          <ComposerAttachIcon />
+                        </button>
+                        {canEditAgents ? (
+                          <button
+                            type="button"
+                            className="composer-icon-btn composer-cancel-btn"
+                            onClick={handleCancelRuns}
+                            disabled={
+                              state.cancelState.status === 'posting' ||
+                              !activeRound
+                            }
+                            aria-label="Cancel Runs"
+                            title={
+                              state.cancelState.status === 'posting'
+                                ? 'Cancelling runs…'
+                                : 'Cancel runs'
+                            }
+                          >
+                            <ComposerCancelRunsIcon />
+                          </button>
+                        ) : null}
+                      </div>
                       <button
-                        type="button"
-                        className="secondary-btn"
-                        onClick={handleCancelRuns}
+                        type="submit"
+                        className="composer-icon-btn composer-send-btn"
                         disabled={
-                          state.cancelState.status === 'posting' || !activeRound
+                          state.sendState.status === 'posting' ||
+                          activeRound ||
+                          hasUnsavedAgentChanges ||
+                          !activeThreadId ||
+                          sendBlockedByGuardrail
+                        }
+                        aria-label="Send"
+                        title={
+                          state.sendState.status === 'posting'
+                            ? 'Sending…'
+                            : 'Send'
                         }
                       >
-                        {state.cancelState.status === 'posting'
-                          ? 'Cancelling…'
-                          : 'Cancel Runs'}
+                        <ComposerSendIcon />
                       </button>
-                    ) : null}
+                    </div>
                   </div>
 
                   {activeRound ? (
@@ -10228,6 +10563,30 @@ export function TalkDetailPage({
                   ) : null}
                 </form>
               </div>
+              {threadMenu && menuThread ? (
+                <ThreadContextMenu
+                  x={threadMenu.x}
+                  y={threadMenu.y}
+                  isPinned={menuThread.isPinned}
+                  canDelete={!menuThread.isDefault}
+                  onClose={() => setThreadMenu(null)}
+                  onRename={() => setEditingThreadId(menuThread.id)}
+                  onTogglePin={() => {
+                    void updateThreadMetadata(menuThread.id, {
+                      pinned: !menuThread.isPinned,
+                    }).catch((err) => {
+                      setThreadState((current) => ({
+                        ...current,
+                        error:
+                          err instanceof Error
+                            ? err.message
+                            : 'Failed to update thread.',
+                      }));
+                    });
+                  }}
+                  onDelete={() => void handleDeleteThread(menuThread)}
+                />
+              ) : null}
             </div>
           ) : null}
         </div>

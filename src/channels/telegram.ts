@@ -1,6 +1,7 @@
-import { Api, Bot } from 'grammy';
+import { Api, Bot, GrammyError } from 'grammy';
 
 import { ASSISTANT_NAME, TRIGGER_PATTERN } from '../config.js';
+import { ChannelDeliveryError } from '../clawrocket/channels/channel-errors.js';
 import { readEnvFile } from '../env.js';
 import { logger } from '../logger.js';
 import { registerChannel, ChannelOpts } from './registry.js';
@@ -270,8 +271,11 @@ export class TelegramChannel implements Channel {
 
   async sendMessage(jid: string, text: string): Promise<void> {
     if (!this.bot) {
-      logger.warn('Telegram bot not initialized');
-      return;
+      throw new ChannelDeliveryError(
+        'Telegram bot not initialized',
+        'transient',
+        'bot_not_initialized',
+      );
     }
 
     try {
@@ -292,7 +296,15 @@ export class TelegramChannel implements Channel {
       logger.info({ jid, length: text.length }, 'Telegram message sent');
     } catch (err) {
       logger.error({ jid, err }, 'Failed to send Telegram message');
+      throw classifyTelegramError(err);
     }
+  }
+
+  async probe(): Promise<void> {
+    if (!this.bot) {
+      throw new Error('Telegram bot not initialized');
+    }
+    await this.bot.api.getMe();
   }
 
   isConnected(): boolean {
@@ -397,6 +409,50 @@ export async function sendPoolMessage(
     logger.error({ chatId, sender, err }, 'Failed to send pool message');
     return false;
   }
+}
+
+function classifyTelegramError(err: unknown): ChannelDeliveryError {
+  if (err instanceof GrammyError) {
+    const status = err.error_code;
+    const desc = (err.description || '').toLowerCase();
+
+    // 403 — bot kicked, blocked, or lacks permissions
+    if (status === 403) {
+      if (desc.includes('bot was kicked') || desc.includes('bot was blocked')) {
+        return new ChannelDeliveryError(err.message, 'permanent', 'bot_kicked');
+      }
+      return new ChannelDeliveryError(err.message, 'permanent', 'forbidden');
+    }
+
+    // 400 — chat not found, peer invalid
+    if (status === 400) {
+      if (
+        desc.includes('chat not found') ||
+        desc.includes('peer_id_invalid')
+      ) {
+        return new ChannelDeliveryError(
+          err.message,
+          'permanent',
+          'chat_not_found',
+        );
+      }
+      return new ChannelDeliveryError(err.message, 'permanent', 'bad_request');
+    }
+
+    // 429 — rate limited
+    if (status === 429) {
+      return new ChannelDeliveryError(err.message, 'rate_limited', 'rate_limited');
+    }
+
+    // 5xx — transient server errors
+    if (status >= 500) {
+      return new ChannelDeliveryError(err.message, 'transient', 'api_error');
+    }
+  }
+
+  // Network errors and everything else → transient
+  const message = err instanceof Error ? err.message : 'Unknown send error';
+  return new ChannelDeliveryError(message, 'transient', 'network_timeout');
 }
 
 registerChannel('telegram', (opts: ChannelOpts) => {

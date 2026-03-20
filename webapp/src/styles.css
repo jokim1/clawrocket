@@ -1432,6 +1432,36 @@ a {
   color: #8d1f1f;
 }
 
+/* Channel diagnosis status dots */
+.channel-status-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-right: 6px;
+  vertical-align: middle;
+  flex-shrink: 0;
+}
+.channel-status-ok {
+  background: #2ea043;
+}
+.channel-status-warning {
+  background: #d29922;
+}
+.channel-status-error {
+  background: #cf222e;
+}
+.channel-status-quarantined {
+  background: #cf222e;
+}
+.channel-status-paused {
+  background: #8b949e;
+}
+.channel-diagnosis-headline {
+  display: flex;
+  align-items: center;
+}
+
 .talk-list li a span {
   color: #66728d;
   font-size: 0.85rem;
@@ -1541,7 +1571,7 @@ a {
   position: sticky;
   top: 0;
   z-index: 2;
-  padding: 1rem 1rem 0.8rem;
+  padding: 0.85rem 1rem 0.7rem;
   background: #fff;
   border-bottom: 1px solid #eef2fa;
 }
@@ -1569,11 +1599,22 @@ a {
 
 .talk-page-header {
   margin-bottom: 0;
+  align-items: flex-start;
 }
 
 .talk-page-heading {
   min-width: 0;
   flex: 1;
+  display: grid;
+  gap: 0.45rem;
+}
+
+.talk-page-topbar {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
 }
 
 .talk-title-input {
@@ -1590,7 +1631,7 @@ a {
   display: flex;
   flex-wrap: wrap;
   gap: 0.55rem;
-  margin-top: 0.45rem;
+  margin-top: 0;
 }
 
 .talk-status-pill {
@@ -1667,28 +1708,33 @@ a {
 
 .talk-tabs-row {
   display: flex;
-  align-items: flex-end;
-  justify-content: space-between;
-  gap: 0.85rem;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.65rem;
   flex-wrap: wrap;
-  margin-top: 0.65rem;
+  margin-top: 0;
 }
 
 .talk-tabs-stack {
   display: grid;
-  gap: 0.55rem;
-  margin-top: 0.65rem;
+  gap: 0.45rem;
+  margin-top: 0;
+  flex: 1 1 28rem;
+  justify-items: end;
 }
 
 .talk-subtabs-row {
   display: flex;
   align-items: center;
+  justify-content: flex-end;
+  width: 100%;
 }
 
 .talk-tabs {
   display: flex;
   gap: 0.55rem;
   flex-wrap: wrap;
+  justify-content: flex-end;
 }
 
 .talk-subtabs {
@@ -1696,19 +1742,29 @@ a {
 }
 
 .talk-orchestration-picker {
-  display: grid;
-  gap: 0.25rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
   color: #4e5d7c;
   font-size: 0.78rem;
   font-weight: 600;
+  white-space: nowrap;
 }
 
 .talk-orchestration-picker select {
-  min-width: 14rem;
+  min-width: 13rem;
 }
 
 .talk-orchestration-hint {
-  margin: 0.45rem 0 0;
+  margin: 0;
+}
+
+.talk-page-back-link {
+  align-self: center;
+  color: #36548d;
+  font-weight: 600;
+  text-decoration: none;
+  white-space: nowrap;
 }
 
 .talk-tab {
@@ -1960,16 +2016,18 @@ a {
 .composer-targets {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.55rem;
+  gap: 0.45rem;
 }
 
 .composer-target-chip {
   display: inline-flex;
   align-items: center;
-  gap: 0.4rem;
+  gap: 0.35rem;
   border: 1px solid #d2dced;
   border-radius: 999px;
-  padding: 0.45rem 0.75rem;
+  padding: 0.33rem 0.62rem;
+  font-size: 0.82rem;
+  line-height: 1.15;
   background: #fff;
   color: #2d3954;
   cursor: pointer;
@@ -1996,6 +2054,8 @@ a {
   margin: 0;
   color: #5b6887;
   font-size: 0.84rem;
+  flex: 1;
+  min-width: 0;
 }
 
 .message-live {
@@ -2227,25 +2287,110 @@ a {
 
 .composer textarea {
   width: 100%;
-  border: 1px solid #c8d3e9;
-  border-radius: 10px;
-  padding: 0.7rem;
+  border: 0;
+  border-radius: 14px 14px 0 0;
+  padding: 0.85rem 0.9rem 0;
   font-size: 0.95rem;
-  resize: vertical;
-  min-height: 84px;
+  resize: none;
+  min-height: 96px;
+  background: transparent;
+}
+
+.composer textarea:focus {
+  outline: none;
+}
+
+.composer-meta-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.composer-input-shell {
+  display: grid;
+  gap: 0.55rem;
+  border: 1px solid #c8d3e9;
+  border-radius: 14px;
+  background: #fff;
+}
+
+.composer-input-shell:focus-within {
+  border-color: #2759d6;
+  box-shadow: 0 0 0 3px rgba(39, 89, 214, 0.12);
 }
 
 .composer-controls {
   display: flex;
   gap: 0.55rem;
   align-items: center;
-  justify-content: flex-end;
+  justify-content: space-between;
+  padding: 0.25rem 0.65rem 0.65rem;
+  border-top: 1px solid #eef2fa;
 }
 
 .composer-count {
-  margin-right: auto;
+  margin: 0;
   color: #6a7692;
   font-size: 0.82rem;
+}
+
+.composer-tool-buttons {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.composer-icon-btn {
+  width: 2.35rem;
+  height: 2.35rem;
+  border: 1px solid #d1daed;
+  border-radius: 10px;
+  background: #f8fbff;
+  color: #36548d;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition:
+    border-color 140ms ease,
+    background 140ms ease,
+    color 140ms ease,
+    box-shadow 140ms ease;
+}
+
+.composer-icon-btn:hover:not(:disabled) {
+  border-color: #b9cae9;
+  background: #eef4ff;
+}
+
+.composer-icon-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.composer-icon-btn svg {
+  width: 1.05rem;
+  height: 1.05rem;
+}
+
+.composer-send-btn {
+  background: #1556c7;
+  border-color: #1556c7;
+  color: #fff;
+  box-shadow: 0 8px 18px rgba(21, 86, 199, 0.2);
+}
+
+.composer-send-btn:hover:not(:disabled) {
+  border-color: #0f4cae;
+  background: #0f4cae;
+}
+
+.composer-cancel-btn {
+  background: #fff8f8;
+  border-color: #f0d0d0;
+  color: #8a2d2d;
 }
 
 .talk-workspace-drag-over {
@@ -2272,7 +2417,7 @@ a {
   display: flex;
   flex-wrap: wrap;
   gap: 0.4rem;
-  padding: 0 0.2rem;
+  padding: 0 0.9rem 0.15rem;
 }
 
 .composer-attachment-chip {
@@ -2630,6 +2775,10 @@ a {
     flex-direction: column;
   }
 
+  .talk-page-topbar {
+    flex-direction: column;
+  }
+
   .talk-title-input {
     width: 100%;
     font-size: 1.6rem;
@@ -2641,8 +2790,12 @@ a {
   }
 
   .composer-controls {
+    padding-bottom: 0.55rem;
+  }
+
+  .composer-meta-row {
     flex-wrap: wrap;
-    justify-content: flex-start;
+    align-items: flex-start;
   }
 
   .settings-form-grid,
@@ -3085,9 +3238,13 @@ a {
 }
 
 .main-thread-item-title {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
   font-weight: 600;
   font-size: 0.86rem;
   color: #1f2a44;
+  min-width: 0;
 }
 
 .main-thread-item-meta {
@@ -3162,6 +3319,92 @@ a {
   margin: 0;
   font-size: 0.78rem;
   color: #c0392b;
+}
+
+.thread-row-title-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  min-width: 0;
+}
+
+.thread-row-title-input {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid #c4d0e8;
+  border-radius: 8px;
+  padding: 0.4rem 0.6rem;
+  font: inherit;
+  font-size: 0.86rem;
+  font-weight: 600;
+  color: #1f2a44;
+  background: #fff;
+}
+
+.thread-row-title-input:focus {
+  outline: none;
+  border-color: #2759d6;
+}
+
+.thread-row-title-error {
+  margin: 0;
+  font-size: 0.75rem;
+  color: #c0392b;
+}
+
+.thread-pin-icon {
+  display: inline-flex;
+  width: 0.8rem;
+  height: 0.8rem;
+  color: #2759d6;
+  flex: 0 0 auto;
+}
+
+.thread-pin-icon svg {
+  width: 100%;
+  height: 100%;
+}
+
+.thread-context-menu {
+  position: fixed;
+  z-index: 40;
+  min-width: 11rem;
+  padding: 0.35rem;
+  border: 1px solid #d8dfec;
+  border-radius: 10px;
+  background: #fff;
+  box-shadow: 0 18px 42px rgba(31, 42, 68, 0.18);
+}
+
+.thread-context-menu-item {
+  display: block;
+  width: 100%;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  padding: 0.55rem 0.7rem;
+  text-align: left;
+  font: inherit;
+  font-size: 0.85rem;
+  color: #1f2a44;
+  cursor: pointer;
+}
+
+.thread-context-menu-item:hover:not(:disabled) {
+  background: #edf1fa;
+}
+
+.thread-context-menu-item:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.thread-context-menu-item-danger {
+  color: #b63a3a;
+}
+
+.thread-context-menu-item-danger:hover:not(:disabled) {
+  background: #fff1f1;
 }
 
 /* Timeline */
@@ -3410,9 +3653,13 @@ a {
 }
 
 .talk-thread-item-title {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
   font-size: 0.86rem;
   font-weight: 600;
   color: #1f2a44;
+  min-width: 0;
 }
 
 .talk-thread-item-meta {
@@ -3430,17 +3677,27 @@ a {
   background: #fff;
 }
 
+.talk-thread-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: grid;
+  align-content: start;
+  gap: 0.75rem;
+  padding: 0.9rem 1.1rem 1rem;
+}
+
 .talk-thread-detail-header {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
   gap: 1rem;
-  padding: 1rem 1.1rem 0.85rem;
-  border-bottom: 1px solid #e8ecf4;
+  padding: 0;
+  border-bottom: 0;
 }
 
 .talk-thread-detail-header h2 {
-  margin: 0 0 0.35rem;
+  margin: 0 0 0.25rem;
   font-size: 1rem;
   color: #1f2a44;
 }
@@ -3450,7 +3707,7 @@ a {
 }
 
 .talk-ordered-progress {
-  margin: 0 1.1rem 0.9rem;
+  margin: 0;
   border: 1px solid #d4e0f6;
   border-radius: 999px;
   padding: 0.45rem 0.8rem;
@@ -3461,9 +3718,9 @@ a {
 }
 
 .talk-thread-timeline {
-  flex: 1;
-  min-height: 0;
-  overflow-y: auto;
+  flex: initial;
+  min-height: 280px;
+  overflow: visible;
 }
 
 /* ── Talk Onboarding Banner ── */
@@ -3494,6 +3751,21 @@ a {
 }
 
 @media (max-width: 768px) {
+  .talk-page-topbar {
+    align-items: stretch;
+  }
+
+  .talk-tabs-stack {
+    width: 100%;
+    justify-items: start;
+  }
+
+  .talk-tabs-row,
+  .talk-subtabs-row,
+  .talk-tabs {
+    justify-content: flex-start;
+  }
+
   .talk-thread-shell {
     flex-direction: column;
   }

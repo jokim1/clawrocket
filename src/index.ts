@@ -58,6 +58,7 @@ import {
 import { ChannelDeliveryWorker } from './clawrocket/channels/channel-delivery-worker.js';
 import { ChannelIngressWorker } from './clawrocket/channels/channel-ingress-worker.js';
 import { TalkChannelRouter } from './clawrocket/channels/channel-router.js';
+import { ConnectionHealthMonitor } from './clawrocket/channels/connection-health-monitor.js';
 import { TalkLifecycleWakeBus } from './clawrocket/channels/talk-lifecycle-wake-bus.js';
 import { registerClawrocketSchedulerMaintenanceHook } from './clawrocket/scheduler-maintenance.js';
 import { GroupQueue } from './group-queue.js';
@@ -541,6 +542,7 @@ async function main(): Promise<void> {
     | undefined;
   let channelIngressWorker: ChannelIngressWorker | undefined;
   let channelDeliveryWorker: ChannelDeliveryWorker | undefined;
+  let connectionHealthMonitor: ConnectionHealthMonitor | undefined;
   let shutdownPromise: Promise<void> | null = null;
   let signalHandlersInstalled = false;
   const talkLifecycleBus = new TalkLifecycleWakeBus();
@@ -591,6 +593,18 @@ async function main(): Promise<void> {
           logger.error(
             { err: error, reason },
             'Failed to stop talk channel delivery worker',
+          );
+        }
+      }
+
+      if (connectionHealthMonitor) {
+        try {
+          await connectionHealthMonitor.stop();
+        } catch (error) {
+          releaseError = releaseError ?? error;
+          logger.error(
+            { err: error, reason },
+            'Failed to stop connection health monitor',
           );
         }
       }
@@ -773,6 +787,19 @@ async function main(): Promise<void> {
       }
       if (channelDeliveryWorker) {
         await channelDeliveryWorker.start();
+      }
+
+      // Start connection health monitor for the Telegram channel
+      const telegramChannelInstance = channels.find((ch) => ch.name === 'telegram');
+      if (telegramChannelInstance && 'probe' in telegramChannelInstance) {
+        connectionHealthMonitor = new ConnectionHealthMonitor({
+          connectionId: telegramConnection.id,
+          probe: async () => {
+            await (telegramChannelInstance as { probe: () => Promise<void> }).probe();
+          },
+          pollMs: 60_000,
+        });
+        await connectionHealthMonitor.start();
       }
 
       // Initialize Telegram bot pool for agent teams

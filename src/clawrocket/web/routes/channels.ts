@@ -1,4 +1,5 @@
 import {
+  clearBindingQuarantine,
   createTalkChannelBinding,
   deleteChannelDeliveryOutboxRow,
   deleteChannelIngressQueueRow,
@@ -9,11 +10,19 @@ import {
   listChannelDeliveryFailures,
   listChannelIngressFailures,
   listTalkChannelBindingsForTalk,
+  quarantineBinding,
   retryChannelDeliveryFailure,
+  retryChannelDeliveryFailuresCapped,
   retryChannelIngressFailure,
   searchChannelTargets,
+  updateBindingDeliveryResult,
+  updateConnectionProbeResult,
   updateTalkChannelBinding,
 } from '../../db/index.js';
+import {
+  diagnoseBinding,
+  type BindingDiagnosis,
+} from '../../channels/channel-diagnosis.js';
 import { canEditTalk } from '../middleware/acl.js';
 import { ApiEnvelope, AuthContext } from '../types.js';
 import { getTalkForUser } from '../../db/index.js';
@@ -24,6 +33,7 @@ export interface TalkChannelBindingApiRecord {
   connectionId: string;
   platform: 'telegram' | 'slack';
   connectionDisplayName: string;
+  connectionHealthStatus: string;
   targetKind: string;
   targetId: string;
   displayName: string;
@@ -39,8 +49,15 @@ export interface TalkChannelBindingApiRecord {
   maxDeferredAgeMinutes: number;
   pendingIngressCount: number;
   deferredIngressCount: number;
+  deadLetterCount: number;
+  unresolvedIngressCount: number;
+  lastIngressAt: string | null;
+  lastDeliveryAt: string | null;
   lastIngressReasonCode: string | null;
   lastDeliveryReasonCode: string | null;
+  healthQuarantined: boolean;
+  healthQuarantineCode: string | null;
+  diagnosis: BindingDiagnosis;
 }
 
 const manualIngressRetryTimestamps = new Map<string, number[]>();
@@ -103,6 +120,7 @@ function toBindingApiRecord(
     connectionId: record.connection_id,
     platform: record.platform,
     connectionDisplayName: record.connection_display_name,
+    connectionHealthStatus: record.connection_health_status,
     targetKind: record.target_kind,
     targetId: record.target_id,
     displayName: record.display_name,
@@ -118,8 +136,25 @@ function toBindingApiRecord(
     maxDeferredAgeMinutes: record.max_deferred_age_minutes,
     pendingIngressCount: record.pending_ingress_count,
     deferredIngressCount: record.deferred_ingress_count,
+    deadLetterCount: record.dead_letter_count,
+    unresolvedIngressCount: record.unresolved_ingress_count,
+    lastIngressAt: record.last_ingress_at,
+    lastDeliveryAt: record.last_delivery_at,
     lastIngressReasonCode: record.last_ingress_reason_code,
     lastDeliveryReasonCode: record.last_delivery_reason_code,
+    healthQuarantined: record.health_quarantined === 1,
+    healthQuarantineCode: record.health_quarantine_code,
+    diagnosis: diagnoseBinding({
+      active: record.active,
+      healthQuarantined: record.health_quarantined,
+      healthQuarantineCode: record.health_quarantine_code,
+      connectionHealthStatus: record.connection_health_status,
+      deadLetterCount: record.dead_letter_count,
+      unresolvedIngressCount: record.unresolved_ingress_count,
+      responseMode: record.response_mode,
+      lastIngressAt: record.last_ingress_at,
+      lastDeliveryAt: record.last_delivery_at,
+    }),
   };
 }
 
@@ -578,15 +613,25 @@ export function testTalkChannelBindingRoute(input: {
   }
   return input
     .sendTestMessage(input.bindingId, 'This is a test from ClawRocket.')
-    .then(() => ({
-      statusCode: 200,
-      body: {
-        ok: true,
-        data: {
-          sent: true,
+    .then(() => {
+      // A successful test send proves the binding and connection work.
+      // Update last_delivery_at so diagnosis moves out of "No activity yet",
+      // and reset the connection probe state so the delivery worker stops
+      // deferring for connection_unreachable.
+      updateBindingDeliveryResult(input.bindingId, {
+        lastDeliveryAt: new Date().toISOString(),
+      });
+      updateConnectionProbeResult(binding.connection_id, true);
+      return {
+        statusCode: 200,
+        body: {
+          ok: true,
+          data: {
+            sent: true,
+          },
         },
-      },
-    }))
+      };
+    })
     .catch((error: unknown) => ({
       statusCode: 502,
       body: {
@@ -598,4 +643,113 @@ export function testTalkChannelBindingRoute(input: {
         },
       },
     }));
+}
+
+export async function unquarantineTalkChannelBindingRoute(input: {
+  auth: AuthContext;
+  talkId: string;
+  bindingId: string;
+  sendTestMessage?: (bindingId: string, text: string) => Promise<void>;
+}) {
+  const talk = getTalkForUser(input.talkId, input.auth.userId);
+  if (!talk) {
+    return notFound('Talk not found.');
+  }
+  if (!canEditTalk(input.talkId, input.auth.userId, input.auth.role)) {
+    return forbidden(
+      'You do not have permission to unquarantine this binding.',
+    );
+  }
+  const binding = getTalkChannelBindingById(input.bindingId);
+  if (!binding || binding.talk_id !== input.talkId) {
+    return notFound('Talk channel binding not found.');
+  }
+  if (!input.sendTestMessage) {
+    return {
+      statusCode: 501,
+      body: {
+        ok: false,
+        error: {
+          code: 'channel_test_unavailable',
+          message: 'Test-send is not available in this runtime.',
+        },
+      },
+    };
+  }
+
+  try {
+    await input.sendTestMessage(
+      input.bindingId,
+      'This is a test from ClawRocket — reconnecting channel.',
+    );
+    clearBindingQuarantine(input.bindingId);
+    updateBindingDeliveryResult(input.bindingId, {
+      lastDeliveryAt: new Date().toISOString(),
+    });
+    // A successful send proves the connection is reachable — reset probe state
+    // so the delivery worker stops deferring and diagnosis shows healthy.
+    updateConnectionProbeResult(binding.connection_id, true);
+    return {
+      statusCode: 200,
+      body: {
+        ok: true,
+        data: { unquarantined: true },
+      },
+    };
+  } catch (error) {
+    const code =
+      error && typeof error === 'object' && 'code' in error
+        ? String((error as { code: string }).code)
+        : 'test_failed';
+    const message =
+      error instanceof Error ? error.message : 'Channel test send failed';
+    const errorAt = new Date().toISOString();
+    quarantineBinding(input.bindingId, code);
+    updateBindingDeliveryResult(input.bindingId, {
+      errorCode: code,
+      errorDetail: message,
+      errorAt,
+    });
+    return {
+      statusCode: 502,
+      body: {
+        ok: false,
+        error: { code, message },
+      },
+    };
+  }
+}
+
+export function retryTalkChannelDeliveryFailuresCappedRoute(input: {
+  auth: AuthContext;
+  talkId: string;
+  bindingId: string;
+  maxAgeMins?: number;
+  maxCount?: number;
+}) {
+  const talk = getTalkForUser(input.talkId, input.auth.userId);
+  if (!talk) {
+    return notFound('Talk not found.');
+  }
+  if (!canEditTalk(input.talkId, input.auth.userId, input.auth.role)) {
+    return forbidden(
+      'You do not have permission to retry delivery failures.',
+    );
+  }
+  const binding = getTalkChannelBindingById(input.bindingId);
+  if (!binding || binding.talk_id !== input.talkId) {
+    return notFound('Talk channel binding not found.');
+  }
+  const result = retryChannelDeliveryFailuresCapped({
+    bindingId: input.bindingId,
+    maxAgeMins: input.maxAgeMins,
+    maxCount: input.maxCount,
+  });
+  return {
+    statusCode: 200,
+    body: {
+      ok: true,
+      data: result,
+    },
+  };
 }
