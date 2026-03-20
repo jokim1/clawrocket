@@ -200,6 +200,8 @@ import {
   uploadTalkAttachmentRoute,
 } from './routes/talk-attachments.js';
 import {
+  listChannelConnectionsRoute,
+  listChannelTargetsRoute,
   listTalkChannelsRoute,
   createTalkChannelRoute,
   patchTalkChannelRoute,
@@ -2919,6 +2921,65 @@ function buildApp(opts: WebServerOptions): Hono {
     const result = listTalkAgentsRoute({
       talkId,
       auth,
+    });
+    return new Response(JSON.stringify(result.body), {
+      status: result.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
+  });
+
+  app.get('/api/v1/channel-connections', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+
+    const rateResult = checkRateLimit({ userId: auth.userId, bucket: 'read' });
+    if (!rateResult.allowed) {
+      return rateLimitedResponse(c, rateResult);
+    }
+
+    const result = listChannelConnectionsRoute({ auth });
+    return new Response(JSON.stringify(result.body), {
+      status: result.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
+  });
+
+  app.get('/api/v1/channel-connections/:connectionId/targets', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+
+    const rateResult = checkRateLimit({ userId: auth.userId, bucket: 'read' });
+    if (!rateResult.allowed) {
+      return rateLimitedResponse(c, rateResult);
+    }
+
+    const encodedConnectionId = c.req.param('connectionId');
+    const connectionId = safeDecodePathSegment(encodedConnectionId);
+    if (!connectionId) {
+      return c.json(
+        {
+          ok: false,
+          error: {
+            code: 'invalid_connection_id',
+            message: 'Connection ID path segment is not valid URL encoding',
+          },
+        },
+        400,
+      );
+    }
+
+    const query = c.req.query('query');
+    const rawLimit = c.req.query('limit');
+    const parsedLimit =
+      rawLimit && rawLimit.trim()
+        ? Number.parseInt(rawLimit.trim(), 10)
+        : undefined;
+
+    const result = listChannelTargetsRoute({
+      auth,
+      connectionId,
+      query,
+      limit: Number.isFinite(parsedLimit) ? parsedLimit : undefined,
     });
     return new Response(JSON.stringify(result.body), {
       status: result.statusCode,

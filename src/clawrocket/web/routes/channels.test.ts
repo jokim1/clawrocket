@@ -2,6 +2,8 @@ import { beforeEach, describe, expect, it } from 'vitest';
 
 import {
   _initTestDatabase,
+  ensureSystemManagedTelegramConnection,
+  upsertChannelTarget,
   upsertTalk,
   upsertTalkMember,
   upsertUser,
@@ -55,6 +57,22 @@ describe('talk channel routes', () => {
       expiresAt: new Date(Date.now() + 60_000).toISOString(),
     });
 
+    upsertWebSession({
+      id: 's-viewer',
+      userId: 'viewer-1',
+      accessTokenHash: hashSessionToken('viewer-token'),
+      refreshTokenHash: hashSessionToken('viewer-refresh'),
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+    });
+
+    ensureSystemManagedTelegramConnection();
+    upsertChannelTarget({
+      connectionId: 'channel-conn:telegram:system',
+      targetKind: 'chat',
+      targetId: 'tg:chat:123',
+      displayName: 'Gamemakers Chat',
+    });
+
     server = createWebServer({
       host: '127.0.0.1',
       port: 0,
@@ -83,5 +101,57 @@ describe('talk channel routes', () => {
     const body = (await res.json()) as any;
     expect(body.ok).toBe(false);
     expect(body.error.code).toBe('unauthorized');
+  });
+
+  it('lists channel connections for owners', async () => {
+    const res = await server.request('/api/v1/channel-connections', {
+      method: 'GET',
+      headers: authHeaders('owner-token'),
+    });
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as any;
+    expect(body.ok).toBe(true);
+    expect(body.data.connections).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: 'channel-conn:telegram:system',
+          platform: 'telegram',
+        }),
+      ]),
+    );
+  });
+
+  it('forbids channel connection listing for non-admin talk members', async () => {
+    const res = await server.request('/api/v1/channel-connections', {
+      method: 'GET',
+      headers: authHeaders('viewer-token'),
+    });
+
+    expect(res.status).toBe(403);
+    const body = (await res.json()) as any;
+    expect(body.ok).toBe(false);
+    expect(body.error.code).toBe('forbidden');
+  });
+
+  it('lists cached channel targets for owners', async () => {
+    const res = await server.request(
+      '/api/v1/channel-connections/channel-conn%3Atelegram%3Asystem/targets?query=game',
+      {
+        method: 'GET',
+        headers: authHeaders('owner-token'),
+      },
+    );
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as any;
+    expect(body.ok).toBe(true);
+    expect(body.data.targets).toEqual([
+      expect.objectContaining({
+        connection_id: 'channel-conn:telegram:system',
+        target_id: 'tg:chat:123',
+        display_name: 'Gamemakers Chat',
+      }),
+    ]);
   });
 });
