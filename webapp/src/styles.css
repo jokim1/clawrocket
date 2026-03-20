@@ -2188,6 +2188,12 @@ a {
   text-decoration: underline;
 }
 
+.run-history-context-toggle {
+  justify-self: start;
+  padding: 0.4rem 0.7rem;
+  font-size: 0.8rem;
+}
+
 .run-history-muted {
   font-size: 0.8rem;
   color: #66728d;
@@ -2293,8 +2299,12 @@ a {
   border-radius: 14px 14px 0 0;
   padding: 0.85rem 0.9rem 0;
   font-size: 0.95rem;
+  font-family: inherit;
+  line-height: 1.45;
   resize: none;
-  min-height: 96px;
+  min-height: 48px;
+  max-height: 240px;
+  overflow-y: hidden;
   background: transparent;
 }
 
@@ -2525,16 +2535,11 @@ a {
   font-size: 0.72rem;
 }
 
-.run-context-block {
-  margin-top: 0.65rem;
-}
-
-.message-context-toggle {
-  font-size: 0.8rem;
+.run-context-shell {
+  margin-top: 0.55rem;
 }
 
 .run-context-panel {
-  margin-top: 0.55rem;
   border: 1px solid #d8e0ef;
   border-radius: 8px;
   background: #f8fbff;
