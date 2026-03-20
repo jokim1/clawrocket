@@ -42,6 +42,9 @@ import type {
   RegisteredAgent,
 } from '../lib/api';
 
+const ORCHESTRATION_MODE_TOOLTIP =
+  'Ordered is turn based synthesis focused multi-agent response. Parallel is fast independent response.';
+
 vi.mock('../lib/talkStream', () => ({
   openTalkStream: vi.fn(),
 }));
@@ -123,7 +126,14 @@ describe('TalkDetailPage', () => {
       within(statusPills).getByText('GPT-5 Mini (Critic)').parentElement
         ?.className,
     ).toContain('talk-status-pill-invalid');
-    expect(screen.getByLabelText('Response mode')).toHaveValue('ordered');
+    const responseModeButton = screen.getByRole('button', {
+      name: /Response mode, Ordered/i,
+    });
+    expect(responseModeButton).toBeTruthy();
+    expect(responseModeButton).toHaveAttribute(
+      'title',
+      ORCHESTRATION_MODE_TOOLTIP,
+    );
     const composerMeta = screen
       .getByText('Only the selected agent will respond.')
       .closest('.composer-meta-row') as HTMLElement | null;
@@ -183,7 +193,9 @@ describe('TalkDetailPage', () => {
     renderDetailPage('/app/talks/talk-1');
 
     await screen.findByPlaceholderText('Send a message to this thread');
-    expect(screen.queryByLabelText('Response mode')).toBeNull();
+    expect(
+      screen.queryByRole('button', { name: /Response mode/i }),
+    ).toBeNull();
   });
 
   it('uses the shared new-thread button and supports inline thread renaming', async () => {
@@ -241,8 +253,18 @@ describe('TalkDetailPage', () => {
 
     renderDetailPage('/app/talks/talk-1');
 
-    await screen.findByText('Older thread');
-    fireEvent.contextMenu(screen.getByText('Older thread'));
+    const threadRail = await screen.findByLabelText('Talk threads');
+    await within(threadRail).findByText('Older thread');
+    const olderThread = within(threadRail)
+      .getAllByRole('button')
+      .find(
+        (button) =>
+          button.className.includes('talk-thread-item') &&
+          within(button).queryByText('Older thread'),
+      );
+    expect(olderThread).toBeTruthy();
+    fireEvent.mouseDown(olderThread!, { button: 2, clientX: 24, clientY: 36 });
+    fireEvent.contextMenu(olderThread!, { clientX: 24, clientY: 36 });
     await user.click(screen.getByRole('menuitem', { name: 'Pin' }));
 
     await waitFor(() => {
@@ -276,7 +298,20 @@ describe('TalkDetailPage', () => {
 
     const threadRail = await screen.findByLabelText('Talk threads');
     await within(threadRail).findByText('Delete me');
-    fireEvent.contextMenu(within(threadRail).getByText('Delete me'));
+    const deleteThreadButton = within(threadRail)
+      .getAllByRole('button')
+      .find(
+        (button) =>
+          button.className.includes('talk-thread-item') &&
+          within(button).queryByText('Delete me'),
+      );
+    expect(deleteThreadButton).toBeTruthy();
+    fireEvent.mouseDown(deleteThreadButton!, {
+      button: 2,
+      clientX: 24,
+      clientY: 36,
+    });
+    fireEvent.contextMenu(deleteThreadButton!, { clientX: 24, clientY: 36 });
     await user.click(screen.getByRole('menuitem', { name: 'Delete thread' }));
 
     await waitFor(() => {
@@ -309,7 +344,20 @@ describe('TalkDetailPage', () => {
 
     const threadRail = await screen.findByLabelText('Talk threads');
     await within(threadRail).findByText('Keep me');
-    fireEvent.contextMenu(within(threadRail).getByText('Keep me'));
+    const keepThreadButton = within(threadRail)
+      .getAllByRole('button')
+      .find(
+        (button) =>
+          button.className.includes('talk-thread-item') &&
+          within(button).queryByText('Keep me'),
+      );
+    expect(keepThreadButton).toBeTruthy();
+    fireEvent.mouseDown(keepThreadButton!, {
+      button: 2,
+      clientX: 24,
+      clientY: 36,
+    });
+    fireEvent.contextMenu(keepThreadButton!, { clientX: 24, clientY: 36 });
     await user.click(screen.getByRole('menuitem', { name: 'Delete thread' }));
 
     expect(within(threadRail).getByText('Keep me')).toBeTruthy();
@@ -1365,7 +1413,10 @@ describe('TalkDetailPage', () => {
       ),
     ).toBeTruthy();
 
-    await user.selectOptions(screen.getByLabelText('Response mode'), 'panel');
+    await user.click(
+      screen.getByRole('button', { name: /Response mode, Ordered/i }),
+    );
+    await user.click(screen.getByRole('menuitemradio', { name: 'Parallel' }));
     await waitFor(() =>
       expect(
         screen.getByText('Selected agents will each respond independently.'),

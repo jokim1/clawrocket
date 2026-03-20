@@ -12,6 +12,7 @@ import { CSS } from '@dnd-kit/utilities';
 import {
   FormEvent,
   KeyboardEvent as ReactKeyboardEvent,
+  type MouseEvent as ReactMouseEvent,
   type ReactNode,
   useCallback,
   useEffect,
@@ -163,6 +164,19 @@ type TabKey =
   | 'data-connectors'
   | 'runs';
 
+type TalkOrchestrationMode = Talk['orchestrationMode'];
+
+const ORCHESTRATION_MODE_OPTIONS: ReadonlyArray<{
+  value: TalkOrchestrationMode;
+  label: string;
+}> = [
+  { value: 'ordered', label: 'Ordered' },
+  { value: 'panel', label: 'Parallel' },
+];
+
+const ORCHESTRATION_MODE_TOOLTIP =
+  'Ordered is turn based synthesis focused multi-agent response. Parallel is fast independent response.';
+
 const SETTINGS_TAB_KEYS: ReadonlyArray<
   Extract<
     TabKey,
@@ -172,6 +186,10 @@ const SETTINGS_TAB_KEYS: ReadonlyArray<
 
 function isSettingsTabKey(tab: TabKey): boolean {
   return SETTINGS_TAB_KEYS.includes(tab as (typeof SETTINGS_TAB_KEYS)[number]);
+}
+
+function getOrchestrationModeLabel(mode: TalkOrchestrationMode): string {
+  return mode === 'ordered' ? 'Ordered' : 'Parallel';
 }
 
 type RunView = TalkRun & {
@@ -1555,6 +1573,59 @@ function ThreadPinIcon(): JSX.Element {
   );
 }
 
+function OrchestrationModeIcon(): JSX.Element {
+  return (
+    <svg viewBox="0 0 16 16" focusable="false" aria-hidden="true">
+      <path
+        d="M2.25 4.5A1.75 1.75 0 0 1 4 2.75h5.25A1.75 1.75 0 0 1 11 4.5v1.75A1.75 1.75 0 0 1 9.25 8H6.64L3.8 10.12a.5.5 0 0 1-.8-.4V8.97A1.75 1.75 0 0 1 2.25 7.3V4.5Z"
+        fill="none"
+        stroke="currentColor"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth="1.25"
+      />
+      <path
+        d="M6.25 6.75h5.25A1.25 1.25 0 0 1 12.75 8v1.1A1.25 1.25 0 0 1 11.5 10.35H9.52l-1.97 1.47a.5.5 0 0 1-.8-.4v-1.1"
+        fill="none"
+        stroke="currentColor"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth="1.25"
+      />
+    </svg>
+  );
+}
+
+function OrchestrationChevronIcon(): JSX.Element {
+  return (
+    <svg viewBox="0 0 16 16" focusable="false" aria-hidden="true">
+      <path
+        d="m4.25 6.5 3.75 3.5 3.75-3.5"
+        fill="none"
+        stroke="currentColor"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth="1.4"
+      />
+    </svg>
+  );
+}
+
+function OrchestrationCheckIcon(): JSX.Element {
+  return (
+    <svg viewBox="0 0 16 16" focusable="false" aria-hidden="true">
+      <path
+        d="M3.5 8.25 6.4 11.1 12.5 5"
+        fill="none"
+        stroke="currentColor"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth="1.5"
+      />
+    </svg>
+  );
+}
+
 function ComposerAttachIcon(): JSX.Element {
   return (
     <svg viewBox="0 0 16 16" focusable="false" aria-hidden="true">
@@ -2107,6 +2178,7 @@ export function TalkDetailPage({
   const activeThreadIdRef = useRef<string | null>(null);
   const threadStateRef = useRef<ThreadListState>(threadState);
   const searchQueryRef = useRef(searchQuery);
+  const orchestrationMenuRef = useRef<HTMLDivElement | null>(null);
   const [agents, setAgents] = useState<TalkAgent[]>([]);
   const [agentDrafts, setAgentDrafts] = useState<TalkAgent[]>([]);
   const [aiAgentsData, setAiAgentsData] = useState<AiAgentsPageData | null>(
@@ -2162,6 +2234,7 @@ export function TalkDetailPage({
     status: 'idle' | 'saving' | 'error';
     message?: string;
   }>({ status: 'idle' });
+  const [orchestrationMenuOpen, setOrchestrationMenuOpen] = useState(false);
   const [projectPathDraft, setProjectPathDraft] = useState('');
   const [projectPathState, setProjectPathState] = useState<{
     status: 'idle' | 'saving' | 'error' | 'success';
@@ -3145,15 +3218,47 @@ export function TalkDetailPage({
       }, {}),
     [effectiveAgents],
   );
-  const orchestrationMode =
+  const orchestrationMode: TalkOrchestrationMode =
     state.kind === 'ready' && state.talk
       ? state.talk.orchestrationMode
       : 'ordered';
+  const orchestrationModeLabel = getOrchestrationModeLabel(orchestrationMode);
   useEffect(() => {
     if (state.kind !== 'ready' || !state.talk) return;
     setProjectPathDraft(state.talk.projectPath ?? '');
   }, [state.kind, state.talk]);
   const showOrchestrationSelector = agents.length >= 2;
+  useEffect(() => {
+    if (showOrchestrationSelector && orchestrationState.status !== 'saving') {
+      return;
+    }
+    setOrchestrationMenuOpen(false);
+  }, [orchestrationState.status, showOrchestrationSelector]);
+  useEffect(() => {
+    if (!orchestrationMenuOpen) return;
+
+    const handlePointerDown = (event: MouseEvent) => {
+      if (
+        orchestrationMenuRef.current &&
+        !orchestrationMenuRef.current.contains(event.target as Node)
+      ) {
+        setOrchestrationMenuOpen(false);
+      }
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setOrchestrationMenuOpen(false);
+      }
+    };
+
+    document.addEventListener('mousedown', handlePointerDown);
+    document.addEventListener('keydown', handleKeyDown);
+
+    return () => {
+      document.removeEventListener('mousedown', handlePointerDown);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [orchestrationMenuOpen]);
   const selectedTargetAgents = useMemo(
     () => effectiveAgents.filter((agent) => targetAgentIds.includes(agent.id)),
     [effectiveAgents, targetAgentIds],
@@ -5647,8 +5752,35 @@ export function TalkDetailPage({
     [currentTab, navigate, talkId],
   );
 
+  const openThreadMenu = useCallback(
+    (threadId: string, x: number, y: number) => {
+      if (!canEditAgents) return;
+      setThreadMenu({ threadId, x, y });
+    },
+    [canEditAgents],
+  );
+
+  const handleThreadSecondaryClick = useCallback(
+    (threadId: string) => (event: ReactMouseEvent<HTMLElement>) => {
+      if (event.button !== 2) return;
+      event.preventDefault();
+      event.stopPropagation();
+      openThreadMenu(threadId, event.clientX, event.clientY);
+    },
+    [openThreadMenu],
+  );
+
+  const handleThreadContextMenu = useCallback(
+    (threadId: string) => (event: ReactMouseEvent<HTMLElement>) => {
+      event.preventDefault();
+      event.stopPropagation();
+      openThreadMenu(threadId, event.clientX, event.clientY);
+    },
+    [openThreadMenu],
+  );
+
   const handleOrchestrationModeChange = useCallback(
-    async (nextMode: 'ordered' | 'panel') => {
+    async (nextMode: TalkOrchestrationMode) => {
       if (state.kind !== 'ready' || !state.talk) return;
       if (state.talk.orchestrationMode === nextMode) return;
 
@@ -6581,23 +6713,84 @@ export function TalkDetailPage({
                       </Link>
                     </nav>
                     {showOrchestrationSelector ? (
-                      <label className="talk-orchestration-picker">
-                        <span>Response mode</span>
-                        <select
-                          value={orchestrationMode}
-                          onChange={(event) =>
-                            void handleOrchestrationModeChange(
-                              event.target.value as 'ordered' | 'panel',
-                            )
+                      <div
+                        className="talk-orchestration-menu"
+                        ref={orchestrationMenuRef}
+                      >
+                        <button
+                          type="button"
+                          className={`talk-orchestration-trigger${
+                            orchestrationMenuOpen
+                              ? ' talk-orchestration-trigger-open'
+                              : ''
+                          }`}
+                          onClick={() =>
+                            setOrchestrationMenuOpen((current) => !current)
                           }
+                          aria-expanded={orchestrationMenuOpen}
+                          aria-haspopup="menu"
+                          aria-label={`Response mode, ${orchestrationModeLabel}`}
+                          title={ORCHESTRATION_MODE_TOOLTIP}
                           disabled={orchestrationState.status === 'saving'}
                         >
-                          <option value="ordered">Ordered Responses</option>
-                          <option value="panel">
-                            Parallel Responses (Quick)
-                          </option>
-                        </select>
-                      </label>
+                          <span
+                            className="talk-orchestration-trigger-icon"
+                            aria-hidden="true"
+                          >
+                            <OrchestrationModeIcon />
+                          </span>
+                          <span className="talk-orchestration-trigger-text">
+                            {orchestrationModeLabel}
+                          </span>
+                          <span
+                            className="talk-orchestration-trigger-chevron"
+                            aria-hidden="true"
+                          >
+                            <OrchestrationChevronIcon />
+                          </span>
+                        </button>
+                        {orchestrationMenuOpen ? (
+                          <div
+                            className="talk-orchestration-dropdown"
+                            role="menu"
+                            aria-label="Response mode options"
+                          >
+                            {ORCHESTRATION_MODE_OPTIONS.map((option) => {
+                              const selected =
+                                orchestrationMode === option.value;
+                              return (
+                                <button
+                                  type="button"
+                                  key={option.value}
+                                  className={`talk-orchestration-option${
+                                    selected
+                                      ? ' talk-orchestration-option-selected'
+                                      : ''
+                                  }`}
+                                  role="menuitemradio"
+                                  aria-checked={selected}
+                                  onClick={() => {
+                                    setOrchestrationMenuOpen(false);
+                                    void handleOrchestrationModeChange(
+                                      option.value,
+                                    );
+                                  }}
+                                >
+                                  <span>{option.label}</span>
+                                  {selected ? (
+                                    <span
+                                      className="talk-orchestration-option-check"
+                                      aria-hidden="true"
+                                    >
+                                      <OrchestrationCheckIcon />
+                                    </span>
+                                  ) : null}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        ) : null}
+                      </div>
                     ) : null}
                     <Link to="/app/talks" className="talk-page-back-link">
                       Back
@@ -6691,12 +6884,6 @@ export function TalkDetailPage({
                     );
                   })}
                 </div>
-              ) : null}
-              {showOrchestrationSelector ? (
-                <p className="policy-muted talk-orchestration-hint">
-                  Ordered mode is the default for synthesis-focused multi-agent
-                  talks. Switch to parallel for faster independent responses.
-                </p>
               ) : null}
               {orchestrationState.status === 'error' ? (
                 <p className="talk-thread-search-error" role="alert">
@@ -10175,18 +10362,7 @@ export function TalkDetailPage({
                 ) : (
                   <ul className="talk-thread-items">
                     {sortedThreads.map((thread) => (
-                      <li
-                        key={thread.id}
-                        onContextMenu={(event) => {
-                          if (!canEditAgents) return;
-                          event.preventDefault();
-                          setThreadMenu({
-                            threadId: thread.id,
-                            x: event.clientX,
-                            y: event.clientY,
-                          });
-                        }}
-                      >
+                      <li key={thread.id}>
                         {editingThreadId === thread.id ? (
                           <div
                             className={`talk-thread-item${
@@ -10194,6 +10370,8 @@ export function TalkDetailPage({
                                 ? ' talk-thread-item-active'
                                 : ''
                             } talk-thread-item-editing`}
+                            onMouseDown={handleThreadSecondaryClick(thread.id)}
+                            onContextMenu={handleThreadContextMenu(thread.id)}
                           >
                             <ThreadRowTitleEditor
                               title={formatThreadLabel(thread)}
@@ -10226,6 +10404,8 @@ export function TalkDetailPage({
                                 : ''
                             }`}
                             onClick={() => handleSelectThread(thread.id)}
+                            onMouseDown={handleThreadSecondaryClick(thread.id)}
+                            onContextMenu={handleThreadContextMenu(thread.id)}
                           >
                             <ThreadRowTitleEditor
                               title={formatThreadLabel(thread)}
