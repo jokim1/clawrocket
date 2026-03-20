@@ -54,11 +54,6 @@ export function ThreadContextMenu({
       onClose();
     }
 
-    function handleContextMenu(event: MouseEvent): void {
-      if (menuRef.current?.contains(event.target as Node)) return;
-      onClose();
-    }
-
     function handleKeyDown(event: KeyboardEvent): void {
       if (event.key === 'Escape') {
         onClose();
@@ -70,12 +65,10 @@ export function ThreadContextMenu({
     }
 
     window.addEventListener('pointerdown', handlePointerDown);
-    window.addEventListener('contextmenu', handleContextMenu);
     window.addEventListener('keydown', handleKeyDown);
     window.addEventListener('scroll', handleScroll, true);
     return () => {
       window.removeEventListener('pointerdown', handlePointerDown);
-      window.removeEventListener('contextmenu', handleContextMenu);
       window.removeEventListener('keydown', handleKeyDown);
       window.removeEventListener('scroll', handleScroll, true);
     };
