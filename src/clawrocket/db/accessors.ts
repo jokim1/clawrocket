@@ -2179,6 +2179,7 @@ export function listTalkThreads(talkId: string): Array<{
   talk_id: string;
   title: string | null;
   is_default: number;
+  is_pinned: number;
   created_at: string;
   updated_at: string;
   message_count: number;
@@ -2196,6 +2197,7 @@ export function listTalkThreads(talkId: string): Array<{
         t.talk_id,
         t.title,
         t.is_default,
+        t.is_pinned,
         t.created_at,
         t.updated_at,
         COALESCE(m.message_count, 0) AS message_count,
@@ -2208,7 +2210,7 @@ export function listTalkThreads(talkId: string): Array<{
         GROUP BY thread_id
       ) m ON m.thread_id = t.id
       WHERE t.talk_id = ? AND t.is_internal = 0
-      ORDER BY COALESCE(m.last_message_at, t.created_at) DESC
+      ORDER BY t.is_pinned DESC, COALESCE(m.last_message_at, t.created_at) DESC
     `,
     )
     .all(talkId, talkId) as Array<{
@@ -2216,6 +2218,7 @@ export function listTalkThreads(talkId: string): Array<{
     talk_id: string;
     title: string | null;
     is_default: number;
+    is_pinned: number;
     created_at: string;
     updated_at: string;
     message_count: number;
@@ -2237,6 +2240,7 @@ export function createTalkThread(input: {
   title: string | null;
   is_default: number;
   is_internal: number;
+  is_pinned: number;
   created_at: string;
   updated_at: string;
 } {
@@ -2273,7 +2277,77 @@ export function createTalkThread(input: {
     title: normalizedTitle,
     is_default: 0,
     is_internal: input.isInternal ? 1 : 0,
+    is_pinned: 0,
     created_at: now,
+    updated_at: now,
+  };
+}
+
+export function updateTalkThreadMetadata(input: {
+  talkId: string;
+  threadId: string;
+  title?: string;
+  pinned?: boolean;
+}): {
+  id: string;
+  talk_id: string;
+  title: string | null;
+  is_default: number;
+  is_internal: number;
+  is_pinned: number;
+  created_at: string;
+  updated_at: string;
+} | null {
+  const normalizedTitle =
+    input.title === undefined
+      ? undefined
+      : validateEditableThreadTitle(input.title);
+
+  const existing = getDb()
+    .prepare(
+      `
+      SELECT id, talk_id, title, is_default, is_internal, is_pinned, created_at
+      FROM talk_threads
+      WHERE id = ? AND talk_id = ?
+    `,
+    )
+    .get(input.threadId, input.talkId) as
+    | {
+        id: string;
+        talk_id: string;
+        title: string | null;
+        is_default: number;
+        is_internal: number;
+        is_pinned: number;
+        created_at: string;
+      }
+    | undefined;
+  if (!existing) {
+    return null;
+  }
+
+  const nextTitle = normalizedTitle ?? existing.title;
+  const nextPinned =
+    input.pinned === undefined ? existing.is_pinned : input.pinned ? 1 : 0;
+  const now = new Date().toISOString();
+  getDb()
+    .prepare(
+      `
+      UPDATE talk_threads
+      SET title = ?, is_pinned = ?, updated_at = ?
+      WHERE id = ? AND talk_id = ?
+    `,
+    )
+    .run(nextTitle, nextPinned, now, input.threadId, input.talkId);
+
+  return {
+    id: existing.id,
+    talk_id: existing.talk_id,
+    title: nextTitle,
+    is_default: existing.is_default,
+    is_internal: existing.is_internal,
+    is_pinned: nextPinned,
+    created_at: existing.created_at,
     updated_at: now,
   };
 }
@@ -2288,51 +2362,17 @@ export function updateTalkThreadTitle(input: {
   title: string;
   is_default: number;
   is_internal: number;
+  is_pinned: number;
   created_at: string;
   updated_at: string;
 } | null {
-  const normalizedTitle = validateEditableThreadTitle(input.title);
-
-  const existing = getDb()
-    .prepare(
-      `
-      SELECT id, talk_id, is_default, is_internal, created_at
-      FROM talk_threads
-      WHERE id = ? AND talk_id = ?
-    `,
-    )
-    .get(input.threadId, input.talkId) as
-    | {
-        id: string;
-        talk_id: string;
-        is_default: number;
-        is_internal: number;
-        created_at: string;
-      }
-    | undefined;
-  if (!existing) {
+  const updated = updateTalkThreadMetadata(input);
+  if (!updated || updated.title === null) {
     return null;
   }
-
-  const now = new Date().toISOString();
-  getDb()
-    .prepare(
-      `
-      UPDATE talk_threads
-      SET title = ?, updated_at = ?
-      WHERE id = ? AND talk_id = ?
-    `,
-    )
-    .run(normalizedTitle, now, input.threadId, input.talkId);
-
   return {
-    id: existing.id,
-    talk_id: existing.talk_id,
-    title: normalizedTitle,
-    is_default: existing.is_default,
-    is_internal: existing.is_internal,
-    created_at: existing.created_at,
-    updated_at: now,
+    ...updated,
+    title: updated.title,
   };
 }
 
@@ -2589,6 +2629,27 @@ export class TalkThreadValidationError extends Error {
   }
 }
 
+export class ThreadDeleteConflictError extends Error {
+  readonly code:
+    | 'default_thread'
+    | 'internal_thread'
+    | 'job_owned_thread'
+    | 'thread_has_active_runs';
+
+  constructor(
+    code:
+      | 'default_thread'
+      | 'internal_thread'
+      | 'job_owned_thread'
+      | 'thread_has_active_runs',
+    message: string,
+  ) {
+    super(message);
+    this.name = 'ThreadDeleteConflictError';
+    this.code = code;
+  }
+}
+
 export function resolveThreadIdForTalk(
   talkId: string,
   threadId?: string | null,
@@ -2604,6 +2665,168 @@ export function resolveThreadIdForTalk(
     throw new TalkThreadValidationError();
   }
   return threadRow.id;
+}
+
+export function deleteTalkThread(input: {
+  talkId: string;
+  threadId: string;
+}): boolean {
+  const tx = getDb().transaction((txInput: typeof input): boolean => {
+    const thread = getDb()
+      .prepare(
+        `
+        SELECT id, is_default, is_internal
+        FROM talk_threads
+        WHERE id = ? AND talk_id = ?
+      `,
+      )
+      .get(txInput.threadId, txInput.talkId) as
+      | {
+          id: string;
+          is_default: number;
+          is_internal: number;
+        }
+      | undefined;
+    if (!thread) {
+      return false;
+    }
+    if (thread.is_default === 1) {
+      throw new ThreadDeleteConflictError(
+        'default_thread',
+        'The default thread cannot be deleted.',
+      );
+    }
+    if (thread.is_internal === 1) {
+      throw new ThreadDeleteConflictError(
+        'internal_thread',
+        'Internal threads cannot be deleted.',
+      );
+    }
+
+    const jobRef = getDb()
+      .prepare(
+        `
+        SELECT id
+        FROM talk_jobs
+        WHERE talk_id = ? AND thread_id = ?
+        LIMIT 1
+      `,
+      )
+      .get(txInput.talkId, txInput.threadId) as { id: string } | undefined;
+    if (jobRef) {
+      throw new ThreadDeleteConflictError(
+        'job_owned_thread',
+        'Job-owned threads cannot be deleted.',
+      );
+    }
+
+    const activeRun = getDb()
+      .prepare(
+        `
+        SELECT id
+        FROM talk_runs
+        WHERE talk_id = ? AND thread_id = ?
+          AND status IN ('queued', 'running', 'awaiting_confirmation')
+        LIMIT 1
+      `,
+      )
+      .get(txInput.talkId, txInput.threadId) as { id: string } | undefined;
+    if (activeRun) {
+      throw new ThreadDeleteConflictError(
+        'thread_has_active_runs',
+        'Threads with active work cannot be deleted.',
+      );
+    }
+
+    const runIds = (
+      getDb()
+        .prepare(
+          `
+          SELECT id
+          FROM talk_runs
+          WHERE talk_id = ? AND thread_id = ?
+        `,
+        )
+        .all(txInput.talkId, txInput.threadId) as Array<{ id: string }>
+    ).map((row) => row.id);
+    const messageIds = (
+      getDb()
+        .prepare(
+          `
+          SELECT id
+          FROM talk_messages
+          WHERE talk_id = ? AND thread_id = ?
+        `,
+        )
+        .all(txInput.talkId, txInput.threadId) as Array<{ id: string }>
+    ).map((row) => row.id);
+
+    if (runIds.length > 0 && messageIds.length > 0) {
+      const runPlaceholders = runIds.map(() => '?').join(', ');
+      const messagePlaceholders = messageIds.map(() => '?').join(', ');
+      getDb()
+        .prepare(
+          `
+          DELETE FROM channel_delivery_outbox
+          WHERE talk_id = ?
+            AND (
+              run_id IN (${runPlaceholders})
+              OR talk_message_id IN (${messagePlaceholders})
+            )
+        `,
+        )
+        .run(txInput.talkId, ...runIds, ...messageIds);
+    } else if (runIds.length > 0) {
+      const runPlaceholders = runIds.map(() => '?').join(', ');
+      getDb()
+        .prepare(
+          `
+          DELETE FROM channel_delivery_outbox
+          WHERE talk_id = ? AND run_id IN (${runPlaceholders})
+        `,
+        )
+        .run(txInput.talkId, ...runIds);
+    } else if (messageIds.length > 0) {
+      const messagePlaceholders = messageIds.map(() => '?').join(', ');
+      getDb()
+        .prepare(
+          `
+          DELETE FROM channel_delivery_outbox
+          WHERE talk_id = ? AND talk_message_id IN (${messagePlaceholders})
+        `,
+        )
+        .run(txInput.talkId, ...messageIds);
+    }
+
+    getDb()
+      .prepare(
+        `
+        DELETE FROM talk_runs
+        WHERE talk_id = ? AND thread_id = ?
+      `,
+      )
+      .run(txInput.talkId, txInput.threadId);
+    getDb()
+      .prepare(
+        `
+        DELETE FROM talk_messages
+        WHERE talk_id = ? AND thread_id = ?
+      `,
+      )
+      .run(txInput.talkId, txInput.threadId);
+    getDb()
+      .prepare(
+        `
+        DELETE FROM talk_threads
+        WHERE id = ? AND talk_id = ?
+      `,
+      )
+      .run(txInput.threadId, txInput.talkId);
+    touchTalkUpdatedAt(txInput.talkId);
+    return true;
+  });
+
+  return tx(input);
 }
 
 // --- Event outbox ---
@@ -3957,6 +4180,7 @@ export function canUserAccessMainThread(
 export function listMainThreadsForUser(userId: string): Array<{
   thread_id: string;
   title: string | null;
+  is_pinned: number;
   last_message_at: string;
   message_count: number;
 }> {
@@ -3966,6 +4190,7 @@ export function listMainThreadsForUser(userId: string): Array<{
       SELECT
         t.thread_id,
         mt.title,
+        COALESCE(mt.is_pinned, 0) AS is_pinned,
         t.last_message_at,
         t.message_count
       FROM (
@@ -3979,12 +4204,13 @@ export function listMainThreadsForUser(userId: string): Array<{
       ) t
       LEFT JOIN main_threads mt ON mt.thread_id = t.thread_id
       WHERE (${buildMainThreadOwnerSubquery('t.thread_id')}) = ?
-      ORDER BY t.last_message_at DESC
+      ORDER BY COALESCE(mt.is_pinned, 0) DESC, t.last_message_at DESC
     `,
     )
     .all(userId) as Array<{
     thread_id: string;
     title: string | null;
+    is_pinned: number;
     last_message_at: string;
     message_count: number;
   }>;
@@ -4001,17 +4227,22 @@ export function getMainThreadTitle(
   return normalizeStoredThreadTitle(row?.title ?? null);
 }
 
-export function updateMainThreadTitle(input: {
+export function updateMainThreadMetadata(input: {
   threadId: string;
   userId: string;
-  title: string;
+  title?: string;
+  pinned?: boolean;
 }): {
   thread_id: string;
   user_id: string;
-  title: string;
+  title: string | null;
+  is_pinned: number;
   updated_at: string;
 } | null {
-  const normalizedTitle = validateEditableThreadTitle(input.title);
+  const normalizedTitle =
+    input.title === undefined
+      ? undefined
+      : validateEditableThreadTitle(input.title);
 
   const exists = getDb()
     .prepare(
@@ -4028,25 +4259,132 @@ export function updateMainThreadTitle(input: {
   }
 
   const now = new Date().toISOString();
+  ensureMainThreadMetadataRow({
+    threadId: input.threadId,
+    userId: input.userId,
+    now,
+  });
+  const existing = getDb()
+    .prepare(
+      `
+      SELECT title, is_pinned
+      FROM main_threads
+      WHERE thread_id = ?
+    `,
+    )
+    .get(input.threadId) as
+    | {
+        title: string | null;
+        is_pinned: number;
+      }
+    | undefined;
+  const nextTitle = normalizedTitle ?? existing?.title ?? null;
+  const nextPinned =
+    input.pinned === undefined
+      ? (existing?.is_pinned ?? 0)
+      : input.pinned
+        ? 1
+        : 0;
   getDb()
     .prepare(
       `
-      INSERT INTO main_threads (thread_id, user_id, title, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?)
-      ON CONFLICT(thread_id) DO UPDATE SET
-        user_id = excluded.user_id,
-        title = excluded.title,
-        updated_at = excluded.updated_at
+      UPDATE main_threads
+      SET user_id = ?, title = ?, is_pinned = ?, updated_at = ?
+      WHERE thread_id = ?
     `,
     )
-    .run(input.threadId, input.userId, normalizedTitle, now, now);
+    .run(input.userId, nextTitle, nextPinned, now, input.threadId);
 
   return {
     thread_id: input.threadId,
     user_id: input.userId,
-    title: normalizedTitle,
+    title: nextTitle,
+    is_pinned: nextPinned,
     updated_at: now,
   };
+}
+
+export function updateMainThreadTitle(input: {
+  threadId: string;
+  userId: string;
+  title: string;
+}): {
+  thread_id: string;
+  user_id: string;
+  title: string;
+  is_pinned: number;
+  updated_at: string;
+} | null {
+  const updated = updateMainThreadMetadata(input);
+  if (!updated || updated.title === null) {
+    return null;
+  }
+  return {
+    ...updated,
+    title: updated.title,
+  };
+}
+
+export function deleteMainThread(input: {
+  threadId: string;
+  userId: string;
+}): boolean {
+  const tx = getDb().transaction((txInput: typeof input): boolean => {
+    const owner = getMainThreadOwner(txInput.threadId);
+    if (owner !== txInput.userId) {
+      return false;
+    }
+
+    const activeRun = getDb()
+      .prepare(
+        `
+        SELECT id
+        FROM talk_runs
+        WHERE talk_id IS NULL AND thread_id = ?
+          AND status IN ('queued', 'running', 'awaiting_confirmation')
+        LIMIT 1
+      `,
+      )
+      .get(txInput.threadId) as { id: string } | undefined;
+    if (activeRun) {
+      throw new ThreadDeleteConflictError(
+        'thread_has_active_runs',
+        'Threads with active work cannot be deleted.',
+      );
+    }
+
+    getDb()
+      .prepare(
+        `
+        DELETE FROM talk_runs
+        WHERE talk_id IS NULL AND thread_id = ?
+      `,
+      )
+      .run(txInput.threadId);
+    const deletedMessages = getDb()
+      .prepare(
+        `
+        DELETE FROM talk_messages
+        WHERE talk_id IS NULL AND thread_id = ?
+      `,
+      )
+      .run(txInput.threadId);
+    const deletedMetadata = getDb()
+      .prepare(
+        `
+        DELETE FROM main_threads
+        WHERE thread_id = ?
+      `,
+      )
+      .run(txInput.threadId);
+    return (
+      deletedMessages.changes > 0 ||
+      deletedMetadata.changes > 0 ||
+      owner !== null
+    );
+  });
+
+  return tx(input);
 }
 
 /**
@@ -4073,7 +4411,7 @@ export function enqueueMainTurnAtomic(input: {
           SELECT COUNT(*) AS count
           FROM talk_runs
           WHERE thread_id = ? AND talk_id IS NULL
-            AND status IN ('queued', 'running')
+            AND status IN ('queued', 'running', 'awaiting_confirmation')
         `,
         )
         .get(txInput.threadId) as { count: number };

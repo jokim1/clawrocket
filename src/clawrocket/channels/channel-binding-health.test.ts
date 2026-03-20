@@ -91,7 +91,9 @@ beforeEach(() => {
     )
     .run('ta-1', 'talk-1', agent.id);
 
-  const conn = ensureSystemManagedTelegramConnection('2024-06-01T00:00:00.000Z');
+  const conn = ensureSystemManagedTelegramConnection(
+    '2024-06-01T00:00:00.000Z',
+  );
   connectionId = conn.id;
 
   const binding = createTalkChannelBinding({
@@ -172,8 +174,14 @@ describe('ChannelDeliveryWorker connection_unreachable path', () => {
 
     // Row should be deferred with attempt_count still 0 (rolled back)
     const row = getDb()
-      .prepare('SELECT status, attempt_count, reason_code FROM channel_delivery_outbox WHERE id = ?')
-      .get('outbox-disconnect-1') as { status: string; attempt_count: number; reason_code: string };
+      .prepare(
+        'SELECT status, attempt_count, reason_code FROM channel_delivery_outbox WHERE id = ?',
+      )
+      .get('outbox-disconnect-1') as {
+      status: string;
+      attempt_count: number;
+      reason_code: string;
+    };
     expect(row.status).toBe('pending'); // re-queued as pending
     expect(row.reason_code).toBe('connection_unreachable');
     expect(row.attempt_count).toBe(0); // rolled back from the claim increment
@@ -197,7 +205,9 @@ describe('quarantine gates', () => {
 
     expect(sendText).not.toHaveBeenCalled();
     const row = getDb()
-      .prepare('SELECT status, reason_code FROM channel_delivery_outbox WHERE id = ?')
+      .prepare(
+        'SELECT status, reason_code FROM channel_delivery_outbox WHERE id = ?',
+      )
       .get('outbox-q-1') as { status: string; reason_code: string };
     expect(row.status).toBe('dead_letter');
     expect(row.reason_code).toBe('binding_quarantined');
@@ -217,7 +227,12 @@ describe('unquarantineTalkChannelBindingRoute', () => {
 
     const sendTestMessage = vi.fn().mockResolvedValue(undefined);
     const result = await unquarantineTalkChannelBindingRoute({
-      auth: { userId: 'owner-1', role: 'owner', sessionId: 'sess-1', authType: 'cookie' as const },
+      auth: {
+        userId: 'owner-1',
+        role: 'owner',
+        sessionId: 'sess-1',
+        authType: 'cookie' as const,
+      },
       talkId: 'talk-1',
       bindingId,
       sendTestMessage,
@@ -232,8 +247,13 @@ describe('unquarantineTalkChannelBindingRoute', () => {
 
     // Connection should be marked healthy
     const conn = getDb()
-      .prepare('SELECT health_status, consecutive_probe_failures FROM channel_connections WHERE id = ?')
-      .get(connectionId) as { health_status: string; consecutive_probe_failures: number };
+      .prepare(
+        'SELECT health_status, consecutive_probe_failures FROM channel_connections WHERE id = ?',
+      )
+      .get(connectionId) as {
+      health_status: string;
+      consecutive_probe_failures: number;
+    };
     expect(conn.health_status).toBe('healthy');
     expect(conn.consecutive_probe_failures).toBe(0);
   });
@@ -241,11 +261,18 @@ describe('unquarantineTalkChannelBindingRoute', () => {
   it('persists error details on failed reconnect', async () => {
     quarantineBinding(bindingId, 'bot_kicked');
 
-    const sendTestMessage = vi.fn().mockRejectedValue(
-      new ChannelDeliveryError('Bot was blocked', 'permanent', 'bot_kicked'),
-    );
+    const sendTestMessage = vi
+      .fn()
+      .mockRejectedValue(
+        new ChannelDeliveryError('Bot was blocked', 'permanent', 'bot_kicked'),
+      );
     const result = await unquarantineTalkChannelBindingRoute({
-      auth: { userId: 'owner-1', role: 'owner', sessionId: 'sess-1', authType: 'cookie' as const },
+      auth: {
+        userId: 'owner-1',
+        role: 'owner',
+        sessionId: 'sess-1',
+        authType: 'cookie' as const,
+      },
       talkId: 'talk-1',
       bindingId,
       sendTestMessage,
@@ -270,7 +297,12 @@ describe('testTalkChannelBindingRoute', () => {
 
     const sendTestMessage = vi.fn().mockResolvedValue(undefined);
     const result = await testTalkChannelBindingRoute({
-      auth: { userId: 'owner-1', role: 'owner', sessionId: 'sess-1', authType: 'cookie' as const },
+      auth: {
+        userId: 'owner-1',
+        role: 'owner',
+        sessionId: 'sess-1',
+        authType: 'cookie' as const,
+      },
       talkId: 'talk-1',
       bindingId,
       sendTestMessage,
@@ -308,7 +340,12 @@ describe('retryTalkChannelDeliveryFailuresCappedRoute', () => {
     });
 
     const result = retryTalkChannelDeliveryFailuresCappedRoute({
-      auth: { userId: 'owner-1', role: 'owner', sessionId: 'sess-1', authType: 'cookie' as const },
+      auth: {
+        userId: 'owner-1',
+        role: 'owner',
+        sessionId: 'sess-1',
+        authType: 'cookie' as const,
+      },
       talkId: 'talk-1',
       bindingId,
       maxAgeMins: 60,
@@ -325,7 +362,12 @@ describe('retryTalkChannelDeliveryFailuresCappedRoute', () => {
     seedOutboxRow({ id: 'dl-1', status: 'dead_letter' });
 
     const result = retryTalkChannelDeliveryFailuresCappedRoute({
-      auth: { userId: 'owner-1', role: 'owner', sessionId: 'sess-1', authType: 'cookie' as const },
+      auth: {
+        userId: 'owner-1',
+        role: 'owner',
+        sessionId: 'sess-1',
+        authType: 'cookie' as const,
+      },
       talkId: 'talk-1',
       bindingId,
       maxAgeMins: undefined,
@@ -462,35 +504,48 @@ describe('diagnoseBinding', () => {
 describe('updateConnectionProbeResult', () => {
   it('transitions healthy → degraded → disconnected → healthy', () => {
     let conn = getDb()
-      .prepare('SELECT health_status, consecutive_probe_failures FROM channel_connections WHERE id = ?')
-      .get(connectionId) as { health_status: string; consecutive_probe_failures: number };
+      .prepare(
+        'SELECT health_status, consecutive_probe_failures FROM channel_connections WHERE id = ?',
+      )
+      .get(connectionId) as {
+      health_status: string;
+      consecutive_probe_failures: number;
+    };
     expect(conn.health_status).toBe('healthy');
     expect(conn.consecutive_probe_failures).toBe(0);
 
     updateConnectionProbeResult(connectionId, false, 'fail 1');
     conn = getDb()
-      .prepare('SELECT health_status, consecutive_probe_failures FROM channel_connections WHERE id = ?')
+      .prepare(
+        'SELECT health_status, consecutive_probe_failures FROM channel_connections WHERE id = ?',
+      )
       .get(connectionId) as typeof conn;
     expect(conn.health_status).toBe('degraded');
     expect(conn.consecutive_probe_failures).toBe(1);
 
     updateConnectionProbeResult(connectionId, false, 'fail 2');
     conn = getDb()
-      .prepare('SELECT health_status, consecutive_probe_failures FROM channel_connections WHERE id = ?')
+      .prepare(
+        'SELECT health_status, consecutive_probe_failures FROM channel_connections WHERE id = ?',
+      )
       .get(connectionId) as typeof conn;
     expect(conn.health_status).toBe('degraded');
     expect(conn.consecutive_probe_failures).toBe(2);
 
     updateConnectionProbeResult(connectionId, false, 'fail 3');
     conn = getDb()
-      .prepare('SELECT health_status, consecutive_probe_failures FROM channel_connections WHERE id = ?')
+      .prepare(
+        'SELECT health_status, consecutive_probe_failures FROM channel_connections WHERE id = ?',
+      )
       .get(connectionId) as typeof conn;
     expect(conn.health_status).toBe('disconnected');
     expect(conn.consecutive_probe_failures).toBe(3);
 
     updateConnectionProbeResult(connectionId, true);
     conn = getDb()
-      .prepare('SELECT health_status, consecutive_probe_failures FROM channel_connections WHERE id = ?')
+      .prepare(
+        'SELECT health_status, consecutive_probe_failures FROM channel_connections WHERE id = ?',
+      )
       .get(connectionId) as typeof conn;
     expect(conn.health_status).toBe('healthy');
     expect(conn.consecutive_probe_failures).toBe(0);

@@ -68,6 +68,7 @@ import {
   getRunningTalkRun,
   getTalkExecutorSession,
   linkAttachmentToMessage,
+  ThreadDeleteConflictError,
   upsertTalk,
   upsertTalkExecutorSession,
   upsertTalkLlmPolicy,
@@ -78,7 +79,7 @@ import {
 } from '../../db/index.js';
 import { createRegisteredAgent } from '../../db/agent-accessors.js';
 import { ThreadTitleValidationError } from '../../db/thread-title-utils.js';
-import { patchTalkThreadRoute } from './talk-threads.js';
+import { deleteTalkThreadRoute, patchTalkThreadRoute } from './talk-threads.js';
 import { hashSessionToken } from '../../identity/session.js';
 import { _resetRateLimitStateForTests } from '../middleware/rate-limit.js';
 import { createWebServer, WebServerHandle } from '../server.js';
@@ -504,7 +505,7 @@ describe('talk routes', () => {
       threadId: 'thread-talk-owner',
       body: { title: 'Valid title' },
       deps: {
-        updateTalkThreadTitle: () => {
+        updateTalkThreadMetadata: () => {
           throw new ThreadTitleValidationError(
             'Thread title must be at most 120 characters',
           );
@@ -517,6 +518,201 @@ describe('talk routes', () => {
     if (!result.body.ok) {
       expect(result.body.error.code).toBe('invalid_input');
     }
+  });
+
+  it('updates talk thread pinned-only metadata', async () => {
+    const thread = createTalkThread({
+      talkId: 'talk-owner',
+      title: 'Pinned later',
+    });
+    const newerThread = createTalkThread({
+      talkId: 'talk-owner',
+      title: 'Newer thread',
+    });
+    createTalkMessage({
+      id: 'msg-pinned-thread',
+      talkId: 'talk-owner',
+      threadId: thread.id,
+      role: 'user',
+      content: 'older activity',
+      createdBy: 'owner-1',
+      createdAt: '2026-03-18T11:00:00.000Z',
+    });
+    createTalkMessage({
+      id: 'msg-newer-thread',
+      talkId: 'talk-owner',
+      threadId: newerThread.id,
+      role: 'user',
+      content: 'newer activity',
+      createdBy: 'owner-1',
+      createdAt: '2026-03-18T12:00:00.000Z',
+    });
+
+    const res = await server.request(
+      `/api/v1/talks/talk-owner/threads/${thread.id}`,
+      {
+        method: 'PATCH',
+        headers: {
+          Authorization: 'Bearer owner-token',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ pinned: true }),
+      },
+    );
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as any;
+    expect(body.ok).toBe(true);
+    expect(body.data.is_pinned).toBe(1);
+
+    const listRes = await server.request('/api/v1/talks/talk-owner/threads', {
+      headers: {
+        Authorization: 'Bearer owner-token',
+      },
+    });
+    const listBody = (await listRes.json()) as any;
+    expect(listBody.data.threads[0].id).toBe(thread.id);
+  });
+
+  it('rejects thread patches without title or pinned', async () => {
+    const res = await server.request(
+      '/api/v1/talks/talk-owner/threads/thread-talk-owner',
+      {
+        method: 'PATCH',
+        headers: {
+          Authorization: 'Bearer owner-token',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({}),
+      },
+    );
+
+    expect(res.status).toBe(400);
+  });
+
+  it('deletes a non-default talk thread', async () => {
+    const thread = createTalkThread({
+      talkId: 'talk-owner',
+      title: 'Delete me',
+    });
+
+    createTalkMessage({
+      id: 'msg-delete-thread',
+      talkId: 'talk-owner',
+      threadId: thread.id,
+      role: 'user',
+      content: 'hello',
+      createdBy: 'owner-1',
+      createdAt: '2026-03-18T12:00:00.000Z',
+    });
+
+    const res = await server.request(
+      `/api/v1/talks/talk-owner/threads/${thread.id}`,
+      {
+        method: 'DELETE',
+        headers: {
+          Authorization: 'Bearer owner-token',
+        },
+      },
+    );
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as any;
+    expect(body.ok).toBe(true);
+    expect(body.data.deleted).toBe(true);
+  });
+
+  it('rejects deleting the default talk thread', async () => {
+    const res = await server.request(
+      '/api/v1/talks/talk-owner/threads/thread-talk-owner',
+      {
+        method: 'DELETE',
+        headers: {
+          Authorization: 'Bearer owner-token',
+        },
+      },
+    );
+
+    expect(res.status).toBe(409);
+    const body = (await res.json()) as any;
+    expect(body.ok).toBe(false);
+  });
+
+  it('rejects deleting an internal talk thread', async () => {
+    const thread = createTalkThread({
+      talkId: 'talk-owner',
+      title: 'Internal worker',
+      isInternal: true,
+    });
+
+    const res = await server.request(
+      `/api/v1/talks/talk-owner/threads/${thread.id}`,
+      {
+        method: 'DELETE',
+        headers: {
+          Authorization: 'Bearer owner-token',
+        },
+      },
+    );
+
+    expect(res.status).toBe(409);
+  });
+
+  it('rejects deleting a thread with active runs', async () => {
+    const thread = createTalkThread({
+      talkId: 'talk-owner',
+      title: 'Busy thread',
+    });
+    enqueueTalkTurnAtomic({
+      talkId: 'talk-owner',
+      threadId: thread.id,
+      userId: 'owner-1',
+      content: 'busy',
+      messageId: 'msg-busy-thread',
+      runIds: ['run-busy-thread'],
+      targetAgentIds: ['ta-talk-owner'],
+    });
+
+    const res = await server.request(
+      `/api/v1/talks/talk-owner/threads/${thread.id}`,
+      {
+        method: 'DELETE',
+        headers: {
+          Authorization: 'Bearer owner-token',
+        },
+      },
+    );
+
+    expect(res.status).toBe(409);
+  });
+
+  it('maps delete thread conflicts to 409', () => {
+    const result = deleteTalkThreadRoute({
+      auth: {
+        userId: 'owner-1',
+        sessionId: 'session-owner-1',
+        role: 'owner',
+        authType: 'bearer',
+      },
+      talkId: 'talk-owner',
+      threadId: 'thread-talk-owner',
+      deps: {
+        getTalkForUser: () =>
+          ({
+            id: 'talk-owner',
+            owner_id: 'owner-1',
+          }) as any,
+        deleteTalkThread: () => {
+          throw new ThreadDeleteConflictError(
+            'thread_has_active_runs',
+            'Threads with active work cannot be deleted.',
+          );
+        },
+      },
+    });
+
+    expect(result.statusCode).toBe(409);
+    expect(result.body.ok).toBe(false);
   });
 
   it('parses supported llm_policy shapes and caps agent badges', async () => {

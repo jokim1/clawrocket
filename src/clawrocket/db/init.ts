@@ -2833,9 +2833,7 @@ function migrateMainAgentToAnthropic(database: Database.Database): void {
  * talk_channel_bindings: add health/operability columns.
  * Idempotent: skips if columns already exist.
  */
-function migrateChannelBindingHealthColumns(
-  database: Database.Database,
-): void {
+function migrateChannelBindingHealthColumns(database: Database.Database): void {
   const columns = database
     .prepare(`PRAGMA table_info(talk_channel_bindings)`)
     .all() as Array<{ name: string }>;

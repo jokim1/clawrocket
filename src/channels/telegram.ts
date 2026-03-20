@@ -426,10 +426,7 @@ function classifyTelegramError(err: unknown): ChannelDeliveryError {
 
     // 400 — chat not found, peer invalid
     if (status === 400) {
-      if (
-        desc.includes('chat not found') ||
-        desc.includes('peer_id_invalid')
-      ) {
+      if (desc.includes('chat not found') || desc.includes('peer_id_invalid')) {
         return new ChannelDeliveryError(
           err.message,
           'permanent',
@@ -441,7 +438,11 @@ function classifyTelegramError(err: unknown): ChannelDeliveryError {
 
     // 429 — rate limited
     if (status === 429) {
-      return new ChannelDeliveryError(err.message, 'rate_limited', 'rate_limited');
+      return new ChannelDeliveryError(
+        err.message,
+        'rate_limited',
+        'rate_limited',
+      );
     }
 
     // 5xx — transient server errors

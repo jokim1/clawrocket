@@ -3206,12 +3206,12 @@ function buildApp(opts: WebServerOptions): Hono {
       >;
       const rawMaxAge = Number(body.maxAgeMins);
       const rawMaxCount = Number(body.maxCount);
-      const maxAgeMins = Number.isFinite(rawMaxAge) && rawMaxAge > 0
-        ? rawMaxAge
-        : undefined;
-      const maxCount = Number.isFinite(rawMaxCount) && rawMaxCount > 0
-        ? rawMaxCount
-        : undefined;
+      const maxAgeMins =
+        Number.isFinite(rawMaxAge) && rawMaxAge > 0 ? rawMaxAge : undefined;
+      const maxCount =
+        Number.isFinite(rawMaxCount) && rawMaxCount > 0
+          ? rawMaxCount
+          : undefined;
       const result = retryTalkChannelDeliveryFailuresCappedRoute({
         auth,
         talkId,

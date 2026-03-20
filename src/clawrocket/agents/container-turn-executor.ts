@@ -28,6 +28,13 @@ import { executeTalkOutputTool } from '../talks/output-tools.js';
 import type { TalkJobExecutionPolicy } from '../talks/executor.js';
 import type { ContainerCredentialConfig } from './execution-planner.js';
 import type { ExecutionContext } from './agent-router.js';
+import {
+  estimateTokens,
+  formatMessageContent,
+  OUTPUT_RESERVE,
+  shrinkHistoryToBudget,
+  TOOL_SCHEMA_RESERVE,
+} from './history-budget.js';
 import type { LlmMessage } from './llm-client.js';
 
 interface ExecuteContainerTurnInput {
@@ -80,21 +87,9 @@ interface WebTalkOutputBridgeResponse {
   isError?: boolean;
 }
 
-const OUTPUT_RESERVE = 4096;
-const TOOL_SCHEMA_RESERVE = 2000;
-const CHARS_TO_TOKENS = 0.25;
 const SMALL_SOURCE_THRESHOLD = 250;
 const WEB_TALK_OUTPUT_BRIDGE_DIRNAME = '.nanoclaw-web-talk-output-bridge';
 const WEB_TALK_OUTPUT_BRIDGE_POLL_MS = 50;
-
-function estimateTokens(text: string): number {
-  return Math.ceil(text.length * CHARS_TO_TOKENS);
-}
-
-function formatMessageContent(content: LlmMessage['content']): string {
-  if (typeof content === 'string') return content;
-  return JSON.stringify(content, null, 2);
-}
 
 function writeFile(targetPath: string, content: string): void {
   fs.mkdirSync(path.dirname(targetPath), { recursive: true });
@@ -119,29 +114,6 @@ function renderHistoryMarkdown(history: LlmMessage[]): string {
       return `## ${role}\n\n${formatMessageContent(message.content)}`;
     })
     .join('\n\n');
-}
-
-function shrinkHistoryToBudget(
-  history: LlmMessage[],
-  budgetTokens: number,
-): LlmMessage[] {
-  if (budgetTokens <= 0) {
-    return [];
-  }
-
-  const selected: LlmMessage[] = [];
-  let used = 0;
-  for (let index = history.length - 1; index >= 0; index -= 1) {
-    const message = history[index];
-    const tokens = estimateTokens(formatMessageContent(message.content));
-    if (used + tokens > budgetTokens) {
-      break;
-    }
-    used += tokens;
-    selected.push(message);
-  }
-  selected.reverse();
-  return selected;
 }
 
 function sanitizeFileNameSegment(value: string): string {

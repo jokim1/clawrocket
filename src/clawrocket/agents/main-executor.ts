@@ -37,6 +37,7 @@ import {
   executeWebSearch,
   WEB_TOOL_DEFINITIONS,
 } from '../tools/web-tools.js';
+import { loadMainContext } from './main-context-loader.js';
 
 // ============================================================================
 // Types
@@ -135,6 +136,7 @@ export async function executeMainChannel(
   }
 
   const plan = planExecution(agent, input.requestedBy);
+  const effectiveSystemPrompt = agent.system_prompt?.trim() || '';
 
   emitEvent({
     type: 'main_response_started',
@@ -144,35 +146,28 @@ export async function executeMainChannel(
     agentName: agent.name,
   });
 
-  // --- Step 2: Load thread history (simple backward fill) ---
-  const db = getDb();
-  const threadMessages = db
-    .prepare(
-      `
-    SELECT role, content
-    FROM talk_messages
-    WHERE thread_id = ? AND talk_id IS NULL
-    ORDER BY created_at ASC
-  `,
-    )
-    .all(input.threadId) as Array<{ role: string; content: string }>;
-
-  const history = threadMessages.map((m) => ({
-    role: m.role as 'user' | 'assistant',
-    content: m.content,
-  }));
-
   // --- Step 3: Execute via agent router ---
   // Main channel has web tools but no context-source or connector tools.
   // systemPrompt is empty here — the router appends agent.system_prompt
   // to context.systemPrompt, so passing it here would duplicate it.
-  const context: ExecutionContext = {
-    systemPrompt: '',
-    contextTools: WEB_TOOL_DEFINITIONS,
-    connectorTools: [], // No connectors for Main channel v1
-    history,
-  };
   if (plan.backend === 'container') {
+    // Container execution keeps its existing full-history load here and applies
+    // its own history budget later inside container-turn-executor.
+    const db = getDb();
+    const threadMessages = db
+      .prepare(
+        `
+      SELECT role, content
+      FROM talk_messages
+      WHERE thread_id = ? AND talk_id IS NULL
+      ORDER BY created_at ASC
+    `,
+      )
+      .all(input.threadId) as Array<{ role: string; content: string }>;
+    const history = threadMessages.map((m) => ({
+      role: m.role as 'user' | 'assistant',
+      content: m.content,
+    }));
     const projectMountHostPath = resolveValidatedProjectMountPath(
       getSettingValue(EXECUTOR_MAIN_PROJECT_PATH_KEY),
       true,
@@ -188,7 +183,7 @@ export async function executeMainChannel(
         effectiveTools: plan.effectiveTools,
       }),
       context: {
-        systemPrompt: agent.system_prompt?.trim() || '',
+        systemPrompt: effectiveSystemPrompt,
         history,
       },
       modelContextWindow: getModelContextWindow(agent),
@@ -207,6 +202,19 @@ export async function executeMainChannel(
       latencyMs: Date.now() - startTime,
     };
   }
+
+  const modelContextWindow = getModelContextWindow(agent);
+  const mainContext = loadMainContext({
+    threadId: input.threadId,
+    effectiveSystemPrompt,
+    modelContextWindow,
+  });
+  const context: ExecutionContext = {
+    systemPrompt: '',
+    contextTools: WEB_TOOL_DEFINITIONS,
+    connectorTools: [], // No connectors for Main channel v1
+    history: mainContext.history,
+  };
 
   const result = await executeWithAgent(
     agent.id,

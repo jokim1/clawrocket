@@ -790,12 +790,16 @@ async function main(): Promise<void> {
       }
 
       // Start connection health monitor for the Telegram channel
-      const telegramChannelInstance = channels.find((ch) => ch.name === 'telegram');
+      const telegramChannelInstance = channels.find(
+        (ch) => ch.name === 'telegram',
+      );
       if (telegramChannelInstance && 'probe' in telegramChannelInstance) {
         connectionHealthMonitor = new ConnectionHealthMonitor({
           connectionId: telegramConnection.id,
           probe: async () => {
-            await (telegramChannelInstance as { probe: () => Promise<void> }).probe();
+            await (
+              telegramChannelInstance as { probe: () => Promise<void> }
+            ).probe();
           },
           pollMs: 60_000,
         });

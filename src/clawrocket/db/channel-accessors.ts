@@ -1563,10 +1563,7 @@ export function quarantineBinding(
     .run(code, timestamp, bindingId);
 }
 
-export function clearBindingQuarantine(
-  bindingId: string,
-  now?: string,
-): void {
+export function clearBindingQuarantine(bindingId: string, now?: string): void {
   const timestamp = normalizeTimestamp(now);
   getDb()
     .prepare(
@@ -1683,9 +1680,7 @@ export function updateConnectionProbeResult(
       .prepare(
         `SELECT consecutive_probe_failures FROM channel_connections WHERE id = ?`,
       )
-      .get(connectionId) as
-      | { consecutive_probe_failures: number }
-      | undefined;
+      .get(connectionId) as { consecutive_probe_failures: number } | undefined;
     const failures = (current?.consecutive_probe_failures ?? 0) + 1;
     let healthStatus: ChannelHealthStatus;
     if (failures >= 3) {

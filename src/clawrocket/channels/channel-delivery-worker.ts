@@ -14,7 +14,9 @@ import { logger } from '../../logger.js';
 import { WakeablePollLoop } from './wakeable-poll-loop.js';
 
 const TRANSIENT_BACKOFF_MS = [2_000, 10_000, 30_000, 120_000, 600_000] as const;
-const RATE_LIMIT_BACKOFF_MS = [5_000, 30_000, 60_000, 120_000, 600_000] as const;
+const RATE_LIMIT_BACKOFF_MS = [
+  5_000, 30_000, 60_000, 120_000, 600_000,
+] as const;
 
 export interface ChannelDeliveryWorkerOptions {
   sendText: (targetId: string, text: string) => Promise<void>;
@@ -86,7 +88,8 @@ export class ChannelDeliveryWorker {
         rowId: row.id,
         deadLetter: true,
         reasonCode: 'binding_quarantined',
-        reasonDetail: 'Binding is quarantined due to persistent delivery failures',
+        reasonDetail:
+          'Binding is quarantined due to persistent delivery failures',
       });
       return;
     }
@@ -101,7 +104,8 @@ export class ChannelDeliveryWorker {
         rowId: row.id,
         deadLetter: false,
         reasonCode: 'connection_unreachable',
-        reasonDetail: 'Connection health probe indicates the platform is unreachable',
+        reasonDetail:
+          'Connection health probe indicates the platform is unreachable',
         availableAt: new Date(Date.now() + 30_000).toISOString(),
       });
       return;
@@ -125,7 +129,9 @@ export class ChannelDeliveryWorker {
         error instanceof ChannelDeliveryError
           ? error
           : new ChannelDeliveryError(
-              error instanceof Error ? error.message : 'Channel delivery failed',
+              error instanceof Error
+                ? error.message
+                : 'Channel delivery failed',
               'transient',
               'unknown',
             );

@@ -10,11 +10,7 @@ export type DiagnosisStatus =
   | 'quarantined'
   | 'paused';
 
-export type DiagnosisActionType =
-  | 'retry'
-  | 'unquarantine'
-  | 'test'
-  | 'dismiss';
+export type DiagnosisActionType = 'retry' | 'unquarantine' | 'test' | 'dismiss';
 
 export interface BindingDiagnosis {
   status: DiagnosisStatus;
@@ -56,8 +52,7 @@ const QUARANTINE_CODE_MAP: Record<
   },
   forbidden: {
     headline: 'Bot lacks permission',
-    detail:
-      'The bot does not have permission to send messages to this chat.',
+    detail: 'The bot does not have permission to send messages to this chat.',
   },
 };
 
@@ -87,7 +82,9 @@ export function diagnoseBinding(input: DiagnosisInput): BindingDiagnosis {
     return {
       status: 'quarantined',
       headline: mapped?.headline || `Quarantined: ${code}`,
-      detail: mapped?.detail || 'This binding has been quarantined due to persistent delivery failures.',
+      detail:
+        mapped?.detail ||
+        'This binding has been quarantined due to persistent delivery failures.',
       action: { label: 'Test and reconnect', type: 'unquarantine' },
     };
   }
@@ -97,7 +94,8 @@ export function diagnoseBinding(input: DiagnosisInput): BindingDiagnosis {
     return {
       status: 'error',
       headline: 'Platform API unreachable',
-      detail: 'The connection to the messaging platform has failed multiple consecutive probes.',
+      detail:
+        'The connection to the messaging platform has failed multiple consecutive probes.',
       action: { label: 'Check bot token', type: 'test' },
     };
   }
@@ -107,7 +105,8 @@ export function diagnoseBinding(input: DiagnosisInput): BindingDiagnosis {
     return {
       status: 'warning',
       headline: `${input.deadLetterCount} message${input.deadLetterCount === 1 ? '' : 's'} failed to deliver`,
-      detail: 'Some outbound messages could not be delivered after all retry attempts.',
+      detail:
+        'Some outbound messages could not be delivered after all retry attempts.',
       action: { label: 'Review failures', type: 'retry' },
     };
   }
@@ -137,7 +136,8 @@ export function diagnoseBinding(input: DiagnosisInput): BindingDiagnosis {
     return {
       status: 'ok',
       headline: 'Connected \u00b7 responses paused',
-      detail: 'This binding is connected but will not respond to incoming messages.',
+      detail:
+        'This binding is connected but will not respond to incoming messages.',
       action: null,
     };
   }

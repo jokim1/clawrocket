@@ -105,7 +105,9 @@ describe('TalkDetailPage', () => {
     renderDetailPage('/app/talks/talk-1');
 
     await screen.findByRole('heading', { name: /Cal Football/i });
-    expect(screen.getByLabelText('Talk timeline')).toBeTruthy();
+    const timeline = screen.getByLabelText('Talk timeline');
+    expect(timeline).toBeTruthy();
+    expect(timeline.querySelector('.talk-thread-detail-header')).toBeTruthy();
     expect(screen.queryByRole('heading', { name: 'Agents' })).toBeNull();
     const statusPills = screen.getByRole('list', { name: 'Talk agent status' });
     expect(
@@ -122,6 +124,12 @@ describe('TalkDetailPage', () => {
         ?.className,
     ).toContain('talk-status-pill-invalid');
     expect(screen.getByLabelText('Response mode')).toHaveValue('ordered');
+    const composerMeta = screen
+      .getByText('Only the selected agent will respond.')
+      .closest('.composer-meta-row') as HTMLElement | null;
+    expect(composerMeta).toBeTruthy();
+    expect(within(composerMeta!).getByText('0/20000')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Attach' })).toBeTruthy();
 
     const tabs = within(
       screen.getByRole('navigation', { name: 'Talk sections' }),
@@ -193,7 +201,7 @@ describe('TalkDetailPage', () => {
 
     await screen.findByPlaceholderText('Send a message to this thread');
 
-    const threadRail = screen.getByLabelText('Talk threads');
+    const threadRail = await screen.findByLabelText('Talk threads');
     expect(
       within(threadRail).getByRole('button', { name: 'Start new thread' }),
     ).toBeTruthy();
@@ -206,6 +214,105 @@ describe('TalkDetailPage', () => {
     await waitFor(() => {
       expect(screen.getAllByText('Daily Cal news')).toHaveLength(2);
     });
+  });
+
+  it('opens a thread context menu, pins a thread, and reorders it to the top', async () => {
+    const user = userEvent.setup();
+    installTalkDetailFetch({
+      threads: [
+        buildThread({
+          id: DEFAULT_THREAD_ID,
+          title: 'Default thread',
+          isDefault: true,
+          lastMessageAt: '2026-03-06T00:00:00.000Z',
+        }),
+        buildThread({
+          id: 'thread-older',
+          title: 'Older thread',
+          lastMessageAt: '2026-03-06T01:00:00.000Z',
+        }),
+        buildThread({
+          id: 'thread-newer',
+          title: 'Newer thread',
+          lastMessageAt: '2026-03-06T02:00:00.000Z',
+        }),
+      ],
+    });
+
+    renderDetailPage('/app/talks/talk-1');
+
+    await screen.findByText('Older thread');
+    fireEvent.contextMenu(screen.getByText('Older thread'));
+    await user.click(screen.getByRole('menuitem', { name: 'Pin' }));
+
+    await waitFor(() => {
+      const items = screen
+        .getAllByRole('button')
+        .filter((button) => button.className.includes('talk-thread-item'));
+      expect(within(items[0]!).getByText('Older thread')).toBeTruthy();
+    });
+  });
+
+  it('deletes the active thread and falls back to the remaining thread', async () => {
+    const user = userEvent.setup();
+    vi.stubGlobal('confirm', vi.fn(() => true));
+    installTalkDetailFetch({
+      threads: [
+        buildThread({
+          id: DEFAULT_THREAD_ID,
+          title: 'Default thread',
+          isDefault: true,
+          lastMessageAt: '2026-03-06T00:00:00.000Z',
+        }),
+        buildThread({
+          id: 'thread-delete',
+          title: 'Delete me',
+          lastMessageAt: '2026-03-06T02:00:00.000Z',
+        }),
+      ],
+    });
+
+    renderDetailPage('/app/talks/talk-1?thread=thread-delete');
+
+    const threadRail = await screen.findByLabelText('Talk threads');
+    await within(threadRail).findByText('Delete me');
+    fireEvent.contextMenu(within(threadRail).getByText('Delete me'));
+    await user.click(screen.getByRole('menuitem', { name: 'Delete thread' }));
+
+    await waitFor(() => {
+      expect(within(threadRail).queryByText('Delete me')).toBeNull();
+    });
+    await waitFor(() => {
+      expect(within(threadRail).getByText('Default thread')).toBeTruthy();
+    });
+  });
+
+  it('keeps a thread when delete confirmation is cancelled', async () => {
+    const user = userEvent.setup();
+    vi.stubGlobal('confirm', vi.fn(() => false));
+    installTalkDetailFetch({
+      threads: [
+        buildThread({
+          id: DEFAULT_THREAD_ID,
+          title: 'Default thread',
+          isDefault: true,
+        }),
+        buildThread({
+          id: 'thread-keep',
+          title: 'Keep me',
+          lastMessageAt: '2026-03-06T02:00:00.000Z',
+        }),
+      ],
+    });
+
+    renderDetailPage('/app/talks/talk-1?thread=thread-keep');
+
+    const threadRail = await screen.findByLabelText('Talk threads');
+    await within(threadRail).findByText('Keep me');
+    fireEvent.contextMenu(within(threadRail).getByText('Keep me'));
+    await user.click(screen.getByRole('menuitem', { name: 'Delete thread' }));
+
+    expect(within(threadRail).getByText('Keep me')).toBeTruthy();
   });
 
   it('lets users rename the talk from the header and removes legacy header chrome', async () => {
@@ -939,6 +1046,12 @@ describe('TalkDetailPage', () => {
           deferredIngressCount: 2,
           lastIngressReasonCode: 'expired_while_busy',
           lastDeliveryReasonCode: 'delivery_retries_exhausted',
+          diagnosis: {
+            status: 'warning',
+            headline: 'Dropped after waiting too long for the talk to become idle',
+            detail: 'Delivery retries exhausted',
+            action: null,
+          },
         }),
       ],
       ingressFailures: [
@@ -960,9 +1073,9 @@ describe('TalkDetailPage', () => {
     });
 
     renderDetailPage('/app/talks/talk-1/channels');
-    await screen.findByRole('heading', { name: 'Channel Bindings' });
+    await screen.findByRole('heading', { name: 'Connected Channels' });
 
-    expect(screen.getByText('Cal Football Chat')).toBeTruthy();
+    expect(screen.getByText(/Cal Football Chat/)).toBeTruthy();
     expect(
       screen.getByText(
         'Dropped after waiting too long for the talk to become idle',
@@ -971,7 +1084,7 @@ describe('TalkDetailPage', () => {
     expect(screen.getByText('Delivery retries exhausted')).toBeTruthy();
 
     const bindingCard = screen
-      .getByRole('heading', { name: 'Cal Football Chat' })
+      .getByRole('heading', { name: /Cal Football Chat/ })
       .closest('article');
     if (!bindingCard) {
       throw new Error('Expected binding card');
@@ -1354,11 +1467,17 @@ describe('TalkDetailPage', () => {
         name: /Claude Sonnet 4\.6 \(General\)/i,
       }),
     ).toBeTruthy();
+    expect(within(targetGroup).getByText('Claude Sonnet 4.6')).toBeTruthy();
+    expect(
+      within(targetGroup).queryByText('Claude Sonnet 4.6 (General)'),
+    ).toBeNull();
     expect(
       within(targetGroup).getByRole('button', {
         name: /GPT-5 Mini \(Critic\)/i,
       }),
     ).toBeTruthy();
+    expect(within(targetGroup).getByText('GPT-5 Mini')).toBeTruthy();
+    expect(within(targetGroup).queryByText('GPT-5 Mini (Critic)')).toBeNull();
 
     expect(
       screen.getByText('Save agent changes before sending a message.'),
@@ -1836,12 +1955,19 @@ describe('TalkDetailPage', () => {
 
     expect(screen.getByText('Claude reply')).toBeTruthy();
     expect(screen.getByText('OpenAI reply')).toBeTruthy();
+    const statusPills = screen.getByRole('list', { name: 'Talk agent status' });
     expect(
-      screen.getAllByText('Claude Sonnet 4.6 (General)').length,
-    ).toBeGreaterThanOrEqual(2);
+      within(statusPills).getByText('Claude Sonnet 4.6 (General)'),
+    ).toBeTruthy();
+    expect(within(statusPills).getByText('GPT-5 Mini (Critic)')).toBeTruthy();
+
+    const targetGroup = screen.getByRole('group', { name: 'Selected agents' });
+    expect(within(targetGroup).getByText('Claude Sonnet 4.6')).toBeTruthy();
+    expect(within(targetGroup).getByText('GPT-5 Mini')).toBeTruthy();
     expect(
-      screen.getAllByText('GPT-5 Mini (Critic)').length,
-    ).toBeGreaterThanOrEqual(2);
+      within(targetGroup).queryByText('Claude Sonnet 4.6 (General)'),
+    ).toBeNull();
+    expect(within(targetGroup).queryByText('GPT-5 Mini (Critic)')).toBeNull();
   });
 
   it('marks synthesis messages in the timeline', async () => {
@@ -2373,6 +2499,7 @@ function buildThread(
     talkId: input.talkId ?? 'talk-1',
     title: input.title ?? null,
     isDefault: input.isDefault ?? false,
+    isPinned: input.isPinned ?? false,
     createdAt: input.createdAt ?? '2026-03-06T00:00:00.000Z',
     updatedAt: input.updatedAt ?? '2026-03-06T00:00:00.000Z',
     messageCount: input.messageCount ?? 0,
@@ -2484,6 +2611,7 @@ function toThreadApiRecord(thread: TalkThread) {
     talk_id: thread.talkId,
     title: thread.title,
     is_default: thread.isDefault ? 1 : 0,
+    is_pinned: thread.isPinned ? 1 : 0,
     created_at: thread.createdAt,
     updated_at: thread.updatedAt,
     message_count: thread.messageCount,
@@ -2544,6 +2672,7 @@ function buildTalkChannelBinding(
     platform: input.platform ?? 'telegram',
     connectionDisplayName:
       input.connectionDisplayName ?? 'Telegram (System Managed)',
+    connectionHealthStatus: input.connectionHealthStatus ?? 'healthy',
     targetKind: input.targetKind ?? 'chat',
     targetId: input.targetId ?? 'tg:group:123',
     displayName: input.displayName ?? 'Cal Football Chat',
@@ -2559,8 +2688,20 @@ function buildTalkChannelBinding(
     maxDeferredAgeMinutes: input.maxDeferredAgeMinutes ?? 10,
     pendingIngressCount: input.pendingIngressCount ?? 1,
     deferredIngressCount: input.deferredIngressCount ?? 0,
+    deadLetterCount: input.deadLetterCount ?? 0,
+    unresolvedIngressCount: input.unresolvedIngressCount ?? 0,
+    lastIngressAt: input.lastIngressAt ?? null,
+    lastDeliveryAt: input.lastDeliveryAt ?? null,
     lastIngressReasonCode: input.lastIngressReasonCode ?? null,
     lastDeliveryReasonCode: input.lastDeliveryReasonCode ?? null,
+    healthQuarantined: input.healthQuarantined ?? false,
+    healthQuarantineCode: input.healthQuarantineCode ?? null,
+    diagnosis: input.diagnosis ?? {
+      status: 'ok',
+      headline: 'Working normally',
+      detail: null,
+      action: null,
+    },
   };
 }
 
@@ -3040,12 +3181,17 @@ function installTalkDetailFetch(input?: {
         const threadId = decodeURIComponent(path.split('/').pop() || '');
         const body = JSON.parse(String(init?.body || '{}')) as {
           title?: string | null;
+          pinned?: boolean;
         };
         threads = threads.map((thread) =>
           thread.id === threadId
             ? {
                 ...thread,
                 title: body.title?.trim() || thread.title,
+                isPinned:
+                  typeof body.pinned === 'boolean'
+                    ? body.pinned
+                    : thread.isPinned,
                 updatedAt: '2026-03-06T00:00:13.000Z',
               }
             : thread,
@@ -3059,9 +3205,22 @@ function installTalkDetailFetch(input?: {
             talk_id: updated.talkId,
             title: updated.title,
             is_default: updated.isDefault ? 1 : 0,
+            is_pinned: updated.isPinned ? 1 : 0,
             created_at: updated.createdAt,
             updated_at: updated.updatedAt,
           },
+        });
+      }
+
+      if (
+        path.startsWith('/api/v1/talks/talk-1/threads/') &&
+        method === 'DELETE'
+      ) {
+        const threadId = decodeURIComponent(path.split('/').pop() || '');
+        threads = threads.filter((thread) => thread.id !== threadId);
+        return jsonResponse(200, {
+          ok: true,
+          data: { deleted: true },
         });
       }
 

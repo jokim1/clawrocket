@@ -12,6 +12,7 @@ import {
   canUserAccessMainThread,
   claimQueuedMainRuns,
   completeMainRunAtomic,
+  deleteMainThread,
   enqueueMainTurnAtomic,
   failInterruptedMainRunsOnStartup,
   failMainRunAtomic,
@@ -19,12 +20,14 @@ import {
   getOrCreateDefaultThread,
   listMainThreadsForUser,
   MainThreadBusyError,
+  updateMainThreadMetadata,
   getTalkRunById,
   upsertTalk,
   upsertUser,
 } from '../db/index.js';
 import { createRegisteredAgent } from '../db/agent-accessors.js';
 import {
+  deleteMainThreadRoute,
   listMainThreadsRoute,
   getMainThreadRoute,
   patchMainThreadRoute,
@@ -212,6 +215,119 @@ describe('Main channel DB accessors', () => {
         expect(result.body.data[0].threadId).toBe(threadId);
         expect(result.body.data[0].title).toBeNull();
       }
+    });
+
+    it('coalesces missing metadata rows to is_pinned = 0', () => {
+      const threadId = randomUUID();
+      enqueueMainTurnAtomic({
+        threadId,
+        userId: USER_A,
+        content: 'thread without manual metadata update',
+        messageId: `msg_${randomUUID()}`,
+        runId: `run_${randomUUID()}`,
+      });
+
+      getDb()
+        .prepare(`DELETE FROM main_threads WHERE thread_id = ?`)
+        .run(threadId);
+
+      const rows = listMainThreadsForUser(USER_A);
+      expect(rows).toHaveLength(1);
+      expect(rows[0].thread_id).toBe(threadId);
+      expect(rows[0].is_pinned).toBe(0);
+    });
+
+    it('pins a thread even when the metadata row must be recreated', () => {
+      const threadId = randomUUID();
+      enqueueMainTurnAtomic({
+        threadId,
+        userId: USER_A,
+        content: 'pin me',
+        messageId: `msg_${randomUUID()}`,
+        runId: `run_${randomUUID()}`,
+      });
+
+      getDb()
+        .prepare(`DELETE FROM main_threads WHERE thread_id = ?`)
+        .run(threadId);
+
+      const updated = updateMainThreadMetadata({
+        threadId,
+        userId: USER_A,
+        pinned: true,
+      });
+      expect(updated?.is_pinned).toBe(1);
+
+      const rows = listMainThreadsForUser(USER_A);
+      expect(rows[0].thread_id).toBe(threadId);
+      expect(rows[0].is_pinned).toBe(1);
+    });
+
+    it('deletes a main thread and removes runs, messages, and metadata', () => {
+      const threadId = randomUUID();
+      const messageId = `msg_${randomUUID()}`;
+      const runId = `run_${randomUUID()}`;
+      enqueueMainTurnAtomic({
+        threadId,
+        userId: USER_A,
+        content: 'delete me',
+        messageId,
+        runId,
+      });
+      const claimed = claimQueuedMainRuns(1);
+      completeMainRunAtomic({
+        runId: claimed[0].id,
+        threadId,
+        requestedBy: USER_A,
+        responseMessageId: `msg_${randomUUID()}`,
+        responseContent: 'done',
+        agentId: AGENT_ID,
+        providerId: PROVIDER_ID,
+        modelId: MODEL_ID,
+        usage: { inputTokens: 1, outputTokens: 1 },
+      });
+
+      const deleted = deleteMainThread({
+        threadId,
+        userId: USER_A,
+      });
+
+      expect(deleted).toBe(true);
+      expect(
+        getDb()
+          .prepare(
+            `SELECT COUNT(*) AS count FROM talk_messages WHERE talk_id IS NULL AND thread_id = ?`,
+          )
+          .get(threadId),
+      ).toMatchObject({ count: 0 });
+      expect(getTalkRunById(runId)).toBeNull();
+      expect(
+        getDb()
+          .prepare(`SELECT title FROM main_threads WHERE thread_id = ?`)
+          .get(threadId),
+      ).toBeUndefined();
+    });
+
+    it('rejects deleting a main thread with an awaiting-confirmation run', () => {
+      const threadId = randomUUID();
+      const runId = `run_${randomUUID()}`;
+      enqueueMainTurnAtomic({
+        threadId,
+        userId: USER_A,
+        content: 'needs approval',
+        messageId: `msg_${randomUUID()}`,
+        runId,
+      });
+      getDb()
+        .prepare(`UPDATE talk_runs SET status = 'awaiting_confirmation' WHERE id = ?`)
+        .run(runId);
+
+      expect(() =>
+        deleteMainThread({
+          threadId,
+          userId: USER_A,
+        }),
+      ).toThrow(/active work/i);
     });
   });
 
@@ -700,6 +816,48 @@ describe('Main channel routes', () => {
       }
     });
 
+    it('updates pinned-only metadata on an owned thread', () => {
+      const threadId = randomUUID();
+      enqueueMainTurnAtomic({
+        threadId,
+        userId: USER_A,
+        content: 'draft agenda',
+        messageId: `msg_${randomUUID()}`,
+        runId: `run_${randomUUID()}`,
+      });
+
+      const result = patchMainThreadRoute(makeAuth(USER_A), threadId, {
+        pinned: true,
+      });
+      expect(result.statusCode).toBe(200);
+      expect(result.body.ok).toBe(true);
+      if (result.body.ok) {
+        expect(result.body.data.isPinned).toBe(true);
+      }
+    });
+
+    it('updates title and pinned together', () => {
+      const threadId = randomUUID();
+      enqueueMainTurnAtomic({
+        threadId,
+        userId: USER_A,
+        content: 'draft agenda',
+        messageId: `msg_${randomUUID()}`,
+        runId: `run_${randomUUID()}`,
+      });
+
+      const result = patchMainThreadRoute(makeAuth(USER_A), threadId, {
+        title: 'Daily planning',
+        pinned: true,
+      });
+      expect(result.statusCode).toBe(200);
+      expect(result.body.ok).toBe(true);
+      if (result.body.ok) {
+        expect(result.body.data.title).toBe('Daily planning');
+        expect(result.body.data.isPinned).toBe(true);
+      }
+    });
+
     it('rejects overlong thread titles with invalid_input', () => {
       const threadId = randomUUID();
       enqueueMainTurnAtomic({
@@ -720,6 +878,21 @@ describe('Main channel routes', () => {
       }
     });
 
+    it('rejects patch bodies without title or pinned', () => {
+      const threadId = randomUUID();
+      enqueueMainTurnAtomic({
+        threadId,
+        userId: USER_A,
+        content: 'draft agenda',
+        messageId: `msg_${randomUUID()}`,
+        runId: `run_${randomUUID()}`,
+      });
+
+      const result = patchMainThreadRoute(makeAuth(USER_A), threadId, {});
+      expect(result.statusCode).toBe(400);
+      expect(result.body.ok).toBe(false);
+    });
+
     it('maps accessor validation errors to invalid_input', () => {
       const threadId = randomUUID();
       enqueueMainTurnAtomic({
@@ -735,7 +908,7 @@ describe('Main channel routes', () => {
         threadId,
         { title: 'Valid title' },
         {
-          updateMainThreadTitle: () => {
+          updateMainThreadMetadata: () => {
             throw new ThreadTitleValidationError(
               'Thread title must be at most 120 characters',
             );
@@ -747,6 +920,50 @@ describe('Main channel routes', () => {
       if (!result.body.ok) {
         expect(result.body.error.code).toBe('invalid_input');
       }
+    });
+  });
+
+  describe('deleteMainThreadRoute', () => {
+    it('deletes an owned thread', () => {
+      const threadId = randomUUID();
+      enqueueMainTurnAtomic({
+        threadId,
+        userId: USER_A,
+        content: 'delete me',
+        messageId: `msg_${randomUUID()}`,
+        runId: `run_${randomUUID()}`,
+      });
+      const claimed = claimQueuedMainRuns(1);
+      completeMainRunAtomic({
+        runId: claimed[0].id,
+        threadId,
+        requestedBy: USER_A,
+        responseMessageId: `msg_${randomUUID()}`,
+        responseContent: 'done',
+        agentId: AGENT_ID,
+        providerId: PROVIDER_ID,
+        modelId: MODEL_ID,
+        usage: { inputTokens: 1, outputTokens: 1 },
+      });
+
+      const result = deleteMainThreadRoute(makeAuth(USER_A), threadId);
+      expect(result.statusCode).toBe(200);
+      expect(result.body.ok).toBe(true);
+    });
+
+    it('returns 409 when deleting a busy thread', () => {
+      const threadId = randomUUID();
+      enqueueMainTurnAtomic({
+        threadId,
+        userId: USER_A,
+        content: 'busy',
+        messageId: `msg_${randomUUID()}`,
+        runId: `run_${randomUUID()}`,
+      });
+
+      const result = deleteMainThreadRoute(makeAuth(USER_A), threadId);
+      expect(result.statusCode).toBe(409);
+      expect(result.body.ok).toBe(false);
     });
   });
 });

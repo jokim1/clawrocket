@@ -40,8 +40,7 @@ export class ConnectionHealthMonitor {
       await this.probe();
       updateConnectionProbeResult(this.connectionId, true);
     } catch (error) {
-      const detail =
-        error instanceof Error ? error.message : 'Probe failed';
+      const detail = error instanceof Error ? error.message : 'Probe failed';
       logger.warn(
         { connectionId: this.connectionId, err: detail },
         'Connection probe failed',

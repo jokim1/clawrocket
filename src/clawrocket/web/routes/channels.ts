@@ -732,9 +732,7 @@ export function retryTalkChannelDeliveryFailuresCappedRoute(input: {
     return notFound('Talk not found.');
   }
   if (!canEditTalk(input.talkId, input.auth.userId, input.auth.role)) {
-    return forbidden(
-      'You do not have permission to retry delivery failures.',
-    );
+    return forbidden('You do not have permission to retry delivery failures.');
   }
   const binding = getTalkChannelBindingById(input.bindingId);
   if (!binding || binding.talk_id !== input.talkId) {
