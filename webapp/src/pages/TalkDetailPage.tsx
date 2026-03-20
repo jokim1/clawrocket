@@ -489,6 +489,7 @@ type DetailAction =
       type: 'RUN_FAILED';
       runId: string;
       threadId?: string | null;
+      showInlineFailure: boolean;
       triggerMessageId: string | null;
       errorCode: string;
       errorMessage: string;
@@ -772,6 +773,46 @@ function pruneEventRunCache(
   return Object.fromEntries([...retainedPinned, ...recentTerminal]);
 }
 
+function isNonTerminalRunStatus(
+  status: TalkRun['status'] | RunView['status'] | undefined,
+): boolean {
+  return (
+    status === 'queued' ||
+    status === 'running' ||
+    status === 'awaiting_confirmation'
+  );
+}
+
+function clearFailedLiveResponsesForThread(
+  liveResponsesByRunId: Record<string, LiveResponseView>,
+  runsById: Record<string, RunView>,
+  threadId: string,
+): Record<string, LiveResponseView> {
+  const next = { ...liveResponsesByRunId };
+  for (const [runId, response] of Object.entries(next)) {
+    if (response.terminalStatus !== 'failed') continue;
+    if (runsById[runId]?.threadId !== threadId) continue;
+    delete next[runId];
+  }
+  return next;
+}
+
+function shouldShowInlineFailure(input: {
+  selectedThreadId: string | null;
+  eventThreadId?: string | null;
+  existing?: LiveResponseView;
+  priorRun?: RunView;
+  showInlineFailure?: boolean;
+}): boolean {
+  if (input.showInlineFailure === false) return false;
+  if (!input.eventThreadId || input.eventThreadId !== input.selectedThreadId) {
+    return false;
+  }
+  return (
+    Boolean(input.existing) || isNonTerminalRunStatus(input.priorRun?.status)
+  );
+}
+
 function hasFileTransfer(
   dataTransfer: DataTransfer | null | undefined,
 ): boolean {
@@ -951,9 +992,16 @@ function detailReducer(state: DetailState, action: DetailAction): DetailState {
       const messages = [...state.messages, action.message];
       const messageIds = new Set(state.messageIds);
       messageIds.add(action.message.id);
-      const liveResponsesByRunId = { ...state.liveResponsesByRunId };
+      let liveResponsesByRunId = { ...state.liveResponsesByRunId };
       if (action.message.runId) {
         delete liveResponsesByRunId[action.message.runId];
+      }
+      if (action.message.role === 'user') {
+        liveResponsesByRunId = clearFailedLiveResponsesForThread(
+          liveResponsesByRunId,
+          state.runsById,
+          action.message.threadId,
+        );
       }
 
       return {
@@ -1024,6 +1072,33 @@ function detailReducer(state: DetailState, action: DetailAction): DetailState {
     case 'RUN_FAILED': {
       if (state.kind !== 'ready') return state;
       const existing = state.liveResponsesByRunId[action.runId];
+      const priorRun = state.runsById[action.runId];
+      const runsById = withRun(state, action.runId, {
+        threadId: action.threadId || undefined,
+        status: 'failed',
+        triggerMessageId: action.triggerMessageId,
+        errorCode: action.errorCode,
+        errorMessage: action.errorMessage,
+        executorAlias: action.executorAlias,
+        executorModel: action.executorModel,
+        completedAt: new Date().toISOString(),
+        responseGroupId: action.responseGroupId,
+        sequenceIndex: action.sequenceIndex,
+      });
+      if (
+        !shouldShowInlineFailure({
+          selectedThreadId: state.selectedThreadId,
+          eventThreadId: action.threadId,
+          existing,
+          priorRun,
+          showInlineFailure: action.showInlineFailure,
+        })
+      ) {
+        return {
+          ...state,
+          runsById,
+        };
+      }
       return {
         ...state,
         liveResponsesByRunId: {
@@ -1043,18 +1118,7 @@ function detailReducer(state: DetailState, action: DetailAction): DetailState {
             terminalStatus: 'failed',
           },
         },
-        runsById: withRun(state, action.runId, {
-          threadId: action.threadId || undefined,
-          status: 'failed',
-          triggerMessageId: action.triggerMessageId,
-          errorCode: action.errorCode,
-          errorMessage: action.errorMessage,
-          executorAlias: action.executorAlias,
-          executorModel: action.executorModel,
-          completedAt: new Date().toISOString(),
-          responseGroupId: action.responseGroupId,
-          sequenceIndex: action.sequenceIndex,
-        }),
+        runsById,
       };
     }
     case 'RUN_CANCELLED_BATCH': {
@@ -1155,6 +1219,17 @@ function detailReducer(state: DetailState, action: DetailAction): DetailState {
     case 'RESPONSE_FAILED': {
       if (state.kind !== 'ready') return state;
       const existing = state.liveResponsesByRunId[action.event.runId];
+      const priorRun = state.runsById[action.event.runId];
+      if (
+        !shouldShowInlineFailure({
+          selectedThreadId: state.selectedThreadId,
+          eventThreadId: action.event.threadId,
+          existing,
+          priorRun,
+        })
+      ) {
+        return state;
+      }
       return {
         ...state,
         liveResponsesByRunId: {
@@ -2028,6 +2103,7 @@ export function TalkDetailPage({
   const threadRefreshInFlightRef = useRef(false);
   const threadRefreshDirtyRef = useRef(false);
   const pendingComposerFocusRef = useRef(false);
+  const pendingRunHistoryScrollRef = useRef<string | null>(null);
   const activeThreadIdRef = useRef<string | null>(null);
   const threadStateRef = useRef<ThreadListState>(threadState);
   const searchQueryRef = useRef(searchQuery);
@@ -2905,6 +2981,7 @@ export function TalkDetailPage({
           type: 'RUN_FAILED',
           runId: event.runId,
           threadId: event.threadId,
+          showInlineFailure: event.threadId === activeThreadIdRef.current,
           triggerMessageId: event.triggerMessageId,
           errorCode: event.errorCode,
           errorMessage: event.errorMessage,
@@ -3298,6 +3375,15 @@ export function TalkDetailPage({
       ),
     [state.liveResponsesByRunId],
   );
+  useEffect(() => {
+    if (currentTab !== 'runs') return;
+    const runId = pendingRunHistoryScrollRef.current;
+    if (!runId) return;
+    const row = document.getElementById(`run-${runId}`);
+    if (!row) return;
+    row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    pendingRunHistoryScrollRef.current = null;
+  }, [currentTab, runHistory]);
   const activeOrderedProgress = useMemo(() => {
     const orderedRuns = Object.values(state.runsById).filter(
       (run) =>
@@ -3501,6 +3587,13 @@ export function TalkDetailPage({
   const manageAgentsHref = `/app/agents?returnTo=${encodeURIComponent(
     threadAwareTalkTabHref,
   )}&focus=providers`;
+  const handleOpenRunHistory = useCallback(
+    (runId: string) => {
+      pendingRunHistoryScrollRef.current = runId;
+      navigate(runsTabHref);
+    },
+    [navigate, runsTabHref],
+  );
   const manageConnectorsHref = '/app/connectors';
   const isRenaming = renameDraft?.talkId === talkId;
   const isSettingsTab = isSettingsTabKey(currentTab);
@@ -9919,7 +10012,11 @@ export function TalkDetailPage({
                   {runHistory.map((run) => {
                     const runContextPanel = runContextPanels[run.id];
                     return (
-                      <li key={run.id} className="run-history-item">
+                      <li
+                        key={run.id}
+                        id={`run-${run.id}`}
+                        className="run-history-item"
+                      >
                         <div className="run-history-main">
                           <span
                             className={`run-history-status run-history-status-${run.status}`}
@@ -10337,6 +10434,19 @@ export function TalkDetailPage({
                               <p className="run-history-error">
                                 {response.errorMessage}
                               </p>
+                            ) : null}
+                            {response.terminalStatus === 'failed' ? (
+                              <div className="run-history-links">
+                                <button
+                                  type="button"
+                                  className="run-history-link"
+                                  onClick={() =>
+                                    handleOpenRunHistory(response.runId)
+                                  }
+                                >
+                                  Open Run History
+                                </button>
+                              </div>
                             ) : null}
                           </article>
                         );

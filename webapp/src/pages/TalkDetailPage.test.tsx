@@ -2625,6 +2625,352 @@ describe('TalkDetailPage', () => {
     ).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
   });
 
+  it('does not recreate stale failed cards from replayed failure events', async () => {
+    installTalkDetailFetch({
+      messages: [
+        buildMessage({
+          id: 'msg-1',
+          role: 'user',
+          content: 'Can we pull retention data?',
+          createdAt: '2026-03-06T00:00:00.000Z',
+        }),
+      ],
+      runs: [
+        buildRun({
+          id: 'run-failed',
+          status: 'failed',
+          createdAt: '2026-03-06T00:00:05.000Z',
+          startedAt: '2026-03-06T00:00:05.000Z',
+          completedAt: '2026-03-06T00:00:08.000Z',
+          triggerMessageId: 'msg-1',
+          targetAgentId: 'agent-claude',
+          targetAgentNickname: 'Claude Sonnet 4.6',
+          errorCode: 'auth_failed',
+          errorMessage: 'Anthropic API error: Unauthorized',
+        }),
+      ],
+    });
+
+    renderDetailPage('/app/talks/talk-1');
+    await screen.findByRole('heading', { name: /Cal Football/i });
+
+    if (!streamInput) {
+      throw new Error('Expected talk stream input');
+    }
+    const stream = streamInput;
+
+    await act(async () => {
+      stream.onResponseFailed?.({
+        talkId: 'talk-1',
+        threadId: DEFAULT_THREAD_ID,
+        runId: 'run-failed',
+        agentId: 'agent-claude',
+        agentNickname: 'Claude Sonnet 4.6',
+        errorCode: 'auth_failed',
+        errorMessage: 'Anthropic API error: Unauthorized',
+      });
+      stream.onRunFailed({
+        talkId: 'talk-1',
+        threadId: DEFAULT_THREAD_ID,
+        runId: 'run-failed',
+        triggerMessageId: 'msg-1',
+        errorCode: 'auth_failed',
+        errorMessage: 'Anthropic API error: Unauthorized',
+      });
+    });
+
+    expect(
+      screen.queryByText('Anthropic API error: Unauthorized'),
+    ).toBeNull();
+    expect(
+      screen.queryByRole('button', { name: 'Open Run History' }),
+    ).toBeNull();
+  });
+
+  it('clears failed live responses when a new user message appends in the same thread', async () => {
+    installTalkDetailFetch({
+      messages: [
+        buildMessage({
+          id: 'msg-1',
+          role: 'user',
+          content: 'Can we pull retention data?',
+          createdAt: '2026-03-06T00:00:00.000Z',
+        }),
+      ],
+    });
+
+    renderDetailPage('/app/talks/talk-1');
+    await screen.findByRole('heading', { name: /Cal Football/i });
+
+    if (!streamInput) {
+      throw new Error('Expected talk stream input');
+    }
+    const stream = streamInput;
+
+    await act(async () => {
+      stream.onResponseStarted?.({
+        talkId: 'talk-1',
+        threadId: DEFAULT_THREAD_ID,
+        runId: 'run-failed',
+        agentId: 'agent-claude',
+        agentNickname: 'Claude Sonnet 4.6',
+      });
+      stream.onResponseDelta?.({
+        talkId: 'talk-1',
+        threadId: DEFAULT_THREAD_ID,
+        runId: 'run-failed',
+        agentId: 'agent-claude',
+        agentNickname: 'Claude Sonnet 4.6',
+        deltaText: 'Failed attempt preview',
+      });
+      stream.onRunFailed({
+        talkId: 'talk-1',
+        threadId: DEFAULT_THREAD_ID,
+        runId: 'run-failed',
+        triggerMessageId: 'msg-1',
+        errorCode: 'execution_failed',
+        errorMessage: 'Anthropic API error: Unauthorized',
+      });
+    });
+
+    expect(screen.getByText('Failed attempt preview')).toBeTruthy();
+
+    await act(async () => {
+      stream.onMessageAppended({
+        talkId: 'talk-1',
+        threadId: DEFAULT_THREAD_ID,
+        messageId: 'msg-2',
+        runId: null,
+        role: 'user',
+        createdBy: 'owner-1',
+        content: 'Try again with the same data.',
+        createdAt: '2026-03-06T00:00:15.000Z',
+      });
+    });
+
+    expect(screen.queryByText('Failed attempt preview')).toBeNull();
+    expect(screen.getByText('Try again with the same data.')).toBeTruthy();
+  });
+
+  it('does not bulk-clear failed cards on assistant message appends', async () => {
+    installTalkDetailFetch({
+      messages: [
+        buildMessage({
+          id: 'msg-1',
+          role: 'user',
+          content: 'Can we pull retention data?',
+          createdAt: '2026-03-06T00:00:00.000Z',
+        }),
+      ],
+    });
+
+    renderDetailPage('/app/talks/talk-1');
+    await screen.findByRole('heading', { name: /Cal Football/i });
+
+    if (!streamInput) {
+      throw new Error('Expected talk stream input');
+    }
+    const stream = streamInput;
+
+    await act(async () => {
+      stream.onResponseStarted?.({
+        talkId: 'talk-1',
+        threadId: DEFAULT_THREAD_ID,
+        runId: 'run-failed',
+        agentId: 'agent-claude',
+        agentNickname: 'Claude Sonnet 4.6',
+      });
+      stream.onResponseDelta?.({
+        talkId: 'talk-1',
+        threadId: DEFAULT_THREAD_ID,
+        runId: 'run-failed',
+        agentId: 'agent-claude',
+        agentNickname: 'Claude Sonnet 4.6',
+        deltaText: 'Failed attempt preview',
+      });
+      stream.onRunFailed({
+        talkId: 'talk-1',
+        threadId: DEFAULT_THREAD_ID,
+        runId: 'run-failed',
+        triggerMessageId: 'msg-1',
+        errorCode: 'execution_failed',
+        errorMessage: 'Anthropic API error: Unauthorized',
+      });
+    });
+
+    expect(screen.getByText('Failed attempt preview')).toBeTruthy();
+
+    await act(async () => {
+      stream.onMessageAppended({
+        talkId: 'talk-1',
+        threadId: DEFAULT_THREAD_ID,
+        messageId: 'msg-2',
+        runId: 'run-completed',
+        role: 'assistant',
+        createdBy: null,
+        content: 'Here is a successful follow-up.',
+        createdAt: '2026-03-06T00:00:20.000Z',
+        agentId: 'agent-openai',
+        agentNickname: 'GPT-5 Mini',
+      });
+    });
+
+    expect(screen.getByText('Failed attempt preview')).toBeTruthy();
+    expect(screen.getByText('Here is a successful follow-up.')).toBeTruthy();
+  });
+
+  it('keeps off-thread failures out of the active timeline while updating Run History', async () => {
+    const user = userEvent.setup();
+
+    installTalkDetailFetch({
+      threads: [
+        buildThread({
+          id: DEFAULT_THREAD_ID,
+          talkId: 'talk-1',
+          title: 'Primary thread',
+          isDefault: true,
+          messageCount: 1,
+          lastMessageAt: '2026-03-06T00:00:00.000Z',
+        }),
+        buildThread({
+          id: 'thread-side',
+          talkId: 'talk-1',
+          title: 'Side thread',
+          messageCount: 0,
+          lastMessageAt: null,
+        }),
+      ],
+      messages: [
+        buildMessage({
+          id: 'msg-1',
+          role: 'user',
+          content: 'What is the latest update?',
+          createdAt: '2026-03-06T00:00:00.000Z',
+        }),
+      ],
+    });
+
+    renderDetailPage('/app/talks/talk-1');
+    await screen.findByRole('heading', { name: /Cal Football/i });
+
+    if (!streamInput) {
+      throw new Error('Expected talk stream input');
+    }
+    const stream = streamInput;
+
+    await act(async () => {
+      stream.onRunFailed({
+        talkId: 'talk-1',
+        threadId: 'thread-side',
+        runId: 'run-side',
+        triggerMessageId: null,
+        errorCode: 'execution_failed',
+        errorMessage: 'Side thread failed',
+      });
+    });
+
+    expect(screen.queryByText('Side thread failed')).toBeNull();
+
+    const tabs = within(
+      screen.getByRole('navigation', { name: 'Talk sections' }),
+    );
+    await user.click(tabs.getByRole('link', { name: 'Run History' }));
+    await screen.findByRole('heading', { name: 'Run History' });
+
+    expect(screen.getByText('run-side')).toBeTruthy();
+    expect(screen.getByText('execution_failed: Side thread failed')).toBeTruthy();
+  });
+
+  it('opens Run History from a failed inline card and scrolls to the run row', async () => {
+    const user = userEvent.setup();
+    const originalScrollIntoView = Object.getOwnPropertyDescriptor(
+      HTMLElement.prototype,
+      'scrollIntoView',
+    );
+    const scrollIntoViewMock = vi.fn();
+    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
+      configurable: true,
+      value: scrollIntoViewMock,
+    });
+
+    try {
+      installTalkDetailFetch({
+        messages: [
+          buildMessage({
+            id: 'msg-1',
+            role: 'user',
+            content: 'Can we pull retention data?',
+            createdAt: '2026-03-06T00:00:00.000Z',
+          }),
+        ],
+        runs: [
+          buildRun({
+            id: 'run-failed',
+            status: 'running',
+            createdAt: '2026-03-06T00:00:05.000Z',
+            startedAt: '2026-03-06T00:00:05.000Z',
+            triggerMessageId: 'msg-1',
+            targetAgentId: 'agent-claude',
+            targetAgentNickname: 'Claude Sonnet 4.6',
+          }),
+        ],
+      });
+
+      renderDetailPage('/app/talks/talk-1');
+      await screen.findByRole('heading', { name: /Cal Football/i });
+
+      if (!streamInput) {
+        throw new Error('Expected talk stream input');
+      }
+      const stream = streamInput;
+
+      await act(async () => {
+        stream.onResponseStarted?.({
+          talkId: 'talk-1',
+          threadId: DEFAULT_THREAD_ID,
+          runId: 'run-failed',
+          agentId: 'agent-claude',
+          agentNickname: 'Claude Sonnet 4.6',
+        });
+        stream.onResponseDelta?.({
+          talkId: 'talk-1',
+          threadId: DEFAULT_THREAD_ID,
+          runId: 'run-failed',
+          agentId: 'agent-claude',
+          agentNickname: 'Claude Sonnet 4.6',
+          deltaText: 'Failed attempt preview',
+        });
+        stream.onRunFailed({
+          talkId: 'talk-1',
+          threadId: DEFAULT_THREAD_ID,
+          runId: 'run-failed',
+          triggerMessageId: 'msg-1',
+          errorCode: 'execution_failed',
+          errorMessage: 'Anthropic API error: Unauthorized',
+        });
+      });
+
+      await user.click(
+        screen.getByRole('button', { name: 'Open Run History' }),
+      );
+
+      await screen.findByRole('heading', { name: 'Run History' });
+      expect(document.getElementById('run-run-failed')).toBeTruthy();
+      expect(screen.getByText('run-failed')).toBeTruthy();
+      expect(scrollIntoViewMock).toHaveBeenCalled();
+    } finally {
+      if (originalScrollIntoView) {
+        Object.defineProperty(
+          HTMLElement.prototype,
+          'scrollIntoView',
+          originalScrollIntoView,
+        );
+      } else {
+        Reflect.deleteProperty(HTMLElement.prototype, 'scrollIntoView');
+      }
+    }
+  });
+
   it('detaches and re-attaches connectors from the Data Connectors tab', async () => {
     const user = userEvent.setup();
 
