@@ -2,12 +2,13 @@
  * MainExecutor — pure execution function for the Main Agent Channel.
  *
  * Uses the SAME pipeline as Talk execution (agentRouter.execute()), but with:
- * - No context loading (context-free in v1)
- * - No persistence (worker owns all DB writes via atomic transactions)
+ * - Main thread memory loaded via main-context-loader
+ * - Only persists the run context snapshot; worker owns message + terminal writes
  * - No terminal event emits (worker owns completed/failed events)
  *
- * The executor resolves an agent, loads thread history, calls executeWithAgent,
- * emits streaming events (started, deltas, usage), and returns output.
+ * The executor resolves an agent, builds a thread-scoped context package,
+ * records an auditable run snapshot, calls executeWithAgent, emits streaming
+ * events (started, deltas, usage), and returns output.
  * On failure it throws — the worker catches and emits the authoritative failure.
  *
  * Phase 2: Main executor now has web_fetch and web_search tools.
@@ -18,7 +19,7 @@ import {
   getRegisteredAgent,
   type RegisteredAgentRecord,
 } from '../db/agent-accessors.js';
-import { getSettingValue } from '../db/accessors.js';
+import { getSettingValue, setTalkRunMetadataJson } from '../db/accessors.js';
 import {
   executeWithAgent,
   type ExecutionContext,
@@ -30,6 +31,11 @@ import {
   planExecution,
 } from './execution-planner.js';
 import { getMainAgent } from './agent-registry.js';
+import {
+  buildMainSystemPrompt,
+  loadMainContext,
+  renderMainPromptPayload,
+} from './main-context-loader.js';
 import { resolveValidatedProjectMountPath } from './project-mounts.js';
 import { executeContainerAgentTurn } from './container-turn-executor.js';
 import {
@@ -110,7 +116,7 @@ function getModelContextWindow(agent: RegisteredAgentRecord): number {
 }
 
 // ============================================================================
-// Main Executor (pure — no DB writes, no terminal events)
+// Main Executor (worker-owned terminal writes; persists context snapshot only)
 // ============================================================================
 
 export async function executeMainChannel(
@@ -144,33 +150,28 @@ export async function executeMainChannel(
     agentName: agent.name,
   });
 
-  // --- Step 2: Load thread history (simple backward fill) ---
-  const db = getDb();
-  const threadMessages = db
-    .prepare(
-      `
-    SELECT role, content
-    FROM talk_messages
-    WHERE thread_id = ? AND talk_id IS NULL
-    ORDER BY created_at ASC
-  `,
-    )
-    .all(input.threadId) as Array<{ role: string; content: string }>;
-
-  const history = threadMessages.map((m) => ({
-    role: m.role as 'user' | 'assistant',
-    content: m.content,
-  }));
+  // --- Step 2: Load thread-scoped Main memory context ---
+  const modelContextWindow = getModelContextWindow(agent);
+  const mainContext = loadMainContext(
+    input.threadId,
+    modelContextWindow,
+    input.triggerMessageId,
+  );
+  setTalkRunMetadataJson(
+    input.runId,
+    JSON.stringify({
+      ...mainContext.contextSnapshot,
+      renderer: plan.backend,
+    }),
+  );
 
   // --- Step 3: Execute via agent router ---
   // Main channel has web tools but no context-source or connector tools.
-  // systemPrompt is empty here — the router appends agent.system_prompt
-  // to context.systemPrompt, so passing it here would duplicate it.
   const context: ExecutionContext = {
-    systemPrompt: '',
+    systemPrompt: buildMainSystemPrompt(mainContext.summaryText),
     contextTools: WEB_TOOL_DEFINITIONS,
     connectorTools: [], // No connectors for Main channel v1
-    history,
+    history: mainContext.history,
   };
   if (plan.backend === 'container') {
     const projectMountHostPath = resolveValidatedProjectMountPath(
@@ -182,16 +183,16 @@ export async function executeMainChannel(
       userId: input.requestedBy,
       agent,
       promptLabel: 'main',
-      userMessage: input.triggerContent,
+      userMessage: renderMainPromptPayload(mainContext, input.triggerContent),
       signal,
       allowedTools: getContainerAllowedTools({
         effectiveTools: plan.effectiveTools,
       }),
       context: {
         systemPrompt: agent.system_prompt?.trim() || '',
-        history,
+        history: mainContext.history,
       },
-      modelContextWindow: getModelContextWindow(agent),
+      modelContextWindow,
       containerCredential: plan.containerCredential,
       threadId: input.threadId,
       projectMountHostPath,

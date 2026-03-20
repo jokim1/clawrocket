@@ -30,6 +30,7 @@ import {
   executeMainChannel,
   type MainExecutionEvent,
 } from './main-executor.js';
+import { refreshMainThreadSummary } from './main-context-loader.js';
 
 // ============================================================================
 // Types
@@ -259,6 +260,16 @@ export class MainRunWorker implements MainRunWorkerControl {
         logger.debug(
           { runId: run.id, threadId: run.thread_id },
           'Main run completion skipped due to non-running status',
+        );
+        return;
+      }
+
+      try {
+        refreshMainThreadSummary(run.thread_id);
+      } catch (error) {
+        logger.warn(
+          { err: error, runId: run.id, threadId: run.thread_id },
+          'Failed to refresh Main thread summary after completion',
         );
       }
     } catch (error) {

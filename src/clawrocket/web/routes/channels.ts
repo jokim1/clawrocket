@@ -1,9 +1,13 @@
 import {
+  approveChannelTarget,
   clearBindingQuarantine,
   createTalkChannelBinding,
+  deleteChannelConnectionSecret,
   deleteChannelDeliveryOutboxRow,
   deleteChannelIngressQueueRow,
   deleteTalkChannelBinding,
+  ensureSystemManagedTelegramConnection,
+  getChannelTarget,
   getChannelConnectionById,
   getTalkChannelBindingById,
   listChannelConnections,
@@ -15,6 +19,8 @@ import {
   retryChannelDeliveryFailuresCapped,
   retryChannelIngressFailure,
   searchChannelTargets,
+  setChannelConnectionSecret,
+  unapproveChannelTarget,
   updateBindingDeliveryResult,
   updateConnectionProbeResult,
   updateTalkChannelBinding,
@@ -23,6 +29,14 @@ import {
   diagnoseBinding,
   type BindingDiagnosis,
 } from '../../channels/channel-diagnosis.js';
+import { encryptChannelSecret } from '../../channels/channel-secret-store.js';
+import {
+  probeTelegramBotToken,
+  resolveTelegramCredential,
+  resolveTelegramTargetInput,
+  type TelegramBotIdentity,
+  type TelegramTokenSource,
+} from '../../channels/telegram-connector.js';
 import { canEditTalk } from '../middleware/acl.js';
 import { ApiEnvelope, AuthContext } from '../types.js';
 import { getTalkForUser } from '../../db/index.js';
@@ -58,6 +72,27 @@ export interface TalkChannelBindingApiRecord {
   healthQuarantined: boolean;
   healthQuarantineCode: string | null;
   diagnosis: BindingDiagnosis;
+}
+
+export interface ChannelConnectionApiRecord {
+  id: string;
+  platform: 'telegram' | 'slack';
+  connection_mode: string;
+  account_key: string;
+  display_name: string;
+  enabled: number;
+  health_status: string;
+  last_health_check_at: string | null;
+  last_health_error: string | null;
+  consecutive_probe_failures: number;
+  config_json: string | null;
+  created_at: string;
+  updated_at: string;
+  created_by: string | null;
+  updated_by: string | null;
+  token_source: TelegramTokenSource | null;
+  env_token_available: number;
+  has_stored_secret: number;
 }
 
 const manualIngressRetryTimestamps = new Map<string, number[]>();
@@ -158,6 +193,38 @@ function toBindingApiRecord(
   };
 }
 
+function parseTargetMetadata(
+  metadataJson: string | null,
+): Record<string, unknown> | null {
+  if (!metadataJson) return null;
+  try {
+    const parsed = JSON.parse(metadataJson) as unknown;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return null;
+    }
+    return parsed as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
+function toChannelConnectionApiRecord(
+  record: ReturnType<typeof listChannelConnections>[number],
+): ChannelConnectionApiRecord {
+  const telegramCredential =
+    record.platform === 'telegram' &&
+    record.account_key === 'telegram:system' &&
+    record.connection_mode === 'system_managed'
+      ? resolveTelegramCredential()
+      : null;
+  return {
+    ...record,
+    token_source: telegramCredential?.tokenSource || null,
+    env_token_available: telegramCredential?.envTokenAvailable ? 1 : 0,
+    has_stored_secret: telegramCredential?.hasStoredSecret ? 1 : 0,
+  };
+}
+
 export function listChannelConnectionsRoute(input: { auth: AuthContext }) {
   if (!canManageConnections(input.auth)) {
     return forbidden(
@@ -169,11 +236,9 @@ export function listChannelConnectionsRoute(input: { auth: AuthContext }) {
     body: {
       ok: true,
       data: {
-        connections: listChannelConnections(),
+        connections: listChannelConnections().map(toChannelConnectionApiRecord),
       },
-    } satisfies ApiEnvelope<{
-      connections: ReturnType<typeof listChannelConnections>;
-    }>,
+    } satisfies ApiEnvelope<{ connections: ChannelConnectionApiRecord[] }>,
   };
 }
 
@@ -182,6 +247,7 @@ export function listChannelTargetsRoute(input: {
   connectionId: string;
   query?: string;
   limit?: number;
+  approval?: 'all' | 'approved' | 'discovered';
 }) {
   if (!canManageConnections(input.auth)) {
     return forbidden('You do not have permission to browse channel targets.');
@@ -200,7 +266,334 @@ export function listChannelTargetsRoute(input: {
           connectionId: input.connectionId,
           query: input.query,
           limit: input.limit,
+          approval: input.approval,
         }),
+      },
+    },
+  };
+}
+
+export function getTelegramChannelConnectorRoute(input: { auth: AuthContext }) {
+  if (!canManageConnections(input.auth)) {
+    return forbidden(
+      'You do not have permission to manage channel connections.',
+    );
+  }
+  const connection = ensureSystemManagedTelegramConnection();
+  return {
+    statusCode: 200,
+    body: {
+      ok: true,
+      data: {
+        connection: toChannelConnectionApiRecord(connection),
+        targets: searchChannelTargets({
+          connectionId: connection.id,
+          limit: 200,
+          approval: 'all',
+        }),
+      },
+    },
+  };
+}
+
+export async function validateTelegramChannelConnectorRoute(input: {
+  auth: AuthContext;
+  botToken: string;
+}) {
+  if (!canManageConnections(input.auth)) {
+    return forbidden(
+      'You do not have permission to manage channel connections.',
+    );
+  }
+  const token = input.botToken.trim();
+  if (!token) {
+    return {
+      statusCode: 400,
+      body: {
+        ok: false,
+        error: {
+          code: 'missing_bot_token',
+          message: 'Bot token is required.',
+        },
+      },
+    };
+  }
+
+  try {
+    const bot = await probeTelegramBotToken(token);
+    return {
+      statusCode: 200,
+      body: {
+        ok: true,
+        data: { bot },
+      },
+    };
+  } catch (error) {
+    return {
+      statusCode: 400,
+      body: {
+        ok: false,
+        error: {
+          code: 'invalid_bot_token',
+          message:
+            error instanceof Error
+              ? error.message
+              : 'Telegram bot validation failed.',
+        },
+      },
+    };
+  }
+}
+
+export async function saveTelegramChannelConnectorTokenRoute(input: {
+  auth: AuthContext;
+  botToken: string;
+  reloadConnector?: (input?: {
+    validatedBot?: TelegramBotIdentity;
+  }) => Promise<void>;
+}) {
+  if (!canManageConnections(input.auth)) {
+    return forbidden(
+      'You do not have permission to manage channel connections.',
+    );
+  }
+  const token = input.botToken.trim();
+  if (!token) {
+    return {
+      statusCode: 400,
+      body: {
+        ok: false,
+        error: {
+          code: 'missing_bot_token',
+          message: 'Bot token is required.',
+        },
+      },
+    };
+  }
+  let validatedBot: TelegramBotIdentity;
+  try {
+    validatedBot = await probeTelegramBotToken(token);
+  } catch (error) {
+    return {
+      statusCode: 400,
+      body: {
+        ok: false,
+        error: {
+          code: 'invalid_bot_token',
+          message:
+            error instanceof Error
+              ? error.message
+              : 'Telegram bot validation failed.',
+        },
+      },
+    };
+  }
+
+  const connection = ensureSystemManagedTelegramConnection();
+  setChannelConnectionSecret({
+    connectionId: connection.id,
+    ciphertext: encryptChannelSecret({
+      kind: 'telegram_bot',
+      botToken: token,
+    }),
+    updatedBy: input.auth.userId,
+  });
+  await input.reloadConnector?.({ validatedBot });
+  return getTelegramChannelConnectorRoute({ auth: input.auth });
+}
+
+export async function deleteTelegramChannelConnectorTokenRoute(input: {
+  auth: AuthContext;
+  reloadConnector?: (input?: {
+    validatedBot?: TelegramBotIdentity;
+  }) => Promise<void>;
+}) {
+  if (!canManageConnections(input.auth)) {
+    return forbidden(
+      'You do not have permission to manage channel connections.',
+    );
+  }
+  const connection = ensureSystemManagedTelegramConnection();
+  deleteChannelConnectionSecret(connection.id, input.auth.userId);
+  await input.reloadConnector?.();
+  return getTelegramChannelConnectorRoute({ auth: input.auth });
+}
+
+export async function adoptTelegramEnvTokenRoute(input: {
+  auth: AuthContext;
+  reloadConnector?: (input?: {
+    validatedBot?: TelegramBotIdentity;
+  }) => Promise<void>;
+}) {
+  if (!canManageConnections(input.auth)) {
+    return forbidden(
+      'You do not have permission to manage channel connections.',
+    );
+  }
+  const credential = resolveTelegramCredential();
+  if (credential.tokenSource !== 'env' || !credential.token) {
+    return {
+      statusCode: 400,
+      body: {
+        ok: false,
+        error: {
+          code: 'env_token_not_available',
+          message: 'No environment-managed Telegram bot token is available.',
+        },
+      },
+    };
+  }
+
+  const connection = ensureSystemManagedTelegramConnection();
+  setChannelConnectionSecret({
+    connectionId: connection.id,
+    ciphertext: encryptChannelSecret({
+      kind: 'telegram_bot',
+      botToken: credential.token,
+    }),
+    updatedBy: input.auth.userId,
+  });
+  await input.reloadConnector?.();
+  return getTelegramChannelConnectorRoute({ auth: input.auth });
+}
+
+export async function approveTelegramTargetRoute(input: {
+  auth: AuthContext;
+  rawInput?: string;
+  targetKind?: string;
+  targetId?: string;
+  displayName?: string | null;
+  reloadConnector?: () => Promise<void>;
+}) {
+  if (!canManageConnections(input.auth)) {
+    return forbidden(
+      'You do not have permission to manage channel connections.',
+    );
+  }
+  const connection = ensureSystemManagedTelegramConnection();
+  let resolved:
+    | {
+        targetKind: string;
+        targetId: string;
+        displayName: string;
+        metadata: Record<string, unknown> | null;
+      }
+    | undefined;
+
+  if (input.rawInput?.trim()) {
+    const credential = resolveTelegramCredential();
+    if (!credential.token) {
+      return {
+        statusCode: 400,
+        body: {
+          ok: false,
+          error: {
+            code: 'telegram_not_configured',
+            message:
+              'Configure a Telegram bot token before adding destinations.',
+          },
+        },
+      };
+    }
+    try {
+      const target = await resolveTelegramTargetInput({
+        botToken: credential.token,
+        rawInput: input.rawInput,
+      });
+      resolved = {
+        targetKind: target.targetKind,
+        targetId: target.targetId,
+        displayName: target.displayName,
+        metadata: target.metadata,
+      };
+    } catch (error) {
+      return {
+        statusCode: 400,
+        body: {
+          ok: false,
+          error: {
+            code: 'invalid_target',
+            message:
+              error instanceof Error
+                ? error.message
+                : 'Telegram destination could not be resolved.',
+          },
+        },
+      };
+    }
+  } else if (input.targetKind && input.targetId) {
+    const existing = getChannelTarget({
+      connectionId: connection.id,
+      targetKind: input.targetKind,
+      targetId: input.targetId,
+    });
+    resolved = {
+      targetKind: input.targetKind,
+      targetId: input.targetId,
+      displayName:
+        input.displayName?.trim() || existing?.display_name || input.targetId,
+      metadata: parseTargetMetadata(existing?.metadata_json || null),
+    };
+  }
+
+  if (!resolved) {
+    return {
+      statusCode: 400,
+      body: {
+        ok: false,
+        error: {
+          code: 'missing_target',
+          message: 'Telegram destination is required.',
+        },
+      },
+    };
+  }
+
+  const target = approveChannelTarget({
+    connectionId: connection.id,
+    targetKind: resolved.targetKind,
+    targetId: resolved.targetId,
+    displayName: input.displayName?.trim() || resolved.displayName,
+    metadata: resolved.metadata,
+    registeredBy: input.auth.userId,
+  });
+  await input.reloadConnector?.();
+  return {
+    statusCode: 200,
+    body: {
+      ok: true,
+      data: { target },
+    },
+  };
+}
+
+export function unapproveTelegramTargetRoute(input: {
+  auth: AuthContext;
+  targetKind: string;
+  targetId: string;
+}) {
+  if (!canManageConnections(input.auth)) {
+    return forbidden(
+      'You do not have permission to manage channel connections.',
+    );
+  }
+  const connection = ensureSystemManagedTelegramConnection();
+  const result = unapproveChannelTarget({
+    connectionId: connection.id,
+    targetKind: input.targetKind,
+    targetId: input.targetId,
+    updatedBy: input.auth.userId,
+  });
+  if (!result.removed) {
+    return notFound('Telegram destination not found.');
+  }
+  return {
+    statusCode: 200,
+    body: {
+      ok: true,
+      data: {
+        removed: true,
+        deactivatedBindingCount: result.deactivatedBindingCount,
       },
     },
   };
@@ -257,6 +650,24 @@ export function createTalkChannelRoute(input: {
   const connection = getChannelConnectionById(input.connectionId);
   if (!connection) {
     return notFound('Channel connection not found.');
+  }
+  const target = getChannelTarget({
+    connectionId: input.connectionId,
+    targetKind: input.targetKind,
+    targetId: input.targetId,
+  });
+  if (!target || target.approved !== 1) {
+    return {
+      statusCode: 400,
+      body: {
+        ok: false,
+        error: {
+          code: 'target_not_approved',
+          message:
+            'Only approved Telegram destinations can be bound to a Talk.',
+        },
+      },
+    };
   }
 
   const binding = createTalkChannelBinding({

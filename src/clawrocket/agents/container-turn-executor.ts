@@ -381,6 +381,7 @@ function startOutputBridge(input: {
 }
 
 function buildClaudeMd(input: {
+  promptLabel: 'talk' | 'main';
   systemPrompt: string;
   sourceFiles: MaterializedSourceFile[];
   attachmentFiles: MaterializedAttachmentFile[];
@@ -394,7 +395,9 @@ function buildClaudeMd(input: {
 
   sections.push(
     [
-      'Use `HISTORY.md` for bounded transcript history from the current Talk/Main thread.',
+      input.promptLabel === 'talk'
+        ? 'Use `HISTORY.md` for bounded transcript history from the current Talk thread.'
+        : 'For Main runs, thread memory is already included inline in the prompt payload.',
       input.hasProjectMount
         ? 'A read-only project is mounted at `/workspace/project`.'
         : 'No project mount is configured for this run.',
@@ -509,6 +512,7 @@ function createContextDirectory(input: ExecuteContainerTurnInput): {
     : [];
 
   const claudeMdContent = buildClaudeMd({
+    promptLabel: input.promptLabel,
     systemPrompt: input.context.systemPrompt,
     sourceFiles,
     attachmentFiles,
@@ -528,10 +532,12 @@ function createContextDirectory(input: ExecuteContainerTurnInput): {
   );
 
   writeFile(path.join(baseDir, 'CLAUDE.md'), claudeMdContent);
-  writeFile(
-    path.join(baseDir, 'HISTORY.md'),
-    renderHistoryMarkdown(boundedHistory),
-  );
+  if (input.promptLabel === 'talk') {
+    writeFile(
+      path.join(baseDir, 'HISTORY.md'),
+      renderHistoryMarkdown(boundedHistory),
+    );
+  }
   const outputBridgeDir = input.talkId
     ? ensureOutputBridgeDirectories(baseDir)
     : undefined;

@@ -429,12 +429,32 @@ describe('TalkDetailPage', () => {
       },
     });
 
-    renderDetailPage('/app/talks/talk-1');
+    const originalFetch = globalThis.fetch;
+    let contextRequestCount = 0;
+    const wrappedFetch: typeof globalThis.fetch = async (input, init) => {
+      const url = typeof input === 'string' ? input : (input as Request).url;
+      const method =
+        init?.method ??
+        (input instanceof Request ? input.method : undefined) ??
+        'GET';
+      if (
+        url.endsWith('/api/v1/talks/talk-1/runs/run-1/context') &&
+        method === 'GET'
+      ) {
+        contextRequestCount += 1;
+      }
+      return originalFetch(input, init);
+    };
+    globalThis.fetch = wrappedFetch;
 
-    await screen.findByText('Cal should be bowl eligible again.');
-    await user.click(screen.getByRole('button', { name: 'Context used' }));
+    renderDetailPage('/app/talks/talk-1/runs');
 
-    const contextPanel = await screen.findByLabelText('Run context used');
+    await screen.findByRole('heading', { name: 'Run History' });
+    await user.click(screen.getByRole('button', { name: 'View context' }));
+
+    const contextPanel = await screen.findByLabelText(
+      'Context used for run run-1',
+    );
     expect(within(contextPanel).getByText(/Estimated context:/)).toBeTruthy();
     expect(within(contextPanel).getByText(/History messages:/)).toBeTruthy();
     expect(
@@ -447,6 +467,7 @@ describe('TalkDetailPage', () => {
     expect(
       within(contextPanel).getAllByText(/2026 Schedule Notes/).length,
     ).toBeGreaterThan(0);
+    expect(contextRequestCount).toBe(1);
 
     await user.click(screen.getByRole('button', { name: 'Hide context' }));
     await waitFor(() => {
@@ -456,6 +477,103 @@ describe('TalkDetailPage', () => {
         ),
       ).toBeNull();
     });
+
+    await user.click(screen.getByRole('button', { name: 'View context' }));
+    await screen.findByLabelText('Context used for run run-1');
+    expect(contextRequestCount).toBe(1);
+
+    globalThis.fetch = originalFetch;
+  });
+
+  it('does not render an inline context button in the Talk timeline', async () => {
+    installTalkDetailFetch({
+      messages: [
+        buildMessage({
+          id: 'msg-user-1',
+          role: 'user',
+          content: 'How will Cal do next season?',
+          createdAt: '2026-03-06T00:00:00.000Z',
+        }),
+        buildMessage({
+          id: 'msg-assistant-1',
+          role: 'assistant',
+          content: 'Cal should be bowl eligible again.',
+          createdAt: '2026-03-06T00:00:03.000Z',
+          runId: 'run-1',
+          agentId: 'agent-openai',
+          agentNickname: 'GPT-5 Mini',
+        }),
+      ],
+    });
+
+    renderDetailPage('/app/talks/talk-1');
+
+    await screen.findByText('Cal should be bowl eligible again.');
+    expect(
+      screen.queryByRole('button', { name: 'Context used' }),
+    ).toBeNull();
+    expect(screen.queryByRole('button', { name: 'View context' })).toBeNull();
+  });
+
+  it('shows an empty state when a run has no saved context snapshot', async () => {
+    const user = userEvent.setup();
+    installTalkDetailFetch();
+
+    renderDetailPage('/app/talks/talk-1/runs');
+
+    await screen.findByRole('heading', { name: 'Run History' });
+    await user.click(screen.getByRole('button', { name: 'View context' }));
+
+    const contextPanel = await screen.findByLabelText(
+      'Context used for run run-1',
+    );
+    expect(
+      within(contextPanel).getByText(
+        'No saved context snapshot is available for this run.',
+      ),
+    ).toBeTruthy();
+  });
+
+  it('shows an inline error when loading run context fails', async () => {
+    const user = userEvent.setup();
+    installTalkDetailFetch();
+
+    const originalFetch = globalThis.fetch;
+    const wrappedFetch: typeof globalThis.fetch = async (input, init) => {
+      const url = typeof input === 'string' ? input : (input as Request).url;
+      const method =
+        init?.method ??
+        (input instanceof Request ? input.method : undefined) ??
+        'GET';
+      if (
+        url.endsWith('/api/v1/talks/talk-1/runs/run-1/context') &&
+        method === 'GET'
+      ) {
+        return jsonResponse(500, {
+          ok: false,
+          error: {
+            code: 'context_fetch_failed',
+            message: 'Failed to load context snapshot.',
+          },
+        });
+      }
+      return originalFetch(input, init);
+    };
+    globalThis.fetch = wrappedFetch;
+
+    renderDetailPage('/app/talks/talk-1/runs');
+
+    await screen.findByRole('heading', { name: 'Run History' });
+    await user.click(screen.getByRole('button', { name: 'View context' }));
+
+    const contextPanel = await screen.findByLabelText(
+      'Context used for run run-1',
+    );
+    expect(
+      within(contextPanel).getByText('Failed to load context snapshot.'),
+    ).toBeTruthy();
+
+    globalThis.fetch = originalFetch;
   });
 
   it('shows the Rules tab badge and persists inline rule edits', async () => {
@@ -1962,6 +2080,71 @@ describe('TalkDetailPage', () => {
     await waitFor(() => expect(composer).toHaveValue(''));
   });
 
+  it('starts the composer as a single row and shrinks it back after send', async () => {
+    const user = userEvent.setup();
+    let currentScrollHeight = 48;
+    const originalScrollHeightDescriptor = Object.getOwnPropertyDescriptor(
+      HTMLTextAreaElement.prototype,
+      'scrollHeight',
+    );
+
+    Object.defineProperty(HTMLTextAreaElement.prototype, 'scrollHeight', {
+      configurable: true,
+      get: () => currentScrollHeight,
+    });
+
+    try {
+      installTalkDetailFetch({
+        messages: [],
+        runs: [],
+        onSendMessage: (body) => ({
+          talkId: 'talk-1',
+          message: buildMessage({
+            id: 'msg-posted-autosize',
+            role: 'user',
+            content: body.content,
+            createdAt: '2026-03-06T00:00:05.000Z',
+          }),
+          runs: [],
+        }),
+      });
+
+      renderDetailPage('/app/talks/talk-1');
+      const composer = (await screen.findByPlaceholderText(
+        'Send a message to this thread',
+      )) as HTMLTextAreaElement;
+
+      expect(composer).toHaveAttribute('rows', '1');
+      await waitFor(() => expect(composer.style.height).toBe('48px'));
+
+      currentScrollHeight = 132;
+      fireEvent.change(composer, {
+        target: { value: 'Line 1\nLine 2\nLine 3\nLine 4' },
+      });
+      await waitFor(() => expect(composer.style.height).toBe('132px'));
+
+      currentScrollHeight = 48;
+      fireEvent.keyDown(composer, {
+        key: 'Enter',
+        code: 'Enter',
+        charCode: 13,
+      });
+
+      await waitFor(() => expect(composer).toHaveValue(''));
+      await waitFor(() => expect(composer.style.height).toBe('48px'));
+    } finally {
+      if (originalScrollHeightDescriptor) {
+        Object.defineProperty(
+          HTMLTextAreaElement.prototype,
+          'scrollHeight',
+          originalScrollHeightDescriptor,
+        );
+      } else {
+        Reflect.deleteProperty(HTMLTextAreaElement.prototype, 'scrollHeight');
+      }
+    }
+  });
+
   it('attaches dropped files from the talk workspace and sends their attachment ids', async () => {
     const user = userEvent.setup();
     let uploadedFileName: string | null = null;
@@ -2901,6 +3084,9 @@ function buildChannelConnection(
     lastHealthCheckAt: input.lastHealthCheckAt ?? null,
     lastHealthError: input.lastHealthError ?? null,
     config: input.config ?? { managedBy: 'runtime' },
+    tokenSource: input.tokenSource ?? 'db',
+    envTokenAvailable: input.envTokenAvailable ?? false,
+    hasStoredSecret: input.hasStoredSecret ?? true,
     createdAt: input.createdAt ?? '2026-03-06T00:00:00.000Z',
     updatedAt: input.updatedAt ?? '2026-03-06T00:00:00.000Z',
   };
@@ -2913,6 +3099,9 @@ function buildChannelTarget(input: Partial<ChannelTarget> = {}): ChannelTarget {
     targetId: input.targetId ?? 'tg:group:123',
     displayName: input.displayName ?? 'Cal Football Chat',
     metadata: input.metadata ?? null,
+    approved: input.approved ?? true,
+    registeredAt: input.registeredAt ?? '2026-03-06T00:00:00.000Z',
+    registeredBy: input.registeredBy ?? 'owner-1',
     lastSeenAt: input.lastSeenAt ?? '2026-03-06T00:00:00.000Z',
     createdAt: input.createdAt ?? '2026-03-06T00:00:00.000Z',
     updatedAt: input.updatedAt ?? '2026-03-06T00:00:00.000Z',

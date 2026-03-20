@@ -14,8 +14,9 @@ import {
   UnauthorizedError,
   type UserGoogleAccount,
 } from '../lib/api';
+import { TelegramChannelConnectorPanel } from '../components/TelegramChannelConnectorPanel';
 import { launchGoogleAccountPopup } from '../lib/googleAccountPopup';
-import { useLocation } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 
 type Props = {
   onUnauthorized: () => void;
@@ -175,6 +176,7 @@ export function DataConnectorsPage({
   userRole,
 }: Props): JSX.Element {
   const location = useLocation();
+  const navigate = useNavigate();
   const [connectors, setConnectors] = useState<DataConnector[]>([]);
   const [googleAccount, setGoogleAccount] = useState<UserGoogleAccount>(
     createEmptyGoogleAccount(),
@@ -198,6 +200,26 @@ export function DataConnectorsPage({
     () => canManageDataConnectors(userRole),
     [userRole],
   );
+  const activeTab = useMemo(
+    () =>
+      new URLSearchParams(location.search).get('tab') === 'channel-connectors'
+        ? 'channel-connectors'
+        : 'data-connectors',
+    [location.search],
+  );
+
+  const setActiveTab = (tab: 'data-connectors' | 'channel-connectors') => {
+    const params = new URLSearchParams(location.search);
+    if (tab === 'channel-connectors') {
+      params.set('tab', 'channel-connectors');
+    } else {
+      params.delete('tab');
+    }
+    navigate({
+      pathname: '/app/connectors',
+      search: params.toString() ? `?${params.toString()}` : '',
+    });
+  };
 
   const refreshGoogleAccount = async (): Promise<UserGoogleAccount> => {
     const nextGoogleAccount = await getUserGoogleAccount();
@@ -269,7 +291,7 @@ export function DataConnectorsPage({
     return (
       <section className="settings-shell">
         <p className="page-state">
-          Data connectors are available to owners and admins.
+          Connectors are available to owners and admins.
         </p>
       </section>
     );
@@ -522,19 +544,39 @@ export function DataConnectorsPage({
   return (
     <section className="settings-shell">
       <article className="settings-card">
-        <h1>Data Connectors</h1>
+        <h1>Connectors</h1>
         <p className="settings-copy">
-          Define org-level data sources and store credentials. Verified
-          connectors can be attached to talks and are available as query tools
-          during execution. External inbox routing is configured separately as
-          Talk channel bindings.
+          Manage workspace-level integrations. Data connectors power retrieval
+          and query tools during execution. Channel connectors authenticate
+          external inboxes and expose approved destinations that Talks can bind
+          to.
         </p>
-        {error ? (
+        <div className="talk-subtabs-row" style={{ justifyContent: 'flex-start' }}>
+          <div className="talk-tabs talk-subtabs" role="tablist" aria-label="Connector tabs">
+            <button
+              type="button"
+              className={`talk-tab${activeTab === 'data-connectors' ? ' talk-tab-active' : ''}`}
+              aria-selected={activeTab === 'data-connectors'}
+              onClick={() => setActiveTab('data-connectors')}
+            >
+              Data Connectors
+            </button>
+            <button
+              type="button"
+              className={`talk-tab${activeTab === 'channel-connectors' ? ' talk-tab-active' : ''}`}
+              aria-selected={activeTab === 'channel-connectors'}
+              onClick={() => setActiveTab('channel-connectors')}
+            >
+              Channel Connectors
+            </button>
+          </div>
+        </div>
+        {activeTab === 'data-connectors' && error ? (
           <div className="settings-banner settings-banner-error" role="alert">
             {error}
           </div>
         ) : null}
-        {notice ? (
+        {activeTab === 'data-connectors' && notice ? (
           <div
             className="settings-banner settings-banner-success"
             role="status"
@@ -544,6 +586,10 @@ export function DataConnectorsPage({
         ) : null}
       </article>
 
+      {activeTab === 'channel-connectors' ? (
+        <TelegramChannelConnectorPanel onUnauthorized={onUnauthorized} />
+      ) : (
+        <>
       <article className="settings-card">
         <h2>Add Connector</h2>
         <div className="connector-form-grid">
@@ -1002,6 +1048,8 @@ export function DataConnectorsPage({
           </div>
         )}
       </article>
+        </>
+      )}
     </section>
   );
 }

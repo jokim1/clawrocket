@@ -53,6 +53,7 @@ import type { TalkRunWorkerControl } from '../talks/run-worker.js';
 import type { TalkJobWorkerControl } from '../talks/job-worker.js';
 import type { MainRunWorkerControl } from '../agents/main-run-worker.js';
 import { hashOpaqueToken } from '../security/hash.js';
+import type { TelegramBotIdentity } from '../channels/telegram-connector.js';
 import { validateCsrfToken } from './middleware/csrf.js';
 import {
   idempotencyPrecheck,
@@ -200,6 +201,10 @@ import {
   uploadTalkAttachmentRoute,
 } from './routes/talk-attachments.js';
 import {
+  adoptTelegramEnvTokenRoute,
+  approveTelegramTargetRoute,
+  deleteTelegramChannelConnectorTokenRoute,
+  getTelegramChannelConnectorRoute,
   listChannelConnectionsRoute,
   listChannelTargetsRoute,
   listTalkChannelsRoute,
@@ -215,6 +220,9 @@ import {
   listTalkChannelDeliveryFailuresRoute,
   retryTalkChannelDeliveryFailureRoute,
   deleteTalkChannelDeliveryFailureRoute,
+  saveTelegramChannelConnectorTokenRoute,
+  unapproveTelegramTargetRoute,
+  validateTelegramChannelConnectorRoute,
 } from './routes/channels.js';
 import {
   createDefaultTalkContextSourceIngestionService,
@@ -251,6 +259,9 @@ export interface WebServerOptions {
   sourceIngestion: TalkContextSourceIngestionService;
   onTalkTerminal?: (talkId: string) => void;
   sendChannelTestMessage?: (bindingId: string, text: string) => Promise<void>;
+  reloadTelegramConnector?: (input?: {
+    validatedBot?: TelegramBotIdentity;
+  }) => Promise<void>;
 }
 
 export interface WebServerHandle {
@@ -302,6 +313,7 @@ export function createWebServer(
       createDefaultTalkContextSourceIngestionService(),
     onTalkTerminal: input?.onTalkTerminal,
     sendChannelTestMessage: input?.sendChannelTestMessage,
+    reloadTelegramConnector: input?.reloadTelegramConnector,
   };
 
   const app = buildApp(opts);
@@ -2944,6 +2956,144 @@ function buildApp(opts: WebServerOptions): Hono {
     });
   });
 
+  app.get('/api/v1/channel-connectors/telegram', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+
+    const rateResult = checkRateLimit({ userId: auth.userId, bucket: 'read' });
+    if (!rateResult.allowed) {
+      return rateLimitedResponse(c, rateResult);
+    }
+
+    const result = getTelegramChannelConnectorRoute({ auth });
+    return new Response(JSON.stringify(result.body), {
+      status: result.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
+  });
+
+  app.post('/api/v1/channel-connectors/telegram/validate', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+
+    const body = (await c.req.json().catch(() => ({}))) as Record<
+      string,
+      unknown
+    >;
+    const result = await validateTelegramChannelConnectorRoute({
+      auth,
+      botToken: typeof body.botToken === 'string' ? body.botToken : '',
+    });
+    return new Response(JSON.stringify(result.body), {
+      status: result.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
+  });
+
+  app.put('/api/v1/channel-connectors/telegram/token', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+
+    const body = (await c.req.json().catch(() => ({}))) as Record<
+      string,
+      unknown
+    >;
+    const result = await saveTelegramChannelConnectorTokenRoute({
+      auth,
+      botToken: typeof body.botToken === 'string' ? body.botToken : '',
+      reloadConnector: opts.reloadTelegramConnector,
+    });
+    return new Response(JSON.stringify(result.body), {
+      status: result.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
+  });
+
+  app.delete('/api/v1/channel-connectors/telegram/token', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+
+    const result = await deleteTelegramChannelConnectorTokenRoute({
+      auth,
+      reloadConnector: opts.reloadTelegramConnector,
+    });
+    return new Response(JSON.stringify(result.body), {
+      status: result.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
+  });
+
+  app.post('/api/v1/channel-connectors/telegram/adopt-env', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+
+    const result = await adoptTelegramEnvTokenRoute({
+      auth,
+      reloadConnector: opts.reloadTelegramConnector,
+    });
+    return new Response(JSON.stringify(result.body), {
+      status: result.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
+  });
+
+  app.post('/api/v1/channel-connectors/telegram/targets/approve', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+
+    const body = (await c.req.json().catch(() => ({}))) as Record<
+      string,
+      unknown
+    >;
+    const result = await approveTelegramTargetRoute({
+      auth,
+      rawInput: typeof body.rawInput === 'string' ? body.rawInput : undefined,
+      targetKind:
+        typeof body.targetKind === 'string' ? body.targetKind : undefined,
+      targetId: typeof body.targetId === 'string' ? body.targetId : undefined,
+      displayName:
+        typeof body.displayName === 'string' ? body.displayName : undefined,
+      reloadConnector: opts.reloadTelegramConnector,
+    });
+    return new Response(JSON.stringify(result.body), {
+      status: result.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
+  });
+
+  app.delete(
+    '/api/v1/channel-connectors/telegram/targets/:targetKind/:targetId/approval',
+    async (c) => {
+      const auth = requireAuth(c);
+      if (!auth) return unauthorized(c);
+
+      const targetKind = safeDecodePathSegment(c.req.param('targetKind'));
+      const targetId = safeDecodePathSegment(c.req.param('targetId'));
+      if (!targetKind || !targetId) {
+        return c.json(
+          {
+            ok: false,
+            error: {
+              code: 'invalid_target',
+              message: 'Target path segments are not valid URL encoding',
+            },
+          },
+          400,
+        );
+      }
+
+      const result = unapproveTelegramTargetRoute({
+        auth,
+        targetKind,
+        targetId,
+      });
+      return new Response(JSON.stringify(result.body), {
+        status: result.statusCode,
+        headers: { 'content-type': 'application/json; charset=utf-8' },
+      });
+    },
+  );
+
   app.get('/api/v1/channel-connections/:connectionId/targets', async (c) => {
     const auth = requireAuth(c);
     if (!auth) return unauthorized(c);
@@ -2970,6 +3120,7 @@ function buildApp(opts: WebServerOptions): Hono {
 
     const query = c.req.query('query');
     const rawLimit = c.req.query('limit');
+    const approval = c.req.query('approval');
     const parsedLimit =
       rawLimit && rawLimit.trim()
         ? Number.parseInt(rawLimit.trim(), 10)
@@ -2980,6 +3131,8 @@ function buildApp(opts: WebServerOptions): Hono {
       connectionId,
       query,
       limit: Number.isFinite(parsedLimit) ? parsedLimit : undefined,
+      approval:
+        approval === 'approved' || approval === 'discovered' ? approval : 'all',
     });
     return new Response(JSON.stringify(result.body), {
       status: result.statusCode,

@@ -18,10 +18,6 @@ import {
 } from './clawrocket/config.js';
 import './channels/index.js';
 import {
-  getChannelFactory,
-  getRegisteredChannelNames,
-} from './channels/registry.js';
-import {
   ContainerOutput,
   runContainerAgent,
   writeGroupsSnapshot,
@@ -53,17 +49,23 @@ import {
   getOwnerUser,
   getTalkChannelBindingById,
   initClawrocketSchema,
+  updateChannelConnectionConfig,
   upsertChannelTarget,
 } from './clawrocket/db/index.js';
 import { ChannelDeliveryWorker } from './clawrocket/channels/channel-delivery-worker.js';
 import { ChannelIngressWorker } from './clawrocket/channels/channel-ingress-worker.js';
 import { TalkChannelRouter } from './clawrocket/channels/channel-router.js';
 import { ConnectionHealthMonitor } from './clawrocket/channels/connection-health-monitor.js';
+import {
+  probeTelegramBotToken,
+  resolveTelegramCredential,
+  type TelegramBotIdentity,
+} from './clawrocket/channels/telegram-connector.js';
 import { TalkLifecycleWakeBus } from './clawrocket/channels/talk-lifecycle-wake-bus.js';
 import { registerClawrocketSchedulerMaintenanceHook } from './clawrocket/scheduler-maintenance.js';
 import { GroupQueue } from './group-queue.js';
 import { resolveGroupFolderPath } from './group-folder.js';
-import { initBotPool } from './channels/telegram.js';
+import { initBotPool, TelegramChannel } from './channels/telegram.js';
 import { startIpcWatcher } from './ipc.js';
 import { findChannel, formatMessages, formatOutbound } from './router.js';
 import { startSchedulerLoop } from './task-scheduler.js';
@@ -682,6 +684,11 @@ async function main(): Promise<void> {
     registerClawrocketSchedulerMaintenanceHook();
     logger.info('Database initialized');
     loadState();
+    let reloadTelegramConnector = async (_input?: {
+      validatedBot?: TelegramBotIdentity;
+    }): Promise<void> => {
+      /* replaced after worker wiring */
+    };
 
     if (WEB_ENABLED) {
       webServer = await startWebServer({
@@ -702,6 +709,7 @@ async function main(): Promise<void> {
           }
           await channel.sendMessage(binding.target_id, text);
         },
+        reloadTelegramConnector: () => reloadTelegramConnector(),
       });
     } else {
       logger.info('Web API server is disabled (WEB_ENABLED=false)');
@@ -738,18 +746,19 @@ async function main(): Promise<void> {
         isGroup?: boolean,
       ) => {
         storeChatMetadata(chatJid, timestamp, name, channel, isGroup);
-        if (channel === 'telegram') {
-          upsertChannelTarget({
-            connectionId: telegramConnection.id,
-            targetKind: 'chat',
-            targetId: chatJid,
-            displayName: name || chatJid,
-            metadataJson: JSON.stringify({
-              isGroup: isGroup === true,
-            }),
-            lastSeenAt: timestamp,
-          });
-        }
+      },
+      onTargetObserved: async (
+        observation: import('./types.js').ChannelTargetObservation,
+      ) => {
+        if (observation.platform !== 'telegram') return;
+        upsertChannelTarget({
+          connectionId: telegramConnection.id,
+          targetKind: observation.target_kind,
+          targetId: observation.target_id,
+          displayName: observation.display_name || observation.target_id,
+          metadataJson: JSON.stringify(observation.metadata || {}),
+          lastSeenAt: observation.observed_at,
+        });
       },
       onInboundEvent: talkChannelRouter
         ? (event: import('./types.js').TalkChannelInboundEvent) =>
@@ -758,22 +767,105 @@ async function main(): Promise<void> {
       registeredGroups: () => registeredGroups,
     };
 
-    // Create and connect all registered channels.
-    // Each channel self-registers via the barrel import above.
-    // Factories return null when credentials are missing, so unconfigured channels are skipped.
-    for (const channelName of getRegisteredChannelNames()) {
-      const factory = getChannelFactory(channelName)!;
-      const channel = factory(channelOpts);
-      if (!channel) {
-        logger.warn(
-          { channel: channelName },
-          'Channel installed but credentials missing — skipping. Check .env or re-run the channel skill.',
-        );
-        continue;
+    const removeConnectedTelegramChannel = async () => {
+      const remaining: Channel[] = [];
+      for (const channel of channels) {
+        if (channel.name !== 'telegram') {
+          remaining.push(channel);
+          continue;
+        }
+        await channel.disconnect();
       }
-      channels.push(channel);
-      await channel.connect();
-    }
+      channels.splice(0, channels.length, ...remaining);
+    };
+
+    const stopTelegramHealthMonitor = async () => {
+      if (!connectionHealthMonitor) return;
+      await connectionHealthMonitor.stop();
+      connectionHealthMonitor = undefined;
+    };
+
+    reloadTelegramConnector = async (input) => {
+      const timestamp = new Date().toISOString();
+      await stopTelegramHealthMonitor();
+      await removeConnectedTelegramChannel();
+
+      const credential = resolveTelegramCredential();
+      const baseConfig = {
+        managedBy: 'runtime',
+        platform: 'telegram',
+        tokenSource: credential.tokenSource,
+        envTokenAvailable: credential.envTokenAvailable,
+        hasStoredSecret: credential.hasStoredSecret,
+      };
+
+      if (!credential.token) {
+        updateChannelConnectionConfig({
+          connectionId: telegramConnection.id,
+          config: {
+            ...baseConfig,
+            botUserId: null,
+            botUsername: null,
+            botDisplayName: null,
+          },
+          healthStatus: 'disconnected',
+          lastHealthCheckAt: timestamp,
+          lastHealthError: 'Telegram bot token not configured.',
+        });
+        return;
+      }
+
+      try {
+        const identity =
+          input?.validatedBot ??
+          (await probeTelegramBotToken(credential.token));
+        const channel = new TelegramChannel(credential.token, channelOpts);
+        await channel.connect();
+        channels.push(channel);
+        updateChannelConnectionConfig({
+          connectionId: telegramConnection.id,
+          config: {
+            ...baseConfig,
+            botUserId: identity.botUserId,
+            botUsername: identity.botUsername,
+            botDisplayName: identity.botDisplayName,
+            canJoinGroups: identity.canJoinGroups,
+          },
+          healthStatus: 'healthy',
+          lastHealthCheckAt: timestamp,
+          lastHealthError: null,
+        });
+
+        if ('probe' in channel) {
+          connectionHealthMonitor = new ConnectionHealthMonitor({
+            connectionId: telegramConnection.id,
+            probe: async () => {
+              await (channel as { probe: () => Promise<void> }).probe();
+            },
+            pollMs: 60_000,
+          });
+          await connectionHealthMonitor.start();
+        }
+      } catch (error) {
+        const detail =
+          error instanceof Error ? error.message : 'Failed to connect Telegram';
+        updateChannelConnectionConfig({
+          connectionId: telegramConnection.id,
+          config: {
+            ...baseConfig,
+            botUserId: null,
+            botUsername: null,
+            botDisplayName: null,
+          },
+          healthStatus: 'error',
+          lastHealthCheckAt: timestamp,
+          lastHealthError: detail,
+        });
+        logger.error({ err: error }, 'Failed to connect Telegram channel');
+      }
+    };
+
+    await reloadTelegramConnector();
     if (channels.length === 0) {
       if (shouldRequireConnectedChannels(WEB_ENABLED)) {
         throw new Error('No channels connected');
@@ -781,79 +873,61 @@ async function main(): Promise<void> {
       logger.warn(
         'No chat channels connected; continuing in web-only mode and skipping channel subsystems.',
       );
-    } else {
-      if (channelIngressWorker) {
-        await channelIngressWorker.start();
-      }
-      if (channelDeliveryWorker) {
-        await channelDeliveryWorker.start();
-      }
-
-      // Start connection health monitor for the Telegram channel
-      const telegramChannelInstance = channels.find(
-        (ch) => ch.name === 'telegram',
-      );
-      if (telegramChannelInstance && 'probe' in telegramChannelInstance) {
-        connectionHealthMonitor = new ConnectionHealthMonitor({
-          connectionId: telegramConnection.id,
-          probe: async () => {
-            await (
-              telegramChannelInstance as { probe: () => Promise<void> }
-            ).probe();
-          },
-          pollMs: 60_000,
-        });
-        await connectionHealthMonitor.start();
-      }
-
-      // Initialize Telegram bot pool for agent teams
-      if (TELEGRAM_BOT_POOL.length > 0) {
-        await initBotPool(TELEGRAM_BOT_POOL);
-      }
-
-      // Start subsystems (independently of connection handler)
-      startSchedulerLoop({
-        registeredGroups: () => registeredGroups,
-        getSessions: () => sessions,
-        queue,
-        onProcess: (groupJid, proc, containerName, groupFolder) =>
-          queue.registerProcess(groupJid, proc, containerName, groupFolder),
-        sendMessage: async (jid, rawText) => {
-          const channel = findChannel(channels, jid);
-          if (!channel) {
-            logger.warn({ jid }, 'No channel owns JID, cannot send message');
-            return;
-          }
-          const text = formatOutbound(rawText);
-          if (text) await channel.sendMessage(jid, text);
-        },
-      });
-      startIpcWatcher({
-        sendMessage: (jid, text) => {
-          const channel = findChannel(channels, jid);
-          if (!channel) throw new Error(`No channel for JID: ${jid}`);
-          return channel.sendMessage(jid, text);
-        },
-        registeredGroups: () => registeredGroups,
-        registerGroup,
-        syncGroups: async (force: boolean) => {
-          await Promise.all(
-            channels
-              .filter((ch) => ch.syncGroups)
-              .map((ch) => ch.syncGroups!(force)),
-          );
-        },
-        getAvailableGroups,
-        writeGroupsSnapshot: (gf, im, ag, rj) =>
-          writeGroupsSnapshot(gf, im, ag, rj),
-      });
-      queue.setProcessMessagesFn(processGroupMessages);
-      recoverPendingMessages();
-      startMessageLoop().catch((err) => {
-        logger.fatal({ err }, 'Message loop crashed unexpectedly');
-        void gracefulShutdown('message_loop_crash', { exitCode: 1 });
-      });
     }
+    if (channelIngressWorker) {
+      await channelIngressWorker.start();
+    }
+    if (channelDeliveryWorker) {
+      await channelDeliveryWorker.start();
+    }
+
+    // Initialize Telegram bot pool for agent teams
+    if (TELEGRAM_BOT_POOL.length > 0) {
+      await initBotPool(TELEGRAM_BOT_POOL);
+    }
+
+    // Start subsystems (independently of connection handler)
+    startSchedulerLoop({
+      registeredGroups: () => registeredGroups,
+      getSessions: () => sessions,
+      queue,
+      onProcess: (groupJid, proc, containerName, groupFolder) =>
+        queue.registerProcess(groupJid, proc, containerName, groupFolder),
+      sendMessage: async (jid, rawText) => {
+        const channel = findChannel(channels, jid);
+        if (!channel) {
+          logger.warn({ jid }, 'No channel owns JID, cannot send message');
+          return;
+        }
+        const text = formatOutbound(rawText);
+        if (text) await channel.sendMessage(jid, text);
+      },
+    });
+    startIpcWatcher({
+      sendMessage: (jid, text) => {
+        const channel = findChannel(channels, jid);
+        if (!channel) throw new Error(`No channel for JID: ${jid}`);
+        return channel.sendMessage(jid, text);
+      },
+      registeredGroups: () => registeredGroups,
+      registerGroup,
+      syncGroups: async (force: boolean) => {
+        await Promise.all(
+          channels
+            .filter((ch) => ch.syncGroups)
+            .map((ch) => ch.syncGroups!(force)),
+        );
+      },
+      getAvailableGroups,
+      writeGroupsSnapshot: (gf, im, ag, rj) =>
+        writeGroupsSnapshot(gf, im, ag, rj),
+    });
+    queue.setProcessMessagesFn(processGroupMessages);
+    recoverPendingMessages();
+    startMessageLoop().catch((err) => {
+      logger.fatal({ err }, 'Message loop crashed unexpectedly');
+      void gracefulShutdown('message_loop_crash', { exitCode: 1 });
+    });
   } catch (error) {
     try {
       await gracefulShutdown('startup_failure', {

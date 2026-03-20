@@ -16,7 +16,12 @@ vi.mock('./project-mounts.js', () => ({
 }));
 
 import { getDb } from '../../db.js';
-import { _initTestDatabase, createMessage, upsertUser } from '../db/index.js';
+import {
+  _initTestDatabase,
+  createMessage,
+  enqueueMainTurnAtomic,
+  upsertUser,
+} from '../db/index.js';
 import {
   executeMainChannel,
   type MainExecutionEvent,
@@ -60,7 +65,7 @@ describe('main-executor (pure)', () => {
     });
   });
 
-  it('returns output without writing to DB', async () => {
+  it('returns output without writing assistant messages or llm attempts', async () => {
     const now = new Date().toISOString();
     createMessage({
       id: 'msg-user-1',
@@ -309,13 +314,13 @@ describe('main-executor (pure)', () => {
         runId: 'run-main-container',
         userId: 'owner-1',
         promptLabel: 'main',
-        userMessage: 'Inspect the project',
+        userMessage: expect.stringContaining('## Current User Message'),
         allowedTools: ['Bash'],
         projectMountHostPath: '/resolved/main-project',
-        context: {
+        context: expect.objectContaining({
           systemPrompt: 'Keep filesystem changes isolated.',
-          history: [{ role: 'user', content: 'Inspect the project' }],
-        },
+          history: [],
+        }),
       }),
     );
 
@@ -331,6 +336,256 @@ describe('main-executor (pure)', () => {
     expect(events.map((event) => event.type)).toEqual([
       'main_response_started',
     ]);
+  });
+
+  it('injects older Main thread facts into the direct backend context package', async () => {
+    for (let index = 1; index <= 13; index += 1) {
+      createMessage({
+        id: `msg-direct-${index}`,
+        talkId: null,
+        threadId: 'thread-direct-memory',
+        role: index % 2 === 0 ? 'assistant' : 'user',
+        content:
+          index === 1
+            ? 'Important earlier fact: the launch code is Orion.'
+            : `Direct thread message ${index}`,
+        createdBy: index % 2 === 0 ? null : 'owner-1',
+        createdAt: new Date(Date.UTC(2026, 0, 1, 0, 0, index)).toISOString(),
+      });
+    }
+    createMessage({
+      id: 'msg-direct-14',
+      talkId: null,
+      threadId: 'thread-direct-memory',
+      role: 'user',
+      content: 'What is the launch code?',
+      createdBy: 'owner-1',
+      createdAt: new Date(Date.UTC(2026, 0, 1, 0, 0, 14)).toISOString(),
+    });
+
+    vi.mocked(executeWithAgent).mockImplementation(
+      async (_agentId, context) => {
+        const combinedContext = [
+          context?.systemPrompt ?? '',
+          ...(context?.history ?? []).map((message) =>
+            typeof message.content === 'string'
+              ? message.content
+              : JSON.stringify(message.content),
+          ),
+        ].join('\n');
+
+        return {
+          content: combinedContext.includes('Orion')
+            ? 'The launch code is Orion.'
+            : 'I do not know.',
+          agentId: 'agent.main',
+          providerId: 'provider.anthropic',
+          modelId: 'claude-sonnet-4-6',
+          usage: {
+            inputTokens: 20,
+            outputTokens: 10,
+            estimatedCostUsd: 0,
+          },
+        };
+      },
+    );
+
+    const result = await executeMainChannel(
+      {
+        runId: 'run-main-direct-memory',
+        threadId: 'thread-direct-memory',
+        requestedBy: 'owner-1',
+        triggerMessageId: 'msg-direct-14',
+        triggerContent: 'What is the launch code?',
+      },
+      new AbortController().signal,
+    );
+
+    expect(result.content).toBe('The launch code is Orion.');
+    expect(vi.mocked(executeWithAgent)).toHaveBeenCalledWith(
+      'agent.main',
+      expect.objectContaining({
+        systemPrompt: expect.stringContaining('Orion'),
+      }),
+      'What is the launch code?',
+      expect.any(Object),
+    );
+  });
+
+  it('persists a Main run context snapshot on the talk_runs row', async () => {
+    for (let index = 1; index <= 13; index += 1) {
+      createMessage({
+        id: `msg-snapshot-${index}`,
+        talkId: null,
+        threadId: 'thread-main-snapshot',
+        role: index % 2 === 0 ? 'assistant' : 'user',
+        content:
+          index === 1
+            ? 'Important earlier fact: the launch code is Atlas.'
+            : `Snapshot thread message ${index}`,
+        createdBy: index % 2 === 0 ? null : 'owner-1',
+        createdAt: new Date(Date.UTC(2026, 0, 3, 0, 0, index)).toISOString(),
+      });
+    }
+
+    enqueueMainTurnAtomic({
+      threadId: 'thread-main-snapshot',
+      userId: 'owner-1',
+      content: 'What is the launch code?',
+      messageId: 'msg-snapshot-14',
+      runId: 'run-main-snapshot',
+    });
+
+    vi.mocked(executeWithAgent).mockResolvedValue({
+      content: 'The launch code is Atlas.',
+      agentId: 'agent.main',
+      providerId: 'provider.anthropic',
+      modelId: 'claude-sonnet-4-6',
+      usage: {
+        inputTokens: 24,
+        outputTokens: 8,
+        estimatedCostUsd: 0,
+      },
+    });
+
+    await executeMainChannel(
+      {
+        runId: 'run-main-snapshot',
+        threadId: 'thread-main-snapshot',
+        requestedBy: 'owner-1',
+        triggerMessageId: 'msg-snapshot-14',
+        triggerContent: 'What is the launch code?',
+      },
+      new AbortController().signal,
+    );
+
+    const persistedRun = getDb()
+      .prepare(
+        `
+        SELECT metadata_json
+        FROM talk_runs
+        WHERE id = ?
+      `,
+      )
+      .get('run-main-snapshot') as { metadata_json: string | null } | undefined;
+
+    expect(persistedRun?.metadata_json).toBeTruthy();
+    expect(JSON.parse(persistedRun!.metadata_json!)).toMatchObject({
+      version: 1,
+      threadId: 'thread-main-snapshot',
+      renderer: 'direct_http',
+      summary: {
+        included: true,
+        source: expect.any(String),
+        coversThroughMessageId: 'msg-snapshot-1',
+        text: expect.stringContaining('Atlas'),
+      },
+      history: {
+        messageCount: 12,
+      },
+    });
+    expect(
+      JSON.parse(persistedRun!.metadata_json!).history.messageIds,
+    ).not.toContain('msg-snapshot-14');
+  });
+
+  it('builds the container prompt payload with thread context and recent conversation inline', async () => {
+    for (let index = 1; index <= 13; index += 1) {
+      createMessage({
+        id: `msg-container-${index}`,
+        talkId: null,
+        threadId: 'thread-container-memory',
+        role: index % 2 === 0 ? 'assistant' : 'user',
+        content:
+          index === 1
+            ? 'Important earlier fact: the launch code is Orion.'
+            : `Container thread message ${index}`,
+        createdBy: index % 2 === 0 ? null : 'owner-1',
+        createdAt: new Date(Date.UTC(2026, 0, 2, 0, 0, index)).toISOString(),
+      });
+    }
+    createMessage({
+      id: 'msg-container-14',
+      talkId: null,
+      threadId: 'thread-container-memory',
+      role: 'user',
+      content: 'What is the launch code?',
+      createdBy: 'owner-1',
+      createdAt: new Date(Date.UTC(2026, 0, 2, 0, 0, 14)).toISOString(),
+    });
+
+    getDb()
+      .prepare(
+        `
+        UPDATE registered_agents
+        SET system_prompt = ?,
+            provider_id = ?,
+            model_id = ?
+        WHERE id = ?
+      `,
+      )
+      .run(
+        'Keep filesystem changes isolated.',
+        'provider.anthropic',
+        'claude-sonnet-4-6',
+        'agent.main',
+      );
+
+    vi.mocked(planExecution).mockReturnValue({
+      backend: 'container',
+      routeReason: 'normal',
+      providerId: 'provider.anthropic',
+      modelId: 'claude-sonnet-4-6',
+      effectiveTools: [],
+      heavyToolFamilies: [],
+      containerCredential: {
+        authMode: 'api_key',
+        secrets: {
+          ANTHROPIC_API_KEY: 'sk-container-test',
+        },
+      },
+    });
+    vi.mocked(executeContainerAgentTurn).mockImplementation(async (input) => ({
+      content: input.userMessage.includes('Orion')
+        ? 'The launch code is Orion.'
+        : 'I do not know.',
+    }));
+
+    const result = await executeMainChannel(
+      {
+        runId: 'run-main-container-memory',
+        threadId: 'thread-container-memory',
+        requestedBy: 'owner-1',
+        triggerMessageId: 'msg-container-14',
+        triggerContent: 'What is the launch code?',
+      },
+      new AbortController().signal,
+    );
+
+    expect(result.content).toBe('The launch code is Orion.');
+    expect(executeContainerAgentTurn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        userMessage: expect.stringContaining('## Thread Context'),
+        context: {
+          systemPrompt: 'Keep filesystem changes isolated.',
+          history: expect.arrayContaining([
+            expect.objectContaining({
+              content: 'Container thread message 13',
+            }),
+          ]),
+        },
+      }),
+    );
+    expect(executeContainerAgentTurn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        userMessage: expect.stringContaining('## Recent Conversation'),
+      }),
+    );
+    expect(executeContainerAgentTurn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        userMessage: expect.stringContaining('## Current User Message'),
+      }),
+    );
   });
 
   it('throws when no agent is available', async () => {

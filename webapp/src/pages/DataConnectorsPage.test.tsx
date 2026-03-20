@@ -23,7 +23,7 @@ describe('DataConnectorsPage', () => {
       </MemoryRouter>,
     );
 
-    await screen.findByRole('heading', { name: 'Data Connectors' });
+    await screen.findByRole('heading', { level: 1, name: 'Connectors' });
     expect(screen.getByText('FTUE PostHog')).toBeTruthy();
 
     const addCard = screen
@@ -53,7 +53,7 @@ describe('DataConnectorsPage', () => {
       </MemoryRouter>,
     );
 
-    await screen.findByRole('heading', { name: 'Data Connectors' });
+    await screen.findByRole('heading', { level: 1, name: 'Connectors' });
     const addCard = screen
       .getByRole('heading', { name: 'Add Connector' })
       .closest('article');
@@ -97,7 +97,7 @@ describe('DataConnectorsPage', () => {
       </MemoryRouter>,
     );
 
-    await screen.findByRole('heading', { name: 'Data Connectors' });
+    await screen.findByRole('heading', { level: 1, name: 'Connectors' });
     const connectorCard = screen
       .getByRole('heading', { name: 'FTUE PostHog' })
       .closest('article');
@@ -164,7 +164,7 @@ describe('DataConnectorsPage', () => {
       </MemoryRouter>,
     );
 
-    await screen.findByRole('heading', { name: 'Data Connectors' });
+    await screen.findByRole('heading', { level: 1, name: 'Connectors' });
     const connectorCard = screen
       .getByRole('heading', { name: 'Live Ops Sheet' })
       .closest('article');
@@ -227,7 +227,7 @@ describe('DataConnectorsPage', () => {
       </MemoryRouter>,
     );
 
-    await screen.findByRole('heading', { name: 'Data Connectors' });
+    await screen.findByRole('heading', { level: 1, name: 'Connectors' });
     const connectorCard = screen
       .getByRole('heading', { name: 'Season Preview Doc' })
       .closest('article');
@@ -249,6 +249,25 @@ describe('DataConnectorsPage', () => {
       await screen.findByText(
         'Season Preview Doc credential saved from owner@example.com.',
       ),
+    ).toBeTruthy();
+  });
+
+  it('renders the Telegram connector on the Channel Connectors tab', async () => {
+    installDataConnectorsFetch();
+
+    render(
+      <MemoryRouter initialEntries={['/app/connectors?tab=channel-connectors']}>
+        <DataConnectorsPage onUnauthorized={vi.fn()} userRole="owner" />
+      </MemoryRouter>,
+    );
+
+    await screen.findByRole('heading', { level: 1, name: 'Connectors' });
+    expect(
+      await screen.findByRole('heading', { name: 'Connect Telegram Bot' }),
+    ).toBeTruthy();
+    expect(screen.getByText('Managed by environment')).toBeTruthy();
+    expect(
+      screen.getByRole('button', { name: 'Adopt into ClawTalk' }),
     ).toBeTruthy();
   });
 });
@@ -290,6 +309,31 @@ function installDataConnectorsFetch(input?: {
     scopes: [],
     accessExpiresAt: null,
   };
+  let telegramConnector = {
+    connection: {
+      id: 'channel-conn:telegram:system',
+      platform: 'telegram',
+      connection_mode: 'system_managed',
+      account_key: 'telegram:system',
+      display_name: 'Telegram (System Managed)',
+      enabled: 1,
+      health_status: 'healthy',
+      last_health_check_at: '2026-03-06T00:00:00.000Z',
+      last_health_error: null,
+      config_json: JSON.stringify({
+        managedBy: 'runtime',
+        platform: 'telegram',
+        botUsername: 'clawtalk_bot',
+        botDisplayName: 'ClawTalk',
+      }),
+      token_source: 'env',
+      env_token_available: 1,
+      has_stored_secret: 0,
+      created_at: '2026-03-06T00:00:00.000Z',
+      updated_at: '2026-03-06T00:00:00.000Z',
+    },
+    targets: [],
+  };
 
   vi.stubGlobal(
     'fetch',
@@ -315,6 +359,13 @@ function installDataConnectorsFetch(input?: {
         return jsonResponse(200, {
           ok: true,
           data: { googleAccount },
+        });
+      }
+
+      if (url.endsWith('/api/v1/channel-connectors/telegram') && method === 'GET') {
+        return jsonResponse(200, {
+          ok: true,
+          data: telegramConnector,
         });
       }
 

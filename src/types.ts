@@ -68,6 +68,15 @@ export interface TalkChannelInboundEvent {
   metadata?: Record<string, unknown> | null;
 }
 
+export interface ChannelTargetObservation {
+  platform: 'telegram' | 'slack';
+  target_kind: string;
+  target_id: string;
+  display_name: string | null;
+  observed_at: string;
+  metadata?: Record<string, unknown> | null;
+}
+
 export interface ScheduledTask {
   id: string;
   group_folder: string;
@@ -112,6 +121,9 @@ export type OnInboundMessage = (chatJid: string, message: NewMessage) => void;
 export type OnTalkChannelInboundEvent = (
   event: TalkChannelInboundEvent,
 ) => boolean | Promise<boolean>;
+export type OnChannelTargetObserved = (
+  observation: ChannelTargetObservation,
+) => void | Promise<void>;
 
 // Callback for chat metadata discovery.
 // name is optional — channels that deliver names inline (Telegram) pass it here;

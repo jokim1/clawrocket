@@ -176,6 +176,56 @@ function createMediaCtx(overrides: {
   };
 }
 
+function createChannelPostCtx(overrides?: {
+  chatId?: number;
+  title?: string;
+  text?: string;
+  caption?: string;
+  messageId?: number;
+  date?: number;
+  extra?: Record<string, any>;
+}) {
+  return {
+    chat: {
+      id: overrides?.chatId ?? -1001234567890,
+      type: 'channel',
+      title: overrides?.title ?? 'Gamemakers Channel',
+    },
+    channelPost: {
+      text: overrides?.text,
+      caption: overrides?.caption,
+      message_id: overrides?.messageId ?? 9,
+      date: overrides?.date ?? Math.floor(Date.now() / 1000),
+      ...(overrides?.extra || {}),
+    },
+    update: {
+      update_id: 3000 + (overrides?.messageId ?? 9),
+    },
+  };
+}
+
+function createChatMemberCtx(overrides?: {
+  chatId?: number;
+  chatType?: 'group' | 'supergroup' | 'channel';
+  title?: string;
+  date?: number;
+  newStatus?: string;
+  oldStatus?: string;
+}) {
+  return {
+    chat: {
+      id: overrides?.chatId ?? -10099887766,
+      type: overrides?.chatType ?? 'supergroup',
+      title: overrides?.title ?? 'Cal Football',
+    },
+    myChatMember: {
+      date: overrides?.date ?? Math.floor(Date.now() / 1000),
+      new_chat_member: { status: overrides?.newStatus ?? 'administrator' },
+      old_chat_member: { status: overrides?.oldStatus ?? 'left' },
+    },
+  };
+}
+
 function currentBot() {
   return botRef.current;
 }
@@ -189,6 +239,11 @@ async function triggerMediaMessage(
   filter: string,
   ctx: ReturnType<typeof createMediaCtx>,
 ) {
+  const handlers = currentBot().filterHandlers.get(filter) || [];
+  for (const h of handlers) await h(ctx);
+}
+
+async function triggerFilter(filter: string, ctx: any) {
   const handlers = currentBot().filterHandlers.get(filter) || [];
   for (const h of handlers) await h(ctx);
 }
@@ -233,6 +288,9 @@ describe('TelegramChannel', () => {
       expect(currentBot().filterHandlers.has('message:sticker')).toBe(true);
       expect(currentBot().filterHandlers.has('message:location')).toBe(true);
       expect(currentBot().filterHandlers.has('message:contact')).toBe(true);
+      expect(currentBot().filterHandlers.has('my_chat_member')).toBe(true);
+      expect(currentBot().filterHandlers.has('channel_post:text')).toBe(true);
+      expect(currentBot().filterHandlers.has('channel_post:photo')).toBe(true);
     });
 
     it('registers error handler on connect', async () => {
@@ -745,6 +803,64 @@ describe('TelegramChannel', () => {
       await triggerMediaMessage('message:photo', ctx);
 
       expect(opts.onMessage).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('destination observation', () => {
+    it('emits target observation for my_chat_member updates', async () => {
+      const opts = createTestOpts({
+        onTargetObserved: vi.fn(),
+      });
+      const channel = new TelegramChannel('test-token', opts);
+      await channel.connect();
+
+      await triggerFilter('my_chat_member', createChatMemberCtx());
+
+      expect(opts.onTargetObserved).toHaveBeenCalledWith(
+        expect.objectContaining({
+          platform: 'telegram',
+          target_kind: 'chat',
+          target_id: 'tg:-10099887766',
+          display_name: 'Cal Football',
+          metadata: expect.objectContaining({
+            source: 'my_chat_member',
+            membershipStatus: 'administrator',
+            previousMembershipStatus: 'left',
+          }),
+        }),
+      );
+    });
+
+    it('routes channel posts as channel targets', async () => {
+      const opts = createTestOpts({
+        onTargetObserved: vi.fn(),
+        onInboundEvent: vi.fn().mockResolvedValue(true),
+      });
+      const channel = new TelegramChannel('test-token', opts);
+      await channel.connect();
+
+      await triggerFilter(
+        'channel_post:text',
+        createChannelPostCtx({ text: 'Ship the weekly update' }),
+      );
+
+      expect(opts.onTargetObserved).toHaveBeenCalledWith(
+        expect.objectContaining({
+          target_kind: 'channel',
+          target_id: 'tg:-1001234567890',
+          display_name: 'Gamemakers Channel',
+        }),
+      );
+      expect(opts.onInboundEvent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          platform: 'telegram',
+          target_kind: 'channel',
+          target_id: 'tg:-1001234567890',
+          sender_id: null,
+          sender_name: null,
+          content: 'Ship the weekly update',
+        }),
+      );
     });
   });
 

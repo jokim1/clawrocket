@@ -522,6 +522,8 @@ type DetailAction =
 const SCROLL_STICK_THRESHOLD_PX = 120;
 const TALK_MESSAGE_MAX_CHARS = 20_000;
 const MAX_EVENT_RUN_CACHE = 500;
+const COMPOSER_TEXTAREA_MIN_HEIGHT_PX = 48;
+const COMPOSER_TEXTAREA_MAX_HEIGHT_PX = 240;
 
 const TALK_AGENT_ROLE_OPTIONS: TalkAgent['role'][] = [
   'assistant',
@@ -3656,6 +3658,11 @@ export function TalkDetailPage({
         setChannelCreateDraft((current) => {
           const nextConnectionId =
             connections.find(
+              (connection) =>
+                connection.platform === 'telegram' &&
+                connection.connectionMode === 'system_managed',
+            )?.id ||
+            connections.find(
               (connection) => connection.id === current.connectionId,
             )?.id ||
             connections[0]?.id ||
@@ -3705,6 +3712,7 @@ export function TalkDetailPage({
         const targets = await listChannelTargets({
           connectionId: channelCreateDraft.connectionId,
           limit: 50,
+          approval: 'approved',
         });
         if (cancelled) return;
         setChannelTargets(targets);
@@ -4687,7 +4695,7 @@ export function TalkDetailPage({
       setChannelStatus({
         status: 'error',
         message:
-          'Select a connection and target before creating a channel binding.',
+          'Select an approved Telegram destination before creating a channel binding.',
       });
       return;
     }
@@ -5067,6 +5075,27 @@ export function TalkDetailPage({
       dispatch({ type: 'SEND_CLEARED' });
     }
   };
+
+  const resizeComposerTextarea = useCallback(() => {
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+    textarea.style.height = 'auto';
+    const scrollHeight = Math.max(
+      textarea.scrollHeight,
+      COMPOSER_TEXTAREA_MIN_HEIGHT_PX,
+    );
+    const nextHeight = Math.min(
+      scrollHeight,
+      COMPOSER_TEXTAREA_MAX_HEIGHT_PX,
+    );
+    textarea.style.height = `${nextHeight}px`;
+    textarea.style.overflowY =
+      scrollHeight > COMPOSER_TEXTAREA_MAX_HEIGHT_PX ? 'auto' : 'hidden';
+  }, []);
+
+  useEffect(() => {
+    resizeComposerTextarea();
+  }, [activeThreadId, currentTab, draft, resizeComposerTextarea, state.kind]);
 
   const ALLOWED_ATTACHMENT_EXTENSIONS =
     '.txt,.md,.csv,.html,.rtf,' +
@@ -8836,8 +8865,9 @@ export function TalkDetailPage({
               <p className="policy-muted">
                 Bind this talk to external channels so inbound Telegram messages
                 can create Talk turns and completed replies can be delivered
-                back out. Data Connectors are separate and only power query
-                tools during execution.
+                back out. Telegram bot setup and destination approval are
+                managed in Connectors; this page only binds the talk to already
+                approved destinations.
               </p>
 
               {channelStatus.status === 'error' ? (
@@ -8860,8 +8890,8 @@ export function TalkDetailPage({
                     <div>
                       <h3>Add Channel Binding</h3>
                       <p className="talk-llm-meta">
-                        V1 uses your system-managed Telegram connection and
-                        cached chat targets discovered by inbound traffic.
+                        Choose one of the approved Telegram destinations from
+                        Connectors, then configure how this talk should respond.
                       </p>
                     </div>
                   </div>
@@ -8869,33 +8899,21 @@ export function TalkDetailPage({
                     <p className="page-state">
                       No channel connections are available in this runtime.
                     </p>
+                  ) : channelTargets.length === 0 && !channelTargetsLoading ? (
+                    <div className="inline-banner inline-banner-warning" role="status">
+                      No approved Telegram destinations are available yet.{' '}
+                      <Link to="/app/connectors?tab=channel-connectors">
+                        Manage Telegram in Connectors
+                      </Link>
+                      .
+                    </div>
                   ) : (
                     <>
                       <div className="connector-attach-row">
-                        <label>
-                          <span className="settings-label">Connection</span>
-                          <select
-                            value={channelCreateDraft.connectionId ?? ''}
-                            onChange={(event) =>
-                              setChannelCreateDraft((current) => ({
-                                ...current,
-                                connectionId: event.target.value,
-                                targetKey: '',
-                                displayName: '',
-                              }))
-                            }
-                            disabled={channelStatus.status === 'saving'}
-                          >
-                            {channelConnections.map((connection) => (
-                              <option key={connection.id} value={connection.id}>
-                                {connection.displayName} (
-                                {formatChannelPlatform(connection.platform)})
-                              </option>
-                            ))}
-                          </select>
-                        </label>
                         <label style={{ flex: 1 }}>
-                          <span className="settings-label">Target</span>
+                          <span className="settings-label">
+                            Telegram destination
+                          </span>
                           <select
                             value={channelCreateDraft.targetKey ?? ''}
                             onChange={(event) => {
@@ -8921,10 +8939,10 @@ export function TalkDetailPage({
                           >
                             <option value="">
                               {channelTargetsLoading
-                                ? 'Loading targets…'
+                                ? 'Loading approved destinations…'
                                 : channelTargets.length === 0
-                                  ? 'No targets discovered yet'
-                                  : 'Select a Telegram chat'}
+                                  ? 'No approved destinations yet'
+                                  : 'Select a Telegram destination'}
                             </option>
                             {channelTargets.map((target) => (
                               <option
@@ -9898,53 +9916,97 @@ export function TalkDetailPage({
                 <p className="page-state">No runs yet.</p>
               ) : (
                 <ul className="run-history-list">
-                  {runHistory.map((run) => (
-                    <li key={run.id} className="run-history-item">
-                      <div className="run-history-main">
-                        <span
-                          className={`run-history-status run-history-status-${run.status}`}
-                        >
-                          {run.status}
-                        </span>
-                        <code>{run.id}</code>
-                      </div>
-                      {run.targetAgentNickname ? (
-                        <p className="run-history-meta">
-                          Agent: {run.targetAgentNickname}
-                        </p>
-                      ) : null}
-                      <div className="run-history-links">
-                        {run.triggerMessageId ? (
+                  {runHistory.map((run) => {
+                    const runContextPanel = runContextPanels[run.id];
+                    return (
+                      <li key={run.id} className="run-history-item">
+                        <div className="run-history-main">
+                          <span
+                            className={`run-history-status run-history-status-${run.status}`}
+                          >
+                            {run.status}
+                          </span>
+                          <code>{run.id}</code>
+                        </div>
+                        {run.targetAgentNickname ? (
+                          <p className="run-history-meta">
+                            Agent: {run.targetAgentNickname}
+                          </p>
+                        ) : null}
+                        <div className="run-history-links">
+                          {run.triggerMessageId ? (
+                            <button
+                              type="button"
+                              className="run-history-link"
+                              onClick={() => handleOpenRunTrigger(run)}
+                            >
+                              Trigger:{' '}
+                              {summarizeMessageForRun(
+                                messageLookup.get(run.triggerMessageId),
+                                run.triggerMessageId,
+                              )}
+                            </button>
+                          ) : (
+                            <span className="run-history-muted">
+                              Trigger: not available
+                            </span>
+                          )}
                           <button
                             type="button"
-                            className="run-history-link"
-                            onClick={() => handleOpenRunTrigger(run)}
+                            className="secondary-btn run-history-context-toggle"
+                            onClick={() => void handleToggleRunContext(run.id)}
                           >
-                            Trigger:{' '}
-                            {summarizeMessageForRun(
-                              messageLookup.get(run.triggerMessageId),
-                              run.triggerMessageId,
-                            )}
+                            {runContextPanel?.status === 'loading'
+                              ? 'Loading context…'
+                              : runContextPanel?.open
+                                ? 'Hide context'
+                                : 'View context'}
                           </button>
-                        ) : (
-                          <span className="run-history-muted">
-                            Trigger: not available
-                          </span>
-                        )}
-                      </div>
-                      {run.status === 'failed' && run.errorMessage ? (
-                        <p className="run-history-error">
-                          {run.errorCode ? `${run.errorCode}: ` : ''}
-                          {run.errorMessage}
-                        </p>
-                      ) : null}
-                      {run.status === 'cancelled' && run.cancelReason ? (
-                        <p className="run-history-muted">
-                          Cancel reason: {run.cancelReason}
-                        </p>
-                      ) : null}
-                    </li>
-                  ))}
+                        </div>
+                        {runContextPanel?.open ? (
+                          <section
+                            className="run-context-shell"
+                            aria-label={`Context used for run ${run.id}`}
+                          >
+                            {runContextPanel.status === 'loading' ? (
+                              <div className="run-context-panel">
+                                <p className="run-context-note">
+                                  Loading context snapshot…
+                                </p>
+                              </div>
+                            ) : runContextPanel.status === 'error' ? (
+                              <div className="run-context-panel">
+                                <p className="run-context-note" role="alert">
+                                  {runContextPanel.message ||
+                                    'Failed to load run context.'}
+                                </p>
+                              </div>
+                            ) : runContextPanel.snapshot ? (
+                              renderRunContextSnapshot(runContextPanel.snapshot)
+                            ) : (
+                              <div className="run-context-panel">
+                                <p className="run-context-note">
+                                  No saved context snapshot is available for
+                                  this run.
+                                </p>
+                              </div>
+                            )}
+                          </section>
+                        ) : null}
+                        {run.status === 'failed' && run.errorMessage ? (
+                          <p className="run-history-error">
+                            {run.errorCode ? `${run.errorCode}: ` : ''}
+                            {run.errorMessage}
+                          </p>
+                        ) : null}
+                        {run.status === 'cancelled' && run.cancelReason ? (
+                          <p className="run-history-muted">
+                            Cancel reason: {run.cancelReason}
+                          </p>
+                        ) : null}
+                      </li>
+                    );
+                  })}
                 </ul>
               )}
             </section>
@@ -10165,9 +10227,6 @@ export function TalkDetailPage({
                               agentLabelById[message.agentId]) ||
                             message.agentNickname ||
                             null;
-                          const runContextPanel = message.runId
-                            ? runContextPanels[message.runId]
-                            : null;
                           return (
                             <article
                               key={entry.key}
@@ -10244,54 +10303,6 @@ export function TalkDetailPage({
                                       </span>
                                     </div>
                                   ))}
-                                </div>
-                              ) : null}
-                              {message.role === 'assistant' && message.runId ? (
-                                <div className="run-context-block">
-                                  <button
-                                    type="button"
-                                    className="secondary-btn message-context-toggle"
-                                    onClick={() =>
-                                      void handleToggleRunContext(
-                                        message.runId!,
-                                      )
-                                    }
-                                  >
-                                    {runContextPanel?.status === 'loading'
-                                      ? 'Loading context…'
-                                      : runContextPanel?.open
-                                        ? 'Hide context'
-                                        : 'Context used'}
-                                  </button>
-                                  {runContextPanel?.open ? (
-                                    <section
-                                      className="run-context-panel"
-                                      aria-label="Run context used"
-                                    >
-                                      {runContextPanel.status === 'loading' ? (
-                                        <p className="run-context-note">
-                                          Loading context snapshot…
-                                        </p>
-                                      ) : runContextPanel.status === 'error' ? (
-                                        <p
-                                          className="run-context-note"
-                                          role="alert"
-                                        >
-                                          {runContextPanel.message ||
-                                            'Failed to load run context.'}
-                                        </p>
-                                      ) : runContextPanel.snapshot ? (
-                                        renderRunContextSnapshot(
-                                          runContextPanel.snapshot,
-                                        )
-                                      ) : (
-                                        <p className="run-context-note">
-                                          No saved context snapshot is available
-                                          for this run.
-                                        </p>
-                                      )}
-                                    </section>
-                                  ) : null}
                                 </div>
                               ) : null}
                             </article>
@@ -10434,7 +10445,7 @@ export function TalkDetailPage({
                       }
                       onKeyDown={handleComposerKeyDown}
                       placeholder="Send a message to this thread"
-                      rows={3}
+                      rows={1}
                       maxLength={TALK_MESSAGE_MAX_CHARS}
                       disabled={
                         state.sendState.status === 'posting' ||
