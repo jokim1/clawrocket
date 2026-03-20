@@ -103,6 +103,7 @@ describe('ThreadContextMenu', () => {
       );
 
       const menu = screen.getByRole('menu', { name: 'Thread options' });
+      expect(menu.parentElement).toBe(document.body);
 
       await waitFor(() => {
         expect(menu.style.left).toBe('132px');

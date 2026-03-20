@@ -3470,7 +3470,7 @@ a {
 
 .thread-context-menu {
   position: fixed;
-  z-index: 40;
+  z-index: 1000;
   min-width: 11rem;
   padding: 0.35rem;
   border: 1px solid #d8dfec;

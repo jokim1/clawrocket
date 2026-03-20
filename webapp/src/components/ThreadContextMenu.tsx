@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 
 type ThreadContextMenuProps = {
   x: number;
@@ -80,7 +81,7 @@ export function ThreadContextMenu({
     };
   }, [onClose]);
 
-  return (
+  const menu = (
     <div
       ref={menuRef}
       role="menu"
@@ -126,4 +127,10 @@ export function ThreadContextMenu({
       </button>
     </div>
   );
+
+  if (typeof document === 'undefined') {
+    return menu;
+  }
+
+  return createPortal(menu, document.body);
 }
