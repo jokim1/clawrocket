@@ -1024,7 +1024,8 @@ describe('CleanTalkExecutor', () => {
     }
 
     it('returns an existing state entry', async () => {
-      const { upsertTalkStateEntry } = await import('../db/context-accessors.js');
+      const { upsertTalkStateEntry } =
+        await import('../db/context-accessors.js');
       upsertTalkStateEntry({
         talkId: TALK_ID,
         key: 'read_me',
@@ -1093,7 +1094,8 @@ describe('CleanTalkExecutor', () => {
     }
 
     it('deletes an entry with matching version', async () => {
-      const { upsertTalkStateEntry } = await import('../db/context-accessors.js');
+      const { upsertTalkStateEntry } =
+        await import('../db/context-accessors.js');
       upsertTalkStateEntry({
         talkId: TALK_ID,
         key: 'del_me',
@@ -1111,7 +1113,8 @@ describe('CleanTalkExecutor', () => {
     });
 
     it('returns conflict on version mismatch', async () => {
-      const { upsertTalkStateEntry } = await import('../db/context-accessors.js');
+      const { upsertTalkStateEntry } =
+        await import('../db/context-accessors.js');
       upsertTalkStateEntry({
         talkId: TALK_ID,
         key: 'conflict_key',

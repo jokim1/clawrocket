@@ -311,8 +311,7 @@ export function buildToolExecutor(
     if (toolName === 'delete_state') {
       if (jobPolicy && !jobPolicy.allowStateMutation) {
         return {
-          result:
-            'Error: delete_state is not available for scheduled job runs',
+          result: 'Error: delete_state is not available for scheduled job runs',
           isError: true,
         };
       }

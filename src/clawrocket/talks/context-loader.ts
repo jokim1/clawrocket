@@ -720,8 +720,7 @@ function buildOmissionNote(
 ): string {
   const shownKeys = omittedKeys.slice(0, MAX_OMITTED_KEYS_SHOWN);
   const extra = omittedKeys.length - shownKeys.length;
-  const keyList =
-    shownKeys.join(', ') + (extra > 0 ? `, +${extra} more` : '');
+  const keyList = shownKeys.join(', ') + (extra > 0 ? `, +${extra} more` : '');
   return `- ${omittedCount} state entr${
     omittedCount === 1 ? 'y' : 'ies'
   } omitted (keys: ${keyList}). Use read_state(key) to fetch them.`;
