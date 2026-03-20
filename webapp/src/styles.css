@@ -1741,22 +1741,118 @@ a {
   gap: 0.45rem;
 }
 
-.talk-orchestration-picker {
+.talk-orchestration-menu {
+  position: relative;
+  display: inline-flex;
+}
+
+.talk-orchestration-trigger {
   display: inline-flex;
   align-items: center;
-  gap: 0.45rem;
-  color: #4e5d7c;
-  font-size: 0.78rem;
+  gap: 0.42rem;
+  border: 1px solid #d7dfef;
+  border-radius: 10px;
+  background: #fff;
+  padding: 0.45rem 0.72rem;
+  color: #36548d;
+  font: inherit;
+  font-size: 0.9rem;
   font-weight: 600;
   white-space: nowrap;
+  cursor: pointer;
+  transition:
+    border-color 140ms ease,
+    background 140ms ease,
+    box-shadow 140ms ease,
+    color 140ms ease;
 }
 
-.talk-orchestration-picker select {
-  min-width: 13rem;
+.talk-orchestration-trigger:hover:not(:disabled) {
+  border-color: #c1cde4;
+  background: #f7f9ff;
 }
 
-.talk-orchestration-hint {
-  margin: 0;
+.talk-orchestration-trigger-open {
+  border-color: #b9c8e6;
+  box-shadow: 0 10px 24px rgba(40, 61, 110, 0.12);
+}
+
+.talk-orchestration-trigger:focus-visible {
+  outline: 2px solid #8fb1ff;
+  outline-offset: 2px;
+}
+
+.talk-orchestration-trigger:disabled {
+  opacity: 0.7;
+  cursor: wait;
+}
+
+.talk-orchestration-trigger-icon,
+.talk-orchestration-trigger-chevron,
+.talk-orchestration-option-check {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+}
+
+.talk-orchestration-trigger-icon svg,
+.talk-orchestration-trigger-chevron svg,
+.talk-orchestration-option-check svg {
+  width: 0.95rem;
+  height: 0.95rem;
+}
+
+.talk-orchestration-trigger-chevron {
+  transition: transform 140ms ease;
+}
+
+.talk-orchestration-trigger-open .talk-orchestration-trigger-chevron {
+  transform: rotate(180deg);
+}
+
+.talk-orchestration-dropdown {
+  position: absolute;
+  top: calc(100% + 0.45rem);
+  right: 0;
+  z-index: 30;
+  min-width: 10.5rem;
+  padding: 0.35rem;
+  border: 1px solid #d8dfec;
+  border-radius: 12px;
+  background: #fff;
+  box-shadow: 0 18px 42px rgba(31, 42, 68, 0.18);
+}
+
+.talk-orchestration-option {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.65rem;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  padding: 0.6rem 0.7rem;
+  text-align: left;
+  color: #1f2a44;
+  font: inherit;
+  font-size: 0.86rem;
+  cursor: pointer;
+}
+
+.talk-orchestration-option:hover:not(:disabled) {
+  background: #edf1fa;
+}
+
+.talk-orchestration-option-selected {
+  background: #f0f4fb;
+  color: #1f4da3;
+  font-weight: 600;
+}
+
+.talk-orchestration-option-check {
+  color: #4f6db2;
 }
 
 .talk-page-back-link {
