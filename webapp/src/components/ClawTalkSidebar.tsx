@@ -765,7 +765,7 @@ export function ClawTalkSidebar({
               `clawtalk-sidebar-link${isActive ? ' active' : ''}`
             }
           >
-            Data Connectors
+            Connectors
           </NavLink>
         ) : null}
       </nav>

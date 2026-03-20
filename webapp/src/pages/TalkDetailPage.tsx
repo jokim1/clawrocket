@@ -3658,6 +3658,11 @@ export function TalkDetailPage({
         setChannelCreateDraft((current) => {
           const nextConnectionId =
             connections.find(
+              (connection) =>
+                connection.platform === 'telegram' &&
+                connection.connectionMode === 'system_managed',
+            )?.id ||
+            connections.find(
               (connection) => connection.id === current.connectionId,
             )?.id ||
             connections[0]?.id ||
@@ -3707,6 +3712,7 @@ export function TalkDetailPage({
         const targets = await listChannelTargets({
           connectionId: channelCreateDraft.connectionId,
           limit: 50,
+          approval: 'approved',
         });
         if (cancelled) return;
         setChannelTargets(targets);
@@ -4689,7 +4695,7 @@ export function TalkDetailPage({
       setChannelStatus({
         status: 'error',
         message:
-          'Select a connection and target before creating a channel binding.',
+          'Select an approved Telegram destination before creating a channel binding.',
       });
       return;
     }
@@ -8859,8 +8865,9 @@ export function TalkDetailPage({
               <p className="policy-muted">
                 Bind this talk to external channels so inbound Telegram messages
                 can create Talk turns and completed replies can be delivered
-                back out. Data Connectors are separate and only power query
-                tools during execution.
+                back out. Telegram bot setup and destination approval are
+                managed in Connectors; this page only binds the talk to already
+                approved destinations.
               </p>
 
               {channelStatus.status === 'error' ? (
@@ -8883,8 +8890,8 @@ export function TalkDetailPage({
                     <div>
                       <h3>Add Channel Binding</h3>
                       <p className="talk-llm-meta">
-                        V1 uses your system-managed Telegram connection and
-                        cached chat targets discovered by inbound traffic.
+                        Choose one of the approved Telegram destinations from
+                        Connectors, then configure how this talk should respond.
                       </p>
                     </div>
                   </div>
@@ -8892,33 +8899,21 @@ export function TalkDetailPage({
                     <p className="page-state">
                       No channel connections are available in this runtime.
                     </p>
+                  ) : channelTargets.length === 0 && !channelTargetsLoading ? (
+                    <div className="inline-banner inline-banner-warning" role="status">
+                      No approved Telegram destinations are available yet.{' '}
+                      <Link to="/app/connectors?tab=channel-connectors">
+                        Manage Telegram in Connectors
+                      </Link>
+                      .
+                    </div>
                   ) : (
                     <>
                       <div className="connector-attach-row">
-                        <label>
-                          <span className="settings-label">Connection</span>
-                          <select
-                            value={channelCreateDraft.connectionId ?? ''}
-                            onChange={(event) =>
-                              setChannelCreateDraft((current) => ({
-                                ...current,
-                                connectionId: event.target.value,
-                                targetKey: '',
-                                displayName: '',
-                              }))
-                            }
-                            disabled={channelStatus.status === 'saving'}
-                          >
-                            {channelConnections.map((connection) => (
-                              <option key={connection.id} value={connection.id}>
-                                {connection.displayName} (
-                                {formatChannelPlatform(connection.platform)})
-                              </option>
-                            ))}
-                          </select>
-                        </label>
                         <label style={{ flex: 1 }}>
-                          <span className="settings-label">Target</span>
+                          <span className="settings-label">
+                            Telegram destination
+                          </span>
                           <select
                             value={channelCreateDraft.targetKey ?? ''}
                             onChange={(event) => {
@@ -8944,10 +8939,10 @@ export function TalkDetailPage({
                           >
                             <option value="">
                               {channelTargetsLoading
-                                ? 'Loading targets…'
+                                ? 'Loading approved destinations…'
                                 : channelTargets.length === 0
-                                  ? 'No targets discovered yet'
-                                  : 'Select a Telegram chat'}
+                                  ? 'No approved destinations yet'
+                                  : 'Select a Telegram destination'}
                             </option>
                             {channelTargets.map((target) => (
                               <option

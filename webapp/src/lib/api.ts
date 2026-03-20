@@ -106,6 +106,9 @@ export type ChannelConnection = {
   lastHealthCheckAt: string | null;
   lastHealthError: string | null;
   config: Record<string, unknown> | null;
+  tokenSource: 'db' | 'env' | 'missing' | null;
+  envTokenAvailable: boolean;
+  hasStoredSecret: boolean;
   createdAt: string;
   updatedAt: string;
 };
@@ -116,9 +119,25 @@ export type ChannelTarget = {
   targetId: string;
   displayName: string;
   metadata: Record<string, unknown> | null;
+  approved: boolean;
+  registeredAt: string | null;
+  registeredBy: string | null;
   lastSeenAt: string;
   createdAt: string;
   updatedAt: string;
+};
+
+export type TelegramConnectorBot = {
+  botUserId: number | null;
+  botUsername: string | null;
+  botDisplayName: string | null;
+  canJoinGroups: boolean;
+};
+
+export type TelegramChannelConnector = {
+  connection: ChannelConnection;
+  bot: TelegramConnectorBot;
+  targets: ChannelTarget[];
 };
 
 export type BindingDiagnosisAction = {
@@ -1741,7 +1760,11 @@ type ChannelConnectionApiRecord = {
   health_status: 'healthy' | 'degraded' | 'disconnected' | 'error';
   last_health_check_at: string | null;
   last_health_error: string | null;
+  consecutive_probe_failures?: number;
   config_json: string | null;
+  token_source: 'db' | 'env' | 'missing' | null;
+  env_token_available: number;
+  has_stored_secret: number;
   created_at: string;
   updated_at: string;
 };
@@ -1752,6 +1775,9 @@ type ChannelTargetApiRecord = {
   target_id: string;
   display_name: string;
   metadata_json: string | null;
+  approved: number;
+  registered_at: string | null;
+  registered_by: string | null;
   last_seen_at: string;
   created_at: string;
   updated_at: string;
@@ -1807,6 +1833,9 @@ function mapChannelConnection(
     lastHealthCheckAt: record.last_health_check_at,
     lastHealthError: record.last_health_error,
     config: parseJsonObject(record.config_json),
+    tokenSource: record.token_source,
+    envTokenAvailable: record.env_token_available === 1,
+    hasStoredSecret: record.has_stored_secret === 1,
     createdAt: record.created_at,
     updatedAt: record.updated_at,
   };
@@ -1819,6 +1848,9 @@ function mapChannelTarget(record: ChannelTargetApiRecord): ChannelTarget {
     targetId: record.target_id,
     displayName: record.display_name,
     metadata: parseJsonObject(record.metadata_json),
+    approved: record.approved === 1,
+    registeredAt: record.registered_at,
+    registeredBy: record.registered_by,
     lastSeenAt: record.last_seen_at,
     createdAt: record.created_at,
     updatedAt: record.updated_at,
@@ -1860,10 +1892,124 @@ export async function listChannelConnections(): Promise<ChannelConnection[]> {
   return envelope.connections.map(mapChannelConnection);
 }
 
+export async function getTelegramChannelConnector(): Promise<TelegramChannelConnector> {
+  const envelope = await apiRequest<{
+    connection: ChannelConnectionApiRecord;
+    targets: ChannelTargetApiRecord[];
+  }>('/api/v1/channel-connectors/telegram');
+  const connection = mapChannelConnection(envelope.connection);
+  const config = connection.config || {};
+  return {
+    connection,
+    bot: {
+      botUserId:
+        typeof config.botUserId === 'number' ? config.botUserId : null,
+      botUsername:
+        typeof config.botUsername === 'string' ? config.botUsername : null,
+      botDisplayName:
+        typeof config.botDisplayName === 'string' ? config.botDisplayName : null,
+      canJoinGroups: config.canJoinGroups === true,
+    },
+    targets: envelope.targets.map(mapChannelTarget),
+  };
+}
+
+export async function validateTelegramChannelConnector(botToken: string): Promise<{
+  bot: {
+    botUserId: number;
+    botUsername: string | null;
+    botDisplayName: string;
+    canJoinGroups: boolean;
+  };
+}> {
+  return apiMutationRequest('/api/v1/channel-connectors/telegram/validate', {
+    method: 'POST',
+    includeJson: true,
+    body: JSON.stringify({ botToken }),
+  });
+}
+
+export async function saveTelegramChannelConnectorToken(
+  botToken: string,
+): Promise<TelegramChannelConnector> {
+  const envelope = await apiMutationRequest<{
+    connection: ChannelConnectionApiRecord;
+    targets: ChannelTargetApiRecord[];
+  }>('/api/v1/channel-connectors/telegram/token', {
+    method: 'PUT',
+    includeJson: true,
+    body: JSON.stringify({ botToken }),
+  });
+  const connection = mapChannelConnection(envelope.connection);
+  const config = connection.config || {};
+  return {
+    connection,
+    bot: {
+      botUserId:
+        typeof config.botUserId === 'number' ? config.botUserId : null,
+      botUsername:
+        typeof config.botUsername === 'string' ? config.botUsername : null,
+      botDisplayName:
+        typeof config.botDisplayName === 'string' ? config.botDisplayName : null,
+      canJoinGroups: config.canJoinGroups === true,
+    },
+    targets: envelope.targets.map(mapChannelTarget),
+  };
+}
+
+export async function clearTelegramChannelConnectorToken(): Promise<TelegramChannelConnector> {
+  const envelope = await apiMutationRequest<{
+    connection: ChannelConnectionApiRecord;
+    targets: ChannelTargetApiRecord[];
+  }>('/api/v1/channel-connectors/telegram/token', {
+    method: 'DELETE',
+  });
+  const connection = mapChannelConnection(envelope.connection);
+  const config = connection.config || {};
+  return {
+    connection,
+    bot: {
+      botUserId:
+        typeof config.botUserId === 'number' ? config.botUserId : null,
+      botUsername:
+        typeof config.botUsername === 'string' ? config.botUsername : null,
+      botDisplayName:
+        typeof config.botDisplayName === 'string' ? config.botDisplayName : null,
+      canJoinGroups: config.canJoinGroups === true,
+    },
+    targets: envelope.targets.map(mapChannelTarget),
+  };
+}
+
+export async function adoptTelegramChannelConnectorEnvToken(): Promise<TelegramChannelConnector> {
+  const envelope = await apiMutationRequest<{
+    connection: ChannelConnectionApiRecord;
+    targets: ChannelTargetApiRecord[];
+  }>('/api/v1/channel-connectors/telegram/adopt-env', {
+    method: 'POST',
+  });
+  const connection = mapChannelConnection(envelope.connection);
+  const config = connection.config || {};
+  return {
+    connection,
+    bot: {
+      botUserId:
+        typeof config.botUserId === 'number' ? config.botUserId : null,
+      botUsername:
+        typeof config.botUsername === 'string' ? config.botUsername : null,
+      botDisplayName:
+        typeof config.botDisplayName === 'string' ? config.botDisplayName : null,
+      canJoinGroups: config.canJoinGroups === true,
+    },
+    targets: envelope.targets.map(mapChannelTarget),
+  };
+}
+
 export async function listChannelTargets(input: {
   connectionId: string;
   query?: string;
   limit?: number;
+  approval?: 'all' | 'approved' | 'discovered';
 }): Promise<ChannelTarget[]> {
   const params = new URLSearchParams();
   if (input.query?.trim()) {
@@ -1872,6 +2018,9 @@ export async function listChannelTargets(input: {
   if (typeof input.limit === 'number') {
     params.set('limit', String(input.limit));
   }
+  if (input.approval && input.approval !== 'all') {
+    params.set('approval', input.approval);
+  }
   const suffix = params.toString() ? `?${params.toString()}` : '';
   const envelope = await apiRequest<{
     targets: ChannelTargetApiRecord[];
@@ -1879,6 +2028,35 @@ export async function listChannelTargets(input: {
     `/api/v1/channel-connections/${encodeURIComponent(input.connectionId)}/targets${suffix}`,
   );
   return envelope.targets.map(mapChannelTarget);
+}
+
+export async function approveTelegramChannelTarget(input: {
+  rawInput?: string;
+  targetKind?: string;
+  targetId?: string;
+  displayName?: string;
+}): Promise<ChannelTarget> {
+  const envelope = await apiMutationRequest<{ target: ChannelTargetApiRecord }>(
+    '/api/v1/channel-connectors/telegram/targets/approve',
+    {
+      method: 'POST',
+      includeJson: true,
+      body: JSON.stringify(input),
+    },
+  );
+  return mapChannelTarget(envelope.target);
+}
+
+export async function unapproveTelegramChannelTarget(input: {
+  targetKind: string;
+  targetId: string;
+}): Promise<void> {
+  await apiMutationRequest<{ removed: true }>(
+    `/api/v1/channel-connectors/telegram/targets/${encodeURIComponent(input.targetKind)}/${encodeURIComponent(input.targetId)}/approval`,
+    {
+      method: 'DELETE',
+    },
+  );
 }
 
 export async function listTalkChannels(

@@ -53,12 +53,22 @@ export interface ChannelConnectionRecord {
   updated_by: string | null;
 }
 
+export interface ChannelConnectionSecretRecord {
+  connection_id: string;
+  ciphertext: string;
+  updated_at: string;
+  updated_by: string | null;
+}
+
 export interface ChannelTargetRecord {
   connection_id: string;
   target_kind: string;
   target_id: string;
   display_name: string;
   metadata_json: string | null;
+  approved: number;
+  registered_at: string | null;
+  registered_by: string | null;
   last_seen_at: string;
   created_at: string;
   updated_at: string;
@@ -179,6 +189,26 @@ function normalizeTimestamp(value?: string | null): string {
   return value || new Date().toISOString();
 }
 
+function serializeJson(
+  value: Record<string, unknown> | null | undefined,
+): string | null {
+  if (!value) return null;
+  return JSON.stringify(value);
+}
+
+function parseJson(value: string | null): Record<string, unknown> | null {
+  if (!value) return null;
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return null;
+    }
+    return parsed as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
 export function ensureSystemManagedTelegramConnection(
   now?: string,
 ): ChannelConnectionRecord {
@@ -228,6 +258,91 @@ export function getChannelConnectionById(
     .get(connectionId) as ChannelConnectionRecord | undefined;
 }
 
+export function getChannelConnectionSecret(
+  connectionId: string,
+): ChannelConnectionSecretRecord | undefined {
+  return getDb()
+    .prepare(
+      `
+      SELECT *
+      FROM channel_connection_secrets
+      WHERE connection_id = ?
+      LIMIT 1
+    `,
+    )
+    .get(connectionId) as ChannelConnectionSecretRecord | undefined;
+}
+
+export function setChannelConnectionSecret(input: {
+  connectionId: string;
+  ciphertext: string;
+  updatedBy: string;
+}): ChannelConnectionSecretRecord | undefined {
+  const connection = getChannelConnectionById(input.connectionId);
+  if (!connection) return undefined;
+
+  const now = normalizeTimestamp();
+  getDb()
+    .prepare(
+      `
+      INSERT INTO channel_connection_secrets (
+        connection_id,
+        ciphertext,
+        updated_at,
+        updated_by
+      )
+      VALUES (?, ?, ?, ?)
+      ON CONFLICT(connection_id) DO UPDATE SET
+        ciphertext = excluded.ciphertext,
+        updated_at = excluded.updated_at,
+        updated_by = excluded.updated_by
+    `,
+    )
+    .run(input.connectionId, input.ciphertext, now, input.updatedBy);
+
+  getDb()
+    .prepare(
+      `
+      UPDATE channel_connections
+      SET updated_at = ?,
+          updated_by = ?
+      WHERE id = ?
+    `,
+    )
+    .run(now, input.updatedBy, input.connectionId);
+
+  return getChannelConnectionSecret(input.connectionId);
+}
+
+export function deleteChannelConnectionSecret(
+  connectionId: string,
+  updatedBy?: string | null,
+): boolean {
+  const result = getDb()
+    .prepare(
+      `
+      DELETE FROM channel_connection_secrets
+      WHERE connection_id = ?
+    `,
+    )
+    .run(connectionId);
+
+  if (result.changes > 0) {
+    getDb()
+      .prepare(
+        `
+        UPDATE channel_connections
+        SET updated_at = ?,
+            updated_by = ?
+        WHERE id = ?
+      `,
+      )
+      .run(normalizeTimestamp(), updatedBy ?? null, connectionId);
+  }
+
+  return result.changes > 0;
+}
+
 export function listChannelConnections(): ChannelConnectionRecord[] {
   return getDb()
     .prepare(
@@ -240,12 +355,55 @@ export function listChannelConnections(): ChannelConnectionRecord[] {
     .all() as ChannelConnectionRecord[];
 }
 
+export function updateChannelConnectionConfig(input: {
+  connectionId: string;
+  config: Record<string, unknown> | null;
+  updatedBy?: string | null;
+  healthStatus?: ChannelHealthStatus;
+  lastHealthCheckAt?: string | null;
+  lastHealthError?: string | null;
+}): ChannelConnectionRecord | undefined {
+  const current = getChannelConnectionById(input.connectionId);
+  if (!current) return undefined;
+  const now = normalizeTimestamp();
+  getDb()
+    .prepare(
+      `
+      UPDATE channel_connections
+      SET config_json = ?,
+          health_status = ?,
+          last_health_check_at = ?,
+          last_health_error = ?,
+          updated_at = ?,
+          updated_by = ?
+      WHERE id = ?
+    `,
+    )
+    .run(
+      serializeJson(input.config),
+      input.healthStatus ?? current.health_status,
+      input.lastHealthCheckAt === undefined
+        ? current.last_health_check_at
+        : input.lastHealthCheckAt,
+      input.lastHealthError === undefined
+        ? current.last_health_error
+        : input.lastHealthError,
+      now,
+      input.updatedBy ?? current.updated_by,
+      input.connectionId,
+    );
+  return getChannelConnectionById(input.connectionId);
+}
+
 export function upsertChannelTarget(input: {
   connectionId: string;
   targetKind: string;
   targetId: string;
   displayName: string;
   metadataJson?: string | null;
+  approved?: boolean;
+  registeredAt?: string | null;
+  registeredBy?: string | null;
   lastSeenAt?: string;
 }): void {
   const now = normalizeTimestamp(input.lastSeenAt);
@@ -254,11 +412,14 @@ export function upsertChannelTarget(input: {
       `
       INSERT INTO channel_targets (
         connection_id, target_kind, target_id, display_name, metadata_json,
-        last_seen_at, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        approved, registered_at, registered_by, last_seen_at, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(connection_id, target_kind, target_id) DO UPDATE SET
         display_name = excluded.display_name,
         metadata_json = excluded.metadata_json,
+        approved = MAX(channel_targets.approved, excluded.approved),
+        registered_at = COALESCE(channel_targets.registered_at, excluded.registered_at),
+        registered_by = COALESCE(channel_targets.registered_by, excluded.registered_by),
         last_seen_at = excluded.last_seen_at,
         updated_at = excluded.updated_at
     `,
@@ -269,16 +430,155 @@ export function upsertChannelTarget(input: {
       input.targetId,
       input.displayName,
       input.metadataJson || null,
+      input.approved ? 1 : 0,
+      input.registeredAt || null,
+      input.registeredBy || null,
       now,
       now,
       now,
     );
 }
 
+export function getChannelTarget(input: {
+  connectionId: string;
+  targetKind: string;
+  targetId: string;
+}): ChannelTargetRecord | undefined {
+  return getDb()
+    .prepare(
+      `
+      SELECT *
+      FROM channel_targets
+      WHERE connection_id = ?
+        AND target_kind = ?
+        AND target_id = ?
+      LIMIT 1
+    `,
+    )
+    .get(input.connectionId, input.targetKind, input.targetId) as
+    | ChannelTargetRecord
+    | undefined;
+}
+
+export function approveChannelTarget(input: {
+  connectionId: string;
+  targetKind: string;
+  targetId: string;
+  displayName?: string | null;
+  metadata?: Record<string, unknown> | null;
+  registeredBy: string;
+  now?: string;
+}): ChannelTargetRecord {
+  const timestamp = normalizeTimestamp(input.now);
+  const existing = getChannelTarget(input);
+
+  if (existing) {
+    const nextDisplayName = input.displayName?.trim() || existing.display_name;
+    const nextMetadata =
+      input.metadata !== undefined
+        ? serializeJson(input.metadata)
+        : existing.metadata_json;
+    getDb()
+      .prepare(
+        `
+        UPDATE channel_targets
+        SET display_name = ?,
+            metadata_json = ?,
+            approved = 1,
+            registered_at = ?,
+            registered_by = ?,
+            updated_at = ?
+        WHERE connection_id = ?
+          AND target_kind = ?
+          AND target_id = ?
+      `,
+      )
+      .run(
+        nextDisplayName,
+        nextMetadata,
+        timestamp,
+        input.registeredBy,
+        timestamp,
+        input.connectionId,
+        input.targetKind,
+        input.targetId,
+      );
+    return getChannelTarget(input)!;
+  }
+
+  upsertChannelTarget({
+    connectionId: input.connectionId,
+    targetKind: input.targetKind,
+    targetId: input.targetId,
+    displayName: input.displayName?.trim() || input.targetId,
+    metadataJson: serializeJson(input.metadata),
+    approved: true,
+    registeredAt: timestamp,
+    registeredBy: input.registeredBy,
+    lastSeenAt: timestamp,
+  });
+  return getChannelTarget(input)!;
+}
+
+export function unapproveChannelTarget(input: {
+  connectionId: string;
+  targetKind: string;
+  targetId: string;
+  updatedBy?: string | null;
+  now?: string;
+}): { removed: boolean; deactivatedBindingCount: number } {
+  const timestamp = normalizeTimestamp(input.now);
+  const tx = getDb().transaction(() => {
+    const targetResult = getDb()
+      .prepare(
+        `
+        UPDATE channel_targets
+        SET approved = 0,
+            registered_at = NULL,
+            registered_by = NULL,
+            updated_at = ?
+        WHERE connection_id = ?
+          AND target_kind = ?
+          AND target_id = ?
+      `,
+      )
+      .run(timestamp, input.connectionId, input.targetKind, input.targetId);
+
+    const bindingResult = getDb()
+      .prepare(
+        `
+        UPDATE talk_channel_bindings
+        SET active = 0,
+            updated_at = ?,
+            updated_by = COALESCE(?, updated_by)
+        WHERE connection_id = ?
+          AND target_kind = ?
+          AND target_id = ?
+          AND active = 1
+      `,
+      )
+      .run(
+        timestamp,
+        input.updatedBy ?? null,
+        input.connectionId,
+        input.targetKind,
+        input.targetId,
+      );
+
+    return {
+      removed: targetResult.changes > 0,
+      deactivatedBindingCount: bindingResult.changes,
+    };
+  });
+
+  return tx();
+}
+
 export function searchChannelTargets(input: {
   connectionId: string;
   query?: string;
   limit?: number;
+  approval?: 'all' | 'approved' | 'discovered';
 }): ChannelTargetRecord[] {
   const query = input.query?.trim() || '';
   const escaped = query
@@ -287,6 +587,13 @@ export function searchChannelTargets(input: {
     .replace(/_/g, '\\_');
   const like = `%${escaped}%`;
   const limit = Math.max(1, Math.min(50, Math.floor(input.limit ?? 20)));
+  const approval = input.approval || 'all';
+  const approvalSql =
+    approval === 'approved'
+      ? 'AND approved = 1'
+      : approval === 'discovered'
+        ? 'AND approved = 0'
+        : '';
   if (!query) {
     return getDb()
       .prepare(
@@ -294,6 +601,7 @@ export function searchChannelTargets(input: {
         SELECT *
         FROM channel_targets
         WHERE connection_id = ?
+        ${approvalSql}
         ORDER BY last_seen_at DESC, display_name ASC
         LIMIT ?
       `,
@@ -306,6 +614,7 @@ export function searchChannelTargets(input: {
       SELECT *
       FROM channel_targets
       WHERE connection_id = ?
+        ${approvalSql}
         AND (display_name LIKE ? ESCAPE '\\' OR target_id LIKE ? ESCAPE '\\')
       ORDER BY last_seen_at DESC, display_name ASC
       LIMIT ?
