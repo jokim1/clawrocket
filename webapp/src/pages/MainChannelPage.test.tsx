@@ -325,7 +325,16 @@ describe('MainChannelPage', () => {
     );
 
     await screen.findByText('Older');
-    fireEvent.contextMenu(screen.getByText('Older'));
+    const olderThread = screen
+      .getAllByRole('button')
+      .find(
+        (button) =>
+          button.className.includes('main-thread-item') &&
+          within(button).queryByText('Older'),
+      );
+    expect(olderThread).toBeTruthy();
+    fireEvent.mouseDown(olderThread!, { button: 2, clientX: 24, clientY: 36 });
+    fireEvent.contextMenu(olderThread!, { clientX: 24, clientY: 36 });
     await user.click(screen.getByRole('menuitem', { name: 'Pin' }));
 
     await waitFor(() => {
@@ -391,7 +400,20 @@ describe('MainChannelPage', () => {
 
     const threadRail = screen.getByLabelText('Threads');
     await within(threadRail).findByText('Delete me');
-    fireEvent.contextMenu(within(threadRail).getByText('Delete me'));
+    const deleteThreadButton = within(threadRail)
+      .getAllByRole('button')
+      .find(
+        (button) =>
+          button.className.includes('main-thread-item') &&
+          within(button).queryByText('Delete me'),
+      );
+    expect(deleteThreadButton).toBeTruthy();
+    fireEvent.mouseDown(deleteThreadButton!, {
+      button: 2,
+      clientX: 24,
+      clientY: 36,
+    });
+    fireEvent.contextMenu(deleteThreadButton!, { clientX: 24, clientY: 36 });
     await user.click(screen.getByRole('menuitem', { name: 'Delete thread' }));
 
     await waitFor(() =>

@@ -8,6 +8,7 @@
 
 import {
   FormEvent,
+  type MouseEvent as ReactMouseEvent,
   useCallback,
   useEffect,
   useMemo,
@@ -660,6 +661,32 @@ export function MainChannelPage({
     [navigate],
   );
 
+  const openThreadMenu = useCallback(
+    (threadId: string, x: number, y: number) => {
+      setThreadMenu({ threadId, x, y });
+    },
+    [],
+  );
+
+  const handleThreadSecondaryClick = useCallback(
+    (threadId: string) => (event: ReactMouseEvent<HTMLElement>) => {
+      if (event.button !== 2) return;
+      event.preventDefault();
+      event.stopPropagation();
+      openThreadMenu(threadId, event.clientX, event.clientY);
+    },
+    [openThreadMenu],
+  );
+
+  const handleThreadContextMenu = useCallback(
+    (threadId: string) => (event: ReactMouseEvent<HTMLElement>) => {
+      event.preventDefault();
+      event.stopPropagation();
+      openThreadMenu(threadId, event.clientX, event.clientY);
+    },
+    [openThreadMenu],
+  );
+
   const startNewThread = useCallback(() => {
     navigate('/app/main');
     dispatch({ type: 'CLEAR_THREAD' });
@@ -835,17 +862,7 @@ export function MainChannelPage({
         ) : (
           <ul className="main-thread-items">
             {sortedThreads.map((thread) => (
-              <li
-                key={thread.threadId}
-                onContextMenu={(event) => {
-                  event.preventDefault();
-                  setThreadMenu({
-                    threadId: thread.threadId,
-                    x: event.clientX,
-                    y: event.clientY,
-                  });
-                }}
-              >
+              <li key={thread.threadId}>
                 {editingThreadId === thread.threadId ? (
                   <div
                     className={`main-thread-item${
@@ -853,6 +870,8 @@ export function MainChannelPage({
                         ? ' main-thread-item-active'
                         : ''
                     } main-thread-item-editing`}
+                    onMouseDown={handleThreadSecondaryClick(thread.threadId)}
+                    onContextMenu={handleThreadContextMenu(thread.threadId)}
                   >
                     <ThreadRowTitleEditor
                       title={displayThreadTitle(thread.title)}
@@ -882,6 +901,8 @@ export function MainChannelPage({
                         : ''
                     }`}
                     onClick={() => selectThread(thread.threadId)}
+                    onMouseDown={handleThreadSecondaryClick(thread.threadId)}
+                    onContextMenu={handleThreadContextMenu(thread.threadId)}
                   >
                     <ThreadRowTitleEditor
                       title={displayThreadTitle(thread.title)}
