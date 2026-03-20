@@ -33,6 +33,7 @@ type PickerBuilderInstance = {
   setCallback: (
     callback: (data: PickerCallbackData) => void,
   ) => PickerBuilderInstance;
+  setTitle: (title: string) => PickerBuilderInstance;
   enableFeature: (feature: string) => PickerBuilderInstance;
   build: () => { setVisible: (visible: boolean) => void };
 };
@@ -51,11 +52,15 @@ declare global {
         DocsView: new (viewId?: string) => {
           setIncludeFolders: (enabled: boolean) => unknown;
           setSelectFolderEnabled: (enabled: boolean) => unknown;
+          setParent: (folderId: string) => unknown;
+          setMimeTypes: (mimeTypes: string) => unknown;
+          setMode: (mode: string) => unknown;
         };
         PickerBuilder: new () => PickerBuilderInstance;
         ViewId: {
           DOCS: string;
           FOLDERS: string;
+          DOCS_IMAGES_AND_VIDEOS: string;
         };
         Feature: {
           MULTISELECT_ENABLED: string;
@@ -139,13 +144,20 @@ export async function openGoogleDrivePicker(input: {
       ? new pickerApi.DocsView(pickerApi.ViewId.FOLDERS)
       : new pickerApi.DocsView(pickerApi.ViewId.DOCS);
   view.setIncludeFolders(true);
+  view.setParent('root');
   if (input.mode === 'folder') {
     view.setSelectFolderEnabled(true);
   }
 
+  const pickerTitle =
+    input.mode === 'folder'
+      ? 'Select a Google Drive folder'
+      : 'Select a file from Google Drive';
+
   return new Promise<GoogleDrivePickerSelection[]>((resolve, reject) => {
     const picker = new pickerApi.PickerBuilder()
       .addView(view)
+      .setTitle(pickerTitle)
       .setOAuthToken(input.session.oauthToken)
       .setDeveloperKey(input.session.developerKey)
       .setAppId(input.session.appId)
