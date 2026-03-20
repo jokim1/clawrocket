@@ -241,7 +241,7 @@ export function buildConnectorToolDefinitions(
         connectorKind: connector.connectorKind,
         connectorName: connector.name,
         toolName: buildToolName(connector.id, 'posthog_query'),
-        description: `${buildPostHogHint(connector)} Run a read-only HogQL (ClickHouse-flavored SQL) query against PostHog. Include date filters in your WHERE clause and LIMIT in the query itself. A safety LIMIT is appended if you omit one. Date range in dateFrom/dateTo is validated to stay within 90 days.`,
+        description: `${buildPostHogHint(connector)} Run a read-only HogQL (ClickHouse-flavored SQL) query against PostHog. Include date filters in your WHERE clause and LIMIT in the query itself. A safety LIMIT is appended if you omit one. If you use dateFrom/dateTo, provide both fields; they are validated only and must stay within 90 days.`,
         inputSchema: {
           type: 'object',
           properties: {
@@ -253,12 +253,12 @@ export function buildConnectorToolDefinitions(
             dateFrom: {
               type: 'string',
               description:
-                'Optional inclusive start date (YYYY-MM-DD) for validation only. Must be within 90 days of dateTo.',
+                'Optional inclusive start date (YYYY-MM-DD) for validation only. Must be provided together with dateTo and stay within 90 days.',
             },
             dateTo: {
               type: 'string',
               description:
-                'Optional inclusive end date (YYYY-MM-DD) for validation only. Must be within 90 days of dateFrom.',
+                'Optional inclusive end date (YYYY-MM-DD) for validation only. Must be provided together with dateFrom and stay within 90 days.',
             },
             limit: {
               type: 'number',

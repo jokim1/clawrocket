@@ -970,8 +970,6 @@ async function runPostHogQuery(input: {
   connector: WebTalkConnectorBundle['connectors'][number];
   config: PostHogConnectorConfig;
   query: string;
-  dateFrom: string;
-  dateTo: string;
   limit: number;
   signal: AbortSignal;
 }): Promise<JsonMap> {
@@ -982,10 +980,12 @@ async function runPostHogQuery(input: {
     );
   }
 
+  const finalQuery = injectLimitIfMissing(input.query, input.limit);
+
   const response = await fetch(
     joinUrl(
       input.config.hostUrl,
-      `/api/projects/${encodeURIComponent(input.config.projectId)}/query`,
+      `/api/projects/${encodeURIComponent(input.config.projectId)}/query/`,
     ),
     {
       method: 'POST',
@@ -997,12 +997,7 @@ async function runPostHogQuery(input: {
       body: JSON.stringify({
         query: {
           kind: 'HogQLQuery',
-          query: input.query,
-        },
-        limit: input.limit,
-        dateRange: {
-          date_from: input.dateFrom,
-          date_to: input.dateTo,
+          query: finalQuery,
         },
       }),
       signal: input.signal,
@@ -1010,14 +1005,23 @@ async function runPostHogQuery(input: {
   );
 
   if (!response.ok) {
+    const errorBody = await response.text().catch(() => '');
     throw new ConnectorToolError(
       'posthog_request_failed',
-      `PostHog query failed with HTTP ${response.status}.`,
+      `PostHog query failed with HTTP ${response.status}${errorBody ? `: ${errorBody.slice(0, 200)}` : ''}.`,
       response.status,
     );
   }
 
   return readJsonResponse(response, DEFAULT_MAX_RESPONSE_BYTES);
+}
+
+function injectLimitIfMissing(query: string, limit: number): string {
+  const trimmed = query.replace(/[\s;]+$/, '');
+  if (/\bLIMIT\s+\d+/i.test(trimmed)) {
+    return query;
+  }
+  return `${trimmed} LIMIT ${limit}`;
 }
 
 function parseDateOnly(value: string): Date | null {
@@ -1040,43 +1044,50 @@ function clampLimit(value: unknown): number {
 
 function validatePostHogInput(value: unknown): {
   query: string;
-  dateFrom: string;
-  dateTo: string;
   limit: number;
 } {
   const input = parseJsonMap(value);
   const query = readString(input?.query);
   const dateFrom = readString(input?.dateFrom);
   const dateTo = readString(input?.dateTo);
-  if (!query || !dateFrom || !dateTo) {
+  if (!query) {
     throw new ConnectorToolError(
       'posthog_query_invalid',
-      'posthog_query requires query, dateFrom, and dateTo.',
+      'posthog_query requires a query string.',
     );
   }
 
-  const fromDate = parseDateOnly(dateFrom);
-  const toDate = parseDateOnly(dateTo);
-  if (!fromDate || !toDate || toDate.valueOf() < fromDate.valueOf()) {
+  // Optional date guardrails: if the agent supplies both dateFrom/dateTo,
+  // validate them to discourage unbounded queries, but keep the canonical
+  // request payload limited to HogQL itself.
+  if ((dateFrom && !dateTo) || (!dateFrom && dateTo)) {
     throw new ConnectorToolError(
       'posthog_query_invalid',
-      'PostHog dateFrom/dateTo must be valid YYYY-MM-DD values.',
+      'PostHog dateFrom/dateTo must be provided together when used.',
     );
   }
+  if (dateFrom && dateTo) {
+    const fromDate = parseDateOnly(dateFrom);
+    const toDate = parseDateOnly(dateTo);
+    if (!fromDate || !toDate || toDate.valueOf() < fromDate.valueOf()) {
+      throw new ConnectorToolError(
+        'posthog_query_invalid',
+        'PostHog dateFrom/dateTo must be valid YYYY-MM-DD values.',
+      );
+    }
 
-  const diffDays =
-    Math.floor((toDate.valueOf() - fromDate.valueOf()) / 86_400_000) + 1;
-  if (diffDays > MAX_POSTHOG_RANGE_DAYS) {
-    throw new ConnectorToolError(
-      'posthog_query_invalid',
-      'PostHog date range cannot exceed 90 days.',
-    );
+    const diffDays =
+      Math.floor((toDate.valueOf() - fromDate.valueOf()) / 86_400_000) + 1;
+    if (diffDays > MAX_POSTHOG_RANGE_DAYS) {
+      throw new ConnectorToolError(
+        'posthog_query_invalid',
+        'PostHog date range cannot exceed 90 days.',
+      );
+    }
   }
 
   return {
     query,
-    dateFrom,
-    dateTo,
     limit: clampLimit(input?.limit),
   };
 }
@@ -1158,8 +1169,6 @@ async function executePostHogTool(
       connector,
       config,
       query: input.query,
-      dateFrom: input.dateFrom,
-      dateTo: input.dateTo,
       limit: input.limit,
       signal: timed.signal,
     });
@@ -1351,13 +1360,23 @@ export function registerConnectorTools(
           tool.toolName,
           tool.description,
           {
-            query: z.string().describe('HogQL query string.'),
+            query: z
+              .string()
+              .describe(
+                'HogQL query string with date filters in WHERE clause.',
+              ),
             dateFrom: z
               .string()
-              .describe('Inclusive start date in YYYY-MM-DD format.'),
+              .optional()
+              .describe(
+                'Optional inclusive start date in YYYY-MM-DD format. Must be provided together with dateTo.',
+              ),
             dateTo: z
               .string()
-              .describe('Inclusive end date in YYYY-MM-DD format.'),
+              .optional()
+              .describe(
+                'Optional inclusive end date in YYYY-MM-DD format. Must be provided together with dateFrom.',
+              ),
             limit: z
               .number()
               .optional()

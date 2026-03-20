@@ -115,6 +115,29 @@ describe('executeConnectorTool', () => {
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
+  it('requires PostHog dateFrom/dateTo to be provided together', async () => {
+    const fetchImpl = vi.fn(async () => {
+      throw new Error('fetch should not be called');
+    });
+
+    const result = await executeConnectorTool(
+      'connector_connector-posthog__posthog_query',
+      {
+        query: 'SELECT count() FROM events',
+        dateFrom: '2024-01-01',
+      },
+      {
+        connector: createPostHogConnector(),
+        signal: new AbortController().signal,
+        fetchImpl,
+      },
+    );
+
+    expect(result.isError).toBe(true);
+    expect(result.content).toContain('provided together');
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
   it('lists sheets via the live spreadsheet metadata endpoint', async () => {
     const fetchImpl = vi.fn(async (url: string | URL | Request) => {
       const targetUrl = String(url);

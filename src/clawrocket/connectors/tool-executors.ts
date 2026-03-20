@@ -108,6 +108,11 @@ function validatePostHogInput(value: unknown): {
   // agent should include date filters in the SQL itself.
   const dateFrom = readString(input?.dateFrom);
   const dateTo = readString(input?.dateTo);
+  if ((dateFrom && !dateTo) || (!dateFrom && dateTo)) {
+    throw new Error(
+      'PostHog dateFrom/dateTo must be provided together when used.',
+    );
+  }
   if (dateFrom && dateTo) {
     const fromDate = parseDateOnly(dateFrom);
     const toDate = parseDateOnly(dateTo);
