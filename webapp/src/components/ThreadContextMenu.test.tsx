@@ -103,6 +103,7 @@ describe('ThreadContextMenu', () => {
       );
 
       const menu = screen.getByRole('menu', { name: 'Thread options' });
+      expect(menu.parentElement).toBe(document.body);
 
       await waitFor(() => {
         expect(menu.style.left).toBe('132px');
@@ -131,5 +132,33 @@ describe('ThreadContextMenu', () => {
       restoreMenuSize();
       restoreViewport();
     }
+  });
+
+  it('does not close in response to the opening contextmenu event', async () => {
+    const onClose = vi.fn();
+
+    render(
+      <ThreadContextMenu
+        x={40}
+        y={48}
+        isPinned={false}
+        onRename={vi.fn()}
+        onTogglePin={vi.fn()}
+        onDelete={vi.fn()}
+        onClose={onClose}
+      />,
+    );
+
+    const menu = screen.getByRole('menu', { name: 'Thread options' });
+    expect(menu).toBeTruthy();
+
+    act(() => {
+      document.body.dispatchEvent(
+        new MouseEvent('contextmenu', { bubbles: true, clientX: 40, clientY: 48 }),
+      );
+    });
+
+    expect(onClose).not.toHaveBeenCalled();
+    expect(screen.getByRole('menu', { name: 'Thread options' })).toBeTruthy();
   });
 });
