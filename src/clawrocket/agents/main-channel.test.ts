@@ -319,7 +319,9 @@ describe('Main channel DB accessors', () => {
         runId,
       });
       getDb()
-        .prepare(`UPDATE talk_runs SET status = 'awaiting_confirmation' WHERE id = ?`)
+        .prepare(
+          `UPDATE talk_runs SET status = 'awaiting_confirmation' WHERE id = ?`,
+        )
         .run(runId);
 
       expect(() =>
