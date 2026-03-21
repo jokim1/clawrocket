@@ -90,6 +90,12 @@ type MainState = {
   sendError: string | null;
 };
 
+type MainTimelineEntry =
+  | { kind: 'message'; message: MainThreadMessage }
+  | { kind: 'run'; run: MainRun }
+  | { kind: 'terminal-run'; run: MainRun }
+  | { kind: 'live'; response: LiveResponse };
+
 type MainAction =
   | { type: 'THREADS_LOADING' }
   | { type: 'THREADS_LOADED'; threads: MainThreadSummary[] }
@@ -217,6 +223,66 @@ function describeMainBrowserCapability(agent: RegisteredAgent | null): {
     badgeTone: 'ready',
     note: null,
   };
+}
+
+function summarizeTerminalMainRun(run: MainRun): {
+  statusLabel: 'Failed' | 'Cancelled';
+  body: string;
+} | null {
+  if (run.status === 'cancelled') {
+    if (run.cancelReason === 'superseded_by_new_user_message') {
+      return null;
+    }
+    if (run.cancelReason === 'interrupted_by_restart') {
+      return {
+        statusLabel: 'Cancelled',
+        body: 'Execution interrupted by server restart.',
+      };
+    }
+    return {
+      statusLabel: 'Cancelled',
+      body: run.cancelReason
+        ? `Run cancelled: ${run.cancelReason}`
+        : 'The run was cancelled before a response could be recorded.',
+    };
+  }
+
+  if (run.status !== 'failed') {
+    return null;
+  }
+
+  if (!run.cancelReason) {
+    return {
+      statusLabel: 'Failed',
+      body: 'The run failed before a response could be recorded.',
+    };
+  }
+
+  const separator = run.cancelReason.indexOf(': ');
+  return {
+    statusLabel: 'Failed',
+    body:
+      separator >= 0
+        ? run.cancelReason.slice(separator + 2)
+        : run.cancelReason,
+  };
+}
+
+function getMainRunTimelineTimestamp(run: MainRun): number {
+  const candidates =
+    run.status === 'failed' || run.status === 'cancelled'
+      ? [run.endedAt, run.startedAt, run.createdAt]
+      : run.status === 'awaiting_confirmation'
+        ? [run.browserBlock?.updatedAt, run.startedAt, run.createdAt]
+        : [run.startedAt, run.createdAt];
+  for (const candidate of candidates) {
+    if (!candidate) continue;
+    const timestamp = Date.parse(candidate);
+    if (Number.isFinite(timestamp) && timestamp > 0) {
+      return timestamp;
+    }
+  }
+  return 0;
 }
 
 function sortMainThreads(threads: MainThreadSummary[]): MainThreadSummary[] {
@@ -1063,6 +1129,7 @@ export function MainChannelPage({
           threadId: event.threadId,
           role: event.role,
           content: event.content || '',
+          runId: event.runId || null,
           agentId: event.agentId || null,
           createdBy: event.createdBy,
           createdAt: event.createdAt || new Date().toISOString(),
@@ -1259,11 +1326,17 @@ export function MainChannelPage({
 
   // ── Build timeline entries ──
   const timeline = useMemo(() => {
-    const entries: Array<
-      | { kind: 'message'; message: MainThreadMessage }
-      | { kind: 'run'; run: MainRun }
-      | { kind: 'live'; response: LiveResponse }
-    > = [];
+    const entries: MainTimelineEntry[] = [];
+    const assistantRunIds = new Set(
+      state.messages
+        .filter(
+          (message) =>
+            message.threadId === state.activeThreadId &&
+            message.role === 'assistant' &&
+            message.runId,
+        )
+        .map((message) => message.runId as string),
+    );
     const liveRunIds = new Set(
       Object.values(state.liveResponses)
         .filter((response) => response.threadId === state.activeThreadId)
@@ -1281,6 +1354,16 @@ export function MainChannelPage({
         isMainRunActive(run) && !isBlockedBrowserRun && !liveRunIds.has(run.id);
       if (isPromotionPending || isBlockedBrowserRun || isGenericActiveRun) {
         entries.push({ kind: 'run', run });
+        continue;
+      }
+
+      const terminalSummary = summarizeTerminalMainRun(run);
+      if (
+        terminalSummary &&
+        !assistantRunIds.has(run.id) &&
+        !liveRunIds.has(run.id)
+      ) {
+        entries.push({ kind: 'terminal-run', run });
       }
     }
     for (const response of Object.values(state.liveResponses)) {
@@ -1290,15 +1373,15 @@ export function MainChannelPage({
       const leftAt =
         left.kind === 'message'
           ? Date.parse(left.message.createdAt)
-          : left.kind === 'run'
-            ? Date.parse(left.run.createdAt)
-            : left.response.startedAt;
+          : left.kind === 'live'
+            ? left.response.startedAt
+            : getMainRunTimelineTimestamp(left.run);
       const rightAt =
         right.kind === 'message'
           ? Date.parse(right.message.createdAt)
-          : right.kind === 'run'
-            ? Date.parse(right.run.createdAt)
-            : right.response.startedAt;
+          : right.kind === 'live'
+            ? right.response.startedAt
+            : getMainRunTimelineTimestamp(right.run);
       return leftAt - rightAt;
     });
   }, [state.activeThreadId, state.messages, state.liveResponses, state.runsById]);
@@ -1897,6 +1980,31 @@ export function MainChannelPage({
                         <em>* {runBodyCopy}</em>
                       </p>
                     )}
+                  </article>
+                );
+              }
+
+              if (entry.kind === 'terminal-run') {
+                const { run } = entry;
+                const terminalSummary = summarizeTerminalMainRun(run);
+                if (!terminalSummary) {
+                  return null;
+                }
+                return (
+                  <article
+                    key={`terminal-run-${run.id}`}
+                    className={`message message-assistant${
+                      run.status === 'failed' ? ' message-error' : ''
+                    }`}
+                  >
+                    <header>
+                      <strong>Nanoclaw</strong>
+                      <time>{terminalSummary.statusLabel}</time>
+                    </header>
+                    <p>{terminalSummary.body}</p>
+                    <ExecutionDecisionSummary
+                      executionDecision={run.executionDecision}
+                    />
                   </article>
                 );
               }
