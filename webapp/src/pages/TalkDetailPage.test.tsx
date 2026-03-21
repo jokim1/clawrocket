@@ -60,6 +60,20 @@ type SavedTalkAgentRequest = {
 
 const DEFAULT_THREAD_ID = 'thread-default';
 
+function createDeferred<T>(): {
+  promise: Promise<T>;
+  resolve: (value: T) => void;
+  reject: (reason?: unknown) => void;
+} {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
 describe('TalkDetailPage', () => {
   const openTalkStreamMock = vi.mocked(openTalkStream);
   const openGoogleDrivePickerMock = vi.mocked(openGoogleDrivePicker);
@@ -3181,27 +3195,29 @@ describe('TalkDetailPage', () => {
   it('opens edit history from /edit and deletes selected messages', async () => {
     const user = userEvent.setup();
 
+    const initialMessages = [
+      buildMessage({
+        id: 'msg-1',
+        role: 'user',
+        content: 'Old user prompt',
+        createdAt: '2026-03-06T00:00:00.000Z',
+      }),
+      buildMessage({
+        id: 'msg-2',
+        role: 'assistant',
+        content: 'Old assistant answer',
+        createdAt: '2026-03-06T00:00:01.000Z',
+      }),
+      buildMessage({
+        id: 'msg-3',
+        role: 'user',
+        content: 'Keep this latest note',
+        createdAt: '2026-03-06T00:00:02.000Z',
+      }),
+    ];
+
     installTalkDetailFetch({
-      messages: [
-        buildMessage({
-          id: 'msg-1',
-          role: 'user',
-          content: 'Old user prompt',
-          createdAt: '2026-03-06T00:00:00.000Z',
-        }),
-        buildMessage({
-          id: 'msg-2',
-          role: 'assistant',
-          content: 'Old assistant answer',
-          createdAt: '2026-03-06T00:00:01.000Z',
-        }),
-        buildMessage({
-          id: 'msg-3',
-          role: 'user',
-          content: 'Keep this latest note',
-          createdAt: '2026-03-06T00:00:02.000Z',
-        }),
-      ],
+      messages: initialMessages,
       runs: [],
     });
 
@@ -3233,6 +3249,173 @@ describe('TalkDetailPage', () => {
     expect(screen.queryByText('Old user prompt')).toBeNull();
     expect(screen.queryByText('Old assistant answer')).toBeNull();
     expect(screen.getByText('Keep this latest note')).toBeTruthy();
+  });
+
+  it('keeps the Talk timeline in sync when a stale replay-gap snapshot resolves after deleting history', async () => {
+    const user = userEvent.setup();
+    const initialMessages = [
+      buildMessage({
+        id: 'msg-1',
+        role: 'user',
+        content: 'Old user prompt',
+        createdAt: '2026-03-06T00:00:00.000Z',
+      }),
+      buildMessage({
+        id: 'msg-2',
+        role: 'assistant',
+        content: 'Old assistant answer',
+        createdAt: '2026-03-06T00:00:01.000Z',
+      }),
+      buildMessage({
+        id: 'msg-3',
+        role: 'user',
+        content: 'Keep this latest note',
+        createdAt: '2026-03-06T00:00:02.000Z',
+      }),
+    ];
+    const staleReplay = createDeferred<TalkMessage[]>();
+    let onListMessagesCallCount = 0;
+
+    installTalkDetailFetch({
+      messages: initialMessages,
+      runs: [],
+      onListMessages: ({ visibleMessages }) => {
+        const callIndex = onListMessagesCallCount++;
+        if (callIndex === 1) {
+          return staleReplay.promise;
+        }
+        return visibleMessages;
+      },
+    });
+
+    renderDetailPage('/app/talks/talk-1');
+    const composer = await screen.findByPlaceholderText(
+      'Send a message to this thread',
+    );
+
+    expect(streamInput).toBeTruthy();
+    act(() => {
+      void streamInput?.onReplayGap?.();
+    });
+
+    await user.type(composer, '/edit');
+    await user.keyboard('{Enter}');
+    expect(
+      await screen.findByRole('dialog', { name: 'Edit history' }),
+    ).toBeTruthy();
+
+    await user.click(screen.getByLabelText(/You.*Old user prompt/i));
+    await user.click(
+      screen.getByLabelText(/Assistant.*Old assistant answer/i),
+    );
+    await user.click(screen.getByRole('button', { name: 'Delete selected' }));
+
+    await waitFor(() =>
+      expect(screen.queryByRole('dialog', { name: 'Edit history' })).toBeNull(),
+    );
+    expect(
+      await screen.findByText('Deleted 2 messages from this Talk history.'),
+    ).toBeTruthy();
+
+    staleReplay.resolve(initialMessages);
+    await waitFor(() => {
+      expect(screen.queryByText('Old user prompt')).toBeNull();
+      expect(screen.queryByText('Old assistant answer')).toBeNull();
+    });
+
+    await user.type(composer, '/edit');
+    await user.keyboard('{Enter}');
+    const dialog = await screen.findByRole('dialog', { name: 'Edit history' });
+    expect(within(dialog).queryByText('Old user prompt')).toBeNull();
+    expect(within(dialog).queryByText('Old assistant answer')).toBeNull();
+    expect(within(dialog).getByText('Keep this latest note')).toBeTruthy();
+  });
+
+  it('ignores replayed deleted message events after sending the same prompt again', async () => {
+    const user = userEvent.setup();
+    const repeatedPrompt = 'can you try to access my linkedin again?';
+
+    installTalkDetailFetch({
+      messages: [
+        buildMessage({
+          id: 'msg-1',
+          role: 'user',
+          content: repeatedPrompt,
+          createdAt: '2026-03-06T00:00:00.000Z',
+        }),
+        buildMessage({
+          id: 'msg-2',
+          role: 'user',
+          content: repeatedPrompt,
+          createdAt: '2026-03-06T00:00:01.000Z',
+        }),
+        buildMessage({
+          id: 'msg-3',
+          role: 'user',
+          content: 'Keep this latest note',
+          createdAt: '2026-03-06T00:00:02.000Z',
+        }),
+      ],
+      runs: [],
+    });
+
+    renderDetailPage('/app/talks/talk-1');
+    const composer = await screen.findByPlaceholderText(
+      'Send a message to this thread',
+    );
+
+    await user.type(composer, '/edit');
+    await user.keyboard('{Enter}');
+    expect(
+      await screen.findByRole('dialog', { name: 'Edit history' }),
+    ).toBeTruthy();
+
+    const repeatedRows = screen.getAllByLabelText(
+      /You.*can you try to access my linkedin again\?/i,
+    );
+    await user.click(repeatedRows[0]!);
+    await user.click(repeatedRows[1]!);
+    await user.click(screen.getByRole('button', { name: 'Delete selected' }));
+
+    await waitFor(() =>
+      expect(screen.queryByRole('dialog', { name: 'Edit history' })).toBeNull(),
+    );
+    expect(screen.queryByText(repeatedPrompt)).toBeNull();
+
+    await user.type(composer, repeatedPrompt);
+    await user.keyboard('{Enter}');
+
+    await waitFor(() =>
+      expect(screen.getAllByText(repeatedPrompt)).toHaveLength(1),
+    );
+
+    expect(streamInput).toBeTruthy();
+    act(() => {
+      streamInput?.onMessageAppended({
+        talkId: 'talk-1',
+        threadId: DEFAULT_THREAD_ID,
+        messageId: 'msg-1',
+        runId: null,
+        role: 'user',
+        createdBy: 'user-1',
+        content: repeatedPrompt,
+        createdAt: '2026-03-06T00:00:00.000Z',
+      });
+      streamInput?.onMessageAppended({
+        talkId: 'talk-1',
+        threadId: DEFAULT_THREAD_ID,
+        messageId: 'msg-2',
+        runId: null,
+        role: 'user',
+        createdBy: 'user-1',
+        content: repeatedPrompt,
+        createdAt: '2026-03-06T00:00:01.000Z',
+      });
+    });
+
+    await waitFor(() =>
+      expect(screen.getAllByText(repeatedPrompt)).toHaveLength(1),
+    );
   });
 });
 
@@ -3981,6 +4164,10 @@ function installTalkDetailFetch(input?: {
     attachmentIds?: string[];
     threadId?: string | null;
   }) => { talkId: string; message: TalkMessage; runs: TalkRun[] };
+  onListMessages?: (input: {
+    threadId: string | null;
+    visibleMessages: TalkMessage[];
+  }) => Promise<TalkMessage[]> | TalkMessage[];
 }) {
   const talk = input?.talk ?? buildTalk();
   let messages = input?.messages ?? [
@@ -4275,14 +4462,17 @@ function installTalkDetailFetch(input?: {
         const visibleMessages = threadId
           ? messages.filter((message) => message.threadId === threadId)
           : messages;
+        const responseMessages = input?.onListMessages
+          ? await input.onListMessages({ threadId, visibleMessages })
+          : visibleMessages;
         return jsonResponse(200, {
           ok: true,
           data: {
             talkId: 'talk-1',
-            messages: visibleMessages,
+            messages: responseMessages,
             page: {
               limit: 100,
-              count: visibleMessages.length,
+              count: responseMessages.length,
               beforeCreatedAt: null,
             },
           },
