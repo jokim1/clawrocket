@@ -1,4 +1,5 @@
 export type BuiltinAdditionalProviderKind = 'openai' | 'gemini' | 'nvidia';
+export type BuiltinAdditionalProviderCredentialMode = 'api_key' | 'host_login';
 
 export interface BuiltinAdditionalProviderModel {
   modelId: string;
@@ -13,6 +14,7 @@ export interface BuiltinAdditionalProvider {
   id: string;
   name: string;
   providerKind: BuiltinAdditionalProviderKind;
+  credentialMode: BuiltinAdditionalProviderCredentialMode;
   apiFormat: 'openai_chat_completions';
   baseUrl: string;
   authScheme: 'bearer';
@@ -27,6 +29,7 @@ export const BUILTIN_ADDITIONAL_PROVIDERS: BuiltinAdditionalProvider[] = [
     id: 'provider.openai',
     name: 'OpenAI',
     providerKind: 'openai',
+    credentialMode: 'api_key',
     apiFormat: 'openai_chat_completions',
     baseUrl: 'https://api.openai.com/v1',
     authScheme: 'bearer',
@@ -45,9 +48,48 @@ export const BUILTIN_ADDITIONAL_PROVIDERS: BuiltinAdditionalProvider[] = [
     ],
   },
   {
+    id: 'provider.openai_codex',
+    name: 'OpenAI Codex (Host)',
+    providerKind: 'openai',
+    credentialMode: 'host_login',
+    apiFormat: 'openai_chat_completions',
+    baseUrl: 'codex://host-runtime',
+    authScheme: 'bearer',
+    responseStartTimeoutMs: 120_000,
+    streamIdleTimeoutMs: 60_000,
+    absoluteTimeoutMs: 1_800_000,
+    models: [
+      {
+        modelId: 'gpt-5.4',
+        displayName: 'GPT-5.4',
+        contextWindowTokens: 128_000,
+        defaultMaxOutputTokens: 8_192,
+        defaultTtftTimeoutMs: 60_000,
+        supportsVision: true,
+      },
+      {
+        modelId: 'gpt-5.4-mini',
+        displayName: 'GPT-5.4 Mini',
+        contextWindowTokens: 128_000,
+        defaultMaxOutputTokens: 8_192,
+        defaultTtftTimeoutMs: 45_000,
+        supportsVision: true,
+      },
+      {
+        modelId: 'gpt-5.3-codex',
+        displayName: 'GPT-5.3 Codex',
+        contextWindowTokens: 400_000,
+        defaultMaxOutputTokens: 128_000,
+        defaultTtftTimeoutMs: 45_000,
+        supportsVision: true,
+      },
+    ],
+  },
+  {
     id: 'provider.gemini',
     name: 'Google / Gemini',
     providerKind: 'gemini',
+    credentialMode: 'api_key',
     apiFormat: 'openai_chat_completions',
     baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
     authScheme: 'bearer',
@@ -69,6 +111,7 @@ export const BUILTIN_ADDITIONAL_PROVIDERS: BuiltinAdditionalProvider[] = [
     id: 'provider.nvidia',
     name: 'NVIDIA Kimi2.5',
     providerKind: 'nvidia',
+    credentialMode: 'api_key',
     apiFormat: 'openai_chat_completions',
     baseUrl: 'https://integrate.api.nvidia.com/v1',
     authScheme: 'bearer',

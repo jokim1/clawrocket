@@ -26,6 +26,21 @@ function seedAnthropicSecret(apiKey = 'sk-ant-test'): void {
     .run(encryptProviderSecret({ apiKey }), now, 'owner-1');
 }
 
+function seedProviderVerification(providerId: string): void {
+  const now = new Date().toISOString();
+  getDb()
+    .prepare(
+      `INSERT INTO llm_provider_verifications (
+         provider_id, status, last_verified_at, last_error, updated_at
+       ) VALUES (?, 'verified', ?, NULL, ?)
+       ON CONFLICT(provider_id) DO UPDATE SET
+         status = excluded.status,
+         last_verified_at = excluded.last_verified_at,
+         updated_at = excluded.updated_at`,
+    )
+    .run(providerId, now, now);
+}
+
 describe('execution-preview', () => {
   beforeEach(() => {
     _initTestDatabase();
@@ -109,6 +124,30 @@ describe('execution-preview', () => {
     });
     expect(buildMainExecutionPreview(agent, 'owner-1').message).toMatch(
       /promote shell\/filesystem work into a background container run/i,
+    );
+  });
+
+  it('marks verified Codex host routes as ready', () => {
+    seedProviderVerification('provider.openai_codex');
+    const agent = createRegisteredAgent({
+      name: 'Codex Main',
+      providerId: 'provider.openai_codex',
+      modelId: 'gpt-5.4',
+      toolPermissionsJson: JSON.stringify({
+        shell: true,
+        filesystem: true,
+        web: true,
+      }),
+    });
+
+    expect(buildMainExecutionPreview(agent, 'owner-1')).toMatchObject({
+      ready: true,
+      backend: 'host_codex',
+      authPath: 'host_login',
+      routeReason: 'host_only',
+    });
+    expect(buildMainExecutionPreview(agent, 'owner-1').message).toMatch(
+      /codex host runtime/i,
     );
   });
 });

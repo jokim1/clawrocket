@@ -3701,6 +3701,7 @@ export function completeRunAndPromoteNextAtomic(input: {
   latencyMs?: number | null;
   usage?: {
     inputTokens?: number;
+    cachedInputTokens?: number;
     outputTokens?: number;
     estimatedCostUsd?: number;
   } | null;
@@ -3785,9 +3786,10 @@ export function completeRunAndPromoteNextAtomic(input: {
             `
             INSERT INTO llm_attempts (
               run_id, talk_id, agent_id, provider_id, model_id,
-              status, latency_ms, input_tokens, output_tokens,
+              status, latency_ms, input_tokens, cached_input_tokens,
+              output_tokens,
               estimated_cost_usd, created_at
-            ) VALUES (?, ?, ?, ?, ?, 'success', ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, 'success', ?, ?, ?, ?, ?, ?)
           `,
           )
           .run(
@@ -3798,6 +3800,7 @@ export function completeRunAndPromoteNextAtomic(input: {
             txInput.modelId,
             txInput.latencyMs ?? null,
             txInput.usage?.inputTokens ?? null,
+            txInput.usage?.cachedInputTokens ?? null,
             txInput.usage?.outputTokens ?? null,
             txInput.usage?.estimatedCostUsd ?? null,
             now,
@@ -5023,6 +5026,7 @@ export function completeMainRunAtomic(input: {
   latencyMs?: number;
   usage?: {
     inputTokens: number;
+    cachedInputTokens?: number;
     outputTokens: number;
     estimatedCostUsd?: number;
   };
@@ -5090,9 +5094,10 @@ export function completeMainRunAtomic(input: {
           `
           INSERT INTO llm_attempts (
             run_id, talk_id, agent_id, provider_id, model_id,
-            status, latency_ms, input_tokens, output_tokens,
+            status, latency_ms, input_tokens, cached_input_tokens,
+            output_tokens,
             estimated_cost_usd, created_at
-          ) VALUES (?, NULL, ?, ?, ?, 'success', ?, ?, ?, ?, ?)
+          ) VALUES (?, NULL, ?, ?, ?, 'success', ?, ?, ?, ?, ?, ?)
         `,
         )
         .run(
@@ -5102,6 +5107,7 @@ export function completeMainRunAtomic(input: {
           txInput.modelId,
           txInput.latencyMs ?? null,
           txInput.usage?.inputTokens ?? null,
+          txInput.usage?.cachedInputTokens ?? null,
           txInput.usage?.outputTokens ?? null,
           txInput.usage?.estimatedCostUsd ?? null,
           now,

@@ -142,6 +142,7 @@ import { openTalkStream } from '../lib/talkStream';
 import type {
   MessageAppendedEvent,
   TalkHistoryEditedEvent,
+  TalkProgressUpdateEvent,
   TalkResponseDeltaEvent,
   TalkResponseStartedEvent,
   TalkResponseTerminalEvent,
@@ -202,6 +203,7 @@ type LiveResponseView = {
   runId: string;
   rawText: string;
   text: string;
+  progressMessage?: string;
   agentId?: string | null;
   agentNickname?: string | null;
   responseGroupId?: string | null;
@@ -531,6 +533,7 @@ type DetailAction =
       cancelledBy?: string | null;
     }
   | { type: 'RESPONSE_STARTED'; event: TalkResponseStartedEvent }
+  | { type: 'RESPONSE_PROGRESS'; event: TalkProgressUpdateEvent }
   | { type: 'RESPONSE_DELTA'; event: TalkResponseDeltaEvent }
   | { type: 'RESPONSE_COMPLETED'; event: TalkResponseTerminalEvent }
   | { type: 'RESPONSE_FAILED'; event: TalkResponseTerminalEvent }
@@ -1204,6 +1207,7 @@ function detailReducer(state: DetailState, action: DetailAction): DetailState {
             runId: action.event.runId,
             rawText: '',
             text: '',
+            progressMessage: undefined,
             agentId: action.event.agentId,
             agentNickname: action.event.agentNickname,
             responseGroupId: action.event.responseGroupId ?? null,
@@ -1214,6 +1218,34 @@ function detailReducer(state: DetailState, action: DetailAction): DetailState {
           },
         },
       };
+    case 'RESPONSE_PROGRESS': {
+      if (state.kind !== 'ready') return state;
+      const existing = state.liveResponsesByRunId[action.event.runId];
+      return {
+        ...state,
+        liveResponsesByRunId: {
+          ...state.liveResponsesByRunId,
+          [action.event.runId]: {
+            runId: action.event.runId,
+            rawText: existing?.rawText || '',
+            text: existing?.text || '',
+            progressMessage: action.event.message,
+            agentId: action.event.agentId ?? existing?.agentId,
+            agentNickname:
+              action.event.agentNickname ?? existing?.agentNickname,
+            responseGroupId:
+              action.event.responseGroupId ?? existing?.responseGroupId ?? null,
+            sequenceIndex:
+              action.event.sequenceIndex ?? existing?.sequenceIndex ?? null,
+            providerId: action.event.providerId ?? existing?.providerId,
+            modelId: action.event.modelId ?? existing?.modelId,
+            startedAt: existing?.startedAt || Date.now(),
+            errorMessage: existing?.errorMessage,
+            terminalStatus: existing?.terminalStatus,
+          },
+        },
+      };
+    }
     case 'RESPONSE_DELTA': {
       if (state.kind !== 'ready') return state;
       const existing = state.liveResponsesByRunId[action.event.runId];
@@ -1226,6 +1258,7 @@ function detailReducer(state: DetailState, action: DetailAction): DetailState {
             runId: action.event.runId,
             rawText,
             text: stripInternalAssistantText(rawText),
+            progressMessage: existing?.progressMessage,
             agentId: action.event.agentId,
             agentNickname: action.event.agentNickname,
             responseGroupId:
@@ -1274,6 +1307,7 @@ function detailReducer(state: DetailState, action: DetailAction): DetailState {
             providerId: action.event.providerId,
             modelId: action.event.modelId,
             startedAt: existing?.startedAt || Date.now(),
+            progressMessage: existing?.progressMessage,
             errorMessage: action.event.errorMessage,
             terminalStatus: 'failed',
           },
@@ -3052,6 +3086,11 @@ export function TalkDetailPage({
         if (event.talkId !== talkId) return;
         if (event.threadId !== activeThreadIdRef.current) return;
         dispatch({ type: 'RESPONSE_STARTED', event });
+      },
+      onProgressUpdate: (event: TalkProgressUpdateEvent) => {
+        if (event.talkId !== talkId) return;
+        if (event.threadId !== activeThreadIdRef.current) return;
+        dispatch({ type: 'RESPONSE_PROGRESS', event });
       },
       onResponseDelta: (event: TalkResponseDeltaEvent) => {
         if (event.talkId !== talkId) return;
@@ -10777,7 +10816,11 @@ export function TalkDetailPage({
                                   : 'Streaming…'}
                               </time>
                             </header>
-                            <p>{response.text || 'Thinking…'}</p>
+                            <p>
+                              {response.text ||
+                                response.progressMessage ||
+                                'Thinking…'}
+                            </p>
                             {response.errorMessage ? (
                               <p className="run-history-error">
                                 {response.errorMessage}

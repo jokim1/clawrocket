@@ -503,13 +503,14 @@ export type BrowserResume = {
 };
 
 export type ExecutionDecision = {
-  backend: 'direct_http' | 'container';
-  authPath: 'api_key' | 'subscription' | 'none';
+  backend: 'direct_http' | 'container' | 'host_codex';
+  authPath: 'api_key' | 'subscription' | 'host_login' | 'none';
   credentialSource:
     | 'db_secret'
     | 'env'
     | 'oauth_token'
     | 'auth_token'
+    | 'host_auth'
     | 'missing';
   plannerReason: string;
   providerId: string;
@@ -876,6 +877,7 @@ export type AgentProviderCard = {
   baseUrl: string;
   authScheme: 'x_api_key' | 'bearer';
   enabled: boolean;
+  credentialMode: 'api_key' | 'host_login';
   hasCredential: boolean;
   credentialHint: string | null;
   verificationStatus:
@@ -888,6 +890,15 @@ export type AgentProviderCard = {
     | 'rate_limited';
   lastVerifiedAt: string | null;
   lastVerificationError: string | null;
+  hostStatus?: {
+    cliInstalled: boolean;
+    authenticated: boolean;
+    authMode: 'chatgpt' | 'apikey' | null;
+    sandboxAvailable: boolean;
+    managedHomePath: string;
+    message: string;
+    recommendedCommands: string[];
+  };
   modelSuggestions: Array<{
     modelId: string;
     displayName: string;
@@ -1824,9 +1835,14 @@ export type RegisteredAgent = {
   updatedAt: string;
   executionPreview: {
     surface: 'main';
-    backend: 'direct_http' | 'container' | null;
-    authPath: 'api_key' | 'subscription' | null;
-    routeReason: 'normal' | 'subscription_fallback' | 'no_valid_path';
+    backend: 'direct_http' | 'container' | 'host_codex' | null;
+    authPath: 'api_key' | 'subscription' | 'host_login' | null;
+    routeReason:
+      | 'normal'
+      | 'subscription_fallback'
+      | 'host_only'
+      | 'direct_with_promotion'
+      | 'no_valid_path';
     ready: boolean;
     message: string;
   };

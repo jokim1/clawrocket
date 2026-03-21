@@ -42,6 +42,12 @@ export type MainResponseDeltaEvent = {
   text: string;
 };
 
+export type MainProgressUpdateEvent = {
+  runId: string;
+  threadId: string;
+  message: string;
+};
+
 export type MainResponseCompletedEvent = {
   runId: string;
   threadId: string;
@@ -99,6 +105,7 @@ interface MainStreamCallbacks {
   onRunCancelled?: (event: MainRunEvent) => void;
   onPromotionPending?: (event: MainPromotionPendingEvent) => void;
   onResponseStarted?: (event: MainResponseStartedEvent) => void;
+  onProgressUpdate?: (event: MainProgressUpdateEvent) => void;
   onResponseDelta?: (event: MainResponseDeltaEvent) => void;
   onResponseCompleted?: (event: MainResponseCompletedEvent) => void;
   onResponseFailed?: (event: MainResponseFailedEvent) => void;
@@ -271,6 +278,13 @@ export function openMainStream(input: OpenMainStreamInput): MainStreamHandle {
       const payload = parse<MainResponseDeltaEvent>(event);
       if (!payload) return;
       input.onResponseDelta?.(payload);
+    });
+
+    next.addEventListener('main_progress_update', (event) => {
+      if (next !== source || stopped) return;
+      const payload = parse<MainProgressUpdateEvent>(event);
+      if (!payload) return;
+      input.onProgressUpdate?.(payload);
     });
 
     next.addEventListener('main_response_completed', (event) => {

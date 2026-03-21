@@ -146,6 +146,7 @@ export interface LlmAttemptRecord {
   failure_class: LlmFailureClass | null;
   latency_ms: number | null;
   input_tokens: number | null;
+  cached_input_tokens: number | null;
   output_tokens: number | null;
   estimated_cost_usd: number | null;
   created_at: string;

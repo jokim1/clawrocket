@@ -281,6 +281,7 @@ export function AiAgentsPage({ onUnauthorized, userRole }: Props): JSX.Element {
       baseUrl: settings.anthropicBaseUrl || 'https://api.anthropic.com',
       authScheme: 'x_api_key',
       enabled: true,
+      credentialMode: 'api_key',
       hasCredential: claudeCredentialAvailable,
       credentialHint:
         settings.apiKeyHint ||
@@ -444,7 +445,11 @@ export function AiAgentsPage({ onUnauthorized, userRole }: Props): JSX.Element {
     setProviderDrafts((current) => ({
       ...current,
       [providerId]: {
-        ...(current[providerId] || { apiKey: '', expanded: false }),
+        ...(current[providerId] || {
+          apiKey: '',
+          expanded: false,
+          showApiKey: false,
+        }),
         ...patch,
       },
     }));
@@ -647,6 +652,13 @@ export function AiAgentsPage({ onUnauthorized, userRole }: Props): JSX.Element {
   const handleSaveProvider = async (providerId: string): Promise<void> => {
     const draft = providerDrafts[providerId];
     if (!draft) return;
+    const provider = additionalProviders.find((entry) => entry.id === providerId);
+    if (provider?.credentialMode === 'host_login') {
+      setError(
+        `${provider.name} uses host login. Run the managed login command, then use Verify.`,
+      );
+      return;
+    }
     setBusyKey(`provider-save:${providerId}`);
     setNotice(null);
     setError(null);
@@ -672,6 +684,11 @@ export function AiAgentsPage({ onUnauthorized, userRole }: Props): JSX.Element {
   };
 
   const handleClearProvider = async (providerId: string): Promise<void> => {
+    const provider = additionalProviders.find((entry) => entry.id === providerId);
+    if (provider?.credentialMode === 'host_login') {
+      setError(`${provider.name} is managed through host login and cannot be cleared here.`);
+      return;
+    }
     setBusyKey(`provider-save:${providerId}`);
     setNotice(null);
     setError(null);
@@ -1167,96 +1184,134 @@ export function AiAgentsPage({ onUnauthorized, userRole }: Props): JSX.Element {
                             {formatDateTime(provider.lastVerifiedAt)}
                           </p>
                         </div>
-                        <button
-                          type="button"
-                          className="icon-btn danger-btn"
-                          onClick={() => void handleClearProvider(provider.id)}
-                          disabled={!canManage || busySave}
-                          aria-label={`Delete ${provider.name} credential`}
-                        >
-                          ×
-                        </button>
+                        {provider.credentialMode === 'api_key' ? (
+                          <button
+                            type="button"
+                            className="icon-btn danger-btn"
+                            onClick={() => void handleClearProvider(provider.id)}
+                            disabled={!canManage || busySave}
+                            aria-label={`Delete ${provider.name} credential`}
+                          >
+                            ×
+                          </button>
+                        ) : null}
                       </div>
                     ) : null}
 
-                    <details
-                      className="talk-llm-update-disclosure"
-                      open={draft.expanded}
-                      onToggle={(event) =>
-                        updateProviderDraft(provider.id, {
-                          expanded: (event.currentTarget as HTMLDetailsElement)
-                            .open,
-                        })
-                      }
-                    >
-                      <summary>
-                        {provider.hasCredential ? 'Update key' : 'Configure'}
-                      </summary>
+                    {provider.credentialMode === 'host_login' ? (
                       <div className="talk-llm-grid">
-                        <label className="talk-llm-field-span">
-                          <span>API key</span>
-                          <div className="talk-llm-secret-input">
-                            <input
-                              type={draft.showApiKey ? 'text' : 'password'}
-                              value={draft.apiKey}
-                              onChange={(event) =>
-                                updateProviderDraft(provider.id, {
-                                  apiKey: event.target.value,
-                                })
-                              }
-                              placeholder={
-                                PROVIDER_KEY_PLACEHOLDER[provider.id] ||
-                                'sk-...'
-                              }
-                              disabled={!canManage || busySave}
-                            />
-                            <button
-                              type="button"
-                              className="talk-llm-eye-toggle"
-                              onClick={() =>
-                                updateProviderDraft(provider.id, {
-                                  showApiKey: !draft.showApiKey,
-                                })
-                              }
-                              disabled={!canManage || busySave}
-                              aria-label={
-                                draft.showApiKey
-                                  ? `Hide ${provider.name} API key`
-                                  : `Show ${provider.name} API key`
-                              }
-                            >
-                              {draft.showApiKey ? 'Hide' : 'Show'}
-                            </button>
-                          </div>
-                        </label>
+                        <div className="talk-llm-field-span">
+                          <span>Host login</span>
+                          <p className="talk-llm-meta">
+                            {provider.hostStatus?.message ||
+                              'Run Codex login against the managed ClawRocket home, then verify this provider.'}
+                          </p>
+                          {provider.hostStatus?.managedHomePath ? (
+                            <p className="talk-llm-meta">
+                              Managed home: {provider.hostStatus.managedHomePath}
+                            </p>
+                          ) : null}
+                          {provider.hostStatus?.recommendedCommands?.length ? (
+                            <div className="talk-llm-command-list">
+                              {provider.hostStatus.recommendedCommands.map(
+                                (command) => (
+                                  <code key={command}>{command}</code>
+                                ),
+                              )}
+                            </div>
+                          ) : null}
+                        </div>
                         <div className="talk-llm-inline-actions">
                           <button
                             type="button"
-                            className="primary-btn"
-                            onClick={() => void handleSaveProvider(provider.id)}
-                            disabled={!canManage || busySave}
+                            className="secondary-btn"
+                            onClick={() => void handleVerifyProvider(provider.id)}
+                            disabled={!canManage || busyVerify}
                           >
-                            {busySave
-                              ? 'Saving…'
-                              : provider.hasCredential
-                                ? 'Update'
-                                : 'Save'}
+                            {busyVerify ? 'Refreshing…' : 'Verify / Refresh'}
                           </button>
-                          {provider.hasCredential ? (
-                            <button
-                              type="button"
-                              className="secondary-btn"
-                              onClick={() =>
-                                void handleVerifyProvider(provider.id)
-                              }
-                              disabled={!canManage || busyVerify}
-                            >
-                              {busyVerify ? 'Verifying…' : 'Re-verify'}
-                            </button>
-                          ) : null}
                         </div>
                       </div>
-                    </details>
+                    ) : (
+                      <details
+                        className="talk-llm-update-disclosure"
+                        open={draft.expanded}
+                        onToggle={(event) =>
+                          updateProviderDraft(provider.id, {
+                            expanded: (event.currentTarget as HTMLDetailsElement)
+                              .open,
+                          })
+                        }
+                      >
+                        <summary>
+                          {provider.hasCredential ? 'Update key' : 'Configure'}
+                        </summary>
+                        <div className="talk-llm-grid">
+                          <label className="talk-llm-field-span">
+                            <span>API key</span>
+                            <div className="talk-llm-secret-input">
+                              <input
+                                type={draft.showApiKey ? 'text' : 'password'}
+                                value={draft.apiKey}
+                                onChange={(event) =>
+                                  updateProviderDraft(provider.id, {
+                                    apiKey: event.target.value,
+                                  })
+                                }
+                                placeholder={
+                                  PROVIDER_KEY_PLACEHOLDER[provider.id] ||
+                                  'sk-...'
+                                }
+                                disabled={!canManage || busySave}
+                              />
+                              <button
+                                type="button"
+                                className="talk-llm-eye-toggle"
+                                onClick={() =>
+                                  updateProviderDraft(provider.id, {
+                                    showApiKey: !draft.showApiKey,
+                                  })
+                                }
+                                disabled={!canManage || busySave}
+                                aria-label={
+                                  draft.showApiKey
+                                    ? `Hide ${provider.name} API key`
+                                    : `Show ${provider.name} API key`
+                                }
+                              >
+                                {draft.showApiKey ? 'Hide' : 'Show'}
+                              </button>
+                            </div>
+                          </label>
+                          <div className="talk-llm-inline-actions">
+                            <button
+                              type="button"
+                              className="primary-btn"
+                              onClick={() => void handleSaveProvider(provider.id)}
+                              disabled={!canManage || busySave}
+                            >
+                              {busySave
+                                ? 'Saving…'
+                                : provider.hasCredential
+                                  ? 'Update'
+                                  : 'Save'}
+                            </button>
+                            {provider.hasCredential ? (
+                              <button
+                                type="button"
+                                className="secondary-btn"
+                                onClick={() =>
+                                  void handleVerifyProvider(provider.id)
+                                }
+                                disabled={!canManage || busyVerify}
+                              >
+                                {busyVerify ? 'Verifying…' : 'Re-verify'}
+                              </button>
+                            ) : null}
+                          </div>
+                        </div>
+                      </details>
+                    )}
                   </article>
                 );
               })}
@@ -1316,6 +1371,9 @@ export function AiAgentsPage({ onUnauthorized, userRole }: Props): JSX.Element {
                               ? agent.executionPreview.routeReason ===
                                 'subscription_fallback'
                                 ? ' · subscription container'
+                                : agent.executionPreview.backend ===
+                                    'host_codex'
+                                  ? ' · codex host'
                                 : agent.executionPreview.backend === 'container'
                                   ? ' · container'
                                   : ' · direct'

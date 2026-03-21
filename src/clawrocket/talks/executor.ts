@@ -22,6 +22,7 @@ export interface TalkExecutorInput {
 
 export interface TalkExecutionUsage {
   inputTokens?: number;
+  cachedInputTokens?: number;
   outputTokens?: number;
   estimatedCostUsd?: number;
 }
@@ -53,6 +54,20 @@ export type TalkExecutionEvent =
       routeStepPosition?: number | null;
       providerId?: string | null;
       modelId?: string | null;
+    }
+  | {
+      type: 'talk_progress_update';
+      runId: string;
+      talkId: string;
+      threadId?: string | null;
+      agentId?: string | null;
+      agentNickname?: string | null;
+      responseGroupId?: string | null;
+      sequenceIndex?: number | null;
+      routeStepPosition?: number | null;
+      providerId?: string | null;
+      modelId?: string | null;
+      message: string;
     }
   | {
       type: 'talk_response_usage';

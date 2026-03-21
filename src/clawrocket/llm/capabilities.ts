@@ -41,6 +41,14 @@ export function resolveModelCapabilities(input: {
   providerId: string;
   modelId: string;
 }): ModelCapabilities {
+  if (input.providerId === 'provider.openai_codex') {
+    return normalizeCapabilities({
+      supports_tools: true,
+      supports_vision: true,
+      supports_long_context: true,
+    });
+  }
+
   if (
     input.providerId === 'provider.anthropic' &&
     input.modelId.startsWith('claude-')

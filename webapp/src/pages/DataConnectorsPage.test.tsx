@@ -1,4 +1,4 @@
-import { cleanup, render, screen, within } from '@testing-library/react';
+import { act, cleanup, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { MemoryRouter } from 'react-router-dom';
@@ -308,6 +308,40 @@ describe('DataConnectorsPage', () => {
       screen.getByRole('button', { name: 'Install to Workspace' }),
     ).not.toBeDisabled();
     expect(screen.getByText('Acme Workspace')).toBeTruthy();
+  });
+
+  it('preserves unsaved Slack app drafts across background refreshes', async () => {
+    const user = userEvent.setup();
+    let intervalCallback: (() => void) | null = null;
+    vi.spyOn(window, 'setInterval').mockImplementation(
+      ((callback: TimerHandler) => {
+        intervalCallback =
+          typeof callback === 'function'
+            ? (callback as () => void)
+            : intervalCallback;
+        return 1 as unknown as number;
+      }) as typeof window.setInterval,
+    );
+    vi.spyOn(window, 'clearInterval').mockImplementation(() => {});
+    installDataConnectorsFetch();
+
+    render(
+      <MemoryRouter initialEntries={['/app/connectors?tab=channel-connectors']}>
+        <DataConnectorsPage onUnauthorized={vi.fn()} userRole="owner" />
+      </MemoryRouter>,
+    );
+
+    await screen.findByRole('heading', { name: 'Connect Slack App' });
+
+    const clientIdInput = screen.getByLabelText('Client ID');
+    await user.type(clientIdInput, '123456.7890');
+    expect(clientIdInput).toHaveValue('123456.7890');
+
+    await act(async () => {
+      await intervalCallback?.();
+    });
+
+    expect(screen.getByLabelText('Client ID')).toHaveValue('123456.7890');
   });
 
   it('approves a discovered Slack channel from the connectors page', async () => {

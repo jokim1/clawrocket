@@ -1082,6 +1082,7 @@ function createClawrocketSchema(database: Database.Database): void {
       failure_class TEXT,
       latency_ms INTEGER,
       input_tokens INTEGER,
+      cached_input_tokens INTEGER,
       output_tokens INTEGER,
       estimated_cost_usd REAL,
       created_at TEXT NOT NULL
@@ -1220,6 +1221,7 @@ function createClawrocketSchema(database: Database.Database): void {
   migrateAddTtftSupport(database);
   migrateAddThreadIdColumns(database);
   migrateLlmAttemptsTable(database);
+  migrateLlmAttemptsCachedInputTokensColumn(database);
   migrateAddMissingColumns(database);
   ensureJobsSupportIndexes(database);
 
@@ -1838,6 +1840,7 @@ function migrateLlmAttemptsTable(database: Database.Database): void {
       failure_class TEXT,
       latency_ms INTEGER,
       input_tokens INTEGER,
+      cached_input_tokens INTEGER,
       output_tokens INTEGER,
       estimated_cost_usd REAL,
       created_at TEXT NOT NULL
@@ -1859,6 +1862,19 @@ function migrateLlmAttemptsTable(database: Database.Database): void {
 
     DROP TABLE llm_attempts_migration_backup;
   `);
+}
+
+function migrateLlmAttemptsCachedInputTokensColumn(
+  database: Database.Database,
+): void {
+  const columns = database
+    .prepare(`PRAGMA table_info(llm_attempts)`)
+    .all() as Array<{ name: string }>;
+  if (columns.length === 0) return;
+  if (columns.some((column) => column.name === 'cached_input_tokens')) return;
+  database.exec(
+    `ALTER TABLE llm_attempts ADD COLUMN cached_input_tokens INTEGER;`,
+  );
 }
 
 // ===========================================================================

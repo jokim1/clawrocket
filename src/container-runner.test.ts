@@ -12,6 +12,7 @@ const OUTPUT_END_MARKER = '---NANOCLAW_OUTPUT_END---';
 vi.mock('./config.js', () => ({
   CONTAINER_IMAGE: 'nanoclaw-agent:latest',
   CONTAINER_MAX_OUTPUT_SIZE: 10485760,
+  CONTAINER_SYNC_AGENT_RUNNER_SOURCE: true,
   CONTAINER_TIMEOUT: 1800000, // 30min
   DATA_DIR: '/tmp/nanoclaw-test-data',
   GROUPS_DIR: '/tmp/nanoclaw-test-groups',
@@ -42,6 +43,12 @@ vi.mock('fs', async () => {
       readFileSync: vi.fn(() => ''),
       readdirSync: vi.fn(() => []),
       statSync: vi.fn(() => ({ isDirectory: () => false })),
+      lstatSync: vi.fn(() => {
+        throw new Error('ENOENT');
+      }),
+      readlinkSync: vi.fn(() => ''),
+      rmSync: vi.fn(),
+      symlinkSync: vi.fn(),
       copyFileSync: vi.fn(),
       cpSync: vi.fn(),
     },

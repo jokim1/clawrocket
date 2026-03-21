@@ -751,6 +751,30 @@ describe('Main channel routes', () => {
       expect(result.statusCode).toBe(400);
     });
 
+    it('returns 409 with setup guidance when browser execution is not configured', () => {
+      getDb()
+        .prepare(
+          `UPDATE registered_agents
+           SET tool_permissions_json = ?
+           WHERE id = 'agent.main'`,
+        )
+        .run(JSON.stringify({ web: true, browser: true }));
+
+      const result = postMainMessageRoute(makeAuth(USER_A), {
+        content: 'check my linkedin',
+      });
+
+      expect(result.statusCode).toBe(409);
+      expect(result.body.ok).toBe(false);
+      if (!result.body.ok) {
+        expect(result.body.error.code).toBe('browser_execution_not_configured');
+        expect(result.body.error.message).toContain(
+          'Browser access is not configured',
+        );
+        expect(result.body.error.message).toContain('claude login');
+      }
+    });
+
     it('returns 404 when posting to thread owned by another user', () => {
       const threadId = randomUUID();
       enqueueMainTurnAtomic({

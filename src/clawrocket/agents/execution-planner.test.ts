@@ -30,6 +30,24 @@ function seedAnthropicSecret(apiKey = 'sk-ant-test'): void {
     .run(encryptProviderSecret({ apiKey }), now, 'owner-1');
 }
 
+function upsertProviderVerification(
+  providerId: string,
+  status: 'verified' | 'missing' | 'not_verified' | 'unavailable',
+): void {
+  const now = new Date().toISOString();
+  getDb()
+    .prepare(
+      `INSERT INTO llm_provider_verifications (
+         provider_id, status, last_verified_at, last_error, updated_at
+       ) VALUES (?, ?, ?, NULL, ?)
+       ON CONFLICT(provider_id) DO UPDATE SET
+         status = excluded.status,
+         last_verified_at = excluded.last_verified_at,
+         updated_at = excluded.updated_at`,
+    )
+    .run(providerId, status, status === 'verified' ? now : null, now);
+}
+
 describe('execution-planner', () => {
   beforeEach(() => {
     _initTestDatabase();
@@ -89,6 +107,45 @@ describe('execution-planner', () => {
       expect(plan.containerCredential.authMode).toBe('api_key');
       expect(plan.heavyToolFamilies).toEqual(['shell', 'filesystem']);
     }
+  });
+
+  it('routes verified Codex heavy agents through the host runtime', () => {
+    upsertProviderVerification('provider.openai_codex', 'verified');
+    const agent = createRegisteredAgent({
+      name: 'Codex Builder',
+      providerId: 'provider.openai_codex',
+      modelId: 'gpt-5.4',
+      toolPermissionsJson: JSON.stringify({
+        shell: true,
+        filesystem: true,
+        browser: true,
+        web: true,
+      }),
+    });
+
+    const plan = planExecution(agent, 'owner-1');
+    expect(plan.backend).toBe('host_codex');
+    if (plan.backend === 'host_codex') {
+      expect(plan.authPath).toBe('host_login');
+      expect(plan.credentialSource).toBe('host_auth');
+      expect(plan.heavyToolFamilies).toEqual(['shell', 'filesystem']);
+    }
+  });
+
+  it('rejects Codex host execution until the provider is verified', () => {
+    const agent = createRegisteredAgent({
+      name: 'Codex Builder',
+      providerId: 'provider.openai_codex',
+      modelId: 'gpt-5.4',
+      toolPermissionsJson: JSON.stringify({
+        shell: true,
+        filesystem: true,
+      }),
+    });
+
+    expect(() => planExecution(agent, 'owner-1')).toThrowError(
+      /codex host runtime is not verified/i,
+    );
   });
 
   it('routes from effective user permissions rather than raw heavy tool flags', () => {
