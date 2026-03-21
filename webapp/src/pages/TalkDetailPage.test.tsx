@@ -1566,7 +1566,9 @@ describe('TalkDetailPage', () => {
     renderDetailPage('/app/talks/talk-1/channels');
     await screen.findByRole('heading', { name: 'Connected Channels' });
 
-    expect(screen.getByText(/Cal Football Chat/)).toBeTruthy();
+    expect(
+      screen.getByRole('heading', { name: /\[Telegram\]\s+Cal Football Chat/i }),
+    ).toBeTruthy();
     expect(
       screen.getByText(
         'Dropped after waiting too long for the talk to become idle',
@@ -1611,6 +1613,65 @@ describe('TalkDetailPage', () => {
     expect(
       screen.queryByText('Telegram delivery exhausted retries.'),
     ).toBeNull();
+  });
+
+  it('shows approved destinations as a browsable list and lets users bind one without searching first', async () => {
+    const user = userEvent.setup();
+
+    installTalkDetailFetch({
+      channelConnections: [
+        buildChannelConnection({
+          id: 'channel-conn:slack:kimfamily',
+          platform: 'slack',
+          accountKey: 'slack:T123',
+          displayName: 'KimFamily',
+          config: { teamId: 'T123', teamName: 'KimFamily' },
+        }),
+        buildChannelConnection({
+          id: 'channel-conn:telegram:system',
+          platform: 'telegram',
+          displayName: 'Telegram (System Managed)',
+        }),
+      ],
+      channelTargets: [
+        buildChannelTarget({
+          connectionId: 'channel-conn:slack:kimfamily',
+          targetKind: 'channel',
+          targetId: 'slack:C123',
+          displayName: '#family-ops',
+        }),
+        buildChannelTarget({
+          connectionId: 'channel-conn:telegram:system',
+          targetKind: 'chat',
+          targetId: 'tg:chat:123',
+          displayName: 'Kim Family Telegram',
+        }),
+      ],
+      talkChannels: [],
+      ingressFailures: [],
+      deliveryFailures: [],
+    });
+
+    renderDetailPage('/app/talks/talk-1/channels');
+    await screen.findByRole('heading', { name: 'Connected Channels' });
+
+    const familyOpsButton = await screen.findByRole('button', {
+      name: /#family-ops/i,
+    });
+    expect(screen.getByText('2 approved destinations')).toBeTruthy();
+    expect(familyOpsButton).toBeTruthy();
+    expect(
+      screen.getByRole('button', { name: /Kim Family Telegram/i }),
+    ).toBeTruthy();
+
+    await user.click(familyOpsButton);
+    expect(screen.getByDisplayValue('#family-ops')).toBeTruthy();
+
+    await user.click(screen.getByRole('button', { name: 'Create Binding' }));
+    expect(await screen.findByText('Talk channel binding created.')).toBeTruthy();
+    expect(
+      await screen.findByRole('heading', { name: /#family-ops/i }),
+    ).toBeTruthy();
   });
 
   it('updates nicknames in auto and custom modes and saves talk agents from the Agents tab', async () => {
@@ -3578,6 +3639,42 @@ function buildChannelTarget(input: Partial<ChannelTarget> = {}): ChannelTarget {
   };
 }
 
+function buildChannelConnectionApiRecord(connection: ChannelConnection) {
+  return {
+    id: connection.id,
+    platform: connection.platform,
+    connection_mode: connection.connectionMode,
+    account_key: connection.accountKey,
+    display_name: connection.displayName,
+    enabled: connection.enabled ? 1 : 0,
+    health_status: connection.healthStatus,
+    last_health_check_at: connection.lastHealthCheckAt,
+    last_health_error: connection.lastHealthError,
+    config_json: connection.config ? JSON.stringify(connection.config) : null,
+    token_source: connection.tokenSource,
+    env_token_available: connection.envTokenAvailable ? 1 : 0,
+    has_stored_secret: connection.hasStoredSecret ? 1 : 0,
+    created_at: connection.createdAt,
+    updated_at: connection.updatedAt,
+  };
+}
+
+function buildChannelTargetApiRecord(target: ChannelTarget) {
+  return {
+    connection_id: target.connectionId,
+    target_kind: target.targetKind,
+    target_id: target.targetId,
+    display_name: target.displayName,
+    metadata_json: target.metadata ? JSON.stringify(target.metadata) : null,
+    approved: target.approved ? 1 : 0,
+    registered_at: target.registeredAt,
+    registered_by: target.registeredBy,
+    last_seen_at: target.lastSeenAt,
+    created_at: target.createdAt,
+    updated_at: target.updatedAt,
+  };
+}
+
 function buildTalkChannelBinding(
   input: Partial<TalkChannelBinding> = {},
 ): TalkChannelBinding {
@@ -5038,7 +5135,9 @@ function installTalkDetailFetch(input?: {
       if (url.endsWith('/api/v1/channel-connections') && method === 'GET') {
         return jsonResponse(200, {
           ok: true,
-          data: { connections: channelConnections },
+          data: {
+            connections: channelConnections.map(buildChannelConnectionApiRecord),
+          },
         });
       }
 
@@ -5047,9 +5146,16 @@ function installTalkDetailFetch(input?: {
         url.includes('/targets') &&
         method === 'GET'
       ) {
+        const connectionId = decodeURIComponent(
+          url.split('/api/v1/channel-connections/')[1].split('/targets')[0],
+        );
         return jsonResponse(200, {
           ok: true,
-          data: { targets: channelTargets },
+          data: {
+            targets: channelTargets
+              .filter((target) => target.connectionId === connectionId)
+              .map(buildChannelTargetApiRecord),
+          },
         });
       }
 
