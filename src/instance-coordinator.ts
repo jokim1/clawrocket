@@ -102,7 +102,23 @@ async function defaultReadPsCommand(pid: number): Promise<string | null> {
 
 function processLooksLikeClawRocket(command: string): boolean {
   const normalized = command.toLowerCase();
-  return /(^|[\\/\s])(clawrocket|nanoclaw)([\\/\s]|$)/.test(normalized);
+  const looksLikeNamedProcess =
+    /(^|[\\/\s])(clawrocket|nanoclaw)([\\/\s]|$)/.test(normalized);
+  if (looksLikeNamedProcess) return true;
+
+  // Dev launches often look like `tsx src/index.ts` or
+  // `node .../tsx/dist/cli.mjs src/index.ts`, which do not include the app
+  // name in /proc/<pid>/cmdline.
+  const looksLikeNodeRuntime =
+    /(^|[\\/\s])(node|tsx|ts-node|bun|npm|pnpm|yarn)([\\/\s]|$)/.test(
+      normalized,
+    );
+  const looksLikeKnownEntrypoint =
+    /(^|[\\/\s])(src[\\/]index\.ts|dist[\\/]index\.js)([\\/\s]|$)/.test(
+      normalized,
+    );
+
+  return looksLikeNodeRuntime && looksLikeKnownEntrypoint;
 }
 
 function normalizeFsPath(input: string): string {

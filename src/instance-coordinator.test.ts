@@ -379,6 +379,61 @@ describe('InstanceCoordinator', () => {
     await coordinatorB.release();
   });
 
+  it('falls back to SIGTERM after an acknowledged takeover when the owner is a tsx dev process', async () => {
+    const dataDir = createDataDir();
+    tempDirs.push(dataDir);
+
+    let alive = true;
+    let now = 0;
+    const signals: Array<NodeJS.Signals | 0> = [];
+
+    const coordinatorA = new InstanceCoordinator({
+      dataDir,
+      pid: 4666,
+      bootId: 'owner-dev',
+      cwd: dataDir,
+    });
+    const coordinatorB = new InstanceCoordinator({
+      dataDir,
+      pid: 4667,
+      bootId: 'replacement-dev',
+      cwd: dataDir,
+      platform: 'linux',
+      now: () => now,
+      sleep: async (ms) => {
+        now += ms;
+      },
+      signalProcess: (_pid, signal) => {
+        if (signal === 0) {
+          if (!alive) throw createErrno('ESRCH');
+          return;
+        }
+        signals.push(signal);
+        if (signal === 'SIGTERM') alive = false;
+      },
+      readLinuxProcessInfo: async () =>
+        alive
+          ? {
+              cmdline:
+                'node /home/k1min8r/projects/clawrocket/node_modules/tsx/dist/cli.mjs src/index.ts',
+              cwd: dataDir,
+            }
+          : null,
+    });
+
+    await coordinatorA.acquire(async () => {
+      /* simulate a hung graceful shutdown */
+    });
+
+    const record = await coordinatorB.acquire(async () => {});
+
+    expect(record.bootId).toBe('replacement-dev');
+    expect(signals).toEqual(['SIGTERM']);
+
+    await coordinatorA.release();
+    await coordinatorB.release();
+  });
+
   it('falls back to SIGTERM when metadata is valid but no control socket path is available', async () => {
     const dataDir = createDataDir();
     tempDirs.push(dataDir);
