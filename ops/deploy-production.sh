@@ -7,7 +7,9 @@ DEPLOY_BRANCH="${DEPLOY_BRANCH:-main}"
 DEPLOY_REMOTE="${DEPLOY_REMOTE:-origin}"
 DEPLOY_HEALTH_URL="${DEPLOY_HEALTH_URL:-http://127.0.0.1:3210/api/v1/health}"
 DEPLOY_HEALTH_INTERVAL="${DEPLOY_HEALTH_INTERVAL:-2}"
-DEPLOY_WAIT_SECONDS="${DEPLOY_WAIT_SECONDS:-60}"
+DEPLOY_HEALTH_CONNECT_TIMEOUT="${DEPLOY_HEALTH_CONNECT_TIMEOUT:-2}"
+DEPLOY_HEALTH_MAX_TIME="${DEPLOY_HEALTH_MAX_TIME:-5}"
+DEPLOY_WAIT_SECONDS="${DEPLOY_WAIT_SECONDS:-180}"
 DEPLOY_LOCK_FILE="${DEPLOY_LOCK_FILE:-$DEPLOY_PATH/data/runtime/deploy.lock}"
 
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
@@ -25,17 +27,30 @@ require_command() {
 }
 
 wait_for_health() {
-  local max_attempts
-  max_attempts=$((DEPLOY_WAIT_SECONDS / DEPLOY_HEALTH_INTERVAL))
+  local max_attempts attempt elapsed service_state
+  max_attempts=$(((DEPLOY_WAIT_SECONDS + DEPLOY_HEALTH_INTERVAL - 1) / DEPLOY_HEALTH_INTERVAL))
   if (( max_attempts < 1 )); then
     max_attempts=1
   fi
 
+  log "Waiting up to ${DEPLOY_WAIT_SECONDS}s for ${DEPLOY_SERVICE} health at ${DEPLOY_HEALTH_URL}"
+
   for ((attempt = 1; attempt <= max_attempts; attempt++)); do
     if systemctl --user is-active --quiet "$DEPLOY_SERVICE" &&
-      curl -fsS "$DEPLOY_HEALTH_URL" >/dev/null; then
+      curl --fail --silent --show-error \
+        --connect-timeout "$DEPLOY_HEALTH_CONNECT_TIMEOUT" \
+        --max-time "$DEPLOY_HEALTH_MAX_TIME" \
+        "$DEPLOY_HEALTH_URL" >/dev/null; then
+      elapsed=$((attempt * DEPLOY_HEALTH_INTERVAL))
+      log "Service reported healthy after ${elapsed}s"
       return 0
     fi
+
+    if (( attempt == 1 || attempt == max_attempts || attempt % 5 == 0 )); then
+      service_state="$(systemctl --user is-active "$DEPLOY_SERVICE" 2>/dev/null || true)"
+      log "Health still pending (${attempt}/${max_attempts}); service state=${service_state:-unknown}"
+    fi
+
     sleep "$DEPLOY_HEALTH_INTERVAL"
   done
 

@@ -25,6 +25,10 @@ jobs:
         env:
           DEPLOY_PATH: ${{ vars.DEPLOY_PATH }}
           DEPLOY_SERVICE: ${{ vars.DEPLOY_SERVICE }}
+          DEPLOY_WAIT_SECONDS: ${{ vars.DEPLOY_WAIT_SECONDS }}
+          DEPLOY_HEALTH_INTERVAL: ${{ vars.DEPLOY_HEALTH_INTERVAL }}
+          DEPLOY_HEALTH_CONNECT_TIMEOUT: ${{ vars.DEPLOY_HEALTH_CONNECT_TIMEOUT }}
+          DEPLOY_HEALTH_MAX_TIME: ${{ vars.DEPLOY_HEALTH_MAX_TIME }}
         run: |
           set -euo pipefail
           deploy_path="${DEPLOY_PATH:-/home/k1min8r/projects/clawrocket}"
