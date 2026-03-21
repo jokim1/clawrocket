@@ -184,6 +184,8 @@ const SUBSCRIPTION_VERIFY_METHOD = 'subscription_container_runtime';
 const API_KEY_VERIFY_METHOD = 'anthropic_messages_direct_http';
 const DEFAULT_CLAUDE_MODEL = 'claude-sonnet-4-6';
 const VERIFY_PROMPT = 'Respond with a short acknowledgement.';
+const SUBSCRIPTION_RUNTIME_UNAVAILABLE_MESSAGE =
+  'Claude subscription verification could not run because the container runtime is unavailable or unhealthy. Check Docker and try again.';
 const verificationLocks = new Set<string>();
 
 function getAnthropicSecretRow():
@@ -346,9 +348,10 @@ function computeVerificationStatus(input: {
     case 'verifying':
     case 'verified':
     case 'invalid':
-    case 'unavailable':
     case 'rate_limited':
       return input.storedStatus;
+    case 'unavailable':
+      return input.mode === 'subscription' ? 'not_verified' : 'unavailable';
     default:
       return 'not_verified';
   }
@@ -450,10 +453,6 @@ export function getExecutorAuthState(): ExecutorAuthState {
 
 function baseExecutorSettingsData(): ExecutorSettingsData {
   const authState = getExecutorAuthState();
-  const runtimeAwareVerificationState = computeRuntimeAwareVerificationState(
-    authState,
-    getContainerRuntimeStatus(),
-  );
   const updatedAt =
     getSettingValue('executor.lastVerifiedAt') ||
     getSettingValue('executor.updatedAt');
@@ -474,9 +473,9 @@ function baseExecutorSettingsData(): ExecutorSettingsData {
     oauthTokenHint: authState.oauthTokenHint,
     authTokenHint: authState.authTokenHint,
     activeCredentialConfigured: authState.activeCredentialConfigured,
-    verificationStatus: runtimeAwareVerificationState.verificationStatus,
+    verificationStatus: authState.verificationStatus,
     lastVerifiedAt: authState.lastVerifiedAt,
-    lastVerificationError: runtimeAwareVerificationState.lastVerificationError,
+    lastVerificationError: authState.lastVerificationError,
     anthropicBaseUrl:
       TALK_EXECUTOR_ANTHROPIC_BASE_URL || 'https://api.anthropic.com',
     isConfigured: authState.activeCredentialConfigured,
@@ -494,10 +493,6 @@ export function buildExecutorSettingsData(): ExecutorSettingsData {
 export function buildExecutorStatusData(): ExecutorStatusData {
   const authState = getExecutorAuthState();
   const containerRuntimeAvailability = getContainerRuntimeStatus();
-  const runtimeAwareVerificationState = computeRuntimeAwareVerificationState(
-    authState,
-    containerRuntimeAvailability,
-  );
   return {
     mode: 'real',
     restartSupported: false,
@@ -506,37 +501,15 @@ export function buildExecutorStatusData(): ExecutorStatusData {
     containerRuntimeAvailability,
     executorAuthMode: authState.executorAuthMode,
     activeCredentialConfigured: authState.activeCredentialConfigured,
-    verificationStatus: runtimeAwareVerificationState.verificationStatus,
+    verificationStatus: authState.verificationStatus,
     lastVerifiedAt: authState.lastVerifiedAt,
-    lastVerificationError: runtimeAwareVerificationState.lastVerificationError,
+    lastVerificationError: authState.lastVerificationError,
     hasProviderAuth: authState.activeCredentialConfigured,
     hasValidAliasMap: true,
     configVersion: 1,
     isConfigured: authState.activeCredentialConfigured,
     bootId: 'web',
     configErrors: [],
-  };
-}
-
-function computeRuntimeAwareVerificationState(
-  authState: ExecutorAuthState,
-  containerRuntimeAvailability: ContainerRuntimeStatus,
-): Pick<ExecutorStatusData, 'verificationStatus' | 'lastVerificationError'> {
-  if (
-    authState.executorAuthMode === 'subscription' &&
-    authState.activeCredentialConfigured &&
-    containerRuntimeAvailability === 'unavailable'
-  ) {
-    return {
-      verificationStatus: 'unavailable',
-      lastVerificationError:
-        'Claude container runtime is unavailable or unhealthy. Check Docker and try again.',
-    };
-  }
-
-  return {
-    verificationStatus: authState.verificationStatus,
-    lastVerificationError: authState.lastVerificationError,
   };
 }
 
@@ -967,8 +940,15 @@ function classifySubscriptionRuntimeFailure(
     normalized.includes('unauthorized') ||
     normalized.includes('authentication') ||
     normalized.includes('invalid token') ||
+    normalized.includes('subscription required') ||
+    normalized.includes('not subscribed') ||
+    normalized.includes('plan required') ||
+    normalized.includes('payment required') ||
+    normalized.includes('upgrade your plan') ||
+    normalized.includes('no active subscription') ||
     normalized.includes('login') ||
     normalized.includes('401') ||
+    normalized.includes('402') ||
     normalized.includes('403')
   ) {
     return {
@@ -1207,6 +1187,27 @@ export async function verifyExecutorRoute(
         };
       }
 
+      if (getContainerRuntimeStatus({ refresh: true }) === 'unavailable') {
+        setVerificationResult({
+          updatedBy: userId,
+          status: 'not_verified',
+          lastVerificationError: SUBSCRIPTION_RUNTIME_UNAVAILABLE_MESSAGE,
+          lastVerificationMode: 'subscription',
+          lastVerificationMethod: SUBSCRIPTION_VERIFY_METHOD,
+        });
+        return {
+          statusCode: 200,
+          body: {
+            ok: true,
+            data: {
+              scheduled: false,
+              code: 'runtime_unavailable',
+              message: SUBSCRIPTION_RUNTIME_UNAVAILABLE_MESSAGE,
+            },
+          },
+        };
+      }
+
       const result = await (
         deps?.verifySubscriptionRuntime || verifySubscriptionRuntimeDefault
       )({
@@ -1219,7 +1220,8 @@ export async function verifyExecutorRoute(
 
       setVerificationResult({
         updatedBy: userId,
-        status: result.status,
+        status:
+          result.status === 'unavailable' ? 'not_verified' : result.status,
         lastVerificationError:
           result.status === 'verified' ? null : result.message,
         lastVerificationMode: 'subscription',

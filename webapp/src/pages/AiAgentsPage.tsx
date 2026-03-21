@@ -579,7 +579,15 @@ export function AiAgentsPage({ onUnauthorized, userRole }: Props): JSX.Element {
       let verifyMessage: string | null = null;
       if (shouldAutoVerify) {
         const result = await verifyExecutorCredentials();
-        verifyMessage = result.message || 'Claude verification started.';
+        if (
+          claudeModeDraft === 'subscription' &&
+          result.code === 'runtime_unavailable'
+        ) {
+          verifyMessage =
+            'Claude subscription saved, but verification could not run because the container runtime is unavailable or unhealthy. Check Docker and try again.';
+        } else {
+          verifyMessage = result.message || 'Claude verification started.';
+        }
       }
       const nextStatus = await getExecutorStatus();
       setStatus(nextStatus);
@@ -754,6 +762,20 @@ export function AiAgentsPage({ onUnauthorized, userRole }: Props): JSX.Element {
     }
     return formatVerificationStatus(status.verificationStatus);
   }, [claudeModeDraft, selectedClaudeAvailable, settings, status]);
+  const showClaudeRuntimeWarning =
+    !!status &&
+    claudeModeDraft === 'subscription' &&
+    status.executorAuthMode === 'subscription' &&
+    selectedClaudeAvailable &&
+    status.containerRuntimeAvailability === 'unavailable';
+  const showClaudeVerificationNote =
+    !!status &&
+    status.executorAuthMode === claudeModeDraft &&
+    selectedClaudeAvailable &&
+    (status.verificationStatus === 'invalid' ||
+      status.verificationStatus === 'rate_limited' ||
+      status.verificationStatus === 'unavailable') &&
+    !!status.lastVerificationError;
   const selectedMainAgent = registeredAgents.find(
     (agent) => agent.id === mainAgentDraft,
   );
@@ -1092,6 +1114,26 @@ export function AiAgentsPage({ onUnauthorized, userRole }: Props): JSX.Element {
                   </div>
                 </div>
               )}
+
+              {showClaudeRuntimeWarning ? (
+                <p className="talk-llm-meta warning-text">
+                  Claude subscription requires the container runtime. Docker is
+                  currently unavailable, so verification and container-backed
+                  execution will fail until it is healthy.
+                </p>
+              ) : null}
+              {showClaudeVerificationNote ? (
+                <p
+                  className={
+                    status.verificationStatus === 'invalid'
+                      ? 'talk-llm-meta error-text'
+                      : 'talk-llm-meta warning-text'
+                  }
+                >
+                  <strong>Verification note:</strong>{' '}
+                  {status.lastVerificationError}
+                </p>
+              ) : null}
 
               <div className="talk-llm-inline-actions">
                 {canVerifyStoredClaude ? (

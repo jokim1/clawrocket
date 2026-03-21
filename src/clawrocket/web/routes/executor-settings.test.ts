@@ -255,7 +255,38 @@ describe('executor-settings routes', () => {
     );
   });
 
-  it('reports subscription runtime as unavailable when Docker is unavailable', () => {
+  it('reports unverified subscription credentials honestly when Docker is unavailable', () => {
+    upsertSettingValue({
+      key: 'executor.authMode',
+      value: 'subscription',
+      updatedBy: auth.userId,
+    });
+    upsertSettingValue({
+      key: 'executor.claudeOauthToken',
+      value: 'oauth-token-123',
+      updatedBy: auth.userId,
+    });
+    _setContainerRuntimeStatusForTests('unavailable');
+
+    const settings = getExecutorSettingsRoute(auth);
+    expect(settings.statusCode).toBe(200);
+    expect(settings.body.ok).toBe(true);
+    if (settings.body.ok) {
+      expect(settings.body.data.verificationStatus).toBe('not_verified');
+      expect(settings.body.data.lastVerificationError).toBeNull();
+    }
+
+    const status = getExecutorStatusRoute(auth);
+    expect(status.statusCode).toBe(200);
+    expect(status.body.ok).toBe(true);
+    if (status.body.ok) {
+      expect(status.body.data.containerRuntimeAvailability).toBe('unavailable');
+      expect(status.body.data.verificationStatus).toBe('not_verified');
+      expect(status.body.data.lastVerificationError).toBeNull();
+    }
+  });
+
+  it('keeps a previously verified subscription credential verified when Docker is unavailable', () => {
     upsertSettingValue({
       key: 'executor.authMode',
       value: 'subscription',
@@ -287,10 +318,8 @@ describe('executor-settings routes', () => {
     expect(settings.statusCode).toBe(200);
     expect(settings.body.ok).toBe(true);
     if (settings.body.ok) {
-      expect(settings.body.data.verificationStatus).toBe('unavailable');
-      expect(settings.body.data.lastVerificationError).toMatch(
-        /container runtime is unavailable/i,
-      );
+      expect(settings.body.data.verificationStatus).toBe('verified');
+      expect(settings.body.data.lastVerificationError).toBeNull();
     }
 
     const status = getExecutorStatusRoute(auth);
@@ -298,8 +327,138 @@ describe('executor-settings routes', () => {
     expect(status.body.ok).toBe(true);
     if (status.body.ok) {
       expect(status.body.data.containerRuntimeAvailability).toBe('unavailable');
-      expect(status.body.data.verificationStatus).toBe('unavailable');
+      expect(status.body.data.verificationStatus).toBe('verified');
     }
+  });
+
+  it('normalizes persisted subscription unavailable status back to not_verified', () => {
+    upsertSettingValue({
+      key: 'executor.authMode',
+      value: 'subscription',
+      updatedBy: auth.userId,
+    });
+    upsertSettingValue({
+      key: 'executor.claudeOauthToken',
+      value: 'oauth-token-123',
+      updatedBy: auth.userId,
+    });
+    upsertSettingValue({
+      key: 'executor.verificationStatus',
+      value: 'unavailable',
+      updatedBy: auth.userId,
+    });
+    upsertSettingValue({
+      key: 'executor.lastVerificationMode',
+      value: 'subscription',
+      updatedBy: auth.userId,
+    });
+    upsertSettingValue({
+      key: 'executor.lastVerificationMethod',
+      value: 'subscription_container_runtime',
+      updatedBy: auth.userId,
+    });
+
+    const settings = getExecutorSettingsRoute(auth);
+    expect(settings.statusCode).toBe(200);
+    expect(settings.body.ok).toBe(true);
+    if (settings.body.ok) {
+      expect(settings.body.data.verificationStatus).toBe('not_verified');
+    }
+  });
+
+  it('returns runtime_unavailable and persists not_verified when Docker is unavailable during subscription verification', async () => {
+    upsertSettingValue({
+      key: 'executor.authMode',
+      value: 'subscription',
+      updatedBy: auth.userId,
+    });
+    upsertSettingValue({
+      key: 'executor.claudeOauthToken',
+      value: 'oauth-token-123',
+      updatedBy: auth.userId,
+    });
+    _setContainerRuntimeStatusForTests('unavailable');
+
+    const result = await verifyExecutorRoute(auth);
+
+    expect(result.statusCode).toBe(200);
+    expect(result.body.ok).toBe(true);
+    if (result.body.ok) {
+      expect(result.body.data.code).toBe('runtime_unavailable');
+      expect(result.body.data.message).toMatch(/verification could not run/i);
+    }
+    expect(getSettingValue('executor.verificationStatus')).toBe('not_verified');
+    expect(getSettingValue('executor.lastVerificationMode')).toBe(
+      'subscription',
+    );
+    expect(getSettingValue('executor.lastVerificationMethod')).toBe(
+      'subscription_container_runtime',
+    );
+    expect(getSettingValue('executor.lastVerificationError')).toMatch(
+      /container runtime is unavailable/i,
+    );
+  });
+
+  it('persists invalid subscription verification results', async () => {
+    upsertSettingValue({
+      key: 'executor.authMode',
+      value: 'subscription',
+      updatedBy: auth.userId,
+    });
+    upsertSettingValue({
+      key: 'executor.claudeOauthToken',
+      value: 'oauth-token-123',
+      updatedBy: auth.userId,
+    });
+
+    const result = await verifyExecutorRoute(auth, {
+      verifySubscriptionRuntime: async () => ({
+        status: 'invalid',
+        code: 'invalid_credential',
+        message: 'Subscription rejected.',
+      }),
+    });
+
+    expect(result.statusCode).toBe(200);
+    expect(result.body.ok).toBe(true);
+    if (result.body.ok) {
+      expect(result.body.data.code).toBe('invalid_credential');
+    }
+    expect(getSettingValue('executor.verificationStatus')).toBe('invalid');
+    expect(getSettingValue('executor.lastVerificationError')).toBe(
+      'Subscription rejected.',
+    );
+  });
+
+  it('persists rate-limited subscription verification results', async () => {
+    upsertSettingValue({
+      key: 'executor.authMode',
+      value: 'subscription',
+      updatedBy: auth.userId,
+    });
+    upsertSettingValue({
+      key: 'executor.claudeOauthToken',
+      value: 'oauth-token-123',
+      updatedBy: auth.userId,
+    });
+
+    const result = await verifyExecutorRoute(auth, {
+      verifySubscriptionRuntime: async () => ({
+        status: 'rate_limited',
+        code: 'rate_limited',
+        message: 'Usage limit hit.',
+      }),
+    });
+
+    expect(result.statusCode).toBe(200);
+    expect(result.body.ok).toBe(true);
+    if (result.body.ok) {
+      expect(result.body.data.code).toBe('rate_limited');
+    }
+    expect(getSettingValue('executor.verificationStatus')).toBe('rate_limited');
+    expect(getSettingValue('executor.lastVerificationError')).toBe(
+      'Usage limit hit.',
+    );
   });
 
   it('deduplicates concurrent verification runs with a process-local lock', async () => {
