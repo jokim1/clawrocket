@@ -3417,6 +3417,92 @@ describe('TalkDetailPage', () => {
       expect(screen.getAllByText(repeatedPrompt)).toHaveLength(1),
     );
   });
+
+  it('keeps deleted prompt messages hidden when an execution resync returns stale rows', async () => {
+    const user = userEvent.setup();
+    const repeatedPrompt = 'can you try to access my linkedin again?';
+    const deletedMessages = [
+      buildMessage({
+        id: 'msg-1',
+        role: 'user',
+        content: repeatedPrompt,
+        createdAt: '2026-03-06T00:00:00.000Z',
+      }),
+      buildMessage({
+        id: 'msg-2',
+        role: 'user',
+        content: repeatedPrompt,
+        createdAt: '2026-03-06T00:00:01.000Z',
+      }),
+    ];
+    let onListMessagesCallCount = 0;
+
+    installTalkDetailFetch({
+      messages: [
+        ...deletedMessages,
+        buildMessage({
+          id: 'msg-3',
+          role: 'user',
+          content: 'Keep this latest note',
+          createdAt: '2026-03-06T00:00:02.000Z',
+        }),
+      ],
+      runs: [],
+      onListMessages: ({ visibleMessages }) => {
+        const callIndex = onListMessagesCallCount++;
+        if (callIndex === 2) {
+          return [...deletedMessages, ...visibleMessages];
+        }
+        return visibleMessages;
+      },
+    });
+
+    renderDetailPage('/app/talks/talk-1');
+    const composer = await screen.findByPlaceholderText(
+      'Send a message to this thread',
+    );
+
+    await user.type(composer, '/edit');
+    await user.keyboard('{Enter}');
+    expect(
+      await screen.findByRole('dialog', { name: 'Edit history' }),
+    ).toBeTruthy();
+
+    const repeatedRows = screen.getAllByLabelText(
+      /You.*can you try to access my linkedin again\?/i,
+    );
+    await user.click(repeatedRows[0]!);
+    await user.click(repeatedRows[1]!);
+    await user.click(screen.getByRole('button', { name: 'Delete selected' }));
+
+    await waitFor(() =>
+      expect(screen.queryByRole('dialog', { name: 'Edit history' })).toBeNull(),
+    );
+    expect(screen.queryByText(repeatedPrompt)).toBeNull();
+
+    await user.type(composer, repeatedPrompt);
+    await user.keyboard('{Enter}');
+
+    await waitFor(() =>
+      expect(screen.getAllByText(repeatedPrompt)).toHaveLength(1),
+    );
+
+    expect(streamInput).toBeTruthy();
+    act(() => {
+      streamInput?.onMessageAppended({
+        talkId: 'talk-1',
+        threadId: DEFAULT_THREAD_ID,
+        messageId: 'msg-run-sync',
+        runId: 'run-sync',
+        role: 'assistant',
+        createdBy: 'agent-1',
+      });
+    });
+
+    await waitFor(() =>
+      expect(screen.getAllByText(repeatedPrompt)).toHaveLength(1),
+    );
+  });
 });
 
 function renderDetailPage(initialEntry: string): ReturnType<typeof render> {
