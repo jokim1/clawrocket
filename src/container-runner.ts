@@ -35,6 +35,55 @@ import type { RegisteredGroup } from './types.js';
 const OUTPUT_START_MARKER = '---NANOCLAW_OUTPUT_START---';
 const OUTPUT_END_MARKER = '---NANOCLAW_OUTPUT_END---';
 
+function parseContainerOutputFromStdout(
+  stdout: string,
+  allowLegacyFallback: boolean,
+): ParsedContainerOutput {
+  const endIdx = stdout.lastIndexOf(OUTPUT_END_MARKER);
+  const startIdx =
+    endIdx === -1 ? -1 : stdout.lastIndexOf(OUTPUT_START_MARKER, endIdx);
+
+  let jsonPayload: string | null = null;
+  if (startIdx !== -1 && endIdx > startIdx) {
+    jsonPayload = stdout
+      .slice(startIdx + OUTPUT_START_MARKER.length, endIdx)
+      .trim();
+  } else if (startIdx !== -1 || endIdx !== -1) {
+    return {
+      output: null,
+      error: 'Failed to parse container output: incomplete output markers',
+    };
+  } else if (allowLegacyFallback) {
+    const lines = stdout
+      .trim()
+      .split('\n')
+      .map((line) => line.trim())
+      .filter(Boolean);
+    if (lines.length === 0) {
+      return { output: null, error: null };
+    }
+    jsonPayload = lines[lines.length - 1] ?? null;
+  } else {
+    return { output: null, error: null };
+  }
+
+  if (!jsonPayload) {
+    return { output: null, error: null };
+  }
+
+  try {
+    return {
+      output: JSON.parse(jsonPayload) as ContainerOutput,
+      error: null,
+    };
+  } catch (err) {
+    return {
+      output: null,
+      error: `Failed to parse container output: ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
+}
+
 export interface ContainerInput {
   prompt: string;
   sessionId?: string;
@@ -66,6 +115,11 @@ export interface ContainerOutput {
   result: string | null;
   newSessionId?: string;
   error?: string;
+}
+
+interface ParsedContainerOutput {
+  output: ContainerOutput | null;
+  error: string | null;
 }
 
 export type ContainerConnectorSecretPayload =
@@ -747,6 +801,65 @@ export async function runContainerAgent(
       fs.writeFileSync(logFile, logLines.join('\n'));
       logger.debug({ logFile, verbose: isVerbose }, 'Container log written');
 
+      const parsedOutput = parseContainerOutputFromStdout(stdout, !onOutput);
+      if (parsedOutput.output) {
+        const resolvedOutput: ContainerOutput = {
+          ...parsedOutput.output,
+          newSessionId:
+            parsedOutput.output.newSessionId || newSessionId || undefined,
+        };
+        const finishWithParsedOutput = () => {
+          if (code !== 0 && resolvedOutput.status === 'success') {
+            logger.warn(
+              {
+                group: targetName,
+                code,
+                duration,
+                logFile,
+              },
+              'Container exited non-zero after emitting a successful result; treating emitted output as authoritative',
+            );
+          } else {
+            logger.info(
+              {
+                group: targetName,
+                duration,
+                status: resolvedOutput.status,
+                hasResult: !!resolvedOutput.result,
+              },
+              'Container completed',
+            );
+          }
+          resolve(resolvedOutput);
+        };
+
+        if (onOutput) {
+          outputChain.then(finishWithParsedOutput);
+        } else {
+          finishWithParsedOutput();
+        }
+        return;
+      }
+
+      if (parsedOutput.error) {
+        logger.error(
+          {
+            group: targetName,
+            stdout,
+            stderr,
+            error: parsedOutput.error,
+          },
+          'Failed to parse container output',
+        );
+
+        resolve({
+          status: 'error',
+          result: null,
+          error: parsedOutput.error,
+        });
+        return;
+      }
+
       if (code !== 0) {
         logger.error(
           {
@@ -784,53 +897,11 @@ export async function runContainerAgent(
         return;
       }
 
-      // Legacy mode: parse the last output marker pair from accumulated stdout
-      try {
-        // Extract JSON between sentinel markers for robust parsing
-        const startIdx = stdout.indexOf(OUTPUT_START_MARKER);
-        const endIdx = stdout.indexOf(OUTPUT_END_MARKER);
-
-        let jsonLine: string;
-        if (startIdx !== -1 && endIdx !== -1 && endIdx > startIdx) {
-          jsonLine = stdout
-            .slice(startIdx + OUTPUT_START_MARKER.length, endIdx)
-            .trim();
-        } else {
-          // Fallback: last non-empty line (backwards compatibility)
-          const lines = stdout.trim().split('\n');
-          jsonLine = lines[lines.length - 1];
-        }
-
-        const output: ContainerOutput = JSON.parse(jsonLine);
-
-        logger.info(
-          {
-            group: targetName,
-            duration,
-            status: output.status,
-            hasResult: !!output.result,
-          },
-          'Container completed',
-        );
-
-        resolve(output);
-      } catch (err) {
-        logger.error(
-          {
-            group: targetName,
-            stdout,
-            stderr,
-            error: err,
-          },
-          'Failed to parse container output',
-        );
-
-        resolve({
-          status: 'error',
-          result: null,
-          error: `Failed to parse container output: ${err instanceof Error ? err.message : String(err)}`,
-        });
-      }
+      resolve({
+        status: 'error',
+        result: null,
+        error: 'Container completed without emitting a final response.',
+      });
     });
 
     container.on('error', (err) => {

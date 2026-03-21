@@ -116,6 +116,10 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function hasNonEmptyText(value: string | null | undefined): value is string {
+  return typeof value === 'string' && value.trim().length > 0;
+}
+
 function renderHistoryMarkdown(history: LlmMessage[]): string {
   if (history.length === 0) {
     return 'No prior conversation history for this run.\n';
@@ -590,6 +594,7 @@ export async function executeContainerAgentTurn(
   }
 
   try {
+    let streamedContent: string | null = null;
     const output = await runContainerAgent(
       target,
       {
@@ -616,6 +621,15 @@ export async function executeContainerAgentTurn(
       (proc) => {
         activeProcess = proc;
       },
+      async (streamedOutput) => {
+        if (
+          streamedOutput.status === 'success' &&
+          streamedOutput.result &&
+          streamedOutput.result.trim()
+        ) {
+          streamedContent = streamedOutput.result;
+        }
+      },
     );
 
     const pausedRun = getTalkRunById(input.runId);
@@ -628,16 +642,33 @@ export async function executeContainerAgentTurn(
     }
 
     if (output.status !== 'success') {
+      if (hasNonEmptyText(streamedContent)) {
+        logger.warn(
+          {
+            runId: input.runId,
+            talkId: input.talkId,
+            threadId: input.threadId,
+            agentId: input.agent.id,
+          },
+          'Container process exited after emitting a successful result; using streamed output',
+        );
+        return {
+          content: streamedContent,
+        };
+      }
       throw new Error(output.error || 'Container execution failed.');
     }
-    if (!output.result || !output.result.trim()) {
+    const finalContent = hasNonEmptyText(output.result)
+      ? output.result
+      : streamedContent;
+    if (!hasNonEmptyText(finalContent)) {
       throw new Error(
         'Container execution completed without a final response.',
       );
     }
 
     return {
-      content: output.result,
+      content: finalContent,
     };
   } catch (error) {
     logger.error(
