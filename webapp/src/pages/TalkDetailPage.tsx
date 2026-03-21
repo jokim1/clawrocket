@@ -1481,6 +1481,20 @@ function buildChannelTargetOptionLabel(
   return `${platformLabel} · ${connectionLabel} · ${target.displayName}`;
 }
 
+function buildChannelTargetOptionMetaLabel(
+  target: ChannelTarget,
+  connections: ChannelConnection[],
+): string {
+  const connection =
+    connections.find((candidate) => candidate.id === target.connectionId) ||
+    null;
+  const platformLabel = connection
+    ? formatChannelPlatform(connection.platform)
+    : 'Channel';
+  const connectionLabel = connection?.displayName || target.connectionId;
+  return `${platformLabel} · ${connectionLabel}`;
+}
+
 function formatChannelReasonCode(value: string | null): string {
   if (!value) return 'None';
   switch (value) {
@@ -3695,13 +3709,18 @@ export function TalkDetailPage({
       channelTargets.map((target) => {
         const key = buildChannelTargetKey(target);
         const label = buildChannelTargetOptionLabel(target, channelConnections);
+        const metaLabel = buildChannelTargetOptionMetaLabel(
+          target,
+          channelConnections,
+        );
         return {
           key,
           label,
+          metaLabel,
           searchLabel: label.toLowerCase(),
           target,
         };
-      }),
+      }).sort((left, right) => left.label.localeCompare(right.label)),
     [channelConnections, channelTargets],
   );
   const filteredChannelTargets = useMemo(() => {
@@ -9244,8 +9263,8 @@ export function TalkDetailPage({
                     <div>
                       <h3>Add Channel Binding</h3>
                       <p className="talk-llm-meta">
-                        Choose one of the approved Telegram destinations from
-                        Connectors, then configure how this talk should respond.
+                        Browse approved channel destinations from Connectors,
+                        then configure how this talk should respond.
                       </p>
                     </div>
                   </div>
@@ -9266,7 +9285,7 @@ export function TalkDetailPage({
                       <div className="connector-attach-row">
                         <label style={{ flex: 1 }}>
                           <span className="settings-label">
-                            Search approved destinations
+                            Browse approved destinations
                           </span>
                           <input
                             type="text"
@@ -9274,7 +9293,7 @@ export function TalkDetailPage({
                             onChange={(event) =>
                               setChannelTargetQuery(event.target.value)
                             }
-                            placeholder="Slack · Workspace · #channel"
+                            placeholder="Filter by platform, workspace, or channel"
                             style={{ width: '100%' }}
                             disabled={
                               channelStatus.status === 'saving' ||
@@ -9283,54 +9302,62 @@ export function TalkDetailPage({
                           />
                         </label>
                       </div>
-                      <div className="connector-attach-row">
-                        <label style={{ flex: 1 }}>
-                          <span className="settings-label">
-                            Approved destination
-                          </span>
-                          <select
-                            value={channelCreateDraft.targetKey ?? ''}
-                            onChange={(event) => {
-                              const nextTarget =
-                                channelTargets.find(
-                                  (target) =>
-                                    buildChannelTargetKey(target) ===
-                                    event.target.value,
-                                ) || null;
-                              setChannelCreateDraft((current) => ({
-                                ...current,
-                                connectionId:
-                                  nextTarget?.connectionId ||
-                                  current.connectionId,
-                                targetKey: event.target.value,
-                                displayName:
-                                  current.displayName || !nextTarget
-                                    ? current.displayName
-                                    : nextTarget.displayName,
-                              }));
-                            }}
-                            disabled={
-                              channelStatus.status === 'saving' ||
-                              channelTargetsLoading
-                            }
-                          >
-                            <option value="">
-                              {channelTargetsLoading
-                                ? 'Loading approved destinations…'
-                                : filteredChannelTargets.length === 0
-                                  ? 'No approved destinations yet'
-                                  : 'Select an approved destination'}
-                            </option>
-                            {filteredChannelTargets.map((option) => (
-                              <option
-                                key={option.key}
-                                value={option.key}
-                              >
-                                {option.label}
-                              </option>
-                            ))}
-                          </select>
-                        </label>
+                      <div className="channel-target-picker">
+                        <div
+                          className="channel-target-picker-summary"
+                          aria-live="polite"
+                        >
+                          {channelTargetsLoading
+                            ? 'Loading approved destinations…'
+                            : filteredChannelTargets.length ===
+                                channelTargetOptions.length
+                              ? `${channelTargetOptions.length} approved destination${channelTargetOptions.length === 1 ? '' : 's'}`
+                              : `Showing ${filteredChannelTargets.length} of ${channelTargetOptions.length} approved destinations`}
+                        </div>
+                        <div className="channel-target-picker-results">
+                          {channelTargetsLoading ? (
+                            <div className="channel-target-picker-empty">
+                              Loading approved destinations…
+                            </div>
+                          ) : filteredChannelTargets.length === 0 ? (
+                            <div className="channel-target-picker-empty">
+                              No approved destinations match this filter.
+                            </div>
+                          ) : (
+                            filteredChannelTargets.map((option) => {
+                              const selected =
+                                channelCreateDraft.targetKey === option.key;
+                              return (
+                                <button
+                                  key={option.key}
+                                  type="button"
+                                  className={`channel-target-picker-option${selected ? ' channel-target-picker-option-selected' : ''}`}
+                                  aria-pressed={selected}
+                                  onClick={() =>
+                                    setChannelCreateDraft((current) => ({
+                                      ...current,
+                                      connectionId: option.target.connectionId,
+                                      targetKey: option.key,
+                                      displayName:
+                                        current.displayName ||
+                                        !option.target.displayName
+                                          ? current.displayName
+                                          : option.target.displayName,
+                                    }))
+                                  }
+                                  disabled={channelStatus.status === 'saving'}
+                                >
+                                  <span className="channel-target-picker-option-title">
+                                    {option.target.displayName}
+                                  </span>
+                                  <span className="channel-target-picker-option-meta">
+                                    {option.metaLabel}
+                                  </span>
+                                </button>
+                              );
+                            })
+                          )}
+                        </div>
                       </div>
                       <div className="connector-attach-row">
                         <label style={{ flex: 1 }}>
