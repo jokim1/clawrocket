@@ -51,6 +51,7 @@ vi.mock('fs', async () => {
       symlinkSync: vi.fn(),
       copyFileSync: vi.fn(),
       cpSync: vi.fn(),
+      symlinkSync: vi.fn(),
     },
   };
 });
