@@ -673,6 +673,7 @@ describe('Main channel routes', () => {
         expect(result.body.data).toHaveLength(1);
         expect(result.body.data[0].threadId).toBe(threadId);
         expect(result.body.data[0].title).toBe('hello');
+        expect(result.body.data[0].hasActiveRun).toBe(true);
       }
     });
 

@@ -80,6 +80,7 @@ type MainAction =
   | { type: 'THREADS_LOADED'; threads: MainThreadSummary[] }
   | { type: 'THREADS_ERROR'; message: string }
   | { type: 'THREAD_REMOVED'; threadId: string }
+  | { type: 'THREAD_RUN_STATE'; threadId: string; hasActiveRun: boolean }
   | { type: 'THREAD_SELECTED'; threadId: string }
   | {
       type: 'THREAD_UPDATED';
@@ -143,6 +144,16 @@ function sortMainThreads(threads: MainThreadSummary[]): MainThreadSummary[] {
   });
 }
 
+function updateThreadRunState(
+  threads: MainThreadSummary[],
+  threadId: string,
+  hasActiveRun: boolean,
+): MainThreadSummary[] {
+  return threads.map((thread) =>
+    thread.threadId === threadId ? { ...thread, hasActiveRun } : thread,
+  );
+}
+
 function ThreadPinIcon(): JSX.Element {
   return (
     <span className="thread-pin-icon" aria-hidden="true">
@@ -193,6 +204,15 @@ function mainReducer(state: MainState, action: MainAction): MainState {
           state.activeThreadId === action.threadId ? null : state.messagesError,
         liveResponses:
           state.activeThreadId === action.threadId ? {} : state.liveResponses,
+      };
+    case 'THREAD_RUN_STATE':
+      return {
+        ...state,
+        threads: updateThreadRunState(
+          state.threads,
+          action.threadId,
+          action.hasActiveRun,
+        ),
       };
     case 'THREAD_SELECTED':
       return {
@@ -261,6 +281,7 @@ function mainReducer(state: MainState, action: MainAction): MainState {
                       : t.title),
                   lastMessageAt: ts,
                   messageCount: t.messageCount + 1,
+                  hasActiveRun: action.message.role === 'user',
                 }
               : t,
           )
@@ -274,6 +295,7 @@ function mainReducer(state: MainState, action: MainAction): MainState {
               isPinned: false,
               lastMessageAt: ts,
               messageCount: 1,
+              hasActiveRun: action.message.role === 'user',
             },
             ...state.threads,
           ];
@@ -293,10 +315,18 @@ function mainReducer(state: MainState, action: MainAction): MainState {
       }
       return { ...state, threads, messages, liveResponses };
     }
-    case 'RESPONSE_STARTED':
-      if (action.event.threadId !== state.activeThreadId) return state;
+    case 'RESPONSE_STARTED': {
+      const threads = updateThreadRunState(
+        state.threads,
+        action.event.threadId,
+        true,
+      );
+      if (action.event.threadId !== state.activeThreadId) {
+        return { ...state, threads };
+      }
       return {
         ...state,
+        threads,
         liveResponses: {
           ...state.liveResponses,
           [action.event.runId]: {
@@ -309,6 +339,7 @@ function mainReducer(state: MainState, action: MainAction): MainState {
           },
         },
       };
+    }
     case 'RESPONSE_DELTA': {
       if (action.event.threadId !== state.activeThreadId) return state;
       const existing = state.liveResponses[action.event.runId];
@@ -331,13 +362,25 @@ function mainReducer(state: MainState, action: MainAction): MainState {
     case 'RESPONSE_COMPLETED': {
       const liveResponses = { ...state.liveResponses };
       delete liveResponses[action.runId];
-      return { ...state, liveResponses };
+      return {
+        ...state,
+        threads: updateThreadRunState(state.threads, action.threadId, false),
+        liveResponses,
+      };
     }
     case 'RESPONSE_FAILED': {
-      if (action.event.threadId !== state.activeThreadId) return state;
+      const threads = updateThreadRunState(
+        state.threads,
+        action.event.threadId,
+        false,
+      );
+      if (action.event.threadId !== state.activeThreadId) {
+        return { ...state, threads };
+      }
       const existing = state.liveResponses[action.event.runId];
       return {
         ...state,
+        threads,
         liveResponses: {
           ...state.liveResponses,
           [action.event.runId]: {
@@ -371,15 +414,16 @@ function mainReducer(state: MainState, action: MainAction): MainState {
             t.threadId === action.threadId
               ? {
                   ...t,
-                  title: action.threadSummary.title,
-                  lastMessageAt: action.threadSummary.lastMessageAt,
-                  messageCount: Math.max(
-                    t.messageCount,
-                    action.threadSummary.messageCount,
-                  ),
-                }
-              : t,
-          )
+              title: action.threadSummary.title,
+              lastMessageAt: action.threadSummary.lastMessageAt,
+              messageCount: Math.max(
+                t.messageCount,
+                action.threadSummary.messageCount,
+              ),
+              hasActiveRun: action.threadSummary.hasActiveRun,
+            }
+          : t,
+      )
         : [action.threadSummary, ...state.threads];
       return {
         ...state,
@@ -620,9 +664,16 @@ export function MainChannelPage({
               isPinned: false,
               lastMessageAt: new Date().toISOString(),
               messageCount: 1,
+              hasActiveRun: true,
             },
           });
           navigate(`/app/main/${result.threadId}`, { replace: true });
+        } else {
+          dispatch({
+            type: 'THREAD_RUN_STATE',
+            threadId: result.threadId,
+            hasActiveRun: true,
+          });
         }
 
         dispatch({ type: 'SEND_CLEARED' });
@@ -830,6 +881,22 @@ export function MainChannelPage({
     [navigate, onUnauthorized, state.activeThreadId, state.threads],
   );
 
+  const renderThreadMeta = useCallback((thread: MainThreadSummary) => {
+    if (thread.hasActiveRun) {
+      return (
+        <span className="main-thread-item-meta main-thread-item-meta-responding">
+          * Thinking…
+        </span>
+      );
+    }
+
+    return (
+      <span className="main-thread-item-meta">
+        {thread.messageCount} msg · {formatRelativeTime(thread.lastMessageAt)}
+      </span>
+    );
+  }, []);
+
   const hasActiveThread = !!routeThreadId;
 
   return (
@@ -877,10 +944,7 @@ export function MainChannelPage({
                         thread.isPinned ? <ThreadPinIcon /> : undefined
                       }
                     />
-                    <span className="main-thread-item-meta">
-                      {thread.messageCount} msg ·{' '}
-                      {formatRelativeTime(thread.lastMessageAt)}
-                    </span>
+                    {renderThreadMeta(thread)}
                   </div>
                 ) : (
                   <button
@@ -906,10 +970,7 @@ export function MainChannelPage({
                         thread.isPinned ? <ThreadPinIcon /> : undefined
                       }
                     />
-                    <span className="main-thread-item-meta">
-                      {thread.messageCount} msg ·{' '}
-                      {formatRelativeTime(thread.lastMessageAt)}
-                    </span>
+                    {renderThreadMeta(thread)}
                   </button>
                 )}
               </li>
@@ -998,7 +1059,9 @@ export function MainChannelPage({
                         : 'Streaming…'}
                     </time>
                   </header>
-                  <p>{response.text || 'Thinking…'}</p>
+                  <p className={response.text ? undefined : 'message-pending-copy'}>
+                    {response.text || '* Thinking…'}
+                  </p>
                   {response.errorMessage ? (
                     <p className="run-history-error">{response.errorMessage}</p>
                   ) : null}

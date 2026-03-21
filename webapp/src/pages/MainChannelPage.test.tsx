@@ -68,6 +68,7 @@ describe('MainChannelPage', () => {
         isPinned: false,
         lastMessageAt: '2026-03-18T12:00:00.000Z',
         messageCount: 2,
+        hasActiveRun: false,
       },
     ]);
 
@@ -112,6 +113,7 @@ describe('MainChannelPage', () => {
         isPinned: false,
         lastMessageAt: '2026-03-18T12:00:00.000Z',
         messageCount: 2,
+        hasActiveRun: false,
       },
     ]);
     getMainThreadMock.mockRejectedValue(
@@ -164,6 +166,7 @@ describe('MainChannelPage', () => {
         isPinned: false,
         lastMessageAt: '2026-03-18T12:00:00.000Z',
         messageCount: 2,
+        hasActiveRun: false,
       },
     ]);
     getMainThreadMock.mockResolvedValue([
@@ -239,6 +242,39 @@ describe('MainChannelPage', () => {
     expect(screen.queryByText('"Cal football recruiting notes"')).toBeNull();
   });
 
+  it('shows pending copy in the thread sidebar when a thread is still responding', async () => {
+    listMainThreadsMock.mockResolvedValue([
+      {
+        threadId: 'thread-main-1',
+        title: 'Capabilities',
+        isPinned: false,
+        lastMessageAt: '2026-03-18T12:00:00.000Z',
+        messageCount: 2,
+        hasActiveRun: true,
+      },
+    ]);
+    getMainThreadMock.mockResolvedValue([]);
+
+    render(
+      <MemoryRouter initialEntries={['/app/main/thread-main-1']}>
+        <Routes>
+          <Route
+            path="/app/main"
+            element={<MainChannelPage onUnauthorized={vi.fn()} />}
+          />
+          <Route
+            path="/app/main/:threadId"
+            element={<MainChannelPage onUnauthorized={vi.fn()} />}
+          />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    const threadRail = screen.getByLabelText('Threads');
+    await within(threadRail).findByText('Capabilities');
+    expect(within(threadRail).getByText('* Thinking…')).toBeTruthy();
+  });
+
   it('opens a right-click menu and renames a thread inline', async () => {
     const user = userEvent.setup();
     listMainThreadsMock.mockResolvedValue([
@@ -248,6 +284,7 @@ describe('MainChannelPage', () => {
         isPinned: false,
         lastMessageAt: '2026-03-18T12:00:00.000Z',
         messageCount: 2,
+        hasActiveRun: false,
       },
     ]);
     getMainThreadMock.mockResolvedValue([]);
@@ -296,6 +333,7 @@ describe('MainChannelPage', () => {
         isPinned: false,
         lastMessageAt: '2026-03-18T11:00:00.000Z',
         messageCount: 2,
+        hasActiveRun: false,
       },
       {
         threadId: 'thread-main-2',
@@ -303,6 +341,7 @@ describe('MainChannelPage', () => {
         isPinned: false,
         lastMessageAt: '2026-03-18T12:00:00.000Z',
         messageCount: 3,
+        hasActiveRun: false,
       },
     ]);
     getMainThreadMock.mockResolvedValue([]);
@@ -360,6 +399,7 @@ describe('MainChannelPage', () => {
         isPinned: false,
         lastMessageAt: '2026-03-18T11:00:00.000Z',
         messageCount: 1,
+        hasActiveRun: false,
       },
       {
         threadId: 'thread-main-2',
@@ -367,6 +407,7 @@ describe('MainChannelPage', () => {
         isPinned: false,
         lastMessageAt: '2026-03-18T12:00:00.000Z',
         messageCount: 2,
+        hasActiveRun: false,
       },
     ]);
     getMainThreadMock.mockResolvedValue([]);
