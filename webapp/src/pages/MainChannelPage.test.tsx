@@ -1071,7 +1071,8 @@ describe('MainChannelPage', () => {
             title: 'Approve sign in',
             message: 'Check your phone and approve sign in to continue.',
             riskReason: null,
-            setupCommand: 'npx tsx src/clawrocket/browser/setup.ts --site linkedin',
+            setupCommand:
+              'npx tsx src/clawrocket/browser/setup.ts --site linkedin',
             artifacts: [],
             confirmationId: null,
             pendingToolCall: {
@@ -1272,6 +1273,144 @@ describe('MainChannelPage', () => {
     expect(
       screen.getByText('Check your phone and approve sign in to continue.'),
     ).toBeTruthy();
+  });
+
+  it('renders persisted failed Main runs when the live response bubble is no longer present', async () => {
+    listMainThreadsMock.mockResolvedValue([
+      {
+        threadId: 'thread-main-1',
+        title: 'LinkedIn Messaging',
+        isPinned: false,
+        lastMessageAt: '2026-03-21T16:04:27.000Z',
+        messageCount: 1,
+        hasActiveRun: false,
+      },
+    ]);
+    getMainThreadMock.mockResolvedValue([
+      {
+        id: 'msg-main-1',
+        threadId: 'thread-main-1',
+        role: 'user',
+        content: 'Try LinkedIn again.',
+        runId: null,
+        agentId: null,
+        createdBy: 'user-1',
+        createdAt: '2026-03-21T16:04:27.000Z',
+      },
+    ]);
+    listMainRunsMock.mockResolvedValue([
+      {
+        id: 'run-main-1',
+        threadId: 'thread-main-1',
+        status: 'failed',
+        createdAt: '2026-03-21T16:04:27.000Z',
+        startedAt: '2026-03-21T16:04:28.000Z',
+        endedAt: '2026-03-21T16:04:41.000Z',
+        triggerMessageId: 'msg-main-1',
+        targetAgentId: null,
+        cancelReason: 'execution_failed: LinkedIn blocked the browser session.',
+        kind: null,
+        parentRunId: null,
+        promotionState: null,
+        promotionChildRunId: null,
+        requestedToolFamilies: ['browser'],
+        userVisibleSummary: 'Checking LinkedIn…',
+        executionDecision: {
+          backend: 'container',
+          authPath: 'subscription',
+          credentialSource: 'oauth_token',
+          plannerReason: 'Browser-enabled Main run stayed local.',
+          providerId: 'provider.anthropic',
+          modelId: 'claude-sonnet-4-6',
+        },
+      },
+    ]);
+
+    render(
+      <MemoryRouter initialEntries={['/app/main/thread-main-1']}>
+        <Routes>
+          <Route
+            path="/app/main"
+            element={<MainChannelPage onUnauthorized={vi.fn()} />}
+          />
+          <Route
+            path="/app/main/:threadId"
+            element={<MainChannelPage onUnauthorized={vi.fn()} />}
+          />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    await screen.findByText('LinkedIn blocked the browser session.');
+    expect(screen.getByText(/Execution:/)).toBeTruthy();
+    expect(
+      screen.getByText('Browser-enabled Main run stayed local.'),
+    ).toBeTruthy();
+  });
+
+  it('does not render superseded cancellation cards for older Main runs', async () => {
+    listMainThreadsMock.mockResolvedValue([
+      {
+        threadId: 'thread-main-1',
+        title: 'LinkedIn Messaging',
+        isPinned: false,
+        lastMessageAt: '2026-03-21T16:04:27.000Z',
+        messageCount: 1,
+        hasActiveRun: false,
+      },
+    ]);
+    getMainThreadMock.mockResolvedValue([
+      {
+        id: 'msg-main-1',
+        threadId: 'thread-main-1',
+        role: 'user',
+        content: 'Try LinkedIn again.',
+        runId: null,
+        agentId: null,
+        createdBy: 'user-1',
+        createdAt: '2026-03-21T16:04:27.000Z',
+      },
+    ]);
+    listMainRunsMock.mockResolvedValue([
+      {
+        id: 'run-main-1',
+        threadId: 'thread-main-1',
+        status: 'cancelled',
+        createdAt: '2026-03-21T16:04:27.000Z',
+        startedAt: '2026-03-21T16:04:28.000Z',
+        endedAt: '2026-03-21T16:04:29.000Z',
+        triggerMessageId: 'msg-main-1',
+        targetAgentId: null,
+        cancelReason: 'superseded_by_new_user_message',
+        kind: null,
+        parentRunId: null,
+        promotionState: null,
+        promotionChildRunId: null,
+        requestedToolFamilies: ['browser'],
+        userVisibleSummary: 'Checking LinkedIn…',
+      },
+    ]);
+
+    render(
+      <MemoryRouter initialEntries={['/app/main/thread-main-1']}>
+        <Routes>
+          <Route
+            path="/app/main"
+            element={<MainChannelPage onUnauthorized={vi.fn()} />}
+          />
+          <Route
+            path="/app/main/:threadId"
+            element={<MainChannelPage onUnauthorized={vi.fn()} />}
+          />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    await screen.findByText('Try LinkedIn again.');
+    expect(screen.queryByText('Cancelled')).toBeNull();
+    expect(
+      screen.queryByText(/Run cancelled: superseded_by_new_user_message/i),
+    ).toBeNull();
   });
 
   it('opens a right-click menu and renames a thread inline', async () => {

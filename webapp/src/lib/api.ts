@@ -3207,6 +3207,7 @@ export type MainThreadMessage = {
   threadId: string;
   role: 'user' | 'assistant' | 'system' | 'tool';
   content: string;
+  runId?: string | null;
   agentId: string | null;
   createdBy: string | null;
   createdAt: string;

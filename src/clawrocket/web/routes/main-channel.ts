@@ -111,6 +111,7 @@ interface ThreadMessage {
   threadId: string;
   role: string;
   content: string;
+  runId: string | null;
   agentId: string | null;
   createdBy: string | null;
   createdAt: string;
@@ -146,6 +147,7 @@ export function getMainThreadRoute(
         thread_id,
         role,
         content,
+        run_id,
         agent_id,
         created_by,
         created_at
@@ -159,6 +161,7 @@ export function getMainThreadRoute(
       thread_id: string;
       role: string;
       content: string;
+      run_id: string | null;
       agent_id: string | null;
       created_by: string | null;
       created_at: string;
@@ -182,6 +185,7 @@ export function getMainThreadRoute(
       threadId: row.thread_id,
       role: row.role,
       content: row.content,
+      runId: row.run_id,
       agentId: row.agent_id,
       createdBy: row.created_by,
       createdAt: row.created_at,
