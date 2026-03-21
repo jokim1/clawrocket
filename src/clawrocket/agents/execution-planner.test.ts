@@ -154,7 +154,7 @@ describe('execution-planner', () => {
     }
   });
 
-  it('routes browser-only agents through the container runtime when direct execution is unavailable', () => {
+  it('routes browser-only agents through the container runtime when subscription mode is configured', () => {
     upsertSettingValue({
       key: 'executor.claudeOauthToken',
       value: 'oauth-token-123',
@@ -169,9 +169,9 @@ describe('execution-planner', () => {
 
     const plan = planExecution(agent, 'owner-1');
     expect(plan.backend).toBe('container');
-    expect(plan.routeReason).toBe('subscription_fallback');
     if (plan.backend === 'container') {
       expect(plan.containerCredential.authMode).toBe('subscription');
+      expect(plan.routeReason).toBe('subscription_fallback');
     }
   });
 

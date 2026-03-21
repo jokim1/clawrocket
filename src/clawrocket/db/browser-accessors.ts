@@ -14,6 +14,7 @@ export interface BrowserProfileRecord {
   timezone_id: string;
   user_agent: string | null;
   viewport_json: string;
+  policy_json: string | null;
   download_dir: string;
   created_at: string;
   updated_at: string;
@@ -35,6 +36,7 @@ export interface BrowserProfileSnapshot {
   timezoneId: string;
   userAgent: string | null;
   viewport: BrowserViewport;
+  policy: Record<string, unknown> | null;
   downloadDir: string;
   createdAt: string;
   updatedAt: string;
@@ -119,6 +121,21 @@ function parseViewport(valueJson: string): BrowserViewport {
   return { ...DEFAULT_VIEWPORT };
 }
 
+function parsePolicy(
+  valueJson: string | null | undefined,
+): Record<string, unknown> | null {
+  if (!valueJson) return null;
+  try {
+    const parsed = JSON.parse(valueJson) as unknown;
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      return parsed as Record<string, unknown>;
+    }
+  } catch {
+    // ignored
+  }
+  return null;
+}
+
 function toSnapshot(row: BrowserProfileRecord): BrowserProfileSnapshot {
   return {
     id: row.id,
@@ -130,6 +147,7 @@ function toSnapshot(row: BrowserProfileRecord): BrowserProfileSnapshot {
     timezoneId: row.timezone_id,
     userAgent: row.user_agent,
     viewport: parseViewport(row.viewport_json),
+    policy: parsePolicy(row.policy_json),
     downloadDir: row.download_dir,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -207,12 +225,13 @@ export function ensureBrowserProfile(input: {
         timezone_id,
         user_agent,
         viewport_json,
+        policy_json,
         download_dir,
         created_at,
         updated_at,
         last_used_at
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
     `,
     )
     .run(
@@ -225,6 +244,7 @@ export function ensureBrowserProfile(input: {
       TIMEZONE,
       null,
       JSON.stringify(DEFAULT_VIEWPORT),
+      null,
       downloadDir,
       now,
       now,

@@ -4,14 +4,13 @@ import path from 'path';
 
 import { DATA_DIR } from '../../config.js';
 import { logger } from '../../logger.js';
+import { BrowserRunPausedError } from './run-paused-error.js';
 import { executeBrowserTool } from '../tools/browser-tools.js';
 
 const BRIDGE_DIR = path.join(DATA_DIR, 'browser-bridge');
-export const BROWSER_BRIDGE_SOCKET_PATH = path.join(
-  BRIDGE_DIR,
-  'browser.sock',
-);
+export const BROWSER_BRIDGE_SOCKET_PATH = path.join(BRIDGE_DIR, 'browser.sock');
 const MAX_REQUEST_BYTES = 2 * 1024 * 1024;
+const runAborters = new Map<string, () => void>();
 
 export interface BrowserBridgeRequest {
   requestId: string;
@@ -34,6 +33,64 @@ function serializeResponse(response: BrowserBridgeResponse): string {
   return JSON.stringify(response);
 }
 
+function abortBrowserBridgeRun(runId: string): boolean {
+  const aborter = runAborters.get(runId);
+  if (!aborter) {
+    return false;
+  }
+  try {
+    aborter();
+    return true;
+  } catch (error) {
+    logger.warn(
+      { err: error, runId },
+      'Browser bridge run abort callback threw unexpectedly',
+    );
+    return false;
+  }
+}
+
+export async function executeBrowserBridgeRequest(input: {
+  request: BrowserBridgeRequest;
+  signal: AbortSignal;
+}): Promise<BrowserBridgeResponse | null> {
+  try {
+    const result = await executeBrowserTool({
+      toolName: input.request.toolName,
+      args: input.request.args,
+      context: {
+        signal: input.signal,
+        runId: input.request.context.runId,
+        userId: input.request.context.userId,
+        talkId: input.request.context.talkId ?? null,
+      },
+    });
+    return {
+      requestId: input.request.requestId,
+      result: result.result,
+      ...(result.isError ? { isError: true } : {}),
+    };
+  } catch (error) {
+    if (error instanceof BrowserRunPausedError) {
+      const aborted = abortBrowserBridgeRun(input.request.context.runId);
+      if (!aborted) {
+        logger.warn(
+          { runId: input.request.context.runId },
+          'Browser bridge paused a run with no registered abort callback',
+        );
+      }
+      return null;
+    }
+    return {
+      requestId: input.request.requestId,
+      result: JSON.stringify({
+        status: 'error',
+        message: error instanceof Error ? error.message : String(error),
+      }),
+      isError: true,
+    };
+  }
+}
 export class BrowserBridgeServer {
   private server: net.Server | null = null;
   private startPromise: Promise<string> | null = null;
@@ -59,6 +116,7 @@ export class BrowserBridgeServer {
         socket.unref();
         let raw = '';
         let finished = false;
+        let controller: AbortController | null = null;
 
         const writeError = (message: string) => {
           if (finished) return;
@@ -79,6 +137,20 @@ export class BrowserBridgeServer {
           }
         };
 
+        const abortExecution = (reason: unknown) => {
+          if (!controller || controller.signal.aborted) {
+            return;
+          }
+          controller.abort(
+            reason instanceof Error
+              ? reason
+              : new Error(
+                  typeof reason === 'string'
+                    ? reason
+                    : 'Browser bridge request was aborted.',
+                ),
+          );
+        };
         socket.on('data', (chunk) => {
           raw += chunk;
           if (raw.length > MAX_REQUEST_BYTES) {
@@ -88,6 +160,13 @@ export class BrowserBridgeServer {
 
         socket.on('error', (error) => {
           logger.warn({ err: error }, 'Browser bridge socket error');
+          abortExecution(error);
+        });
+
+        socket.on('close', () => {
+          if (finished) return;
+          finished = true;
+          abortExecution('Browser bridge client disconnected.');
         });
 
         socket.on('end', async () => {
@@ -100,39 +179,22 @@ export class BrowserBridgeServer {
             return;
           }
 
-          try {
-            const result = await executeBrowserTool({
-              toolName: request.toolName,
-              args: request.args,
-              context: {
-                signal: new AbortController().signal,
-                runId: request.context.runId,
-                userId: request.context.userId,
-                talkId: request.context.talkId ?? null,
-              },
-            });
-            finished = true;
-            socket.end(
-              serializeResponse({
-                requestId: request.requestId,
-                result: result.result,
-                ...(result.isError ? { isError: true } : {}),
-              }),
-            );
-          } catch (error) {
-            finished = true;
-            socket.end(
-              serializeResponse({
-                requestId: request.requestId,
-                result: JSON.stringify({
-                  status: 'error',
-                  message:
-                    error instanceof Error ? error.message : String(error),
-                }),
-                isError: true,
-              }),
-            );
+          controller = new AbortController();
+
+          const response = await executeBrowserBridgeRequest({
+            request,
+            signal: controller.signal,
+          });
+          if (finished || socket.destroyed) {
+            return;
           }
+          if (!response) {
+            finished = true;
+            socket.destroy();
+            return;
+          }
+          finished = true;
+          socket.end(serializeResponse(response));
         });
       });
 
@@ -176,6 +238,16 @@ export class BrowserBridgeServer {
 
 let bridgeServer: BrowserBridgeServer | null = null;
 
+export function registerBrowserBridgeRunAbort(
+  runId: string,
+  aborter: () => void,
+): void {
+  runAborters.set(runId, aborter);
+}
+
+export function unregisterBrowserBridgeRunAbort(runId: string): void {
+  runAborters.delete(runId);
+}
 export async function ensureBrowserBridgeServer(): Promise<string> {
   if (!bridgeServer) {
     bridgeServer = new BrowserBridgeServer();

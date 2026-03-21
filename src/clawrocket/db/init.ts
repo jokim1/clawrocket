@@ -411,6 +411,8 @@ function createClawrocketSchema(database: Database.Database): void {
       code_verifier TEXT,
       redirect_uri TEXT NOT NULL,
       return_to TEXT,
+      requested_by_user_id TEXT REFERENCES users(id),
+      requested_by_session_id TEXT REFERENCES web_sessions(id),
       created_at TEXT NOT NULL,
       expires_at TEXT NOT NULL,
       used_at TEXT
@@ -615,6 +617,20 @@ function createClawrocketSchema(database: Database.Database): void {
       updated_by TEXT REFERENCES users(id)
     );
 
+    CREATE TABLE IF NOT EXISTS channel_provider_configs (
+      platform TEXT PRIMARY KEY,
+      config_json TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      updated_by TEXT REFERENCES users(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS channel_provider_secrets (
+      platform TEXT PRIMARY KEY,
+      ciphertext TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      updated_by TEXT REFERENCES users(id)
+    );
+
     CREATE TABLE IF NOT EXISTS channel_targets (
       connection_id TEXT NOT NULL REFERENCES channel_connections(id) ON DELETE CASCADE,
       target_kind TEXT NOT NULL,
@@ -776,6 +792,7 @@ function createClawrocketSchema(database: Database.Database): void {
       timezone_id TEXT NOT NULL,
       user_agent TEXT,
       viewport_json TEXT NOT NULL,
+      policy_json TEXT,
       download_dir TEXT NOT NULL,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
@@ -1238,7 +1255,9 @@ function createClawrocketSchema(database: Database.Database): void {
   migrateChannelBindingHealthColumns(database);
   migrateConnectionProbeFailuresColumn(database);
   migrateChannelConnectionSecretsTable(database);
+  migrateChannelProviderConfigTables(database);
   migrateChannelTargetRegistryColumns(database);
+  migrateOAuthStateRequesterColumns(database);
 
   migrateMainAgentToAnthropic(database);
 
@@ -1738,6 +1757,11 @@ function migrateAddMissingColumns(database: Database.Database): void {
     {
       table: 'talk_messages',
       column: 'metadata_json',
+      definition: 'TEXT',
+    },
+    {
+      table: 'browser_profiles',
+      column: 'policy_json',
       definition: 'TEXT',
     },
     {
@@ -2992,6 +3016,24 @@ function migrateChannelConnectionSecretsTable(
   `);
 }
 
+function migrateChannelProviderConfigTables(database: Database.Database): void {
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS channel_provider_configs (
+      platform TEXT PRIMARY KEY,
+      config_json TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      updated_by TEXT REFERENCES users(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS channel_provider_secrets (
+      platform TEXT PRIMARY KEY,
+      ciphertext TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      updated_by TEXT REFERENCES users(id)
+    );
+  `);
+}
+
 function migrateChannelTargetRegistryColumns(
   database: Database.Database,
 ): void {
@@ -3013,6 +3055,27 @@ function migrateChannelTargetRegistryColumns(
   if (!columns.some((column) => column.name === 'registered_by')) {
     database.exec(`
       ALTER TABLE channel_targets ADD COLUMN registered_by TEXT REFERENCES users(id);
+    `);
+  }
+}
+
+function migrateOAuthStateRequesterColumns(database: Database.Database): void {
+  const columns = database
+    .prepare(`PRAGMA table_info(oauth_state)`)
+    .all() as Array<{ name: string }>;
+  if (columns.length === 0) return;
+
+  if (!columns.some((column) => column.name === 'requested_by_user_id')) {
+    database.exec(`
+      ALTER TABLE oauth_state
+      ADD COLUMN requested_by_user_id TEXT REFERENCES users(id);
+    `);
+  }
+
+  if (!columns.some((column) => column.name === 'requested_by_session_id')) {
+    database.exec(`
+      ALTER TABLE oauth_state
+      ADD COLUMN requested_by_session_id TEXT REFERENCES web_sessions(id);
     `);
   }
 }

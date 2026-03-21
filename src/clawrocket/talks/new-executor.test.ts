@@ -94,6 +94,8 @@ describe('CleanTalkExecutor', () => {
     vi.mocked(planExecution).mockReturnValue({
       backend: 'direct_http',
       routeReason: 'normal',
+      authPath: 'api_key',
+      credentialSource: 'env',
       effectiveTools: [],
       providerId: 'provider.anthropic',
       modelId: 'claude-sonnet-4-6',
@@ -946,6 +948,8 @@ describe('CleanTalkExecutor', () => {
     vi.mocked(planExecution).mockReturnValue({
       backend: 'direct_http',
       routeReason: 'normal',
+      authPath: 'api_key',
+      credentialSource: 'db_secret',
       effectiveTools: [],
       providerId: 'provider.openai',
       modelId: 'gpt-text-only',
@@ -1032,6 +1036,7 @@ describe('CleanTalkExecutor', () => {
       heavyToolFamilies: ['shell'],
       containerCredential: {
         authMode: 'api_key',
+        credentialSource: 'env',
         secrets: {
           ANTHROPIC_API_KEY: 'sk-container-test',
         },

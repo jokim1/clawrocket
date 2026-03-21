@@ -47,6 +47,8 @@ import {
   BROWSER_TOOL_DEFINITIONS,
   executeBrowserTool,
 } from '../tools/browser-tools.js';
+import { buildBrowserResumeSection } from '../browser/run-context.js';
+import type { ExecutionDecisionMetadata } from '../browser/metadata.js';
 import {
   executeWebFetch,
   executeWebSearch,
@@ -84,7 +86,7 @@ export interface MainExecutorOutput {
 
 export interface MainPromotionRequest {
   taskDescription: string;
-  requiredToolFamilies: Array<'shell' | 'filesystem' | 'browser'>;
+  requiredToolFamilies: Array<'shell' | 'filesystem'>;
   userVisibleSummary: string;
   handoffNote: string | null;
   requiresApproval: boolean;
@@ -143,7 +145,7 @@ function getModelContextWindow(agent: RegisteredAgentRecord): number {
 const REQUEST_HEAVY_EXECUTION_TOOL = {
   name: 'request_heavy_execution',
   description:
-    'Escalate this Main request into a heavy background run when shell, filesystem, or browser tools are required.',
+    'Escalate this Main request into a heavy background run when shell or filesystem tools are required.',
   inputSchema: {
     type: 'object',
     additionalProperties: false,
@@ -153,7 +155,7 @@ const REQUEST_HEAVY_EXECUTION_TOOL = {
         type: 'array',
         items: {
           type: 'string',
-          enum: ['shell', 'filesystem', 'browser'],
+          enum: ['shell', 'filesystem'],
         },
         minItems: 1,
         uniqueItems: true,
@@ -238,16 +240,15 @@ function validatePromotionRequest(
   const requiredToolFamilies = Array.from(
     new Set(
       requiredToolFamiliesRaw.filter(
-        (entry): entry is 'shell' | 'filesystem' | 'browser' =>
-          entry === 'shell' || entry === 'filesystem' || entry === 'browser',
+        (entry): entry is 'shell' | 'filesystem' =>
+          entry === 'shell' || entry === 'filesystem',
       ),
     ),
   );
   if (requiredToolFamilies.length === 0) {
     return {
       ok: false,
-      error:
-        'requiredToolFamilies must include at least one of shell, filesystem, or browser.',
+      error: 'requiredToolFamilies must include shell or filesystem.',
     };
   }
 
@@ -304,6 +305,40 @@ function validatePromotionRequest(
   };
 }
 
+function buildExecutionDecisionForMain(input: {
+  agent: RegisteredAgentRecord;
+  mainPlan: MainExecutionPlan;
+  backend: 'direct_http' | 'container';
+}): ExecutionDecisionMetadata {
+  if (input.backend === 'container') {
+    const containerPlan = input.mainPlan.containerPlan;
+    if (!containerPlan) {
+      throw new Error('Missing container plan for Main execution decision');
+    }
+    return {
+      backend: 'container',
+      authPath: containerPlan.containerCredential.authMode,
+      credentialSource: containerPlan.containerCredential.credentialSource,
+      plannerReason: input.mainPlan.policy,
+      providerId: input.agent.provider_id,
+      modelId: input.agent.model_id,
+    };
+  }
+
+  const directPlan = input.mainPlan.directPlan;
+  if (!directPlan) {
+    throw new Error('Missing direct plan for Main execution decision');
+  }
+  return {
+    backend: 'direct_http',
+    authPath: directPlan.authPath,
+    credentialSource: directPlan.credentialSource,
+    plannerReason: input.mainPlan.policy,
+    providerId: input.agent.provider_id,
+    modelId: input.agent.model_id,
+  };
+}
+
 function buildPromotionHandoffSection(
   promotionRequest: MainPromotionRequest,
 ): string {
@@ -347,6 +382,7 @@ export async function executeMainChannel(
 
   const mainPlan = planMainExecution(agent, input.requestedBy);
   const runMetadata = parseObject(getTalkRunById(input.runId)?.metadata_json);
+  const browserResumeSection = buildBrowserResumeSection(runMetadata);
   const promotedRun =
     runMetadata.kind === 'main_promotion'
       ? ({
@@ -356,10 +392,8 @@ export async function executeMainChannel(
               : '',
           requiredToolFamilies: Array.isArray(runMetadata.requestedToolFamilies)
             ? runMetadata.requestedToolFamilies.filter(
-                (entry): entry is 'shell' | 'filesystem' | 'browser' =>
-                  entry === 'shell' ||
-                  entry === 'filesystem' ||
-                  entry === 'browser',
+                (entry): entry is 'shell' | 'filesystem' =>
+                  entry === 'shell' || entry === 'filesystem',
               )
             : [],
           userVisibleSummary:
@@ -396,6 +430,14 @@ export async function executeMainChannel(
   updateTalkRunMetadata(input.runId, (current) => ({
     ...current,
     ...mainContext.contextSnapshot,
+    executionDecision: buildExecutionDecisionForMain({
+      agent,
+      mainPlan,
+      backend:
+        promotedRun || mainPlan.policy === 'container_only'
+          ? 'container'
+          : 'direct_http',
+    }),
     renderer:
       promotedRun || mainPlan.policy === 'container_only'
         ? 'container'
@@ -426,6 +468,13 @@ export async function executeMainChannel(
         mainContext.summaryText,
       );
     }
+    if (browserResumeSection) {
+      systemPrompt = appendSystemSection(
+        systemPrompt,
+        'Browser Resume Context',
+        browserResumeSection,
+      );
+    }
     if (promotedRun) {
       systemPrompt = appendSystemSection(
         systemPrompt,
@@ -437,8 +486,9 @@ export async function executeMainChannel(
       ? containerPlan.effectiveTools.filter(
           (tool) =>
             tool.toolFamily === 'web' ||
+            tool.toolFamily === 'browser' ||
             promotedRun.requiredToolFamilies.includes(
-              tool.toolFamily as 'shell' | 'filesystem' | 'browser',
+              tool.toolFamily as 'shell' | 'filesystem',
             ),
         )
       : containerPlan.effectiveTools;
@@ -460,6 +510,9 @@ export async function executeMainChannel(
       containerCredential: containerPlan.containerCredential,
       threadId: input.threadId,
       projectMountHostPath,
+      enableBrowserTools: containerEffectiveTools.some(
+        (tool) => tool.toolFamily === 'browser' && tool.enabled,
+      ),
     });
 
     updateRunTiming(input.runId, {
@@ -493,7 +546,9 @@ export async function executeMainChannel(
       : []),
   ];
   const context: ExecutionContext = {
-    systemPrompt: buildMainSystemPrompt(mainContext.summaryText),
+    systemPrompt: browserResumeSection
+      ? `${buildMainSystemPrompt(mainContext.summaryText)}\n\n# Browser Resume Context\n\n${browserResumeSection}`
+      : buildMainSystemPrompt(mainContext.summaryText),
     contextTools:
       mainPlan.policy === 'direct_with_promotion'
         ? [...directContextTools, REQUEST_HEAVY_EXECUTION_TOOL]

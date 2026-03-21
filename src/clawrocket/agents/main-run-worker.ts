@@ -23,6 +23,7 @@ import {
   type TalkRunRecord,
 } from '../db/index.js';
 import { logger } from '../../logger.js';
+import { BrowserRunPausedError } from '../browser/run-paused-error.js';
 import {
   createTalkResponseStreamSanitizer,
   stripInternalTalkResponseText,
@@ -32,6 +33,7 @@ import {
   type MainExecutionEvent,
 } from './main-executor.js';
 import { refreshMainThreadSummary } from './main-context-loader.js';
+import { getBrowserService } from '../browser/service.js';
 
 // ============================================================================
 // Types
@@ -266,6 +268,18 @@ export class MainRunWorker implements MainRunWorkerControl {
       }
 
       if (output.promotionRequest) {
+        const carriedBrowserSessions = getBrowserService()
+          .getRunTouchedSessions(run.id)
+          .map((session) => ({
+            sessionId: session.sessionId,
+            siteKey: session.siteKey,
+            accountLabel: session.accountLabel,
+            lastKnownState: session.lastKnownState,
+            blockedKind: session.blockedKind,
+            lastKnownUrl: session.lastKnownUrl,
+            lastKnownTitle: session.lastKnownTitle,
+            lastUpdatedAt: session.lastUpdatedAt,
+          }));
         const childRun = createMainPromotionRunAtomic({
           parentRunId: run.id,
           childRunId: `run_${randomUUID()}`,
@@ -278,6 +292,7 @@ export class MainRunWorker implements MainRunWorkerControl {
           handoffNote: output.promotionRequest.handoffNote,
           taskDescription: output.promotionRequest.taskDescription,
           requiresApproval: output.promotionRequest.requiresApproval,
+          carriedBrowserSessions,
         });
         if (!childRun) {
           logger.warn(
@@ -296,6 +311,17 @@ export class MainRunWorker implements MainRunWorkerControl {
         );
       }
     } catch (error) {
+      if (error instanceof BrowserRunPausedError) {
+        logger.info(
+          {
+            runId: run.id,
+            threadId: run.thread_id,
+            browserBlock: error.browserBlock.kind,
+          },
+          'Main run paused for browser intervention',
+        );
+        return;
+      }
       if (isAbortError(error)) {
         if (!this.running) return;
         if (this.isCancelled(run.id)) return;

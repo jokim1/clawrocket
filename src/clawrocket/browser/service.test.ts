@@ -37,10 +37,10 @@ describe('browser service helpers', () => {
       url: 'https://www.linkedin.com/checkpoint/challenge',
     });
 
-    const result = await _testOnly.detectAuthState(page);
+    const result = await _testOnly.detectBlockedState(page);
 
     expect(result).toEqual({
-      needsAuth: true,
+      kind: 'auth_required',
       reason:
         'Current page URL suggests an authentication flow: https://www.linkedin.com/checkpoint/challenge',
     });
@@ -48,40 +48,40 @@ describe('browser service helpers', () => {
   });
 
   it('detects auth when the page contains a password field', async () => {
-    const result = await _testOnly.detectAuthState(
+    const result = await _testOnly.detectBlockedState(
       makePage({
         passwordCount: 1,
       }),
     );
 
     expect(result).toEqual({
-      needsAuth: true,
+      kind: 'auth_required',
       reason: 'Page contains a password field.',
     });
   });
 
   it('detects auth when the page body contains login or verification copy', async () => {
-    const result = await _testOnly.detectAuthState(
+    const result = await _testOnly.detectBlockedState(
       makePage({
         bodyText: 'Please sign in to continue.',
       }),
     );
 
     expect(result).toEqual({
-      needsAuth: true,
+      kind: 'auth_required',
       reason: 'Page content suggests interactive authentication.',
     });
   });
 
   it('falls back to URL-only auth detection when DOM inspection throws', async () => {
-    const result = await _testOnly.detectAuthState(
+    const result = await _testOnly.detectBlockedState(
       makePage({
         url: 'https://example.com/account',
         throwOnPasswordCount: true,
       }),
     );
 
-    expect(result).toEqual({ needsAuth: false });
+    expect(result).toEqual({ kind: null });
   });
 
   it('does not classify a harmless click as risky just because the page URL contains confirm', () => {

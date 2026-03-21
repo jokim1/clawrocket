@@ -8,6 +8,7 @@ const browserServiceMocks = vi.hoisted(() => ({
     wait: vi.fn(),
     screenshot: vi.fn(),
     close: vi.fn(),
+    recordRunSessionTouch: vi.fn(),
   },
 }));
 
@@ -20,10 +21,12 @@ import {
   _initTestDatabase,
   createTalkRun,
   getTalkStateEntry,
+  getTalkRunById,
   listTalkOutputs,
   upsertTalk,
   upsertUser,
 } from '../db/index.js';
+import { BrowserRunPausedError } from '../browser/run-paused-error.js';
 import { executeBrowserTool } from './browser-tools.js';
 
 const TALK_ID = 'talk-browser-tools';
@@ -75,9 +78,10 @@ describe('browser-tools', () => {
     browserServiceMocks.service.wait.mockReset();
     browserServiceMocks.service.screenshot.mockReset();
     browserServiceMocks.service.close.mockReset();
+    browserServiceMocks.service.recordRunSessionTouch.mockReset();
   });
 
-  it('returns setupCommand and records Talk state when browser_open needs auth', async () => {
+  it('pauses the Talk run and records setup guidance when browser_open needs auth', async () => {
     createRun('run-browser-open');
     browserServiceMocks.service.open.mockResolvedValue({
       status: 'needs_auth',
@@ -91,29 +95,32 @@ describe('browser-tools', () => {
       message:
         'This site requires interactive authentication for this profile.',
     });
-
-    const result = await executeBrowserTool({
-      toolName: 'browser_open',
-      args: {
-        siteKey: 'linkedin',
-        url: 'https://www.linkedin.com/messaging/',
-      },
-      context: {
-        signal: new AbortController().signal,
-        runId: 'run-browser-open',
-        userId: 'owner-1',
-        talkId: TALK_ID,
-      },
-    });
-
-    expect(result.isError).toBeUndefined();
-    expect(JSON.parse(result.result)).toMatchObject({
-      status: 'needs_auth',
+    browserServiceMocks.service.screenshot.mockResolvedValue({
+      status: 'ok',
       siteKey: 'linkedin',
-      setupCommand: expect.stringContaining(
-        "src/clawrocket/browser/setup.ts --site 'linkedin'",
-      ),
+      accountLabel: null,
+      url: 'https://www.linkedin.com/checkpoint/challenge',
+      title: 'LinkedIn Login',
+      path: '/tmp/browser-blocked-open.png',
+      contentType: 'image/png',
+      content: Buffer.from('png'),
     });
+
+    await expect(
+      executeBrowserTool({
+        toolName: 'browser_open',
+        args: {
+          siteKey: 'linkedin',
+          url: 'https://www.linkedin.com/messaging/',
+        },
+        context: {
+          signal: new AbortController().signal,
+          runId: 'run-browser-open',
+          userId: 'owner-1',
+          talkId: TALK_ID,
+        },
+      }),
+    ).rejects.toBeInstanceOf(BrowserRunPausedError);
 
     expect(getTalkStateEntry(TALK_ID, 'browser.profile')?.value).toMatchObject({
       siteKey: 'linkedin',
@@ -128,6 +135,9 @@ describe('browser-tools', () => {
       siteKey: 'linkedin',
       actionSummary: 'Open https://www.linkedin.com/checkpoint/challenge',
     });
+    expect(getTalkRunById('run-browser-open')?.status).toBe(
+      'awaiting_confirmation',
+    );
     expect(listTalkOutputs(TALK_ID)).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -137,7 +147,7 @@ describe('browser-tools', () => {
     );
   });
 
-  it('records confirmation-required browser_act results in Talk state and outputs', async () => {
+  it('pauses the Talk run and records confirmation-required browser_act state', async () => {
     createRun('run-browser-act');
     browserServiceMocks.service.act.mockResolvedValue({
       status: 'awaiting_confirmation',
@@ -148,28 +158,33 @@ describe('browser-tools', () => {
       message: 'Action requires confirmation before proceeding.',
       riskReason: 'Target appears to be a likely final-action control.',
     });
-
-    const result = await executeBrowserTool({
-      toolName: 'browser_act',
-      args: {
-        sessionId: 'bs_delta',
-        action: 'click',
-        target: 'e12',
-      },
-      context: {
-        signal: new AbortController().signal,
-        runId: 'run-browser-act',
-        userId: 'owner-1',
-        talkId: TALK_ID,
-      },
-    });
-
-    expect(result.isError).toBeUndefined();
-    expect(JSON.parse(result.result)).toMatchObject({
-      status: 'awaiting_confirmation',
+    browserServiceMocks.service.screenshot.mockResolvedValue({
+      status: 'ok',
       siteKey: 'delta',
-      riskReason: 'Target appears to be a likely final-action control.',
+      accountLabel: null,
+      url: 'https://www.delta.com/checkout/review',
+      title: 'Review Trip',
+      path: '/tmp/browser-blocked-act.png',
+      contentType: 'image/png',
+      content: Buffer.from('png'),
     });
+
+    await expect(
+      executeBrowserTool({
+        toolName: 'browser_act',
+        args: {
+          sessionId: 'bs_delta',
+          action: 'click',
+          target: 'e12',
+        },
+        context: {
+          signal: new AbortController().signal,
+          runId: 'run-browser-act',
+          userId: 'owner-1',
+          talkId: TALK_ID,
+        },
+      }),
+    ).rejects.toBeInstanceOf(BrowserRunPausedError);
 
     expect(getTalkStateEntry(TALK_ID, 'browser.pending')?.value).toMatchObject({
       reason: 'confirmation_required',
@@ -177,6 +192,9 @@ describe('browser-tools', () => {
       actionSummary: 'click target=e12',
       riskReason: 'Target appears to be a likely final-action control.',
     });
+    expect(getTalkRunById('run-browser-act')?.status).toBe(
+      'awaiting_confirmation',
+    );
     expect(listTalkOutputs(TALK_ID)).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -236,6 +254,46 @@ describe('browser-tools', () => {
       mime_type: 'image/png',
       file_name: 'irs-form.png',
       extraction_status: 'ready',
+    });
+  });
+
+  it('returns an error result when the browser tool signal is aborted mid-call', async () => {
+    const controller = new AbortController();
+    browserServiceMocks.service.open.mockImplementation(
+      async () =>
+        new Promise((_resolve, reject) => {
+          controller.signal.addEventListener(
+            'abort',
+            () => {
+              reject(controller.signal.reason);
+            },
+            { once: true },
+          );
+        }),
+    );
+
+    const pending = executeBrowserTool({
+      toolName: 'browser_open',
+      args: {
+        siteKey: 'linkedin',
+        url: 'https://www.linkedin.com/feed/',
+      },
+      context: {
+        signal: controller.signal,
+        runId: 'run-browser-abort',
+        userId: 'owner-1',
+        talkId: TALK_ID,
+      },
+    });
+
+    controller.abort(new Error('Container bridge client disconnected.'));
+
+    await expect(pending).resolves.toEqual({
+      result: JSON.stringify({
+        status: 'error',
+        message: 'Container bridge client disconnected.',
+      }),
+      isError: true,
     });
   });
 });

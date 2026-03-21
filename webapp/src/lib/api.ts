@@ -407,6 +407,112 @@ export type TalkMessageSearchResult = {
   preview: string;
 };
 
+export type BrowserBlockedKind =
+  | 'auth_required'
+  | 'confirmation_required'
+  | 'human_step_required';
+
+export type BrowserBlockArtifact = {
+  attachmentId?: string | null;
+  path?: string | null;
+  fileName?: string | null;
+  contentType?: string | null;
+  label?: string | null;
+};
+
+export type BrowserPendingToolCall = {
+  toolName: string;
+  args: Record<string, unknown>;
+};
+
+export type BrowserBlock = {
+  kind: BrowserBlockedKind;
+  sessionId: string | null;
+  siteKey: string;
+  accountLabel: string | null;
+  url: string;
+  title: string;
+  message: string;
+  riskReason: string | null;
+  setupCommand: string | null;
+  artifacts: BrowserBlockArtifact[];
+  confirmationId: string | null;
+  pendingToolCall: BrowserPendingToolCall | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type BrowserResume = {
+  kind:
+    | 'auth_completed'
+    | 'confirmation_approved'
+    | 'confirmation_rejected'
+    | 'human_step_completed';
+  resumedAt: string;
+  resumedBy: string | null;
+  sessionId: string | null;
+  confirmationId: string | null;
+  note: string | null;
+  pendingToolCall: BrowserPendingToolCall | null;
+};
+
+export type ExecutionDecision = {
+  backend: 'direct_http' | 'container';
+  authPath: 'api_key' | 'subscription' | 'none';
+  credentialSource:
+    | 'db_secret'
+    | 'env'
+    | 'oauth_token'
+    | 'auth_token'
+    | 'missing';
+  plannerReason: string;
+  providerId: string;
+  modelId: string;
+};
+
+export type CarriedBrowserSession = {
+  sessionId: string;
+  siteKey: string;
+  accountLabel: string | null;
+  lastKnownState: 'active' | 'blocked' | 'takeover' | 'closed' | 'dead';
+  blockedKind: BrowserBlockedKind | null;
+  lastKnownUrl: string;
+  lastKnownTitle: string;
+  lastUpdatedAt: string;
+};
+
+export type BrowserSessionStatus = {
+  sessionId: string;
+  siteKey: string;
+  accountLabel: string | null;
+  headed: boolean;
+  state: 'active' | 'blocked' | 'takeover' | 'closed' | 'dead';
+  owner: 'agent' | 'user';
+  blockedKind: BrowserBlockedKind | null;
+  blockedMessage: string | null;
+  currentUrl: string;
+  currentTitle: string;
+  lastUpdatedAt: string;
+};
+
+export type BrowserSetupResult = {
+  status:
+    | 'ok'
+    | 'needs_auth'
+    | 'human_step_required'
+    | 'awaiting_confirmation'
+    | 'error';
+  siteKey: string;
+  accountLabel: string | null;
+  sessionId?: string;
+  url: string;
+  title: string;
+  reusedSession: boolean;
+  createdProfile: boolean;
+  message: string;
+  setupCommand?: string;
+};
+
 export type TalkRun = {
   id: string;
   threadId: string;
@@ -430,6 +536,10 @@ export type TalkRun = {
   cancelReason: string | null;
   executorAlias: string | null;
   executorModel: string | null;
+  browserBlock?: BrowserBlock | null;
+  browserResume?: BrowserResume | null;
+  carriedBrowserSessions?: CarriedBrowserSession[];
+  executionDecision?: ExecutionDecision | null;
 };
 
 export type TalkRunContextStateEntrySnapshot = {
@@ -1519,6 +1629,113 @@ export async function rejectTalkActionConfirmation(input: {
     },
   );
   return envelope.confirmation;
+}
+
+export async function startBrowserSetupSession(input: {
+  siteKey: string;
+  accountLabel?: string | null;
+  url?: string | null;
+}): Promise<BrowserSetupResult> {
+  return apiMutationRequest<BrowserSetupResult>('/api/v1/browser/setup', {
+    method: 'POST',
+    includeJson: true,
+    body: JSON.stringify({
+      siteKey: input.siteKey,
+      accountLabel: input.accountLabel ?? null,
+      url: input.url ?? null,
+    }),
+  });
+}
+
+export async function startBrowserTakeover(
+  sessionId: string,
+): Promise<BrowserSessionStatus> {
+  return apiMutationRequest<BrowserSessionStatus>(
+    `/api/v1/browser/sessions/${encodeURIComponent(sessionId)}/takeover`,
+    {
+      method: 'POST',
+      includeJson: true,
+      body: '{}',
+    },
+  );
+}
+
+export async function resumeBrowserSession(
+  sessionId: string,
+): Promise<BrowserSessionStatus> {
+  return apiMutationRequest<BrowserSessionStatus>(
+    `/api/v1/browser/sessions/${encodeURIComponent(sessionId)}/resume`,
+    {
+      method: 'POST',
+      includeJson: true,
+      body: '{}',
+    },
+  );
+}
+
+export async function resumeBrowserBlockedRun(input: {
+  runId: string;
+  note?: string | null;
+}): Promise<{
+  runId: string;
+  resumed: boolean;
+  browserResume: BrowserResume;
+}> {
+  return apiMutationRequest<{
+    runId: string;
+    resumed: boolean;
+    browserResume: BrowserResume;
+  }>(`/api/v1/browser/runs/${encodeURIComponent(input.runId)}/resume`, {
+    method: 'POST',
+    includeJson: true,
+    body: JSON.stringify({ note: input.note ?? null }),
+  });
+}
+
+export async function approveBrowserConfirmation(input: {
+  confirmationId: string;
+  note?: string | null;
+}): Promise<{
+  confirmationId: string;
+  runId: string;
+  approved: boolean;
+  browserResume: BrowserResume;
+}> {
+  return apiMutationRequest<{
+    confirmationId: string;
+    runId: string;
+    approved: boolean;
+    browserResume: BrowserResume;
+  }>(
+    `/api/v1/browser/confirmations/${encodeURIComponent(input.confirmationId)}/approve`,
+    {
+      method: 'POST',
+      includeJson: true,
+      body: JSON.stringify({ note: input.note ?? null }),
+    },
+  );
+}
+
+export async function rejectBrowserConfirmation(input: {
+  confirmationId: string;
+  note?: string | null;
+}): Promise<{
+  confirmationId: string;
+  runId: string;
+  rejected: boolean;
+}> {
+  return apiMutationRequest<{
+    confirmationId: string;
+    runId: string;
+    rejected: boolean;
+  }>(
+    `/api/v1/browser/confirmations/${encodeURIComponent(input.confirmationId)}/reject`,
+    {
+      method: 'POST',
+      includeJson: true,
+      body: JSON.stringify({ note: input.note ?? null }),
+    },
+  );
 }
 
 export async function updateTalkAgents(input: {
@@ -2795,6 +3012,10 @@ export type MainRun = {
   promotionChildRunId: string | null;
   requestedToolFamilies: string[];
   userVisibleSummary: string | null;
+  browserBlock?: BrowserBlock | null;
+  browserResume?: BrowserResume | null;
+  carriedBrowserSessions?: CarriedBrowserSession[];
+  executionDecision?: ExecutionDecision | null;
 };
 
 export async function listMainThreads(): Promise<MainThreadSummary[]> {

@@ -24,7 +24,10 @@ function buildReadyMessage(
   plan: ExecutionPlan,
 ): string {
   if (plan.backend === 'direct_http') {
-    if (agent.provider_id === 'provider.anthropic') {
+    if (
+      plan.authPath === 'api_key' &&
+      agent.provider_id === 'provider.anthropic'
+    ) {
       return 'Main will use Anthropic direct HTTP with an API key.';
     }
     return 'Main will use direct HTTP.';
@@ -103,7 +106,7 @@ export function buildMainExecutionPreview(
       return {
         surface: 'main',
         backend: 'direct_http',
-        authPath: agent.provider_id === 'provider.anthropic' ? 'api_key' : null,
+        authPath: mainPlan.directPlan?.authPath ?? null,
         routeReason: 'direct_with_promotion',
         ready: true,
         message:
@@ -115,9 +118,7 @@ export function buildMainExecutionPreview(
       backend: plan.backend,
       authPath:
         plan.backend === 'direct_http'
-          ? agent.provider_id === 'provider.anthropic'
-            ? 'api_key'
-            : null
+          ? plan.authPath
           : plan.containerCredential.authMode,
       routeReason: plan.routeReason,
       ready: true,

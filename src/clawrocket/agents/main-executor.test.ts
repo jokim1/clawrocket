@@ -74,6 +74,8 @@ describe('main-executor (pure)', () => {
       directPlan: {
         backend: 'direct_http',
         routeReason: 'normal',
+        authPath: 'api_key',
+        credentialSource: 'env',
         effectiveTools: [],
         providerId: 'provider.anthropic',
         modelId: 'claude-sonnet-4-6',
@@ -317,6 +319,7 @@ describe('main-executor (pure)', () => {
         heavyToolFamilies: ['shell'],
         containerCredential: {
           authMode: 'api_key',
+          credentialSource: 'env',
           secrets: {
             ANTHROPIC_API_KEY: 'sk-container-test',
           },
@@ -477,6 +480,8 @@ describe('main-executor (pure)', () => {
       directPlan: {
         backend: 'direct_http',
         routeReason: 'normal',
+        authPath: 'api_key',
+        credentialSource: 'env',
         effectiveTools: [
           {
             toolFamily: 'browser',
@@ -553,6 +558,8 @@ describe('main-executor (pure)', () => {
       directPlan: {
         backend: 'direct_http',
         routeReason: 'normal',
+        authPath: 'api_key',
+        credentialSource: 'env',
         effectiveTools: [
           {
             toolFamily: 'browser',
@@ -799,6 +806,7 @@ describe('main-executor (pure)', () => {
         heavyToolFamilies: [],
         containerCredential: {
           authMode: 'api_key',
+          credentialSource: 'env',
           secrets: {
             ANTHROPIC_API_KEY: 'sk-container-test',
           },

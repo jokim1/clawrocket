@@ -29,7 +29,13 @@ import type { TalkJobExecutionPolicy } from '../talks/executor.js';
 import type { ContainerCredentialConfig } from './execution-planner.js';
 import type { ExecutionContext } from './agent-router.js';
 import type { LlmMessage } from './llm-client.js';
-import { ensureBrowserBridgeServer } from '../browser/bridge.js';
+import {
+  ensureBrowserBridgeServer,
+  registerBrowserBridgeRunAbort,
+  unregisterBrowserBridgeRunAbort,
+} from '../browser/bridge.js';
+import { BrowserRunPausedError } from '../browser/run-paused-error.js';
+import { getBrowserBlockForRun, getTalkRunById } from '../db/index.js';
 
 interface ExecuteContainerTurnInput {
   runId: string;
@@ -579,6 +585,9 @@ export async function executeContainerAgentTurn(
     activeProcess.kill('SIGKILL');
   };
   input.signal.addEventListener('abort', onAbort, { once: true });
+  if (input.enableBrowserTools) {
+    registerBrowserBridgeRunAbort(input.runId, onAbort);
+  }
 
   try {
     const output = await runContainerAgent(
@@ -609,6 +618,15 @@ export async function executeContainerAgentTurn(
       },
     );
 
+    const pausedRun = getTalkRunById(input.runId);
+    const browserBlock =
+      pausedRun?.status === 'awaiting_confirmation'
+        ? getBrowserBlockForRun(input.runId)
+        : null;
+    if (browserBlock) {
+      throw new BrowserRunPausedError(input.runId, browserBlock);
+    }
+
     if (output.status !== 'success') {
       throw new Error(output.error || 'Container execution failed.');
     }
@@ -635,6 +653,9 @@ export async function executeContainerAgentTurn(
     throw error;
   } finally {
     input.signal.removeEventListener('abort', onAbort);
+    if (input.enableBrowserTools) {
+      unregisterBrowserBridgeRunAbort(input.runId);
+    }
     outputBridge?.stop();
     await outputBridge?.done;
     fs.rmSync(contextDir.path, { recursive: true, force: true });

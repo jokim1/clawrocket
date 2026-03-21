@@ -20,14 +20,50 @@ const DEFAULT_ACTION_TIMEOUT_MS = 15000;
 export type BrowserResultStatus =
   | 'ok'
   | 'needs_auth'
+  | 'human_step_required'
   | 'awaiting_confirmation'
   | 'error';
+
+export type BrowserBlockedKind =
+  | 'auth_required'
+  | 'confirmation_required'
+  | 'human_step_required';
+
+export type BrowserSessionState =
+  | 'active'
+  | 'blocked'
+  | 'takeover'
+  | 'closed'
+  | 'dead';
+
+export type BrowserSessionOwner = 'agent' | 'user';
 
 export interface BrowserSessionSnapshot {
   sessionId: string;
   siteKey: string;
   accountLabel: string | null;
   headed: boolean;
+}
+
+export interface BrowserSessionStatusSnapshot extends BrowserSessionSnapshot {
+  state: BrowserSessionState;
+  owner: BrowserSessionOwner;
+  blockedKind: BrowserBlockedKind | null;
+  blockedMessage: string | null;
+  currentUrl: string;
+  currentTitle: string;
+  lastUpdatedAt: string;
+}
+
+export interface BrowserRunCarriedSession {
+  sessionId: string;
+  siteKey: string;
+  accountLabel: string | null;
+  lastKnownState: BrowserSessionState;
+  blockedKind: BrowserBlockedKind | null;
+  lastKnownUrl: string;
+  lastKnownTitle: string;
+  lastUpdatedAt: string;
 }
 
 export interface BrowserOpenResult {
@@ -111,6 +147,14 @@ interface LiveSession {
   siteKey: string;
   accountLabel: string | null;
   headed: boolean;
+  state: BrowserSessionState;
+  owner: BrowserSessionOwner;
+  blockedKind: BrowserBlockedKind | null;
+  blockedMessage: string | null;
+  lastKnownUrl: string;
+  lastKnownTitle: string;
+  lastUpdatedAt: string;
+  touchedRunIds: Set<string>;
   context: BrowserContext;
   page: Page;
 }
@@ -160,14 +204,14 @@ async function ensurePrimaryPage(context: BrowserContext): Promise<Page> {
   return context.newPage();
 }
 
-async function detectAuthState(page: Page): Promise<{
-  needsAuth: boolean;
+async function detectBlockedState(page: Page): Promise<{
+  kind: BrowserBlockedKind | null;
   reason?: string;
 }> {
   const url = page.url();
   if (/(login|signin|sign-in|auth|checkpoint|challenge|verify)/i.test(url)) {
     return {
-      needsAuth: true,
+      kind: 'auth_required',
       reason: `Current page URL suggests an authentication flow: ${url}`,
     };
   }
@@ -178,15 +222,25 @@ async function detectAuthState(page: Page): Promise<{
       .count();
     if (passwordFieldCount > 0) {
       return {
-        needsAuth: true,
+        kind: 'auth_required',
         reason: 'Page contains a password field.',
       };
     }
 
     const bodyText = await page.locator('body').innerText();
+    if (
+      /\b(captcha|not a robot|verify you are human|security check|complete the challenge|press and hold)\b/i.test(
+        bodyText,
+      )
+    ) {
+      return {
+        kind: 'human_step_required',
+        reason: 'Page content suggests a human-only verification step.',
+      };
+    }
     if (/\b(sign in|log in|login|verify your identity)\b/i.test(bodyText)) {
       return {
-        needsAuth: true,
+        kind: 'auth_required',
         reason: 'Page content suggests interactive authentication.',
       };
     }
@@ -194,7 +248,7 @@ async function detectAuthState(page: Page): Promise<{
     // Ignore auth detection failures and fall back to the page state we have.
   }
 
-  return { needsAuth: false };
+  return { kind: null };
 }
 
 async function describeTarget(
@@ -393,9 +447,14 @@ function basenameList(files?: string[]): string[] | undefined {
   return files.map((file) => path.basename(file));
 }
 
+function nowIso(): string {
+  return new Date().toISOString();
+}
+
 export class BrowserService {
   private readonly sessionsById = new Map<string, LiveSession>();
   private readonly profileSessionIds = new Map<string, string>();
+  private readonly runSessionIds = new Map<string, Set<string>>();
 
   getSessionSnapshot(sessionId: string): BrowserSessionSnapshot | null {
     const session = this.sessionsById.get(sessionId);
@@ -408,9 +467,84 @@ export class BrowserService {
     };
   }
 
+  private async buildStatusSnapshot(
+    session: LiveSession,
+  ): Promise<BrowserSessionStatusSnapshot> {
+    session.lastKnownUrl = session.page.url();
+    session.lastKnownTitle = await session.page.title();
+    session.lastUpdatedAt = nowIso();
+    return {
+      sessionId: session.sessionId,
+      siteKey: session.siteKey,
+      accountLabel: session.accountLabel,
+      headed: session.headed,
+      state: session.state,
+      owner: session.owner,
+      blockedKind: session.blockedKind,
+      blockedMessage: session.blockedMessage,
+      currentUrl: session.lastKnownUrl,
+      currentTitle: session.lastKnownTitle,
+      lastUpdatedAt: session.lastUpdatedAt,
+    };
+  }
+
+  getRunTouchedSessions(runId: string): BrowserRunCarriedSession[] {
+    const sessionIds = this.runSessionIds.get(runId);
+    if (!sessionIds || sessionIds.size === 0) {
+      return [];
+    }
+
+    const carried: BrowserRunCarriedSession[] = [];
+    for (const sessionId of sessionIds) {
+      const session = this.sessionsById.get(sessionId);
+      if (!session) continue;
+      carried.push({
+        sessionId: session.sessionId,
+        siteKey: session.siteKey,
+        accountLabel: session.accountLabel,
+        lastKnownState: session.state,
+        blockedKind: session.blockedKind,
+        lastKnownUrl: session.lastKnownUrl,
+        lastKnownTitle: session.lastKnownTitle,
+        lastUpdatedAt: session.lastUpdatedAt,
+      });
+    }
+    return carried;
+  }
+
+  recordRunSessionTouch(
+    runId: string | null | undefined,
+    sessionId: string,
+  ): void {
+    if (!runId) return;
+    const session = this.sessionsById.get(sessionId);
+    if (!session) return;
+    session.touchedRunIds.add(runId);
+    const current = this.runSessionIds.get(runId) || new Set<string>();
+    current.add(sessionId);
+    this.runSessionIds.set(runId, current);
+  }
+
+  getSessionTouchedRunIds(sessionId: string): string[] {
+    const session = this.sessionsById.get(sessionId);
+    if (!session) {
+      return [];
+    }
+    return Array.from(session.touchedRunIds);
+  }
+
+  async getSessionStatus(
+    sessionId: string,
+  ): Promise<BrowserSessionStatusSnapshot | null> {
+    const session = this.sessionsById.get(sessionId);
+    if (!session) return null;
+    return this.buildStatusSnapshot(session);
+  }
+
   private async createSession(input: {
     profile: BrowserProfileSnapshot;
     headed: boolean;
+    sessionId?: string;
   }): Promise<LiveSession> {
     fs.mkdirSync(input.profile.profilePath, { recursive: true });
     fs.mkdirSync(input.profile.downloadDir, { recursive: true });
@@ -424,11 +558,19 @@ export class BrowserService {
     page.setDefaultTimeout(DEFAULT_ACTION_TIMEOUT_MS);
 
     const session: LiveSession = {
-      sessionId: `bs_${randomUUID()}`,
+      sessionId: input.sessionId || `bs_${randomUUID()}`,
       profileId: input.profile.id,
       siteKey: input.profile.siteKey,
       accountLabel: input.profile.accountLabel,
       headed: input.headed,
+      state: 'active',
+      owner: 'agent',
+      blockedKind: null,
+      blockedMessage: null,
+      lastKnownUrl: page.url(),
+      lastKnownTitle: '',
+      lastUpdatedAt: nowIso(),
+      touchedRunIds: new Set<string>(),
       context,
       page,
     };
@@ -438,6 +580,14 @@ export class BrowserService {
         buildProfileMapKey(session.siteKey, session.accountLabel),
       );
       this.sessionsById.delete(session.sessionId);
+      for (const runId of session.touchedRunIds) {
+        const sessions = this.runSessionIds.get(runId);
+        if (!sessions) continue;
+        sessions.delete(session.sessionId);
+        if (sessions.size === 0) {
+          this.runSessionIds.delete(runId);
+        }
+      }
     });
 
     this.sessionsById.set(session.sessionId, session);
@@ -456,8 +606,36 @@ export class BrowserService {
     if (!profile) {
       throw new Error('Browser profile not found for live session');
     }
+    const {
+      sessionId,
+      state,
+      owner,
+      blockedKind,
+      blockedMessage,
+      lastKnownUrl,
+      lastKnownTitle,
+      touchedRunIds,
+    } = liveSession;
     await liveSession.context.close();
-    return this.createSession({ profile, headed });
+    const relaunched = await this.createSession({
+      profile,
+      headed,
+      sessionId,
+    });
+    relaunched.state = state;
+    relaunched.owner = owner;
+    relaunched.blockedKind = blockedKind;
+    relaunched.blockedMessage = blockedMessage;
+    relaunched.lastKnownUrl = lastKnownUrl;
+    relaunched.lastKnownTitle = lastKnownTitle;
+    relaunched.lastUpdatedAt = nowIso();
+    relaunched.touchedRunIds = new Set(touchedRunIds);
+    for (const runId of touchedRunIds) {
+      const sessions = this.runSessionIds.get(runId) || new Set<string>();
+      sessions.add(relaunched.sessionId);
+      this.runSessionIds.set(runId, sessions);
+    }
+    return relaunched;
   }
 
   private getSessionOrThrow(sessionId: string): LiveSession {
@@ -465,7 +643,38 @@ export class BrowserService {
     if (!session) {
       throw new Error(`Browser session ${sessionId} not found`);
     }
+    if (session.state === 'takeover' || session.owner === 'user') {
+      throw new Error(
+        `Browser session ${sessionId} is currently under user takeover and must be resumed before the agent can continue.`,
+      );
+    }
     return session;
+  }
+
+  private markSessionActive(session: LiveSession): void {
+    session.state = 'active';
+    session.owner = 'agent';
+    session.blockedKind = null;
+    session.blockedMessage = null;
+    session.lastUpdatedAt = nowIso();
+  }
+
+  private markSessionBlocked(
+    session: LiveSession,
+    kind: BrowserBlockedKind,
+    message: string,
+  ): void {
+    session.state = 'blocked';
+    session.owner = 'agent';
+    session.blockedKind = kind;
+    session.blockedMessage = message;
+    session.lastUpdatedAt = nowIso();
+  }
+
+  private async refreshSessionLocation(session: LiveSession): Promise<void> {
+    session.lastKnownUrl = session.page.url();
+    session.lastKnownTitle = await session.page.title();
+    session.lastUpdatedAt = nowIso();
   }
 
   async open(input: {
@@ -520,12 +729,21 @@ export class BrowserService {
       waitUntil: 'domcontentloaded',
       timeout: DEFAULT_NAVIGATION_TIMEOUT_MS,
     });
+    await this.refreshSessionLocation(session);
 
     touchBrowserProfileLastUsed(profile.id);
-    const authState = await detectAuthState(session.page);
-    if (authState.needsAuth) {
+    const blockedState = await detectBlockedState(session.page);
+    if (blockedState.kind) {
+      this.markSessionBlocked(
+        session,
+        blockedState.kind,
+        blockedState.reason || '',
+      );
       return {
-        status: 'needs_auth',
+        status:
+          blockedState.kind === 'human_step_required'
+            ? 'human_step_required'
+            : 'needs_auth',
         siteKey: profile.siteKey,
         accountLabel: profile.accountLabel,
         sessionId: session.sessionId,
@@ -534,10 +752,14 @@ export class BrowserService {
         reusedSession: !created && Boolean(existingSessionId && reuseSession),
         createdProfile: created,
         message:
-          authState.reason ||
-          'This site requires interactive authentication for this profile.',
+          blockedState.reason ||
+          (blockedState.kind === 'human_step_required'
+            ? 'This site requires a human-only browser step before the agent can continue.'
+            : 'This site requires interactive authentication for this profile.'),
       };
     }
+
+    this.markSessionActive(session);
 
     return {
       status: 'ok',
@@ -584,8 +806,14 @@ export class BrowserService {
         timeout: DEFAULT_NAVIGATION_TIMEOUT_MS,
       });
     }
+    await this.refreshSessionLocation(session);
 
     touchBrowserProfileLastUsed(profile.id);
+    session.state = 'takeover';
+    session.owner = 'user';
+    session.blockedKind = null;
+    session.blockedMessage = null;
+    session.lastUpdatedAt = nowIso();
     return {
       status: 'ok',
       siteKey: profile.siteKey,
@@ -613,6 +841,7 @@ export class BrowserService {
         ? Math.floor(input.maxElements)
         : 200,
     );
+    await this.refreshSessionLocation(session);
 
     return {
       status: 'ok',
@@ -659,6 +888,11 @@ export class BrowserService {
     });
     if (riskReason && input.confirm !== true) {
       gatingDecision = 'blocked_confirmation';
+      this.markSessionBlocked(
+        session,
+        'confirmation_required',
+        'Action requires confirmation before proceeding.',
+      );
       await this.logAudit({
         event: 'browser_action_audit',
         siteKey: session.siteKey,
@@ -783,8 +1017,9 @@ export class BrowserService {
     }
 
     touchBrowserProfileLastUsed(session.profileId);
-    const authState = await detectAuthState(session.page);
+    const blockedState = await detectBlockedState(session.page);
     const urlAfter = session.page.url();
+    await this.refreshSessionLocation(session);
     await this.logAudit({
       event: 'browser_action_audit',
       siteKey: session.siteKey,
@@ -806,18 +1041,33 @@ export class BrowserService {
       uploadFiles: basenameList(input.files) ?? null,
     });
 
-    if (authState.needsAuth) {
+    if (blockedState.kind) {
+      this.markSessionBlocked(
+        session,
+        blockedState.kind,
+        blockedState.reason ||
+          (blockedState.kind === 'human_step_required'
+            ? 'This action led to a human-only browser step.'
+            : 'This action led to an interactive authentication step.'),
+      );
       return {
-        status: 'needs_auth',
+        status:
+          blockedState.kind === 'human_step_required'
+            ? 'human_step_required'
+            : 'needs_auth',
         siteKey: session.siteKey,
         accountLabel: session.accountLabel,
         url: urlAfter,
         title: await session.page.title(),
         message:
-          authState.reason ||
-          'This action led to an interactive authentication step.',
+          blockedState.reason ||
+          (blockedState.kind === 'human_step_required'
+            ? 'This action led to a human-only browser step.'
+            : 'This action led to an interactive authentication step.'),
       };
     }
+
+    this.markSessionActive(session);
 
     return {
       status: 'ok',
@@ -881,19 +1131,35 @@ export class BrowserService {
         );
     }
 
-    const authState = await detectAuthState(session.page);
-    if (authState.needsAuth) {
+    const blockedState = await detectBlockedState(session.page);
+    await this.refreshSessionLocation(session);
+    if (blockedState.kind) {
+      this.markSessionBlocked(
+        session,
+        blockedState.kind,
+        blockedState.reason ||
+          (blockedState.kind === 'human_step_required'
+            ? 'This page now requires a human-only browser step.'
+            : 'This page now requires interactive authentication.'),
+      );
       return {
-        status: 'needs_auth',
+        status:
+          blockedState.kind === 'human_step_required'
+            ? 'human_step_required'
+            : 'needs_auth',
         siteKey: session.siteKey,
         accountLabel: session.accountLabel,
         url: session.page.url(),
         title: await session.page.title(),
         message:
-          authState.reason ||
-          'This page now requires interactive authentication.',
+          blockedState.reason ||
+          (blockedState.kind === 'human_step_required'
+            ? 'This page now requires a human-only browser step.'
+            : 'This page now requires interactive authentication.'),
       };
     }
+
+    this.markSessionActive(session);
 
     return {
       status: 'ok',
@@ -923,6 +1189,7 @@ export class BrowserService {
       `${Date.now()}-${label.replace(/[^a-zA-Z0-9._-]+/g, '-')}.png`,
     );
     fs.writeFileSync(filePath, content);
+    await this.refreshSessionLocation(session);
 
     return {
       status: 'ok',
@@ -941,6 +1208,8 @@ export class BrowserService {
     keepProfile?: boolean;
   }): Promise<BrowserCloseResult> {
     const session = this.getSessionOrThrow(input.sessionId);
+    session.state = 'closed';
+    session.lastUpdatedAt = nowIso();
     await session.context.close();
     return {
       status: 'ok',
@@ -948,6 +1217,38 @@ export class BrowserService {
       accountLabel: session.accountLabel,
       message: 'Browser session closed.',
     };
+  }
+
+  async startTakeover(input: {
+    sessionId: string;
+  }): Promise<BrowserSessionStatusSnapshot> {
+    const session = this.sessionsById.get(input.sessionId);
+    if (!session) {
+      throw new Error(`Browser session ${input.sessionId} not found`);
+    }
+
+    const activeSession = session.headed
+      ? session
+      : await this.relaunchSession(session, true);
+    await this.refreshSessionLocation(activeSession);
+    activeSession.state = 'takeover';
+    activeSession.owner = 'user';
+    activeSession.blockedKind = null;
+    activeSession.blockedMessage = null;
+    activeSession.lastUpdatedAt = nowIso();
+    return this.buildStatusSnapshot(activeSession);
+  }
+
+  async resumeTakeover(input: {
+    sessionId: string;
+  }): Promise<BrowserSessionStatusSnapshot> {
+    const session = this.sessionsById.get(input.sessionId);
+    if (!session) {
+      throw new Error(`Browser session ${input.sessionId} not found`);
+    }
+    this.markSessionActive(session);
+    await this.refreshSessionLocation(session);
+    return this.buildStatusSnapshot(session);
   }
 }
 
@@ -965,6 +1266,6 @@ export function _resetBrowserServiceForTests(): void {
 }
 
 export const _testOnly = {
-  detectAuthState,
+  detectBlockedState,
   classifyRisk,
 };

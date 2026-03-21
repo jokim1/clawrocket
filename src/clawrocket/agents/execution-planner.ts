@@ -22,15 +22,24 @@ export const EXECUTOR_MAIN_PROJECT_PATH_KEY = 'executor.mainProjectPath';
 
 export type ExecutionBackend = 'direct_http' | 'container';
 export type ExecutionRouteReason = 'normal' | 'subscription_fallback';
+export type ExecutionCredentialSource =
+  | 'db_secret'
+  | 'env'
+  | 'oauth_token'
+  | 'auth_token'
+  | 'missing';
 
 export interface ContainerCredentialConfig {
   authMode: 'api_key' | 'subscription';
+  credentialSource: ExecutionCredentialSource;
   secrets: Record<string, string>;
 }
 
 export interface DirectHttpExecutionPlan {
   backend: 'direct_http';
   routeReason: 'normal';
+  authPath: 'api_key';
+  credentialSource: ExecutionCredentialSource;
   effectiveTools: EffectiveToolAccess[];
   providerId: string;
   modelId: string;
@@ -159,6 +168,7 @@ export function resolveContainerCredential(input?: {
     }
     return {
       authMode: 'api_key',
+      credentialSource: getAnthropicApiKeyFromDb() ? 'db_secret' : 'env',
       secrets: {
         ANTHROPIC_API_KEY: normalizedApiKey,
       },
@@ -183,6 +193,7 @@ export function resolveContainerCredential(input?: {
     }
     return {
       authMode: 'subscription',
+      credentialSource: oauthToken ? 'oauth_token' : 'auth_token',
       secrets,
     };
   }
@@ -267,6 +278,15 @@ function tryResolveDirectExecutionPlan(input: {
     return {
       backend: 'direct_http',
       routeReason: 'normal',
+      authPath: 'api_key',
+      credentialSource:
+        input.agent.provider_id === 'provider.anthropic'
+          ? getAnthropicApiKeyFromDb()
+            ? 'db_secret'
+            : TALK_EXECUTOR_ANTHROPIC_API_KEY
+              ? 'env'
+              : 'missing'
+          : 'db_secret',
       effectiveTools: input.effectiveTools,
       providerId: input.agent.provider_id,
       modelId: input.agent.model_id,
@@ -354,10 +374,62 @@ export function planExecution(
   userId: string,
 ): ExecutionPlan {
   const effectiveTools = getEffectiveToolsForAgent(agent.id, userId);
+  const browserEnabled = effectiveTools.some(
+    (tool) => tool.toolFamily === 'browser' && tool.enabled,
+  );
   const heavyToolFamilies = resolveHeavyToolFamilies(effectiveTools);
   const provider = getProviderRecord(agent.provider_id);
   const configuredAuthMode = getConfiguredExecutorAuthMode();
+  if (browserEnabled) {
+    const directPlan = tryResolveDirectExecutionPlan({
+      agent,
+      effectiveTools,
+      provider,
+      configuredAuthMode,
+    });
+    const shouldPreferSubscriptionContainer =
+      agent.provider_id === 'provider.anthropic' &&
+      configuredAuthMode === 'subscription';
+    const containerPlan = tryResolveContainerExecutionPlan({
+      agent,
+      effectiveTools,
+      heavyToolFamilies,
+      provider,
+      configuredAuthMode,
+    });
 
+    if (heavyToolFamilies.length > 0) {
+      if (containerPlan) return containerPlan;
+      if (directPlan) return directPlan;
+      throw new ExecutionPlannerError(
+        'Container execution is not configured for this agent.',
+        'CONTAINER_CREDENTIAL_MISSING',
+      );
+    }
+
+    if (shouldPreferSubscriptionContainer && containerPlan) {
+      return {
+        ...containerPlan,
+        routeReason: 'normal',
+      };
+    }
+    if (shouldPreferSubscriptionContainer && !containerPlan) {
+      throw new ExecutionPlannerError(
+        'Container execution is not configured for this agent.',
+        'CONTAINER_CREDENTIAL_MISSING',
+      );
+    }
+    if (directPlan) {
+      return directPlan;
+    }
+    if (containerPlan) {
+      return containerPlan;
+    }
+    throw new ExecutionPlannerError(
+      'Direct execution is unavailable.',
+      'DIRECT_EXECUTION_UNAVAILABLE',
+    );
+  }
   if (
     heavyToolFamilies.length === 0 &&
     agent.provider_id === 'provider.anthropic' &&
@@ -424,6 +496,9 @@ export function planMainExecution(
   userId: string,
 ): MainExecutionPlan {
   const effectiveTools = getEffectiveToolsForAgent(agent.id, userId);
+  const browserEnabled = effectiveTools.some(
+    (tool) => tool.toolFamily === 'browser' && tool.enabled,
+  );
   const heavyToolFamilies = resolveHeavyToolFamilies(effectiveTools);
   const provider = getProviderRecord(agent.provider_id);
   const configuredAuthMode = getConfiguredExecutorAuthMode();
@@ -452,6 +527,54 @@ export function planMainExecution(
     configuredAuthMode,
   });
 
+  const shouldPreferSubscriptionContainer =
+    browserEnabled &&
+    agent.provider_id === 'provider.anthropic' &&
+    configuredAuthMode === 'subscription';
+
+  if (browserEnabled && heavyToolFamilies.length === 0) {
+    if (shouldPreferSubscriptionContainer && containerPlan) {
+      return {
+        policy: 'container_only',
+        effectiveTools,
+        heavyToolFamilies,
+        directPlan,
+        containerPlan: {
+          ...containerPlan,
+          routeReason: 'normal',
+        },
+      };
+    }
+    if (shouldPreferSubscriptionContainer && !containerPlan) {
+      throw new ExecutionPlannerError(
+        'No valid Main execution path is currently configured for this agent.',
+        'DIRECT_EXECUTION_UNAVAILABLE',
+      );
+    }
+    if (directPlan) {
+      return {
+        policy: 'direct_only',
+        effectiveTools,
+        heavyToolFamilies,
+        directPlan,
+        containerPlan,
+      };
+    }
+    if (containerPlan) {
+      return {
+        policy: 'container_only',
+        effectiveTools,
+        heavyToolFamilies,
+        directPlan: null,
+        containerPlan,
+      };
+    }
+    throw new ExecutionPlannerError(
+      'No valid Main execution path is currently configured for this agent.',
+      'DIRECT_EXECUTION_UNAVAILABLE',
+    );
+  }
+
   if (heavyToolFamilies.length === 0) {
     if (directPlan) {
       return {
@@ -475,6 +598,30 @@ export function planMainExecution(
       'No valid Main execution path is currently configured for this agent.',
       'DIRECT_EXECUTION_UNAVAILABLE',
     );
+  }
+
+  if (browserEnabled && shouldPreferSubscriptionContainer) {
+    if (containerPlan) {
+      return {
+        policy: 'container_only',
+        effectiveTools,
+        heavyToolFamilies,
+        directPlan,
+        containerPlan: {
+          ...containerPlan,
+          routeReason: 'normal',
+        },
+      };
+    }
+    if (directPlan) {
+      return {
+        policy: 'direct_only',
+        effectiveTools,
+        heavyToolFamilies,
+        directPlan,
+        containerPlan: null,
+      };
+    }
   }
 
   if (directPlan && containerPlan) {
