@@ -24,6 +24,7 @@ import {
   ensureSystemManagedTelegramConnection,
   getTalkForUser,
   getOutboxEventsForTopics,
+  getOutboxMaxEventIdForTopics,
   getOutboxMinEventIdForTopics,
   getGoogleOAuthLinkRequest,
   listTalkThreads,
@@ -6402,8 +6403,10 @@ function buildApp(opts: WebServerOptions): Hono {
       return rateLimitedResponse(c, rateResult);
     }
 
-    const lastEventId = parseLastEventId(c.req.header('last-event-id'));
     if (isLiveSseMode(c.req.query('stream'))) {
+      const rawLastEventId = c.req.header('last-event-id');
+      const lastEventId = parseLastEventId(rawLastEventId);
+      const topics = getUserScopedEventTopics(auth.userId);
       if (!tryAcquireLiveSseConnection(auth.userId)) {
         c.header('retry-after', String(SSE_STREAM_RETRY_AFTER_SEC));
         return c.json(
@@ -6418,13 +6421,17 @@ function buildApp(opts: WebServerOptions): Hono {
         );
       }
       return createLiveSseResponse({
-        topics: getUserScopedEventTopics(auth.userId),
-        lastEventId,
+        topics,
+        lastEventId:
+          rawLastEventId === undefined
+            ? (getOutboxMaxEventIdForTopics(topics) ?? 0)
+            : lastEventId,
         requestSignal: c.req.raw.signal,
         onClose: () => releaseLiveSseConnection(auth.userId),
       });
     }
 
+    const lastEventId = parseLastEventId(c.req.header('last-event-id'));
     const stream = buildUserScopedSseStream({
       userId: auth.userId,
       lastEventId,
@@ -6496,8 +6503,10 @@ function buildApp(opts: WebServerOptions): Hono {
       }
     }
 
-    const lastEventId = parseLastEventId(c.req.header('last-event-id'));
     if (isLiveSseMode(c.req.query('stream'))) {
+      const rawLastEventId = c.req.header('last-event-id');
+      const lastEventId = parseLastEventId(rawLastEventId);
+      const topics = getTalkScopedEventTopics(talkId);
       if (!tryAcquireLiveSseConnection(auth.userId)) {
         c.header('retry-after', String(SSE_STREAM_RETRY_AFTER_SEC));
         return c.json(
@@ -6512,8 +6521,11 @@ function buildApp(opts: WebServerOptions): Hono {
         );
       }
       return createLiveSseResponse({
-        topics: getTalkScopedEventTopics(talkId),
-        lastEventId,
+        topics,
+        lastEventId:
+          rawLastEventId === undefined
+            ? (getOutboxMaxEventIdForTopics(topics) ?? 0)
+            : lastEventId,
         eventFilter: threadId
           ? buildTalkThreadEventFilter(threadId)
           : undefined,
@@ -6522,6 +6534,7 @@ function buildApp(opts: WebServerOptions): Hono {
       });
     }
 
+    const lastEventId = parseLastEventId(c.req.header('last-event-id'));
     const stream = buildTalkScopedSseStream({ talkId, lastEventId, threadId });
 
     return c.body(

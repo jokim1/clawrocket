@@ -250,6 +250,55 @@ describe('events routes', () => {
     expect(streamText).toContain('event: message_appended');
   });
 
+  it('starts fresh live user streams at the current tail when Last-Event-ID is omitted', async () => {
+    const res = await server.request('/api/v1/events?stream=1', {
+      headers: {
+        Authorization: 'Bearer owner-token',
+      },
+    });
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get('x-clawrocket-sse-mode')).toBe('stream');
+
+    appendOutboxEvent({
+      topic: 'talk:talk-1',
+      eventType: 'message_appended',
+      payload: JSON.stringify({ talkId: 'talk-1', messageId: 'm-live-now' }),
+    });
+
+    const streamText = await readSseUntil(res, (text) =>
+      text.includes('m-live-now'),
+    );
+    expect(streamText).toContain('m-live-now');
+    expect(streamText).not.toContain('"messageId":"m1"');
+  });
+
+  it('starts fresh live talk streams at the current tail when Last-Event-ID is omitted', async () => {
+    const res = await server.request('/api/v1/talks/talk-1/events?stream=1', {
+      headers: {
+        Authorization: 'Bearer owner-token',
+      },
+    });
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get('x-clawrocket-sse-mode')).toBe('stream');
+
+    appendOutboxEvent({
+      topic: 'talk:talk-1',
+      eventType: 'message_appended',
+      payload: JSON.stringify({
+        talkId: 'talk-1',
+        messageId: 'm-talk-live-now',
+      }),
+    });
+
+    const streamText = await readSseUntil(res, (text) =>
+      text.includes('m-talk-live-now'),
+    );
+    expect(streamText).toContain('m-talk-live-now');
+    expect(streamText).not.toContain('"messageId":"m1"');
+  });
+
   it('emits replay_gap inline in stream mode when cursor falls behind retention', async () => {
     appendOutboxEvent({
       topic: 'talk:talk-1',
