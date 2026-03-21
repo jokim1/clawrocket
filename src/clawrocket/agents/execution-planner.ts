@@ -412,6 +412,13 @@ function tryResolveDirectExecutionPlan(input: {
   provider: LlmProviderRecord | undefined;
   configuredAuthMode: ReturnType<typeof getConfiguredExecutorAuthMode>;
 }): DirectHttpExecutionPlan | null {
+  if (
+    input.agent.provider_id === 'provider.anthropic' &&
+    input.configuredAuthMode === 'subscription'
+  ) {
+    return null;
+  }
+
   try {
     const binding = resolveExecution(input.agent);
     return {

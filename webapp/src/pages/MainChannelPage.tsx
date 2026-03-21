@@ -215,6 +215,19 @@ function threadHasActiveRun(
   );
 }
 
+function clearFailedLiveResponsesForThread(
+  liveResponses: Record<string, LiveResponse>,
+  threadId: string,
+): Record<string, LiveResponse> {
+  const next = { ...liveResponses };
+  for (const [runId, response] of Object.entries(next)) {
+    if (response.threadId !== threadId) continue;
+    if (response.terminalStatus !== 'failed') continue;
+    delete next[runId];
+  }
+  return next;
+}
+
 function withThreadActivity(
   threads: MainThreadSummary[],
   runsById: Record<string, MainRun>,
@@ -491,22 +504,29 @@ function mainReducer(state: MainState, action: MainAction): MainState {
 
       // Active thread — also append message and clear matching live response
       const messages = [...state.messages, action.message];
-      const liveResponses = { ...state.liveResponses };
+      let liveResponses = { ...state.liveResponses };
       for (const [runId, lr] of Object.entries(liveResponses)) {
         if (lr.threadId === tid && action.message.role === 'assistant') {
           delete liveResponses[runId];
         }
+      }
+      if (action.message.role === 'user') {
+        liveResponses = clearFailedLiveResponsesForThread(liveResponses, tid);
       }
       return { ...state, threads, messages, liveResponses };
     }
     case 'HISTORY_DELETED': {
       if (action.threadId !== state.activeThreadId) return state;
       const deletedIds = new Set(action.deletedMessageIds);
-      const messages = state.messages.filter((message) => !deletedIds.has(message.id));
+      const messages = state.messages.filter(
+        (message) => !deletedIds.has(message.id),
+      );
       if (messages.length === 0) {
         return {
           ...state,
-          threads: state.threads.filter((thread) => thread.threadId !== action.threadId),
+          threads: state.threads.filter(
+            (thread) => thread.threadId !== action.threadId,
+          ),
           activeThreadId: null,
           messages: [],
           runsById: {},
@@ -528,6 +548,10 @@ function mainReducer(state: MainState, action: MainAction): MainState {
             : thread,
         ),
         messages,
+        liveResponses: clearFailedLiveResponsesForThread(
+          state.liveResponses,
+          action.threadId,
+        ),
       };
     }
     case 'RESPONSE_STARTED': {
