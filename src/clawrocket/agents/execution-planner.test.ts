@@ -221,9 +221,7 @@ describe('execution-planner', () => {
 
     try {
       planMainExecution(agent, 'owner-1');
-      expect.unreachable(
-        'expected mixed browser/container Main plan to throw',
-      );
+      expect.unreachable('expected mixed browser/container Main plan to throw');
     } catch (error) {
       expect(error).toBeInstanceOf(ExecutionPlannerError);
       expect((error as ExecutionPlannerError).code).toBe(

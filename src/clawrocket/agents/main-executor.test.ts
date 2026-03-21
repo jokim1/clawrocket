@@ -501,15 +501,17 @@ describe('main-executor (pure)', () => {
     });
 
     let toolNames: string[] = [];
-    vi.mocked(executeWithAgent).mockImplementation(async (_agentId, context) => {
-      toolNames = (context?.contextTools ?? []).map((tool) => tool.name);
-      return {
-        content: 'Browser-ready',
-        agentId: 'agent.main',
-        providerId: 'provider.anthropic',
-        modelId: 'claude-sonnet-4-6',
-      };
-    });
+    vi.mocked(executeWithAgent).mockImplementation(
+      async (_agentId, context) => {
+        toolNames = (context?.contextTools ?? []).map((tool) => tool.name);
+        return {
+          content: 'Browser-ready',
+          agentId: 'agent.main',
+          providerId: 'provider.anthropic',
+          modelId: 'claude-sonnet-4-6',
+        };
+      },
+    );
 
     await executeMainChannel(
       {
@@ -578,13 +580,10 @@ describe('main-executor (pure)', () => {
     });
     vi.mocked(executeWithAgent).mockImplementation(
       async (_agentId, _context, _content, options) => {
-        const toolResult = await options!.executeToolCall!(
-          'browser_open',
-          {
-            siteKey: 'linkedin',
-            url: 'https://www.linkedin.com/messaging/',
-          },
-        );
+        const toolResult = await options!.executeToolCall!('browser_open', {
+          siteKey: 'linkedin',
+          url: 'https://www.linkedin.com/messaging/',
+        });
         expect(toolResult).toEqual({
           result: '{"status":"ok"}',
         });
@@ -636,13 +635,10 @@ describe('main-executor (pure)', () => {
 
     vi.mocked(executeWithAgent).mockImplementation(
       async (_agentId, _context, _content, options) => {
-        const toolResult = await options!.executeToolCall!(
-          'browser_open',
-          {
-            siteKey: 'linkedin',
-            url: 'https://www.linkedin.com/messaging/',
-          },
-        );
+        const toolResult = await options!.executeToolCall!('browser_open', {
+          siteKey: 'linkedin',
+          url: 'https://www.linkedin.com/messaging/',
+        });
         expect(toolResult).toEqual({
           result: "Tool 'browser_open' is not enabled for this Main agent",
           isError: true,
