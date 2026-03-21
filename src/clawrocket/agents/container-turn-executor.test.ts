@@ -218,6 +218,70 @@ describe('container-turn-executor', () => {
     expect(result.content).toBe('Main container response');
   });
 
+  it('uses streamed output when teardown fails after a successful result', async () => {
+    fs.mkdirSync(path.join(process.cwd(), 'data'), { recursive: true });
+    const controller = new AbortController();
+    const agent: RegisteredAgentRecord = {
+      id: 'agent.verify',
+      name: 'Verifier',
+      provider_id: 'provider.anthropic',
+      model_id: 'claude-sonnet-4-6',
+      tool_permissions_json: JSON.stringify({}),
+      persona_role: 'assistant',
+      system_prompt: 'Return a brief acknowledgement.',
+      enabled: 1,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    };
+
+    runContainerAgentMock.mockImplementation(
+      async (_target, _input, _onProcess, onOutput) => {
+        if (onOutput) {
+          await onOutput({
+            status: 'success',
+            result: 'Verification succeeded',
+          });
+        }
+        return {
+          status: 'error',
+          result: null,
+          error: 'Container exited with code null',
+        };
+      },
+    );
+
+    const result = await executeContainerAgentTurn({
+      runId: 'run-streamed-success',
+      userId: 'owner-1',
+      agent,
+      promptLabel: 'main',
+      userMessage: 'ping',
+      signal: controller.signal,
+      allowedTools: [],
+      context: {
+        systemPrompt: 'Verification prompt',
+        history: [],
+      },
+      modelContextWindow: 200_000,
+      containerCredential: {
+        authMode: 'subscription',
+        credentialSource: 'oauth_token',
+        secrets: {
+          CLAUDE_CODE_OAUTH_TOKEN: 'oauth-token',
+        },
+      },
+      threadId: 'thread-streamed-success',
+    });
+
+    expect(result.content).toBe('Verification succeeded');
+    expect(runContainerAgentMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      expect.any(Function),
+      expect.any(Function),
+    );
+  });
+
   it('passes browser bridge details into talk_main container runs when browser tools are enabled', async () => {
     fs.mkdirSync(path.join(process.cwd(), 'data'), { recursive: true });
     const controller = new AbortController();
@@ -268,6 +332,7 @@ describe('container-turn-executor', () => {
         browserUserId: 'owner-1',
         browserTalkId: 'talk-1',
       }),
+      expect.any(Function),
       expect.any(Function),
     );
   });

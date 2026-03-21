@@ -230,6 +230,59 @@ describe('container-runner timeout behavior', () => {
     expect(result.newSessionId).toBe('session-456');
   });
 
+  it('non-zero exit after final output still resolves as success', async () => {
+    const resultPromise = runContainerAgent(
+      testLegacyTarget,
+      testInput,
+      () => {},
+    );
+
+    emitOutputMarker(fakeProc, {
+      status: 'success',
+      result: 'Finished before teardown',
+      newSessionId: 'session-789',
+    });
+
+    await vi.advanceTimersByTimeAsync(10);
+    fakeProc.emit('close', 137);
+    await vi.advanceTimersByTimeAsync(10);
+
+    await expect(resultPromise).resolves.toMatchObject({
+      status: 'success',
+      result: 'Finished before teardown',
+      newSessionId: 'session-789',
+    });
+  });
+
+  it('non-zero exit after streamed output still resolves as success', async () => {
+    const onOutput = vi.fn(async () => {});
+    const resultPromise = runContainerAgent(
+      testLegacyTarget,
+      testInput,
+      () => {},
+      onOutput,
+    );
+
+    emitOutputMarker(fakeProc, {
+      status: 'success',
+      result: 'Streamed before teardown',
+      newSessionId: 'session-999',
+    });
+
+    await vi.advanceTimersByTimeAsync(10);
+    fakeProc.emit('close', 137);
+    await vi.advanceTimersByTimeAsync(10);
+
+    await expect(resultPromise).resolves.toMatchObject({
+      status: 'success',
+      result: 'Streamed before teardown',
+      newSessionId: 'session-999',
+    });
+    expect(onOutput).toHaveBeenCalledWith(
+      expect.objectContaining({ result: 'Streamed before teardown' }),
+    );
+  });
+
   it('refreshes the web-talk agent runner source even when a cached copy exists', async () => {
     const projectRoot = process.cwd();
     const agentRunnerSrc = `${projectRoot}/container/agent-runner/src`;
