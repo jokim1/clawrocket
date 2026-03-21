@@ -1220,7 +1220,8 @@ export async function verifyExecutorRoute(
 
       setVerificationResult({
         updatedBy: userId,
-        status: result.status === 'unavailable' ? 'not_verified' : result.status,
+        status:
+          result.status === 'unavailable' ? 'not_verified' : result.status,
         lastVerificationError:
           result.status === 'verified' ? null : result.message,
         lastVerificationMode: 'subscription',
