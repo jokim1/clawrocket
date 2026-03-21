@@ -161,6 +161,38 @@ function fieldDraftState(input: {
   };
 }
 
+function activeExecutorCredentialHint(
+  settings: ExecutorSettings,
+  mode: ExecutorStatus['executorAuthMode'],
+): string | null {
+  switch (mode) {
+    case 'subscription':
+      return settings.oauthTokenHint || settings.authTokenHint;
+    case 'api_key':
+      return settings.apiKeyHint;
+    case 'advanced_bearer':
+      return settings.authTokenHint;
+    default:
+      return null;
+  }
+}
+
+function activeExecutorCredentialSource(
+  settings: ExecutorSettings,
+  mode: ExecutorStatus['executorAuthMode'],
+): 'stored' | 'env' | null {
+  switch (mode) {
+    case 'subscription':
+      return settings.oauthTokenSource || settings.authTokenSource;
+    case 'api_key':
+      return settings.apiKeySource;
+    case 'advanced_bearer':
+      return settings.authTokenSource;
+    default:
+      return null;
+  }
+}
+
 export function SettingsPage({ onUnauthorized, userRole }: Props) {
   const [settings, setSettings] = useState<ExecutorSettings | null>(null);
   const [status, setStatus] = useState<ExecutorStatus | null>(null);
@@ -603,6 +635,21 @@ export function SettingsPage({ onUnauthorized, userRole }: Props) {
       : hasPendingCredentialState
         ? 'Will refresh after save'
         : formatDateTime(status.lastVerifiedAt);
+  const activeCredentialHint = activeExecutorCredentialHint(
+    settings,
+    status.executorAuthMode,
+  );
+  const activeCredentialSource = activeExecutorCredentialSource(
+    settings,
+    status.executorAuthMode,
+  );
+  const configStatusLabel = status.activeCredentialConfigured
+    ? activeCredentialSource === 'env'
+      ? 'Environment-managed'
+      : 'Owned by settings page'
+    : settings.isConfigured
+      ? 'Owned by settings page'
+      : 'Using bootstrap defaults';
 
   return (
     <section className="page-shell settings-shell">
@@ -673,11 +720,7 @@ export function SettingsPage({ onUnauthorized, userRole }: Props) {
           </div>
           <div>
             <span className="settings-label">Config status</span>
-            <strong>
-              {settings.isConfigured
-                ? 'Owned by settings page'
-                : 'Using bootstrap defaults'}
-            </strong>
+            <strong>{configStatusLabel}</strong>
           </div>
           <div>
             <span className="settings-label">Active runs</span>
@@ -691,6 +734,17 @@ export function SettingsPage({ onUnauthorized, userRole }: Props) {
         {status.lastVerificationError ? (
           <p className="settings-copy">
             <strong>Verification note:</strong> {status.lastVerificationError}
+          </p>
+        ) : null}
+        {status.activeCredentialConfigured && activeCredentialHint ? (
+          <p className="settings-copy">
+            <strong>Credential source:</strong> {activeCredentialHint}
+          </p>
+        ) : null}
+        {settings.authModeSource === 'inferred' ? (
+          <p className="settings-copy">
+            <strong>Mode source:</strong> The active Claude auth mode is being
+            inferred from currently available runtime credentials.
           </p>
         ) : null}
       </section>

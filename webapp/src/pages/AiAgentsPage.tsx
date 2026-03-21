@@ -154,13 +154,23 @@ function currentClaudeHint(
     : settings.apiKeyHint;
 }
 
-function currentClaudeStored(
+function currentClaudeAvailable(
   settings: ExecutorSettings,
   mode: ClaudeAuthMode,
 ): boolean {
   return mode === 'subscription'
     ? settings.hasOauthToken || settings.hasAuthToken
     : settings.hasApiKey;
+}
+
+function currentClaudeCredentialSource(
+  settings: ExecutorSettings,
+  mode: ClaudeAuthMode,
+): 'stored' | 'env' | null {
+  if (mode === 'subscription') {
+    return settings.oauthTokenSource || settings.authTokenSource;
+  }
+  return settings.apiKeySource;
 }
 
 function formatProviderVerificationSummary(
@@ -698,9 +708,12 @@ export function AiAgentsPage({ onUnauthorized, userRole }: Props): JSX.Element {
   const selectedClaudeHint = settings
     ? currentClaudeHint(settings, claudeModeDraft)
     : null;
-  const selectedClaudeStored = settings
-    ? currentClaudeStored(settings, claudeModeDraft)
+  const selectedClaudeAvailable = settings
+    ? currentClaudeAvailable(settings, claudeModeDraft)
     : false;
+  const selectedClaudeCredentialSource = settings
+    ? currentClaudeCredentialSource(settings, claudeModeDraft)
+    : null;
   const hasUnsavedClaudeCredentialDraft =
     claudeModeDraft === 'subscription'
       ? claudeOauthDraft.trim().length > 0
@@ -712,18 +725,18 @@ export function AiAgentsPage({ onUnauthorized, userRole }: Props): JSX.Element {
   const showHostLoginFlow =
     claudeModeDraft === 'subscription' && !showManualTokenFlow;
   const canVerifyStoredClaude =
-    canManage && selectedClaudeStored && !hasUnsavedClaudeCredentialDraft;
+    canManage && selectedClaudeAvailable && !hasUnsavedClaudeCredentialDraft;
 
   const selectedClaudeStatus = useMemo(() => {
     if (!settings || !status) return 'Loading…';
     if (status.executorAuthMode !== claudeModeDraft) {
       return 'Ready to save';
     }
-    if (!selectedClaudeStored) {
+    if (!selectedClaudeAvailable) {
       return 'Not configured';
     }
     return formatVerificationStatus(status.verificationStatus);
-  }, [claudeModeDraft, selectedClaudeStored, settings, status]);
+  }, [claudeModeDraft, selectedClaudeAvailable, settings, status]);
   const selectedMainAgent = registeredAgents.find(
     (agent) => agent.id === mainAgentDraft,
   );
@@ -815,11 +828,17 @@ export function AiAgentsPage({ onUnauthorized, userRole }: Props): JSX.Element {
                   <p className="talk-llm-meta">
                     Configure the Claude capability every new talk starts with.
                   </p>
+                  {settings.authModeSource === 'inferred' ? (
+                    <p className="talk-llm-meta">
+                      Active Claude auth mode is inferred from currently
+                      available runtime credentials.
+                    </p>
+                  ) : null}
                 </div>
                 <span
                   className={verificationStatusClass(
                     status.executorAuthMode !== claudeModeDraft ||
-                      !selectedClaudeStored
+                      !selectedClaudeAvailable
                       ? 'not_verified'
                       : status.verificationStatus,
                   )}
@@ -879,21 +898,29 @@ export function AiAgentsPage({ onUnauthorized, userRole }: Props): JSX.Element {
                 <div className="talk-llm-grid">
                   <div className="talk-llm-field-span">
                     <span>Subscription credential</span>
-                    {selectedClaudeStored ? (
+                    {selectedClaudeAvailable ? (
                       <div className="talk-llm-stored-key">
                         <div>
                           <strong>
-                            {selectedClaudeHint || 'Stored in settings'}
+                            {selectedClaudeHint || 'Credential available'}
                           </strong>
                           <p className="talk-llm-meta">
                             Last verified{' '}
                             {formatDateTime(status.lastVerifiedAt)}
                           </p>
+                          {selectedClaudeCredentialSource === 'env' ? (
+                            <p className="talk-llm-meta">
+                              This subscription credential comes from the
+                              service environment. Save or import a credential
+                              here only if you want the app to manage it
+                              directly.
+                            </p>
+                          ) : null}
                         </div>
                       </div>
                     ) : (
                       <p className="talk-llm-meta">
-                        No Claude subscription credential is stored yet.
+                        No Claude subscription credential is available yet.
                       </p>
                     )}
                     <p className="talk-llm-meta">
@@ -984,11 +1011,11 @@ export function AiAgentsPage({ onUnauthorized, userRole }: Props): JSX.Element {
                 <div className="talk-llm-grid">
                   <div className="talk-llm-field-span">
                     <span>Anthropic API credential</span>
-                    {selectedClaudeStored ? (
+                    {selectedClaudeAvailable ? (
                       <div className="talk-llm-stored-key">
                         <div>
                           <strong>
-                            {selectedClaudeHint || 'Stored in settings'}
+                            {selectedClaudeHint || 'Credential available'}
                           </strong>
                           <p className="talk-llm-meta">
                             Get a key from{' '}
@@ -1001,6 +1028,14 @@ export function AiAgentsPage({ onUnauthorized, userRole }: Props): JSX.Element {
                             </a>
                             .
                           </p>
+                          {selectedClaudeCredentialSource === 'env' ? (
+                            <p className="talk-llm-meta">
+                              This API key comes from the service environment.
+                              Remove the env var and restart the service if you
+                              want subscription mode or a settings-managed key
+                              to take over.
+                            </p>
+                          ) : null}
                         </div>
                       </div>
                     ) : (

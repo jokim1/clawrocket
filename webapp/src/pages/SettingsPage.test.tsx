@@ -135,6 +135,72 @@ describe('SettingsPage', () => {
       screen.queryByRole('button', { name: 'Restart ClawRocket Service' }),
     ).toBeNull();
   });
+
+  it('surfaces environment-managed executor credentials honestly', async () => {
+    mockFetch([
+      jsonResponse(200, {
+        ok: true,
+        data: {
+          configuredAliasMap: {},
+          effectiveAliasMap: {},
+          defaultAlias: 'Mock',
+          executorAuthMode: 'api_key',
+          authModeSource: 'inferred',
+          hasApiKey: true,
+          hasOauthToken: false,
+          hasAuthToken: false,
+          apiKeySource: 'env',
+          oauthTokenSource: null,
+          authTokenSource: null,
+          apiKeyHint: 'Environment variable (ANTHROPIC_API_KEY)',
+          oauthTokenHint: null,
+          authTokenHint: null,
+          activeCredentialConfigured: true,
+          verificationStatus: 'invalid',
+          lastVerifiedAt: null,
+          lastVerificationError: 'Anthropic API error: Unauthorized',
+          anthropicBaseUrl: 'https://api.anthropic.com',
+          isConfigured: true,
+          configVersion: 1,
+          lastUpdatedAt: null,
+          lastUpdatedBy: null,
+          configErrors: [],
+        },
+      }),
+      jsonResponse(200, {
+        ok: true,
+        data: {
+          mode: 'real',
+          restartSupported: false,
+          pendingRestartReasons: [],
+          activeRunCount: 0,
+          containerRuntimeAvailability: 'ready',
+          executorAuthMode: 'api_key',
+          activeCredentialConfigured: true,
+          verificationStatus: 'invalid',
+          lastVerifiedAt: null,
+          lastVerificationError: 'Anthropic API error: Unauthorized',
+          hasProviderAuth: true,
+          hasValidAliasMap: true,
+          configVersion: 1,
+          isConfigured: true,
+          bootId: 'boot-env',
+          configErrors: [],
+        },
+      }),
+    ]);
+
+    render(<SettingsPage onUnauthorized={vi.fn()} userRole="owner" />);
+
+    await screen.findByRole('heading', { name: 'Executor Settings' });
+    expect(await screen.findByText('Environment-managed')).toBeTruthy();
+    expect(
+      await screen.findByText('Environment variable (ANTHROPIC_API_KEY)'),
+    ).toBeTruthy();
+    expect(
+      await screen.findByText(/active claude auth mode is being inferred/i),
+    ).toBeTruthy();
+  });
 });
 
 function mockFetch(responses: Response[]): void {

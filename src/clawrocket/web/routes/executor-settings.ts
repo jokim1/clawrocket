@@ -22,7 +22,12 @@ import {
   ExecutorSubscriptionHostAuthService,
   type SubscriptionHostStatusView,
 } from '../../talks/executor-subscription-host-auth.js';
-import { TALK_EXECUTOR_ANTHROPIC_BASE_URL } from '../../config.js';
+import {
+  TALK_EXECUTOR_ANTHROPIC_API_KEY,
+  TALK_EXECUTOR_ANTHROPIC_AUTH_TOKEN,
+  TALK_EXECUTOR_ANTHROPIC_BASE_URL,
+  TALK_EXECUTOR_CLAUDE_OAUTH_TOKEN,
+} from '../../config.js';
 import {
   decryptProviderSecret,
   encryptProviderSecret,
@@ -43,14 +48,21 @@ export type ExecutorVerificationStatus =
   | 'unavailable'
   | 'rate_limited';
 
+export type ExecutorCredentialSource = 'stored' | 'env' | null;
+export type ExecutorAuthModeSource = 'settings' | 'inferred';
+
 export interface ExecutorSettingsData {
   configuredAliasMap: Record<string, string>;
   effectiveAliasMap: Record<string, string>;
   defaultAlias: string;
   executorAuthMode: ExecutorAuthMode;
+  authModeSource: ExecutorAuthModeSource;
   hasApiKey: boolean;
   hasOauthToken: boolean;
   hasAuthToken: boolean;
+  apiKeySource: ExecutorCredentialSource;
+  oauthTokenSource: ExecutorCredentialSource;
+  authTokenSource: ExecutorCredentialSource;
   apiKeyHint: string | null;
   oauthTokenHint: string | null;
   authTokenHint: string | null;
@@ -102,9 +114,13 @@ export interface ExecutorVerificationResponse {
 
 export interface ExecutorAuthState {
   executorAuthMode: ExecutorAuthMode;
+  authModeSource: ExecutorAuthModeSource;
   hasApiKey: boolean;
   hasOauthToken: boolean;
   hasAuthToken: boolean;
+  apiKeySource: ExecutorCredentialSource;
+  oauthTokenSource: ExecutorCredentialSource;
+  authTokenSource: ExecutorCredentialSource;
   activeCredentialConfigured: boolean;
   verificationStatus: ExecutorVerificationStatus;
   lastVerifiedAt: string | null;
@@ -127,6 +143,15 @@ export interface PutExecutorSettingsBody {
 interface VerificationMetadata {
   lastVerificationMode: string | null;
   lastVerificationMethod: string | null;
+}
+
+interface EffectiveExecutorCredentialState {
+  apiKey: string | null;
+  apiKeySource: ExecutorCredentialSource;
+  oauthToken: string | null;
+  oauthTokenSource: ExecutorCredentialSource;
+  authToken: string | null;
+  authTokenSource: ExecutorCredentialSource;
 }
 
 type SubscriptionVerificationResult =
@@ -194,6 +219,39 @@ function getAnthropicApiKey(): string | null {
   }
 }
 
+function getEffectiveExecutorCredentialState(): EffectiveExecutorCredentialState {
+  const storedApiKey = getAnthropicApiKey();
+  const envApiKey = TALK_EXECUTOR_ANTHROPIC_API_KEY.trim() || null;
+  const storedOauthToken =
+    getSettingValue('executor.claudeOauthToken')?.trim() || null;
+  const envOauthToken = TALK_EXECUTOR_CLAUDE_OAUTH_TOKEN.trim() || null;
+  const storedAuthToken =
+    getSettingValue('executor.anthropicAuthToken')?.trim() || null;
+  const envAuthToken = TALK_EXECUTOR_ANTHROPIC_AUTH_TOKEN.trim() || null;
+
+  return {
+    apiKey: storedApiKey || envApiKey,
+    apiKeySource: storedApiKey ? 'stored' : envApiKey ? 'env' : null,
+    oauthToken: storedOauthToken || envOauthToken,
+    oauthTokenSource: storedOauthToken ? 'stored' : envOauthToken ? 'env' : null,
+    authToken: storedAuthToken || envAuthToken,
+    authTokenSource: storedAuthToken ? 'stored' : envAuthToken ? 'env' : null,
+  };
+}
+
+function describeCredentialSource(input: {
+  source: ExecutorCredentialSource;
+  envVar: string;
+}): string | null {
+  if (input.source === 'stored') {
+    return 'Stored in settings';
+  }
+  if (input.source === 'env') {
+    return `Environment variable (${input.envVar})`;
+  }
+  return null;
+}
+
 function readExecutorVerificationMetadata(): VerificationMetadata {
   return {
     lastVerificationMode: getSettingValue('executor.lastVerificationMode'),
@@ -201,11 +259,7 @@ function readExecutorVerificationMetadata(): VerificationMetadata {
   };
 }
 
-function inferExecutorAuthMode(input: {
-  hasApiKey: boolean;
-  hasOauthToken: boolean;
-  hasAuthToken: boolean;
-}): ExecutorAuthMode {
+function getConfiguredExecutorAuthMode(): ExecutorAuthMode | null {
   const configuredMode = (getSettingValue('executor.authMode')?.trim() ||
     '') as ExecutorAuthMode | '';
   if (
@@ -216,6 +270,16 @@ function inferExecutorAuthMode(input: {
   ) {
     return configuredMode;
   }
+  return null;
+}
+
+function inferExecutorAuthMode(input: {
+  hasApiKey: boolean;
+  hasOauthToken: boolean;
+  hasAuthToken: boolean;
+}): ExecutorAuthMode {
+  const configuredMode = getConfiguredExecutorAuthMode();
+  if (configuredMode) return configuredMode;
 
   if (input.hasApiKey) return 'api_key';
   if (input.hasOauthToken || input.hasAuthToken) return 'subscription';
@@ -328,9 +392,11 @@ function getLastUpdatedActor(): {
 }
 
 export function getExecutorAuthState(): ExecutorAuthState {
-  const hasApiKey = Boolean(getAnthropicApiKey());
-  const hasOauthToken = Boolean(getSettingValue('executor.claudeOauthToken'));
-  const hasAuthToken = Boolean(getSettingValue('executor.anthropicAuthToken'));
+  const credentials = getEffectiveExecutorCredentialState();
+  const hasApiKey = Boolean(credentials.apiKey);
+  const hasOauthToken = Boolean(credentials.oauthToken);
+  const hasAuthToken = Boolean(credentials.authToken);
+  const configuredAuthMode = getConfiguredExecutorAuthMode();
   const executorAuthMode = inferExecutorAuthMode({
     hasApiKey,
     hasOauthToken,
@@ -352,16 +418,29 @@ export function getExecutorAuthState(): ExecutorAuthState {
 
   return {
     executorAuthMode,
+    authModeSource: configuredAuthMode ? 'settings' : 'inferred',
     hasApiKey,
     hasOauthToken,
     hasAuthToken,
+    apiKeySource: credentials.apiKeySource,
+    oauthTokenSource: credentials.oauthTokenSource,
+    authTokenSource: credentials.authTokenSource,
     activeCredentialConfigured,
     verificationStatus,
     lastVerifiedAt: getSettingValue('executor.lastVerifiedAt'),
     lastVerificationError: getSettingValue('executor.lastVerificationError'),
-    apiKeyHint: hasApiKey ? 'sk-ant-***' : null,
-    oauthTokenHint: hasOauthToken ? '***oauth***' : null,
-    authTokenHint: hasAuthToken ? '***auth***' : null,
+    apiKeyHint: describeCredentialSource({
+      source: credentials.apiKeySource,
+      envVar: 'ANTHROPIC_API_KEY',
+    }),
+    oauthTokenHint: describeCredentialSource({
+      source: credentials.oauthTokenSource,
+      envVar: 'CLAUDE_CODE_OAUTH_TOKEN',
+    }),
+    authTokenHint: describeCredentialSource({
+      source: credentials.authTokenSource,
+      envVar: 'ANTHROPIC_AUTH_TOKEN',
+    }),
   };
 }
 
@@ -380,9 +459,13 @@ function baseExecutorSettingsData(): ExecutorSettingsData {
     effectiveAliasMap: {},
     defaultAlias: 'claude-sonnet-4-6',
     executorAuthMode: authState.executorAuthMode,
+    authModeSource: authState.authModeSource,
     hasApiKey: authState.hasApiKey,
     hasOauthToken: authState.hasOauthToken,
     hasAuthToken: authState.hasAuthToken,
+    apiKeySource: authState.apiKeySource,
+    oauthTokenSource: authState.oauthTokenSource,
+    authTokenSource: authState.authTokenSource,
     apiKeyHint: authState.apiKeyHint,
     oauthTokenHint: authState.oauthTokenHint,
     authTokenHint: authState.authTokenHint,
@@ -1042,12 +1125,12 @@ export async function verifyExecutorRoute(
 
   try {
     if (authState.executorAuthMode === 'api_key') {
-      const apiKey = getAnthropicApiKey();
+      const apiKey = getEffectiveExecutorCredentialState().apiKey;
       if (!apiKey) {
         setVerificationResult({
           updatedBy: userId,
           status: 'missing',
-          lastVerificationError: 'No Anthropic API key stored.',
+          lastVerificationError: 'No Anthropic API key is configured.',
           lastVerificationMode: 'api_key',
           lastVerificationMethod: API_KEY_VERIFY_METHOD,
         });
@@ -1058,7 +1141,7 @@ export async function verifyExecutorRoute(
             data: {
               scheduled: false,
               code: 'no_credential',
-              message: 'No Anthropic API key stored.',
+              message: 'No Anthropic API key is configured.',
             },
           },
         };
