@@ -8,6 +8,7 @@ import {
 } from '../types.js';
 
 export interface ChannelOpts {
+  connectionId: string;
   onMessage: OnInboundMessage;
   onChatMetadata: OnChatMetadata;
   onTargetObserved?: OnChannelTargetObserved;

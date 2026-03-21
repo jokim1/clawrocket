@@ -60,6 +60,20 @@ export interface ChannelConnectionSecretRecord {
   updated_by: string | null;
 }
 
+export interface ChannelProviderConfigRecord {
+  platform: ChannelPlatform;
+  config_json: string;
+  updated_at: string;
+  updated_by: string | null;
+}
+
+export interface ChannelProviderSecretRecord {
+  platform: ChannelPlatform;
+  ciphertext: string;
+  updated_at: string;
+  updated_by: string | null;
+}
+
 export interface ChannelTargetRecord {
   connection_id: string;
   target_kind: string;
@@ -134,6 +148,7 @@ type HydratedTalkChannelBindingRow = TalkChannelBindingWithPolicyRecord & {
 
 export interface ChannelDeliveryBindingStateRecord {
   id: string;
+  connection_id: string;
   active: number;
   connection_enabled: number;
   health_quarantined: number;
@@ -258,6 +273,88 @@ export function getChannelConnectionById(
     .get(connectionId) as ChannelConnectionRecord | undefined;
 }
 
+export function getChannelConnectionByPlatformAccount(input: {
+  platform: ChannelPlatform;
+  accountKey: string;
+}): ChannelConnectionRecord | undefined {
+  return getDb()
+    .prepare(
+      `
+      SELECT *
+      FROM channel_connections
+      WHERE platform = ?
+        AND account_key = ?
+      LIMIT 1
+    `,
+    )
+    .get(input.platform, input.accountKey) as
+    | ChannelConnectionRecord
+    | undefined;
+}
+
+export function upsertChannelConnection(input: {
+  platform: ChannelPlatform;
+  connectionMode: string;
+  accountKey: string;
+  displayName: string;
+  enabled?: boolean;
+  config?: Record<string, unknown> | null;
+  createdBy?: string | null;
+  updatedBy?: string | null;
+  healthStatus?: ChannelHealthStatus;
+  lastHealthCheckAt?: string | null;
+  lastHealthError?: string | null;
+  now?: string;
+}): ChannelConnectionRecord {
+  const now = normalizeTimestamp(input.now);
+  const existing = getChannelConnectionByPlatformAccount({
+    platform: input.platform,
+    accountKey: input.accountKey,
+  });
+  const connectionId =
+    existing?.id ||
+    `channel-conn:${input.platform}:${randomUUID().replace(/-/g, '')}`;
+
+  getDb()
+    .prepare(
+      `
+      INSERT INTO channel_connections (
+        id, platform, connection_mode, account_key, display_name, enabled,
+        health_status, last_health_check_at, last_health_error, config_json,
+        created_at, updated_at, created_by, updated_by
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        connection_mode = excluded.connection_mode,
+        display_name = excluded.display_name,
+        enabled = excluded.enabled,
+        health_status = excluded.health_status,
+        last_health_check_at = excluded.last_health_check_at,
+        last_health_error = excluded.last_health_error,
+        config_json = excluded.config_json,
+        updated_at = excluded.updated_at,
+        updated_by = excluded.updated_by
+    `,
+    )
+    .run(
+      connectionId,
+      input.platform,
+      input.connectionMode,
+      input.accountKey,
+      input.displayName,
+      input.enabled === false ? 0 : 1,
+      input.healthStatus || existing?.health_status || 'healthy',
+      input.lastHealthCheckAt ?? existing?.last_health_check_at ?? null,
+      input.lastHealthError ?? existing?.last_health_error ?? null,
+      serializeJson(input.config ?? null),
+      existing?.created_at || now,
+      now,
+      existing?.created_by || input.createdBy || null,
+      input.updatedBy || existing?.updated_by || input.createdBy || null,
+    );
+
+  return getChannelConnectionById(connectionId)!;
+}
+
 export function getChannelConnectionSecret(
   connectionId: string,
 ): ChannelConnectionSecretRecord | undefined {
@@ -271,6 +368,102 @@ export function getChannelConnectionSecret(
     `,
     )
     .get(connectionId) as ChannelConnectionSecretRecord | undefined;
+}
+
+export function getChannelProviderConfig(
+  platform: ChannelPlatform,
+): ChannelProviderConfigRecord | undefined {
+  return getDb()
+    .prepare(
+      `
+      SELECT *
+      FROM channel_provider_configs
+      WHERE platform = ?
+      LIMIT 1
+    `,
+    )
+    .get(platform) as ChannelProviderConfigRecord | undefined;
+}
+
+export function setChannelProviderConfig(input: {
+  platform: ChannelPlatform;
+  configJson: string;
+  updatedBy: string;
+  now?: string;
+}): ChannelProviderConfigRecord {
+  const now = normalizeTimestamp(input.now);
+  getDb()
+    .prepare(
+      `
+      INSERT INTO channel_provider_configs (
+        platform, config_json, updated_at, updated_by
+      ) VALUES (?, ?, ?, ?)
+      ON CONFLICT(platform) DO UPDATE SET
+        config_json = excluded.config_json,
+        updated_at = excluded.updated_at,
+        updated_by = excluded.updated_by
+    `,
+    )
+    .run(input.platform, input.configJson, now, input.updatedBy);
+  return getChannelProviderConfig(input.platform)!;
+}
+
+export function deleteChannelProviderConfig(
+  platform: ChannelPlatform,
+): boolean {
+  return (
+    getDb()
+      .prepare(`DELETE FROM channel_provider_configs WHERE platform = ?`)
+      .run(platform).changes > 0
+  );
+}
+
+export function getChannelProviderSecret(
+  platform: ChannelPlatform,
+): ChannelProviderSecretRecord | undefined {
+  return getDb()
+    .prepare(
+      `
+      SELECT *
+      FROM channel_provider_secrets
+      WHERE platform = ?
+      LIMIT 1
+    `,
+    )
+    .get(platform) as ChannelProviderSecretRecord | undefined;
+}
+
+export function setChannelProviderSecret(input: {
+  platform: ChannelPlatform;
+  ciphertext: string;
+  updatedBy: string;
+  now?: string;
+}): ChannelProviderSecretRecord {
+  const now = normalizeTimestamp(input.now);
+  getDb()
+    .prepare(
+      `
+      INSERT INTO channel_provider_secrets (
+        platform, ciphertext, updated_at, updated_by
+      ) VALUES (?, ?, ?, ?)
+      ON CONFLICT(platform) DO UPDATE SET
+        ciphertext = excluded.ciphertext,
+        updated_at = excluded.updated_at,
+        updated_by = excluded.updated_by
+    `,
+    )
+    .run(input.platform, input.ciphertext, now, input.updatedBy);
+  return getChannelProviderSecret(input.platform)!;
+}
+
+export function deleteChannelProviderSecret(
+  platform: ChannelPlatform,
+): boolean {
+  return (
+    getDb()
+      .prepare(`DELETE FROM channel_provider_secrets WHERE platform = ?`)
+      .run(platform).changes > 0
+  );
 }
 
 export function setChannelConnectionSecret(input: {
@@ -353,6 +546,14 @@ export function listChannelConnections(): ChannelConnectionRecord[] {
     `,
     )
     .all() as ChannelConnectionRecord[];
+}
+
+export function deleteChannelConnection(connectionId: string): boolean {
+  return (
+    getDb()
+      .prepare(`DELETE FROM channel_connections WHERE id = ?`)
+      .run(connectionId).changes > 0
+  );
 }
 
 export function updateChannelConnectionConfig(input: {
@@ -770,6 +971,7 @@ export function getChannelDeliveryBindingState(
       `
       SELECT
         b.id,
+        b.connection_id,
         b.active,
         c.enabled AS connection_enabled,
         b.health_quarantined,

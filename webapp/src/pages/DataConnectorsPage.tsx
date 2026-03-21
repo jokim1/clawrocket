@@ -14,6 +14,7 @@ import {
   UnauthorizedError,
   type UserGoogleAccount,
 } from '../lib/api';
+import { SlackChannelConnectorPanel } from '../components/SlackChannelConnectorPanel';
 import { TelegramChannelConnectorPanel } from '../components/TelegramChannelConnectorPanel';
 import { launchGoogleAccountPopup } from '../lib/googleAccountPopup';
 import { useLocation, useNavigate } from 'react-router-dom';
@@ -587,7 +588,10 @@ export function DataConnectorsPage({
       </article>
 
       {activeTab === 'channel-connectors' ? (
-        <TelegramChannelConnectorPanel onUnauthorized={onUnauthorized} />
+        <>
+          <SlackChannelConnectorPanel onUnauthorized={onUnauthorized} />
+          <TelegramChannelConnectorPanel onUnauthorized={onUnauthorized} />
+        </>
       ) : (
         <>
       <article className="settings-card">

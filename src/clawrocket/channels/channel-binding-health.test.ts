@@ -158,8 +158,8 @@ describe('ChannelDeliveryWorker connection_unreachable path', () => {
     const state = getChannelDeliveryBindingState(bindingId);
     expect(state?.connection_health_status).toBe('disconnected');
 
-    const sendText = vi.fn();
-    const worker = new ChannelDeliveryWorker({ sendText, pollMs: 100 });
+    const sendDelivery = vi.fn();
+    const worker = new ChannelDeliveryWorker({ sendDelivery, pollMs: 100 });
 
     // Seed a pending delivery row
     seedOutboxRow({ id: 'outbox-disconnect-1' });
@@ -170,7 +170,7 @@ describe('ChannelDeliveryWorker connection_unreachable path', () => {
     await worker.stop();
 
     // sendText should not have been called
-    expect(sendText).not.toHaveBeenCalled();
+    expect(sendDelivery).not.toHaveBeenCalled();
 
     // Row should be deferred with attempt_count still 0 (rolled back)
     const row = getDb()
@@ -197,13 +197,13 @@ describe('quarantine gates', () => {
     quarantineBinding(bindingId, 'bot_kicked');
     seedOutboxRow({ id: 'outbox-q-1' });
 
-    const sendText = vi.fn();
-    const worker = new ChannelDeliveryWorker({ sendText, pollMs: 100 });
+    const sendDelivery = vi.fn();
+    const worker = new ChannelDeliveryWorker({ sendDelivery, pollMs: 100 });
     await worker.start();
     await new Promise((r) => setTimeout(r, 300));
     await worker.stop();
 
-    expect(sendText).not.toHaveBeenCalled();
+    expect(sendDelivery).not.toHaveBeenCalled();
     const row = getDb()
       .prepare(
         'SELECT status, reason_code FROM channel_delivery_outbox WHERE id = ?',

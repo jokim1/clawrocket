@@ -1,11 +1,18 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { createHmac } from 'crypto';
 
 import * as telegramConnector from '../../channels/telegram-connector.js';
+import { encryptChannelSecret } from '../../channels/channel-secret-store.js';
+import { encryptChannelProviderSecret } from '../../channels/channel-provider-secret-store.js';
 import { setTalkAgents } from '../../agents/agent-registry.js';
 import {
   _initTestDatabase,
   createRegisteredAgent,
   ensureSystemManagedTelegramConnection,
+  setChannelConnectionSecret,
+  setChannelProviderConfig,
+  setChannelProviderSecret,
+  upsertChannelConnection,
   upsertChannelTarget,
   upsertTalk,
   upsertTalkMember,
@@ -201,6 +208,169 @@ describe('talk channel routes', () => {
         }),
       ]),
     );
+  });
+
+  it('lists the Slack connector state and workspace installs for owners', async () => {
+    setChannelProviderConfig({
+      platform: 'slack',
+      configJson: JSON.stringify({ clientId: '123.456' }),
+      updatedBy: 'owner-1',
+    });
+    setChannelProviderSecret({
+      platform: 'slack',
+      ciphertext: encryptChannelProviderSecret({
+        kind: 'slack_app',
+        clientSecret: 'client-secret',
+        signingSecret: 'signing-secret',
+      }),
+      updatedBy: 'owner-1',
+    });
+
+    const res = await server.request('/api/v1/channel-connectors/slack', {
+      method: 'GET',
+      headers: authHeaders('owner-token'),
+    });
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as any;
+    expect(body.ok).toBe(true);
+    expect(body.data.config).toEqual(
+      expect.objectContaining({
+        clientId: '123.456',
+        hasClientSecret: true,
+        hasSigningSecret: true,
+      }),
+    );
+    expect(body.data.workspaces).toEqual([]);
+  });
+
+  it('returns a clear error when Slack events are hit before the signing secret is saved', async () => {
+    const res = await server.request(
+      '/api/v1/channel-connectors/slack/events',
+      {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({ type: 'url_verification', challenge: 'abc123' }),
+      },
+    );
+
+    expect(res.status).toBe(503);
+    const body = (await res.json()) as any;
+    expect(body.ok).toBe(false);
+    expect(body.error.code).toBe('slack_events_not_ready');
+  });
+
+  it('accepts Slack url_verification after the signing secret is configured', async () => {
+    const signingSecret = 'signing-secret';
+    setChannelProviderSecret({
+      platform: 'slack',
+      ciphertext: encryptChannelProviderSecret({
+        kind: 'slack_app',
+        clientSecret: 'client-secret',
+        signingSecret,
+      }),
+      updatedBy: 'owner-1',
+    });
+
+    const payload = JSON.stringify({
+      type: 'url_verification',
+      challenge: 'abc123',
+    });
+    const timestamp = String(Math.floor(Date.now() / 1000));
+    const signature = `v0=${createHmac('sha256', signingSecret)
+      .update(`v0:${timestamp}:${payload}`)
+      .digest('hex')}`;
+
+    const res = await server.request(
+      '/api/v1/channel-connectors/slack/events',
+      {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-slack-request-timestamp': timestamp,
+          'x-slack-signature': signature,
+        },
+        body: payload,
+      },
+    );
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ challenge: 'abc123' });
+  });
+
+  it('returns public and private channel counts when syncing a Slack workspace', async () => {
+    const slackConnection = upsertChannelConnection({
+      platform: 'slack',
+      connectionMode: 'oauth_workspace',
+      accountKey: 'slack:T123',
+      displayName: 'Acme Workspace',
+      enabled: true,
+      healthStatus: 'healthy',
+      config: {
+        teamId: 'T123',
+        teamName: 'Acme Workspace',
+        teamUrl: 'acme.slack.com',
+      },
+    });
+    setChannelConnectionSecret({
+      connectionId: slackConnection.id,
+      ciphertext: encryptChannelSecret({
+        kind: 'slack_bot',
+        botToken: 'xoxb-test-token',
+      }),
+      updatedBy: 'owner-1',
+    });
+
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          ok: true,
+          channels: [
+            {
+              id: 'C123',
+              name: 'general',
+              is_private: false,
+              is_member: true,
+            },
+            {
+              id: 'C234',
+              name: 'product-launch',
+              is_private: true,
+              is_member: true,
+            },
+          ],
+          response_metadata: {
+            next_cursor: '',
+          },
+        }),
+        {
+          status: 200,
+          headers: {
+            'Content-Type': 'application/json',
+          },
+        },
+      ),
+    );
+
+    const res = await server.request(
+      `/api/v1/channel-connectors/slack/workspaces/${encodeURIComponent(slackConnection.id)}/sync`,
+      {
+        method: 'POST',
+        headers: authHeaders('owner-token'),
+      },
+    );
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as any;
+    expect(body.ok).toBe(true);
+    expect(body.data).toEqual({
+      syncedCount: 2,
+      publicCount: 1,
+      privateCount: 1,
+    });
+    fetchSpy.mockRestore();
   });
 
   it('approves discovered telegram destinations through the connector route', async () => {

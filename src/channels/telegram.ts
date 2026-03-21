@@ -7,6 +7,7 @@ import { logger } from '../logger.js';
 import { registerChannel, ChannelOpts } from './registry.js';
 import {
   Channel,
+  ChannelDeliveryPayload,
   ChannelTargetObservation,
   OnChatMetadata,
   OnInboundMessage,
@@ -14,6 +15,7 @@ import {
 } from '../types.js';
 
 export interface TelegramChannelOpts {
+  connectionId: string;
   onMessage: OnInboundMessage;
   onChatMetadata: OnChatMetadata;
   onTargetObserved?: ChannelOpts['onTargetObserved'];
@@ -47,12 +49,14 @@ function getTelegramChatDisplayName(chat: Record<string, any>): string {
 }
 
 function buildTelegramTargetObservation(input: {
+  connectionId: string;
   chat: Record<string, any>;
   timestamp: string;
   metadata?: Record<string, unknown> | null;
 }): ChannelTargetObservation {
   return {
     platform: 'telegram',
+    connection_id: input.connectionId,
     target_kind: getTelegramTargetKind(String(input.chat.type || 'private')),
     target_id: buildTelegramTargetId(String(input.chat.id)),
     display_name: getTelegramChatDisplayName(input.chat),
@@ -109,6 +113,7 @@ export class TelegramChannel implements Channel {
     ) => {
       await this.opts.onTargetObserved?.(
         buildTelegramTargetObservation({
+          connectionId: this.opts.connectionId,
           chat,
           timestamp,
           metadata,
@@ -176,6 +181,7 @@ export class TelegramChannel implements Channel {
       const consumed = this.opts.onInboundEvent
         ? await this.opts.onInboundEvent({
             platform: 'telegram',
+            connection_id: this.opts.connectionId,
             target_kind: 'chat',
             target_id: chatJid,
             platform_event_id: ctx.update.update_id.toString(),
@@ -262,6 +268,7 @@ export class TelegramChannel implements Channel {
       const consumed = this.opts.onInboundEvent
         ? await this.opts.onInboundEvent({
             platform: 'telegram',
+            connection_id: this.opts.connectionId,
             target_kind: 'chat',
             target_id: chatJid,
             platform_event_id: ctx.update.update_id.toString(),
@@ -324,6 +331,7 @@ export class TelegramChannel implements Channel {
       if (!this.opts.onInboundEvent) return;
       await this.opts.onInboundEvent({
         platform: 'telegram',
+        connection_id: this.opts.connectionId,
         target_kind: 'channel',
         target_id: targetId,
         platform_event_id: ctx.update.update_id.toString(),
@@ -425,6 +433,14 @@ export class TelegramChannel implements Channel {
   }
 
   async sendMessage(jid: string, text: string): Promise<void> {
+    await this.sendDelivery({
+      connectionId: this.opts.connectionId,
+      targetId: jid,
+      content: text,
+    });
+  }
+
+  async sendDelivery(payload: ChannelDeliveryPayload): Promise<void> {
     if (!this.bot) {
       throw new ChannelDeliveryError(
         'Telegram bot not initialized',
@@ -434,23 +450,45 @@ export class TelegramChannel implements Channel {
     }
 
     try {
-      const numericId = jid.replace(/^tg:/, '');
+      const numericId = payload.targetId.replace(/^tg:/, '');
+      const replyToMessageId =
+        payload.deliveryMode === 'reply' &&
+        payload.sourceExternalMessageId &&
+        /^\d+$/.test(payload.sourceExternalMessageId)
+          ? Number(payload.sourceExternalMessageId)
+          : undefined;
 
       // Telegram has a 4096 character limit per message — split if needed
       const MAX_LENGTH = 4096;
-      if (text.length <= MAX_LENGTH) {
-        await this.bot.api.sendMessage(numericId, text);
+      if (payload.content.length <= MAX_LENGTH) {
+        await this.bot.api.sendMessage(numericId, payload.content, {
+          reply_parameters: replyToMessageId
+            ? { message_id: replyToMessageId }
+            : undefined,
+        });
       } else {
-        for (let i = 0; i < text.length; i += MAX_LENGTH) {
+        for (let i = 0; i < payload.content.length; i += MAX_LENGTH) {
           await this.bot.api.sendMessage(
             numericId,
-            text.slice(i, i + MAX_LENGTH),
+            payload.content.slice(i, i + MAX_LENGTH),
+            {
+              reply_parameters:
+                i === 0 && replyToMessageId
+                  ? { message_id: replyToMessageId }
+                  : undefined,
+            },
           );
         }
       }
-      logger.info({ jid, length: text.length }, 'Telegram message sent');
+      logger.info(
+        { jid: payload.targetId, length: payload.content.length },
+        'Telegram message sent',
+      );
     } catch (err) {
-      logger.error({ jid, err }, 'Failed to send Telegram message');
+      logger.error(
+        { jid: payload.targetId, err },
+        'Failed to send Telegram message',
+      );
       throw classifyTelegramError(err);
     }
   }

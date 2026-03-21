@@ -2,9 +2,10 @@ import crypto from 'crypto';
 
 import { logger } from '../../logger.js';
 
-export type ChannelSecretPayload = {
-  kind: 'telegram_bot' | 'slack_bot';
-  botToken: string;
+export type ChannelProviderSecretPayload = {
+  kind: 'slack_app';
+  clientSecret: string;
+  signingSecret: string;
 };
 
 const SECRET_KEY_ENV = 'CLAWROCKET_CHANNEL_SECRET_KEY';
@@ -20,7 +21,7 @@ function getSecretMaterial(): string {
     warnedAboutFallbackSecret = true;
     logger.warn(
       { envVar: SECRET_KEY_ENV },
-      'Using unsafe development fallback for channel secret encryption key',
+      'Using unsafe development fallback for channel provider secret encryption key',
     );
   }
 
@@ -28,13 +29,18 @@ function getSecretMaterial(): string {
 }
 
 function deriveKey(): Buffer {
-  return crypto.scryptSync(getSecretMaterial(), 'clawrocket-channel-store', 32);
+  return crypto.scryptSync(
+    getSecretMaterial(),
+    'clawrocket-channel-provider-store',
+    32,
+  );
 }
 
-export function encryptChannelSecret(payload: ChannelSecretPayload): string {
+export function encryptChannelProviderSecret(
+  payload: ChannelProviderSecretPayload,
+): string {
   const iv = crypto.randomBytes(12);
-  const key = deriveKey();
-  const cipher = crypto.createCipheriv(AES_ALGO, key, iv);
+  const cipher = crypto.createCipheriv(AES_ALGO, deriveKey(), iv);
   const plaintext = JSON.stringify(payload);
   const ciphertext = Buffer.concat([
     cipher.update(plaintext, 'utf8'),
@@ -50,7 +56,9 @@ export function encryptChannelSecret(payload: ChannelSecretPayload): string {
   });
 }
 
-export function decryptChannelSecret(ciphertext: string): ChannelSecretPayload {
+export function decryptChannelProviderSecret(
+  ciphertext: string,
+): ChannelProviderSecretPayload {
   const parsed = JSON.parse(ciphertext) as {
     v: number;
     alg: string;
@@ -60,7 +68,7 @@ export function decryptChannelSecret(ciphertext: string): ChannelSecretPayload {
   };
 
   if (parsed.v !== 1 || parsed.alg !== AES_ALGO) {
-    throw new Error('Unsupported channel secret payload format');
+    throw new Error('Unsupported channel provider secret payload format');
   }
 
   const decipher = crypto.createDecipheriv(
@@ -73,13 +81,14 @@ export function decryptChannelSecret(ciphertext: string): ChannelSecretPayload {
     decipher.update(Buffer.from(parsed.data, 'base64')),
     decipher.final(),
   ]).toString('utf8');
-  const payload = JSON.parse(plaintext) as ChannelSecretPayload;
+  const payload = JSON.parse(plaintext) as ChannelProviderSecretPayload;
 
   if (
-    (payload.kind !== 'telegram_bot' && payload.kind !== 'slack_bot') ||
-    !payload.botToken?.trim()
+    payload.kind !== 'slack_app' ||
+    !payload.clientSecret?.trim() ||
+    !payload.signingSecret?.trim()
   ) {
-    throw new Error('Channel secret payload missing bot token');
+    throw new Error('Channel provider secret payload missing Slack app secret');
   }
 
   return payload;

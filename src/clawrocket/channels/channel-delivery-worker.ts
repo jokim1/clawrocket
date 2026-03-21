@@ -12,6 +12,7 @@ import {
 import { ChannelDeliveryError } from './channel-errors.js';
 import { logger } from '../../logger.js';
 import { WakeablePollLoop } from './wakeable-poll-loop.js';
+import type { ChannelDeliveryPayload } from '../../types.js';
 
 const TRANSIENT_BACKOFF_MS = [2_000, 10_000, 30_000, 120_000, 600_000] as const;
 const RATE_LIMIT_BACKOFF_MS = [
@@ -19,7 +20,7 @@ const RATE_LIMIT_BACKOFF_MS = [
 ] as const;
 
 export interface ChannelDeliveryWorkerOptions {
-  sendText: (targetId: string, text: string) => Promise<void>;
+  sendDelivery: (payload: ChannelDeliveryPayload) => Promise<void>;
   pollMs?: number;
 }
 
@@ -111,9 +112,21 @@ export class ChannelDeliveryWorker {
       return;
     }
 
-    const payload = JSON.parse(row.payload_json) as { content: string };
+    const payload = JSON.parse(row.payload_json) as {
+      content: string;
+      sourceThreadKey?: string | null;
+      sourceExternalMessageId?: string | null;
+      metadata?: Record<string, unknown> | null;
+    };
     try {
-      await this.options.sendText(row.target_id, payload.content);
+      await this.options.sendDelivery({
+        connectionId: bindingState.connection_id,
+        targetId: row.target_id,
+        content: payload.content,
+        sourceThreadKey: payload.sourceThreadKey || null,
+        sourceExternalMessageId: payload.sourceExternalMessageId || null,
+        metadata: payload.metadata || null,
+      });
       markChannelDeliverySent(row.id);
       const now = new Date().toISOString();
       updateBindingDeliveryResult(row.binding_id, {

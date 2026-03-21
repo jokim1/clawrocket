@@ -88,6 +88,7 @@ function createTestOpts(
   overrides?: Partial<TelegramChannelOpts>,
 ): TelegramChannelOpts {
   return {
+    connectionId: 'channel-conn:telegram:test',
     onMessage: vi.fn(),
     onChatMetadata: vi.fn(),
     registeredGroups: vi.fn(() => ({
@@ -375,6 +376,7 @@ describe('TelegramChannel', () => {
       expect(opts.onInboundEvent).toHaveBeenCalledWith(
         expect.objectContaining({
           platform: 'telegram',
+          connection_id: opts.connectionId,
           platform_event_id: '1001',
           target_id: 'tg:100200300',
           target_kind: 'chat',
@@ -819,6 +821,7 @@ describe('TelegramChannel', () => {
       expect(opts.onTargetObserved).toHaveBeenCalledWith(
         expect.objectContaining({
           platform: 'telegram',
+          connection_id: opts.connectionId,
           target_kind: 'chat',
           target_id: 'tg:-10099887766',
           display_name: 'Cal Football',
@@ -846,6 +849,7 @@ describe('TelegramChannel', () => {
 
       expect(opts.onTargetObserved).toHaveBeenCalledWith(
         expect.objectContaining({
+          connection_id: opts.connectionId,
           target_kind: 'channel',
           target_id: 'tg:-1001234567890',
           display_name: 'Gamemakers Channel',
@@ -854,6 +858,7 @@ describe('TelegramChannel', () => {
       expect(opts.onInboundEvent).toHaveBeenCalledWith(
         expect.objectContaining({
           platform: 'telegram',
+          connection_id: opts.connectionId,
           target_kind: 'channel',
           target_id: 'tg:-1001234567890',
           sender_id: null,
@@ -877,6 +882,7 @@ describe('TelegramChannel', () => {
       expect(currentBot().api.sendMessage).toHaveBeenCalledWith(
         '100200300',
         'Hello',
+        { reply_parameters: undefined },
       );
     });
 
@@ -890,6 +896,7 @@ describe('TelegramChannel', () => {
       expect(currentBot().api.sendMessage).toHaveBeenCalledWith(
         '-1001234567890',
         'Group message',
+        { reply_parameters: undefined },
       );
     });
 
@@ -906,11 +913,13 @@ describe('TelegramChannel', () => {
         1,
         '100200300',
         'x'.repeat(4096),
+        { reply_parameters: undefined },
       );
       expect(currentBot().api.sendMessage).toHaveBeenNthCalledWith(
         2,
         '100200300',
         'x'.repeat(904),
+        { reply_parameters: undefined },
       );
     });
 

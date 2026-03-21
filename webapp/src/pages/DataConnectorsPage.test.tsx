@@ -4,7 +4,11 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { MemoryRouter } from 'react-router-dom';
 
 import { DataConnectorsPage } from './DataConnectorsPage';
-import type { DataConnector } from '../lib/api';
+import type { ChannelConnection, ChannelTarget, DataConnector } from '../lib/api';
+
+vi.mock('../lib/slackInstallPopup', () => ({
+  launchSlackInstallPopup: vi.fn(async () => undefined),
+}));
 
 describe('DataConnectorsPage', () => {
   afterEach(() => {
@@ -270,6 +274,67 @@ describe('DataConnectorsPage', () => {
       screen.getByRole('button', { name: 'Adopt into ClawTalk' }),
     ).toBeTruthy();
   });
+
+  it('renders the Slack connector and saves Slack app config', async () => {
+    const user = userEvent.setup();
+    installDataConnectorsFetch();
+
+    render(
+      <MemoryRouter initialEntries={['/app/connectors?tab=channel-connectors']}>
+        <DataConnectorsPage onUnauthorized={vi.fn()} userRole="owner" />
+      </MemoryRouter>,
+    );
+
+    await screen.findByRole('heading', { name: 'Connect Slack App' });
+    expect(
+      screen.getByText((value) => value.includes('Events API status: Not ready')),
+    ).toBeTruthy();
+    expect(
+      screen.getByRole('button', { name: 'Install to Workspace' }),
+    ).toBeDisabled();
+
+    await user.type(screen.getByLabelText('Client ID'), '123456.7890');
+    await user.type(screen.getByLabelText('Client Secret'), 'secret-1');
+    await user.type(screen.getByLabelText('Signing Secret'), 'signing-1');
+    await user.click(screen.getByRole('button', { name: 'Save Slack App' }));
+
+    expect(
+      await screen.findByText('Slack app configuration saved.'),
+    ).toBeTruthy();
+    expect(
+      screen.getByText((value) => value.includes('Events API status: Ready')),
+    ).toBeTruthy();
+    expect(
+      screen.getByRole('button', { name: 'Install to Workspace' }),
+    ).not.toBeDisabled();
+    expect(screen.getByText('Acme Workspace')).toBeTruthy();
+  });
+
+  it('approves a discovered Slack channel from the connectors page', async () => {
+    const user = userEvent.setup();
+    installDataConnectorsFetch();
+
+    render(
+      <MemoryRouter initialEntries={['/app/connectors?tab=channel-connectors']}>
+        <DataConnectorsPage onUnauthorized={vi.fn()} userRole="owner" />
+      </MemoryRouter>,
+    );
+
+    await screen.findByRole('heading', { name: 'Connected Workspaces' });
+    expect(screen.getByText('#product-launch')).toBeTruthy();
+
+    await user.click(screen.getByRole('button', { name: 'Approve' }));
+
+    expect(
+      await screen.findByText('#product-launch approved for Talk bindings.'),
+    ).toBeTruthy();
+    const approvedCard = screen
+      .getByRole('heading', { name: 'Approved Channels' })
+      .closest('div');
+    expect(approvedCard).toBeTruthy();
+    expect(screen.getAllByText('#product-launch').length).toBeGreaterThan(0);
+    expect(screen.queryByRole('button', { name: 'Approve' })).toBeNull();
+  });
 });
 
 function installDataConnectorsFetch(input?: {
@@ -281,6 +346,8 @@ function installDataConnectorsFetch(input?: {
     scopes: string[];
     accessExpiresAt: string | null;
   };
+  slackWorkspaces?: ChannelConnection[];
+  slackTargetsByConnection?: Record<string, ChannelTarget[]>;
 }) {
   let connectors: DataConnector[] = input?.connectors || [
     {
@@ -334,6 +401,64 @@ function installDataConnectorsFetch(input?: {
     },
     targets: [],
   };
+  let slackConfig = {
+    clientId: null as string | null,
+    hasClientSecret: false,
+    hasSigningSecret: false,
+    redirectUrl: 'https://clawtalk.app/api/v1/channel-connectors/slack/oauth/callback',
+    eventsApiUrl: null as string | null,
+    eventsApiReady: false,
+    oauthInstallReady: false,
+    available: true,
+    availabilityReason: null as string | null,
+    updatedAt: null as string | null,
+    updatedBy: null as string | null,
+  };
+  let slackWorkspaces: ChannelConnection[] =
+    input?.slackWorkspaces || [
+      {
+        id: 'channel-conn:slack:acme',
+        platform: 'slack',
+        connectionMode: 'oauth_workspace',
+        accountKey: 'slack:T123',
+        displayName: 'Acme Workspace',
+        enabled: true,
+        healthStatus: 'healthy',
+        lastHealthCheckAt: '2026-03-06T00:00:00.000Z',
+        lastHealthError: null,
+        config: {
+          teamId: 'T123',
+          teamUrl: 'acme.slack.com',
+          botUserId: 'U999',
+        },
+        tokenSource: 'db',
+        envTokenAvailable: false,
+        hasStoredSecret: true,
+        createdAt: '2026-03-06T00:00:00.000Z',
+        updatedAt: '2026-03-06T00:00:00.000Z',
+      },
+    ];
+  let slackTargetsByConnection: Record<string, ChannelTarget[]> =
+    input?.slackTargetsByConnection || {
+      'channel-conn:slack:acme': [
+        {
+          connectionId: 'channel-conn:slack:acme',
+          targetKind: 'channel',
+          targetId: 'slack:C123',
+          displayName: '#product-launch',
+          metadata: {
+            channelName: 'product-launch',
+            isPrivate: true,
+          },
+          approved: false,
+          registeredAt: null,
+          registeredBy: null,
+          lastSeenAt: '2026-03-06T00:00:00.000Z',
+          createdAt: '2026-03-06T00:00:00.000Z',
+          updatedAt: '2026-03-06T00:00:00.000Z',
+        },
+      ],
+    };
 
   vi.stubGlobal(
     'fetch',
@@ -366,6 +491,165 @@ function installDataConnectorsFetch(input?: {
         return jsonResponse(200, {
           ok: true,
           data: telegramConnector,
+        });
+      }
+
+      if (url.endsWith('/api/v1/channel-connectors/slack') && method === 'GET') {
+        return jsonResponse(200, {
+          ok: true,
+          data: {
+            config: slackConfig,
+            workspaces: slackWorkspaces.map(toChannelConnectionApiRecord),
+          },
+        });
+      }
+
+      if (url.endsWith('/api/v1/channel-connectors/slack/config') && method === 'PUT') {
+        const body = JSON.parse(String(init?.body || '{}')) as {
+          clientId?: string;
+          clientSecret?: string;
+          signingSecret?: string;
+        };
+        const hasClientSecret =
+          Boolean(body.clientSecret?.trim()) || slackConfig.hasClientSecret;
+        const hasSigningSecret =
+          Boolean(body.signingSecret?.trim()) || slackConfig.hasSigningSecret;
+        slackConfig = {
+          ...slackConfig,
+          clientId: body.clientId?.trim() || null,
+          hasClientSecret,
+          hasSigningSecret,
+          eventsApiUrl: hasSigningSecret
+            ? 'https://clawtalk.app/api/v1/channel-connectors/slack/events'
+            : null,
+          eventsApiReady: hasSigningSecret,
+          oauthInstallReady:
+            Boolean(body.clientId?.trim()) && hasClientSecret && hasSigningSecret,
+          updatedAt: '2026-03-06T01:00:00.000Z',
+          updatedBy: 'owner-1',
+        };
+        return jsonResponse(200, {
+          ok: true,
+          data: {
+            config: slackConfig,
+            workspaces: slackWorkspaces.map(toChannelConnectionApiRecord),
+          },
+        });
+      }
+
+      if (url.endsWith('/api/v1/channel-connectors/slack/config') && method === 'DELETE') {
+        slackConfig = {
+          ...slackConfig,
+          clientId: null,
+          hasClientSecret: false,
+          hasSigningSecret: false,
+          eventsApiUrl: null,
+          eventsApiReady: false,
+          oauthInstallReady: false,
+          updatedAt: '2026-03-06T01:00:00.000Z',
+          updatedBy: 'owner-1',
+        };
+        return jsonResponse(200, {
+          ok: true,
+          data: {
+            config: slackConfig,
+            workspaces: slackWorkspaces.map(toChannelConnectionApiRecord),
+          },
+        });
+      }
+
+      if (
+        url.includes('/api/v1/channel-connections/') &&
+        url.includes('/targets') &&
+        method === 'GET'
+      ) {
+        const connectionId = decodeURIComponent(
+          url.split('/api/v1/channel-connections/')[1]?.split('/targets')[0] ||
+            '',
+        );
+        const parsed = new URL(url, 'http://localhost');
+        const approval = parsed.searchParams.get('approval');
+        let targets = slackTargetsByConnection[connectionId] || [];
+        if (approval === 'approved') {
+          targets = targets.filter((target) => target.approved);
+        } else if (approval === 'discovered') {
+          targets = targets.filter((target) => !target.approved);
+        }
+        return jsonResponse(200, {
+          ok: true,
+          data: {
+            targets: targets.map(toChannelTargetApiRecord),
+          },
+        });
+      }
+
+      if (
+        url.includes('/api/v1/channel-connections/') &&
+        url.endsWith('/targets/approve') &&
+        method === 'POST'
+      ) {
+        const body = JSON.parse(String(init?.body || '{}')) as {
+          connectionId: string;
+          targetKind: string;
+          targetId: string;
+          displayName?: string;
+          metadata?: Record<string, unknown> | null;
+        };
+        const targets = slackTargetsByConnection[body.connectionId] || [];
+        const updatedTarget: ChannelTarget = {
+          connectionId: body.connectionId,
+          targetKind: body.targetKind,
+          targetId: body.targetId,
+          displayName: body.displayName || body.targetId,
+          metadata: body.metadata || null,
+          approved: true,
+          registeredAt: '2026-03-06T01:15:00.000Z',
+          registeredBy: 'owner-1',
+          lastSeenAt: '2026-03-06T00:00:00.000Z',
+          createdAt: '2026-03-06T00:00:00.000Z',
+          updatedAt: '2026-03-06T01:15:00.000Z',
+        };
+        slackTargetsByConnection[body.connectionId] = [
+          ...targets.filter((target) => target.targetId !== body.targetId),
+          updatedTarget,
+        ];
+        return jsonResponse(200, {
+          ok: true,
+          data: {
+            target: toChannelTargetApiRecord(updatedTarget),
+          },
+        });
+      }
+
+      if (
+        url.includes('/api/v1/channel-connections/') &&
+        url.includes('/approval') &&
+        method === 'DELETE'
+      ) {
+        const connectionId = decodeURIComponent(
+          url.split('/api/v1/channel-connections/')[1]?.split('/targets/')[0] ||
+            '',
+        );
+        const targetPath = url.split('/targets/')[1]?.split('/approval')[0] || '';
+        const [, targetId] = targetPath.split('/').map((segment) =>
+          decodeURIComponent(segment),
+        );
+        slackTargetsByConnection[connectionId] = (
+          slackTargetsByConnection[connectionId] || []
+        ).map((target) =>
+          target.targetId === targetId
+            ? {
+                ...target,
+                approved: false,
+                registeredAt: null,
+                registeredBy: null,
+                updatedAt: '2026-03-06T01:20:00.000Z',
+              }
+            : target,
+        );
+        return jsonResponse(200, {
+          ok: true,
+          data: { removed: true, deactivatedBindingCount: 0 },
         });
       }
 
@@ -461,4 +745,40 @@ function jsonResponse(status: number, body: unknown): Response {
       'Content-Type': 'application/json',
     },
   });
+}
+
+function toChannelConnectionApiRecord(connection: ChannelConnection) {
+  return {
+    id: connection.id,
+    platform: connection.platform,
+    connection_mode: connection.connectionMode,
+    account_key: connection.accountKey,
+    display_name: connection.displayName,
+    enabled: connection.enabled ? 1 : 0,
+    health_status: connection.healthStatus,
+    last_health_check_at: connection.lastHealthCheckAt,
+    last_health_error: connection.lastHealthError,
+    config_json: connection.config ? JSON.stringify(connection.config) : null,
+    token_source: connection.tokenSource,
+    env_token_available: connection.envTokenAvailable ? 1 : 0,
+    has_stored_secret: connection.hasStoredSecret ? 1 : 0,
+    created_at: connection.createdAt,
+    updated_at: connection.updatedAt,
+  };
+}
+
+function toChannelTargetApiRecord(target: ChannelTarget) {
+  return {
+    connection_id: target.connectionId,
+    target_kind: target.targetKind,
+    target_id: target.targetId,
+    display_name: target.displayName,
+    metadata_json: target.metadata ? JSON.stringify(target.metadata) : null,
+    approved: target.approved ? 1 : 0,
+    registered_at: target.registeredAt,
+    registered_by: target.registeredBy,
+    last_seen_at: target.lastSeenAt,
+    created_at: target.createdAt,
+    updated_at: target.updatedAt,
+  };
 }
