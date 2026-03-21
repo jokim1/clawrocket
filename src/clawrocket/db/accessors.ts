@@ -4183,6 +4183,7 @@ export function listMainThreadsForUser(userId: string): Array<{
   is_pinned: number;
   last_message_at: string;
   message_count: number;
+  has_active_run: number;
 }> {
   const rows = getDb()
     .prepare(
@@ -4192,7 +4193,8 @@ export function listMainThreadsForUser(userId: string): Array<{
         mt.title,
         COALESCE(mt.is_pinned, 0) AS is_pinned,
         t.last_message_at,
-        t.message_count
+        t.message_count,
+        CASE WHEN COALESCE(r.active_run_count, 0) > 0 THEN 1 ELSE 0 END AS has_active_run
       FROM (
         SELECT
           thread_id,
@@ -4203,6 +4205,16 @@ export function listMainThreadsForUser(userId: string): Array<{
         GROUP BY thread_id
       ) t
       LEFT JOIN main_threads mt ON mt.thread_id = t.thread_id
+      LEFT JOIN (
+        SELECT
+          thread_id,
+          COUNT(*) AS active_run_count
+        FROM talk_runs
+        WHERE talk_id IS NULL
+          AND thread_id IS NOT NULL
+          AND status IN ('queued', 'running', 'awaiting_confirmation')
+        GROUP BY thread_id
+      ) r ON r.thread_id = t.thread_id
       WHERE (${buildMainThreadOwnerSubquery('t.thread_id')}) = ?
       ORDER BY COALESCE(mt.is_pinned, 0) DESC, t.last_message_at DESC
     `,
@@ -4213,6 +4225,7 @@ export function listMainThreadsForUser(userId: string): Array<{
     is_pinned: number;
     last_message_at: string;
     message_count: number;
+    has_active_run: number;
   }>;
   return rows;
 }

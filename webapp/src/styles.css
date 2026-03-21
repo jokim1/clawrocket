@@ -2160,6 +2160,11 @@ a {
   border-style: dashed;
 }
 
+.message-pending-copy {
+  font-style: italic;
+  color: #5a6987;
+}
+
 .message-synthesis {
   border-color: #c6ddf7;
   background: linear-gradient(180deg, #f8fbff 0%, #eef5ff 100%);
@@ -3353,6 +3358,11 @@ a {
 .main-thread-item-meta {
   font-size: 0.76rem;
   color: #7b8aa2;
+}
+
+.main-thread-item-meta-responding {
+  font-style: italic;
+  color: #52698f;
 }
 
 /* Thread Detail */

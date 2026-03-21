@@ -2760,6 +2760,7 @@ export type MainThreadSummary = {
   isPinned: boolean;
   lastMessageAt: string;
   messageCount: number;
+  hasActiveRun: boolean;
 };
 
 export type MainThreadMessage = {

@@ -26,6 +26,7 @@ interface ThreadSummary {
   isPinned: boolean;
   lastMessageAt: string;
   messageCount: number;
+  hasActiveRun: boolean;
 }
 
 export function listMainThreadsRoute(auth: AuthContext): {
@@ -41,6 +42,7 @@ export function listMainThreadsRoute(auth: AuthContext): {
       isPinned: row.is_pinned === 1,
       lastMessageAt: row.last_message_at,
       messageCount: row.message_count,
+      hasActiveRun: row.has_active_run === 1,
     }));
 
     return {
