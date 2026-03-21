@@ -86,6 +86,12 @@ function formatVerificationStatus(
   }
 }
 
+function formatContainerRuntimeAvailability(
+  availability: ExecutorStatus['containerRuntimeAvailability'],
+): string {
+  return availability === 'ready' ? 'Ready' : 'Unavailable';
+}
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => {
     setTimeout(resolve, ms);
@@ -650,6 +656,15 @@ export function SettingsPage({ onUnauthorized, userRole }: Props) {
     : settings.isConfigured
       ? 'Owned by settings page'
       : 'Using bootstrap defaults';
+  const showStoredVerificationNote =
+    !!status.lastVerificationError &&
+    (status.verificationStatus === 'invalid' ||
+      status.verificationStatus === 'rate_limited' ||
+      status.verificationStatus === 'unavailable');
+  const showSubscriptionRuntimeWarning =
+    status.executorAuthMode === 'subscription' &&
+    status.activeCredentialConfigured &&
+    status.containerRuntimeAvailability === 'unavailable';
 
   return (
     <section className="page-shell settings-shell">
@@ -715,6 +730,14 @@ export function SettingsPage({ onUnauthorized, userRole }: Props) {
             <strong>{formatVerificationStatus(status.verificationStatus)}</strong>
           </div>
           <div>
+            <span className="settings-label">Container runtime</span>
+            <strong>
+              {formatContainerRuntimeAvailability(
+                status.containerRuntimeAvailability,
+              )}
+            </strong>
+          </div>
+          <div>
             <span className="settings-label">Alias map</span>
             <strong>{status.hasValidAliasMap ? 'Valid' : 'Invalid'}</strong>
           </div>
@@ -731,7 +754,14 @@ export function SettingsPage({ onUnauthorized, userRole }: Props) {
             <strong>{formatDateTime(status.lastVerifiedAt)}</strong>
           </div>
         </div>
-        {status.lastVerificationError ? (
+        {showSubscriptionRuntimeWarning ? (
+          <p className="settings-copy">
+            <strong>Runtime note:</strong> Docker / the container runtime is
+            currently unavailable, so subscription verification and
+            container-backed Claude execution cannot run until it is healthy.
+          </p>
+        ) : null}
+        {showStoredVerificationNote ? (
           <p className="settings-copy">
             <strong>Verification note:</strong> {status.lastVerificationError}
           </p>

@@ -215,6 +215,120 @@ describe('AiAgentsPage', () => {
     ).toBeTruthy();
   });
 
+  it('shows subscription runtime warnings without collapsing the badge to unavailable', async () => {
+    installAiAgentsFetch({
+      settings: {
+        hasOauthToken: true,
+        oauthTokenSource: 'stored',
+        oauthTokenHint: 'Stored in settings',
+        activeCredentialConfigured: true,
+        verificationStatus: 'not_verified',
+      },
+      status: {
+        executorAuthMode: 'subscription',
+        activeCredentialConfigured: true,
+        containerRuntimeAvailability: 'unavailable',
+        verificationStatus: 'not_verified',
+      },
+    });
+
+    render(
+      <MemoryRouter initialEntries={['/app/agents']}>
+        <AiAgentsPage onUnauthorized={vi.fn()} userRole="owner" />
+      </MemoryRouter>,
+    );
+
+    await screen.findByRole('heading', { name: 'AI Agents' });
+    const claudeCard = screen.getByRole('heading', { name: 'Claude' }).closest(
+      'article',
+    );
+    if (!claudeCard) {
+      throw new Error('Expected Claude card');
+    }
+
+    expect(within(claudeCard).getByText('Not verified')).toBeTruthy();
+    expect(within(claudeCard).queryByText('Unavailable')).toBeNull();
+    expect(
+      within(claudeCard).getByText(
+        /Docker is currently unavailable, so verification and container-backed execution will fail/i,
+      ),
+    ).toBeTruthy();
+  });
+
+  it('shows a saved-but-not-verified notice when subscription verification cannot run', async () => {
+    const user = userEvent.setup();
+    const helpers = installAiAgentsFetch({
+      status: {
+        containerRuntimeAvailability: 'unavailable',
+      },
+    });
+
+    render(
+      <MemoryRouter initialEntries={['/app/agents']}>
+        <AiAgentsPage onUnauthorized={vi.fn()} userRole="owner" />
+      </MemoryRouter>,
+    );
+
+    await screen.findByRole('heading', { name: 'AI Agents' });
+    await user.type(
+      screen.getByLabelText('Claude Code OAuth token'),
+      'oauth-token-test',
+    );
+    await user.click(
+      screen.getByRole('button', { name: 'Save and verify Claude' }),
+    );
+
+    expect(
+      await screen.findByText(
+        /Claude subscription saved, but verification could not run because the container runtime is unavailable or unhealthy/i,
+      ),
+    ).toBeTruthy();
+    expect(helpers.getExecutorVerifyCalls()).toBe(1);
+    expect(screen.getByText('Not verified')).toBeTruthy();
+  });
+
+  it('still renders invalid subscription verification results as invalid', async () => {
+    installAiAgentsFetch({
+      settings: {
+        hasOauthToken: true,
+        oauthTokenSource: 'stored',
+        oauthTokenHint: 'Stored in settings',
+        activeCredentialConfigured: true,
+        verificationStatus: 'invalid',
+        lastVerificationError:
+          'Claude subscription authentication failed in the container runtime.',
+      },
+      status: {
+        executorAuthMode: 'subscription',
+        activeCredentialConfigured: true,
+        verificationStatus: 'invalid',
+        lastVerificationError:
+          'Claude subscription authentication failed in the container runtime.',
+      },
+    });
+
+    render(
+      <MemoryRouter initialEntries={['/app/agents']}>
+        <AiAgentsPage onUnauthorized={vi.fn()} userRole="owner" />
+      </MemoryRouter>,
+    );
+
+    await screen.findByRole('heading', { name: 'AI Agents' });
+    const claudeCard = screen.getByRole('heading', { name: 'Claude' }).closest(
+      'article',
+    );
+    if (!claudeCard) {
+      throw new Error('Expected Claude card');
+    }
+
+    expect(within(claudeCard).getByText('Invalid')).toBeTruthy();
+    expect(
+      within(claudeCard).getByText(
+        /Claude subscription authentication failed in the container runtime/i,
+      ),
+    ).toBeTruthy();
+  });
+
   it('shows Main execution preview and blocks impossible main agent selections', async () => {
     const user = userEvent.setup();
     installAiAgentsFetch();
@@ -456,11 +570,31 @@ function installAiAgentsFetch(input?: {
           oauthTokenHint: body.claudeOauthToken
             ? 'Stored in settings'
             : settings.oauthTokenHint,
+          verificationStatus:
+            body.anthropicApiKey || body.claudeOauthToken
+              ? 'not_verified'
+              : settings.verificationStatus,
+          lastVerifiedAt: body.anthropicApiKey || body.claudeOauthToken
+            ? null
+            : settings.lastVerifiedAt,
+          lastVerificationError: body.anthropicApiKey || body.claudeOauthToken
+            ? null
+            : settings.lastVerificationError,
         };
         status = {
           ...status,
           executorAuthMode: settings.executorAuthMode,
           activeCredentialConfigured: settings.activeCredentialConfigured,
+          verificationStatus:
+            body.anthropicApiKey || body.claudeOauthToken
+              ? 'not_verified'
+              : status.verificationStatus,
+          lastVerifiedAt: body.anthropicApiKey || body.claudeOauthToken
+            ? null
+            : status.lastVerifiedAt,
+          lastVerificationError: body.anthropicApiKey || body.claudeOauthToken
+            ? null
+            : status.lastVerificationError,
         };
         return jsonResponse(200, { ok: true, data: settings });
       }
@@ -470,6 +604,34 @@ function installAiAgentsFetch(input?: {
         method === 'POST'
       ) {
         executorVerifyCalls += 1;
+        if (
+          settings.executorAuthMode === 'subscription' &&
+          status.containerRuntimeAvailability === 'unavailable'
+        ) {
+          status = {
+            ...status,
+            verificationStatus: 'not_verified',
+            activeCredentialConfigured: true,
+            lastVerificationError:
+              'Claude subscription verification could not run because the container runtime is unavailable or unhealthy. Check Docker and try again.',
+          };
+          settings = {
+            ...settings,
+            verificationStatus: 'not_verified',
+            activeCredentialConfigured: true,
+            lastVerificationError:
+              'Claude subscription verification could not run because the container runtime is unavailable or unhealthy. Check Docker and try again.',
+          };
+          return jsonResponse(200, {
+            ok: true,
+            data: {
+              scheduled: false,
+              code: 'runtime_unavailable',
+              message:
+                'Claude subscription verification could not run because the container runtime is unavailable or unhealthy. Check Docker and try again.',
+            },
+          });
+        }
         status = {
           ...status,
           verificationStatus: 'verifying',

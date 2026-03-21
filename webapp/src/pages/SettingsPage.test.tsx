@@ -201,6 +201,76 @@ describe('SettingsPage', () => {
       await screen.findByText(/active claude auth mode is being inferred/i),
     ).toBeTruthy();
   });
+
+  it('shows container runtime health separately from subscription verification status', async () => {
+    mockFetch([
+      jsonResponse(200, {
+        ok: true,
+        data: {
+          configuredAliasMap: {},
+          effectiveAliasMap: {},
+          defaultAlias: 'Mock',
+          executorAuthMode: 'subscription',
+          authModeSource: 'settings',
+          hasApiKey: false,
+          hasOauthToken: true,
+          hasAuthToken: false,
+          apiKeySource: null,
+          oauthTokenSource: 'stored',
+          authTokenSource: null,
+          apiKeyHint: null,
+          oauthTokenHint: 'Stored in settings',
+          authTokenHint: null,
+          activeCredentialConfigured: true,
+          verificationStatus: 'not_verified',
+          lastVerifiedAt: null,
+          lastVerificationError:
+            'Claude subscription verification could not run because the container runtime is unavailable or unhealthy. Check Docker and try again.',
+          anthropicBaseUrl: 'https://api.anthropic.com',
+          isConfigured: true,
+          configVersion: 1,
+          lastUpdatedAt: null,
+          lastUpdatedBy: null,
+          configErrors: [],
+        },
+      }),
+      jsonResponse(200, {
+        ok: true,
+        data: {
+          mode: 'real',
+          restartSupported: false,
+          pendingRestartReasons: [],
+          activeRunCount: 0,
+          containerRuntimeAvailability: 'unavailable',
+          executorAuthMode: 'subscription',
+          activeCredentialConfigured: true,
+          verificationStatus: 'not_verified',
+          lastVerifiedAt: null,
+          lastVerificationError:
+            'Claude subscription verification could not run because the container runtime is unavailable or unhealthy. Check Docker and try again.',
+          hasProviderAuth: true,
+          hasValidAliasMap: true,
+          configVersion: 1,
+          isConfigured: true,
+          bootId: 'boot-subscription-runtime',
+          configErrors: [],
+        },
+      }),
+    ]);
+
+    render(<SettingsPage onUnauthorized={vi.fn()} userRole="owner" />);
+
+    await screen.findByRole('heading', { name: 'Executor Settings' });
+    expect(await screen.findByText('Container runtime')).toBeTruthy();
+    expect(await screen.findByText('Not verified')).toBeTruthy();
+    expect(await screen.findByText(/Runtime note:/i)).toBeTruthy();
+    expect(
+      await screen.findByText(
+        /Docker \/ the container runtime is currently unavailable/i,
+      ),
+    ).toBeTruthy();
+    expect(screen.queryByText(/Verification note:/i)).toBeNull();
+  });
 });
 
 function mockFetch(responses: Response[]): void {
