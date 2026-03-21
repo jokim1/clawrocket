@@ -15,6 +15,7 @@ import {
   appendOutboxEvent,
   claimQueuedMainRuns,
   completeMainRunAtomic,
+  createMainPromotionRunAtomic,
   failInterruptedMainRunsOnStartup,
   failMainRunAtomic,
   getTalkMessageById,
@@ -262,6 +263,28 @@ export class MainRunWorker implements MainRunWorkerControl {
           'Main run completion skipped due to non-running status',
         );
         return;
+      }
+
+      if (output.promotionRequest) {
+        const childRun = createMainPromotionRunAtomic({
+          parentRunId: run.id,
+          childRunId: `run_${randomUUID()}`,
+          threadId: run.thread_id,
+          requestedBy: run.requested_by,
+          triggerMessageId: run.trigger_message_id,
+          targetAgentId: output.agentId,
+          requiredToolFamilies: output.promotionRequest.requiredToolFamilies,
+          userVisibleSummary: output.promotionRequest.userVisibleSummary,
+          handoffNote: output.promotionRequest.handoffNote,
+          taskDescription: output.promotionRequest.taskDescription,
+          requiresApproval: output.promotionRequest.requiresApproval,
+        });
+        if (!childRun) {
+          logger.warn(
+            { runId: run.id, threadId: run.thread_id },
+            'Main promotion child run could not be created after parent completion',
+          );
+        }
       }
 
       try {

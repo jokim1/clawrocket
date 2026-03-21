@@ -1,10 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('./agent-router.js', () => ({
+  ALWAYS_ALLOWED_CONTEXT_TOOLS: new Set<string>(),
   executeWithAgent: vi.fn(),
 }));
 vi.mock('./execution-planner.js', () => ({
-  planExecution: vi.fn(),
+  planMainExecution: vi.fn(),
   getContainerAllowedTools: vi.fn(() => ['Bash']),
   EXECUTOR_MAIN_PROJECT_PATH_KEY: 'executor.mainProjectPath',
 }));
@@ -13,6 +14,10 @@ vi.mock('./container-turn-executor.js', () => ({
 }));
 vi.mock('./project-mounts.js', () => ({
   resolveValidatedProjectMountPath: vi.fn(),
+}));
+vi.mock('../tools/browser-tools.js', () => ({
+  BROWSER_TOOL_DEFINITIONS: [],
+  executeBrowserTool: vi.fn(),
 }));
 
 import { getDb } from '../../db.js';
@@ -27,7 +32,7 @@ import {
   type MainExecutionEvent,
 } from './main-executor.js';
 import { executeWithAgent } from './agent-router.js';
-import { planExecution } from './execution-planner.js';
+import { planMainExecution } from './execution-planner.js';
 import { executeContainerAgentTurn } from './container-turn-executor.js';
 import { resolveValidatedProjectMountPath } from './project-mounts.js';
 
@@ -41,27 +46,33 @@ describe('main-executor (pure)', () => {
       role: 'owner',
     });
     vi.mocked(executeWithAgent).mockReset();
-    vi.mocked(planExecution).mockReset();
+    vi.mocked(planMainExecution).mockReset();
     vi.mocked(executeContainerAgentTurn).mockReset();
     vi.mocked(resolveValidatedProjectMountPath).mockReset();
     vi.mocked(resolveValidatedProjectMountPath).mockImplementation((path) =>
       path ? String(path) : null,
     );
-    vi.mocked(planExecution).mockReturnValue({
-      backend: 'direct_http',
-      routeReason: 'normal',
+    vi.mocked(planMainExecution).mockReturnValue({
+      policy: 'direct_only',
       effectiveTools: [],
-      providerId: 'provider.anthropic',
-      modelId: 'claude-sonnet-4-6',
-      binding: {
-        providerConfig: {
-          providerId: 'provider.anthropic',
-          baseUrl: 'https://api.anthropic.com',
-          apiFormat: 'anthropic_messages',
-          authScheme: 'x_api_key',
+      heavyToolFamilies: [],
+      directPlan: {
+        backend: 'direct_http',
+        routeReason: 'normal',
+        effectiveTools: [],
+        providerId: 'provider.anthropic',
+        modelId: 'claude-sonnet-4-6',
+        binding: {
+          providerConfig: {
+            providerId: 'provider.anthropic',
+            baseUrl: 'https://api.anthropic.com',
+            apiFormat: 'anthropic_messages',
+            authScheme: 'x_api_key',
+          },
+          secret: { apiKey: 'sk-ant-test' },
         },
-        secret: { apiKey: 'sk-ant-test' },
       },
+      containerPlan: null,
     });
   });
 
@@ -263,11 +274,8 @@ describe('main-executor (pure)', () => {
         new Date().toISOString(),
       );
 
-    vi.mocked(planExecution).mockReturnValue({
-      backend: 'container',
-      routeReason: 'normal',
-      providerId: 'provider.anthropic',
-      modelId: 'claude-sonnet-4-6',
+    vi.mocked(planMainExecution).mockReturnValue({
+      policy: 'container_only',
       effectiveTools: [
         {
           toolFamily: 'shell',
@@ -277,10 +285,26 @@ describe('main-executor (pure)', () => {
         },
       ],
       heavyToolFamilies: ['shell'],
-      containerCredential: {
-        authMode: 'api_key',
-        secrets: {
-          ANTHROPIC_API_KEY: 'sk-container-test',
+      directPlan: null,
+      containerPlan: {
+        backend: 'container',
+        routeReason: 'normal',
+        providerId: 'provider.anthropic',
+        modelId: 'claude-sonnet-4-6',
+        effectiveTools: [
+          {
+            toolFamily: 'shell',
+            runtimeTools: ['Bash'],
+            enabled: true,
+            requiresApproval: false,
+          },
+        ],
+        heavyToolFamilies: ['shell'],
+        containerCredential: {
+          authMode: 'api_key',
+          secrets: {
+            ANTHROPIC_API_KEY: 'sk-container-test',
+          },
         },
       },
     });
@@ -531,17 +555,23 @@ describe('main-executor (pure)', () => {
         'agent.main',
       );
 
-    vi.mocked(planExecution).mockReturnValue({
-      backend: 'container',
-      routeReason: 'normal',
-      providerId: 'provider.anthropic',
-      modelId: 'claude-sonnet-4-6',
+    vi.mocked(planMainExecution).mockReturnValue({
+      policy: 'container_only',
       effectiveTools: [],
       heavyToolFamilies: [],
-      containerCredential: {
-        authMode: 'api_key',
-        secrets: {
-          ANTHROPIC_API_KEY: 'sk-container-test',
+      directPlan: null,
+      containerPlan: {
+        backend: 'container',
+        routeReason: 'normal',
+        providerId: 'provider.anthropic',
+        modelId: 'claude-sonnet-4-6',
+        effectiveTools: [],
+        heavyToolFamilies: [],
+        containerCredential: {
+          authMode: 'api_key',
+          secrets: {
+            ANTHROPIC_API_KEY: 'sk-container-test',
+          },
         },
       },
     });
@@ -566,14 +596,16 @@ describe('main-executor (pure)', () => {
     expect(executeContainerAgentTurn).toHaveBeenCalledWith(
       expect.objectContaining({
         userMessage: expect.stringContaining('## Thread Context'),
-        context: {
-          systemPrompt: 'Keep filesystem changes isolated.',
+        context: expect.objectContaining({
+          systemPrompt: expect.stringContaining(
+            'Keep filesystem changes isolated.',
+          ),
           history: expect.arrayContaining([
             expect.objectContaining({
               content: 'Container thread message 13',
             }),
           ]),
-        },
+        }),
       }),
     );
     expect(executeContainerAgentTurn).toHaveBeenCalledWith(

@@ -54,6 +54,7 @@ import type { TalkJobWorkerControl } from '../talks/job-worker.js';
 import type { MainRunWorkerControl } from '../agents/main-run-worker.js';
 import { hashOpaqueToken } from '../security/hash.js';
 import type { TelegramBotIdentity } from '../channels/telegram-connector.js';
+import { waitForOutboxTopics } from '../channels/outbox-notifier.js';
 import { validateCsrfToken } from './middleware/csrf.js';
 import {
   idempotencyPrecheck,
@@ -133,7 +134,9 @@ import {
   deleteMainThreadRoute,
   listMainThreadsRoute,
   getMainThreadRoute,
+  listMainRunsRoute,
   patchMainThreadRoute,
+  postMainRunVisibleRoute,
   postMainMessageRoute,
 } from './routes/main-channel.js';
 import {
@@ -237,7 +240,6 @@ import { logger } from '../../logger.js';
 
 const MAX_REQUEST_BODY_BYTES = 10 * 1024 * 1024; // 10 MB
 const SSE_RETRY_MS = 3000;
-const SSE_STREAM_POLL_MS = 250;
 const SSE_STREAM_HEARTBEAT_MS = 15_000;
 const SSE_STREAM_BATCH_LIMIT = 100;
 const SSE_STREAM_RETRY_AFTER_SEC = 5;
@@ -1429,6 +1431,22 @@ function buildApp(opts: WebServerOptions): Hono {
     });
   });
 
+  app.get('/api/v1/main/threads/:threadId/runs', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+    const rateResult = checkRateLimit({
+      principalId: auth.userId,
+      bucket: 'read',
+    });
+    if (!rateResult.allowed) return rateLimitedResponse(c, rateResult);
+
+    const result = listMainRunsRoute(auth, c.req.param('threadId'));
+    return new Response(JSON.stringify(result.body), {
+      status: result.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
+  });
+
   app.patch('/api/v1/main/threads/:threadId', async (c) => {
     const auth = requireAuth(c);
     if (!auth) return unauthorized(c);
@@ -1570,6 +1588,36 @@ function buildApp(opts: WebServerOptions): Hono {
     });
 
     return new Response(serialized, {
+      status: result.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
+  });
+
+  app.post('/api/v1/main/runs/:runId/visible', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+    const rateResult = checkRateLimit({
+      principalId: auth.userId,
+      bucket: 'write',
+    });
+    if (!rateResult.allowed) return rateLimitedResponse(c, rateResult);
+
+    const payload = parseJsonPayload<{ firstVisibleAt?: unknown }>(
+      await c.req.text(),
+    );
+    if (!payload.ok) {
+      return c.json(
+        { ok: false, error: { code: 'invalid_json', message: payload.error } },
+        400,
+      );
+    }
+
+    const result = postMainRunVisibleRoute(
+      auth,
+      c.req.param('runId'),
+      payload.data,
+    );
+    return new Response(JSON.stringify(result.body), {
       status: result.statusCode,
       headers: { 'content-type': 'application/json; charset=utf-8' },
     });
@@ -6185,7 +6233,23 @@ function createLiveSseResponse(input: {
             lastHeartbeatMs = nowMs;
           }
 
-          await sleepWithAbort(SSE_STREAM_POLL_MS, input.requestSignal);
+          const waitTimeoutMs = Math.max(
+            1,
+            SSE_STREAM_HEARTBEAT_MS - (Date.now() - lastHeartbeatMs),
+          );
+          const waitResult = await waitForOutboxTopics({
+            topics: input.topics,
+            afterEventId: cursor,
+            timeoutMs: waitTimeoutMs,
+            signal: input.requestSignal,
+          });
+          if (waitResult === 'timeout') {
+            const heartbeatNowMs = Date.now();
+            if (heartbeatNowMs - lastHeartbeatMs >= SSE_STREAM_HEARTBEAT_MS) {
+              write(': keepalive\n\n');
+              lastHeartbeatMs = heartbeatNowMs;
+            }
+          }
         }
       } finally {
         input.requestSignal.removeEventListener('abort', onAbort);
@@ -6201,23 +6265,6 @@ function createLiveSseResponse(input: {
   return new Response(stream, {
     status: 200,
     headers: sseHeaders('stream'),
-  });
-}
-
-async function sleepWithAbort(ms: number, signal: AbortSignal): Promise<void> {
-  if (ms <= 0 || signal.aborted) return;
-
-  await new Promise<void>((resolve) => {
-    const onAbort = () => {
-      clearTimeout(timer);
-      signal.removeEventListener('abort', onAbort);
-      resolve();
-    };
-    const timer = setTimeout(() => {
-      signal.removeEventListener('abort', onAbort);
-      resolve();
-    }, ms);
-    signal.addEventListener('abort', onAbort, { once: true });
   });
 }
 

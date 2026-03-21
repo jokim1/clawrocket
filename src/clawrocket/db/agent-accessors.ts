@@ -20,7 +20,14 @@ export const TOOL_FAMILY_MAP: Record<string, string[]> = {
   shell: ['Bash'],
   filesystem: ['Read', 'Write', 'Edit', 'Glob'],
   web: ['web_fetch', 'web_search'],
-  browser: ['BrowserAction', 'BrowserScreenshot'],
+  browser: [
+    'browser_open',
+    'browser_snapshot',
+    'browser_act',
+    'browser_wait',
+    'browser_screenshot',
+    'browser_close',
+  ],
   connectors: [], // matched dynamically: any tool starting with 'connector_'
   google_read: [
     'GoogleDriveRead',
@@ -61,7 +68,6 @@ export function buildDefaultTalkToolPermissions(): Record<string, boolean> {
  */
 export const AUTO_IMPLIED_DEPENDENCIES: Array<[string, string]> = [
   ['shell', 'filesystem'],
-  ['browser', 'web'],
   ['gmail_send', 'gmail_read'],
 ];
 

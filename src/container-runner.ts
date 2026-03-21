@@ -9,6 +9,7 @@ import path from 'path';
 import {
   CONTAINER_IMAGE,
   CONTAINER_MAX_OUTPUT_SIZE,
+  CONTAINER_SYNC_AGENT_RUNNER_SOURCE,
   CONTAINER_TIMEOUT,
   DATA_DIR,
   GROUPS_DIR,
@@ -116,6 +117,7 @@ interface VolumeMount {
 
 const TALK_MAIN_RUN_DIR = '/workspace/run';
 const PROJECT_MOUNT_PATH = '/workspace/project';
+const STATIC_SKILLS_CONTAINER_PATH = '/opt/nanoclaw/skills';
 const PROJECT_SENSITIVE_FILES = [
   '.env',
   '.env.local',
@@ -127,6 +129,12 @@ const PROJECT_SENSITIVE_FILES = [
 ];
 
 const CLAUDE_HOME_PATH = '/home/node/.claude';
+
+if (CONTAINER_SYNC_AGENT_RUNNER_SOURCE) {
+  logger.warn(
+    'DEV MODE: agent-runner source sync enabled — container startup will be slower.',
+  );
+}
 
 function addShadowedProjectMount(
   mounts: VolumeMount[],
@@ -150,17 +158,21 @@ function addShadowedProjectMount(
   }
 }
 
-function syncSkillsIntoClaudeHome(claudeHomeDir: string): void {
-  const skillsSrc = path.join(process.cwd(), 'container', 'skills');
+function ensureStaticSkillsLink(claudeHomeDir: string): void {
   const skillsDst = path.join(claudeHomeDir, 'skills');
-  if (!fs.existsSync(skillsSrc)) return;
-
-  for (const skillDir of fs.readdirSync(skillsSrc)) {
-    const srcDir = path.join(skillsSrc, skillDir);
-    if (!fs.statSync(srcDir).isDirectory()) continue;
-    const dstDir = path.join(skillsDst, skillDir);
-    fs.cpSync(srcDir, dstDir, { recursive: true, force: true });
+  try {
+    const stat = fs.lstatSync(skillsDst);
+    if (stat.isSymbolicLink()) {
+      const linkTarget = fs.readlinkSync(skillsDst);
+      if (linkTarget === STATIC_SKILLS_CONTAINER_PATH) {
+        return;
+      }
+    }
+    fs.rmSync(skillsDst, { recursive: true, force: true });
+  } catch {
+    // ignored
   }
+  fs.symlinkSync(STATIC_SKILLS_CONTAINER_PATH, skillsDst, 'dir');
 }
 
 function ensureClaudeHome(
@@ -182,7 +194,7 @@ function ensureClaudeHome(
       2,
     ) + '\n',
   );
-  syncSkillsIntoClaudeHome(claudeHomeDir);
+  ensureStaticSkillsLink(claudeHomeDir);
 }
 
 function buildTalkMainVolumeMounts(
@@ -222,7 +234,7 @@ function buildTalkMainVolumeMounts(
     'agent-runner',
     'src',
   );
-  if (fs.existsSync(agentRunnerSrc)) {
+  if (CONTAINER_SYNC_AGENT_RUNNER_SOURCE && fs.existsSync(agentRunnerSrc)) {
     const runAgentRunnerDir = path.join(
       ephemeralContextDir,
       'agent-runner-src',
@@ -310,6 +322,7 @@ function buildLegacyVolumeMounts(
     'agent-runner-src',
   );
   if (
+    CONTAINER_SYNC_AGENT_RUNNER_SOURCE &&
     fs.existsSync(agentRunnerSrc) &&
     (syncAgentRunnerSource || !fs.existsSync(groupAgentRunnerDir))
   ) {
@@ -318,11 +331,16 @@ function buildLegacyVolumeMounts(
       force: true,
     });
   }
-  mounts.push({
-    hostPath: groupAgentRunnerDir,
-    containerPath: '/app/src',
-    readonly: false,
-  });
+  if (
+    CONTAINER_SYNC_AGENT_RUNNER_SOURCE &&
+    fs.existsSync(groupAgentRunnerDir)
+  ) {
+    mounts.push({
+      hostPath: groupAgentRunnerDir,
+      containerPath: '/app/src',
+      readonly: false,
+    });
+  }
 
   if (group.containerConfig?.additionalMounts) {
     const validatedMounts = validateAdditionalMounts(
@@ -421,7 +439,7 @@ export async function runContainerAgent(
   const mounts = buildVolumeMounts(
     target,
     input.isMain,
-    input.toolProfile === 'web_talk' || input.toolProfile === 'talk_main',
+    CONTAINER_SYNC_AGENT_RUNNER_SOURCE,
     input.toolProfile,
     input.ephemeralContextDir,
     input.projectMountHostPath,

@@ -13,6 +13,10 @@ vi.mock('../agents/container-turn-executor.js', () => ({
 vi.mock('../agents/project-mounts.js', () => ({
   resolveValidatedProjectMountPath: vi.fn(),
 }));
+vi.mock('../tools/browser-tools.js', () => ({
+  BROWSER_TOOL_DEFINITIONS: [],
+  executeBrowserTool: vi.fn(),
+}));
 
 import { getDb } from '../../db.js';
 import {

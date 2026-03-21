@@ -2359,6 +2359,11 @@ a {
   background: #f7fff7;
 }
 
+.main-run-chip {
+  border-color: #d8dde7;
+  background: #fafbfd;
+}
+
 .timeline-new-indicator {
   position: sticky;
   bottom: 0.25rem;

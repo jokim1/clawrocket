@@ -2,7 +2,7 @@ import type { RegisteredAgentRecord } from '../db/agent-accessors.js';
 import { getContainerRuntimeStatus } from '../../container-runtime.js';
 import {
   ExecutionPlannerError,
-  planExecution,
+  planMainExecution,
   type ExecutionPlan,
 } from './execution-planner.js';
 
@@ -10,7 +10,11 @@ export interface AgentExecutionPreview {
   surface: 'main';
   backend: 'direct_http' | 'container' | null;
   authPath: 'api_key' | 'subscription' | null;
-  routeReason: 'normal' | 'subscription_fallback' | 'no_valid_path';
+  routeReason:
+    | 'normal'
+    | 'subscription_fallback'
+    | 'direct_with_promotion'
+    | 'no_valid_path';
   ready: boolean;
   message: string;
 }
@@ -66,7 +70,22 @@ export function buildMainExecutionPreview(
   userId: string,
 ): AgentExecutionPreview {
   try {
-    const plan = planExecution(agent, userId);
+    const mainPlan = planMainExecution(agent, userId);
+    const plan =
+      mainPlan.policy === 'container_only'
+        ? mainPlan.containerPlan
+        : mainPlan.directPlan;
+    if (!plan) {
+      return {
+        surface: 'main',
+        backend: null,
+        authPath: null,
+        routeReason: 'no_valid_path',
+        ready: false,
+        message:
+          'No valid Main execution path is currently configured for this agent.',
+      };
+    }
     if (
       plan.backend === 'container' &&
       getContainerRuntimeStatus() !== 'ready'
@@ -78,6 +97,17 @@ export function buildMainExecutionPreview(
         routeReason: 'no_valid_path',
         ready: false,
         message: buildContainerRuntimeUnavailableMessage(agent, plan),
+      };
+    }
+    if (mainPlan.policy === 'direct_with_promotion') {
+      return {
+        surface: 'main',
+        backend: 'direct_http',
+        authPath: agent.provider_id === 'provider.anthropic' ? 'api_key' : null,
+        routeReason: 'direct_with_promotion',
+        ready: true,
+        message:
+          'Main will answer over direct HTTP first and promote shell/filesystem/browser work into a background container run.',
       };
     }
     return {

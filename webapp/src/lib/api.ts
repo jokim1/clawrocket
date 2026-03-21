@@ -2773,6 +2773,30 @@ export type MainThreadMessage = {
   createdAt: string;
 };
 
+export type MainRun = {
+  id: string;
+  threadId: string;
+  status:
+    | 'queued'
+    | 'running'
+    | 'awaiting_confirmation'
+    | 'cancelled'
+    | 'completed'
+    | 'failed';
+  createdAt: string;
+  startedAt: string | null;
+  endedAt: string | null;
+  triggerMessageId: string | null;
+  targetAgentId: string | null;
+  cancelReason: string | null;
+  kind: string | null;
+  parentRunId: string | null;
+  promotionState: 'pending' | 'superseded' | null;
+  promotionChildRunId: string | null;
+  requestedToolFamilies: string[];
+  userVisibleSummary: string | null;
+};
+
 export async function listMainThreads(): Promise<MainThreadSummary[]> {
   return apiRequest<MainThreadSummary[]>('/api/v1/main/threads');
 }
@@ -2793,12 +2817,14 @@ export async function postMainMessage(input: {
   threadId: string;
   runId: string;
   title: string | null;
+  run: MainRun;
 }> {
   return apiMutationRequest<{
     messageId: string;
     threadId: string;
     runId: string;
     title: string | null;
+    run: MainRun;
   }>('/api/v1/main/messages', {
     method: 'POST',
     includeJson: true,
@@ -2807,6 +2833,28 @@ export async function postMainMessage(input: {
       ...(input.threadId ? { threadId: input.threadId } : {}),
     }),
   });
+}
+
+export async function listMainRuns(threadId: string): Promise<MainRun[]> {
+  return apiRequest<MainRun[]>(
+    `/api/v1/main/threads/${encodeURIComponent(threadId)}/runs`,
+  );
+}
+
+export async function postMainRunVisible(input: {
+  runId: string;
+  firstVisibleAt: string;
+}): Promise<{ recorded: boolean }> {
+  return apiMutationRequest<{ recorded: boolean }>(
+    `/api/v1/main/runs/${encodeURIComponent(input.runId)}/visible`,
+    {
+      method: 'POST',
+      includeJson: true,
+      body: JSON.stringify({
+        firstVisibleAt: input.firstVisibleAt,
+      }),
+    },
+  );
 }
 
 export async function updateMainThread(input: {
