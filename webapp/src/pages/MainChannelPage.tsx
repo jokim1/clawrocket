@@ -730,6 +730,7 @@ export function MainChannelPage({
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const activeThreadIdRef = useRef<string | null>(state.activeThreadId);
   const runsByIdRef = useRef<Record<string, MainRun>>(state.runsById);
+  const threadSnapshotVersionRef = useRef(0);
   const firstVisibleReportedRunIdsRef = useRef<Set<string>>(new Set());
   const [editingThreadId, setEditingThreadId] = useState<string | null>(null);
   const [threadMenu, setThreadMenu] = useState<{
@@ -768,27 +769,44 @@ export function MainChannelPage({
     });
   }, []);
 
-  const refreshActiveThread = useCallback(async () => {
-    const threadId = activeThreadIdRef.current;
-    if (!threadId) return;
-    try {
-      const [messages, runs] = await Promise.all([
-        getMainThread(threadId),
-        listMainRuns(threadId),
-      ]);
-      if (threadId !== activeThreadIdRef.current) return;
-      dispatch({
-        type: 'MESSAGES_LOADED_FOR_THREAD',
-        threadId,
-        messages,
-      });
-      dispatch({ type: 'RUNS_LOADED', threadId, runs });
-    } catch (err) {
-      if (err instanceof UnauthorizedError) {
-        onUnauthorized();
+  const refreshActiveThread = useCallback(
+    async ({
+      refreshThreads = false,
+    }: {
+      refreshThreads?: boolean;
+    } = {}) => {
+      const threadId = activeThreadIdRef.current;
+      if (!threadId) return;
+      const snapshotVersion = threadSnapshotVersionRef.current;
+      try {
+        const [messages, runs, threads] = await Promise.all([
+          getMainThread(threadId),
+          listMainRuns(threadId),
+          refreshThreads ? listMainThreads() : Promise.resolve(null),
+        ]);
+        if (
+          threadId !== activeThreadIdRef.current ||
+          snapshotVersion !== threadSnapshotVersionRef.current
+        ) {
+          return;
+        }
+        if (threads !== null) {
+          dispatch({ type: 'THREADS_LOADED', threads });
+        }
+        dispatch({
+          type: 'MESSAGES_LOADED_FOR_THREAD',
+          threadId,
+          messages,
+        });
+        dispatch({ type: 'RUNS_LOADED', threadId, runs });
+      } catch (err) {
+        if (err instanceof UnauthorizedError) {
+          onUnauthorized();
+        }
       }
-    }
-  }, [onUnauthorized]);
+    },
+    [onUnauthorized],
+  );
 
   // ── Load threads ──
   useEffect(() => {
@@ -848,21 +866,38 @@ export function MainChannelPage({
   activeThreadIdRef.current = state.activeThreadId;
   runsByIdRef.current = state.runsById;
 
+  useEffect(() => {
+    threadSnapshotVersionRef.current += 1;
+  }, [state.activeThreadId]);
+
   // ── Load messages when activeThreadId changes ──
   useEffect(() => {
     if (!state.activeThreadId) return;
     const threadId = state.activeThreadId;
+    const snapshotVersion = threadSnapshotVersionRef.current;
     let cancelled = false;
     dispatch({ type: 'MESSAGES_LOADING' });
     getMainThread(threadId)
       .then((messages) => {
         if (cancelled) return;
-        dispatch({ type: 'MESSAGES_LOADED', messages });
+        if (
+          threadId !== activeThreadIdRef.current ||
+          snapshotVersion !== threadSnapshotVersionRef.current
+        ) {
+          return;
+        }
+        dispatch({ type: 'MESSAGES_LOADED_FOR_THREAD', threadId, messages });
         // Scroll to bottom after messages load
         requestAnimationFrame(() => scrollToBottom());
       })
       .catch((err) => {
         if (cancelled) return;
+        if (
+          threadId !== activeThreadIdRef.current ||
+          snapshotVersion !== threadSnapshotVersionRef.current
+        ) {
+          return;
+        }
         if (err instanceof UnauthorizedError) {
           onUnauthorized();
           return;
@@ -882,10 +917,17 @@ export function MainChannelPage({
   useEffect(() => {
     if (!state.activeThreadId) return;
     const threadId = state.activeThreadId;
+    const snapshotVersion = threadSnapshotVersionRef.current;
     let cancelled = false;
     listMainRuns(threadId)
       .then((runs) => {
         if (cancelled) return;
+        if (
+          threadId !== activeThreadIdRef.current ||
+          snapshotVersion !== threadSnapshotVersionRef.current
+        ) {
+          return;
+        }
         dispatch({ type: 'RUNS_LOADED', threadId, runs });
         for (const run of runs) {
           if (
@@ -898,6 +940,12 @@ export function MainChannelPage({
       })
       .catch((err) => {
         if (cancelled) return;
+        if (
+          threadId !== activeThreadIdRef.current ||
+          snapshotVersion !== threadSnapshotVersionRef.current
+        ) {
+          return;
+        }
         if (err instanceof UnauthorizedError) {
           onUnauthorized();
         }
@@ -1055,29 +1103,19 @@ export function MainChannelPage({
         dispatch({ type: 'STREAM_STATE', state: streamState });
       },
       onReplayGap: () => {
-        // Re-fetch messages for active thread on replay gap (read from ref to avoid dep on activeThreadId).
-        // Dispatch with threadId so the reducer drops stale results if the user navigated away.
-        const tid = activeThreadIdRef.current;
-        if (tid) {
-          getMainThread(tid)
-            .then((messages) =>
-              dispatch({
-                type: 'MESSAGES_LOADED_FOR_THREAD',
-                threadId: tid,
-                messages,
-              }),
-            )
-            .catch(() => {});
-          listMainRuns(tid)
-            .then((runs) => dispatch({ type: 'RUNS_LOADED', threadId: tid, runs }))
-            .catch(() => {});
-        }
+        void refreshActiveThread();
       },
       onUnauthorized,
     });
 
     return () => handle.close();
-  }, [onUnauthorized, isNearBottom, reportRunVisible, scrollToBottom]);
+  }, [
+    onUnauthorized,
+    isNearBottom,
+    refreshActiveThread,
+    reportRunVisible,
+    scrollToBottom,
+  ]);
 
   // ── Thread selection ──
   const selectThread = useCallback(
@@ -1365,11 +1403,13 @@ export function MainChannelPage({
           dispatch({ type: 'THREAD_REMOVED', threadId });
           navigate('/app/main', { replace: true });
         } else {
+          threadSnapshotVersionRef.current += 1;
           dispatch({
             type: 'HISTORY_DELETED',
             threadId,
             deletedMessageIds: result.deletedMessageIds,
           });
+          void refreshActiveThread({ refreshThreads: true });
         }
         setHistoryEditorOpen(false);
         setHistoryEditState({
@@ -1383,6 +1423,10 @@ export function MainChannelPage({
           onUnauthorized();
           return;
         }
+        if (err instanceof ApiError && err.code === 'message_not_found') {
+          threadSnapshotVersionRef.current += 1;
+          void refreshActiveThread({ refreshThreads: true });
+        }
         setHistoryEditState({
           status: 'error',
           message:
@@ -1392,7 +1436,7 @@ export function MainChannelPage({
         });
       }
     },
-    [navigate, onUnauthorized, state.activeThreadId],
+    [navigate, onUnauthorized, refreshActiveThread, state.activeThreadId],
   );
 
   // ── Send message ──
