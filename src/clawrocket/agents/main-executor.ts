@@ -11,7 +11,7 @@
  * events (started, deltas, usage), and returns output.
  * On failure it throws — the worker catches and emits the authoritative failure.
  *
- * Phase 2: Main executor now has web_fetch and web_search tools.
+ * Phase 2: Main executor now has direct web and browser tools.
  */
 
 import { getDb } from '../../db.js';
@@ -43,6 +43,10 @@ import {
 } from './main-context-loader.js';
 import { resolveValidatedProjectMountPath } from './project-mounts.js';
 import { executeContainerAgentTurn } from './container-turn-executor.js';
+import {
+  BROWSER_TOOL_DEFINITIONS,
+  executeBrowserTool,
+} from '../tools/browser-tools.js';
 import {
   executeWebFetch,
   executeWebSearch,
@@ -480,9 +484,14 @@ export async function executeMainChannel(
   let firstProviderEventRecorded = false;
   let firstTokenRecorded = false;
   let promotionRequest: MainPromotionRequest | null = null;
-  const directContextTools = toolFamilyEnabled(mainPlan.effectiveTools, 'web')
-    ? WEB_TOOL_DEFINITIONS
-    : [];
+  const directContextTools = [
+    ...(toolFamilyEnabled(mainPlan.effectiveTools, 'web')
+      ? WEB_TOOL_DEFINITIONS
+      : []),
+    ...(toolFamilyEnabled(mainPlan.effectiveTools, 'browser')
+      ? BROWSER_TOOL_DEFINITIONS
+      : []),
+  ];
   const context: ExecutionContext = {
     systemPrompt: buildMainSystemPrompt(mainContext.summaryText),
     contextTools:
@@ -622,6 +631,23 @@ function buildMainToolExecutor(input: {
         };
       }
       return executeWebSearch(args, input.signal);
+    }
+    if (toolName.startsWith('browser_')) {
+      if (!toolFamilyEnabled(input.mainPlan.effectiveTools, 'browser')) {
+        return {
+          result: `Tool '${toolName}' is not enabled for this Main agent`,
+          isError: true,
+        };
+      }
+      return executeBrowserTool({
+        toolName,
+        args,
+        context: {
+          signal: input.signal,
+          userId: input.input.requestedBy,
+          runId: input.input.runId,
+        },
+      });
     }
     if (toolName === REQUEST_HEAVY_EXECUTION_TOOL.name) {
       if (input.mainPlan.policy !== 'direct_with_promotion') {
