@@ -91,7 +91,6 @@ export async function executeBrowserBridgeRequest(input: {
     };
   }
 }
-
 export class BrowserBridgeServer {
   private server: net.Server | null = null;
   private startPromise: Promise<string> | null = null;
@@ -152,7 +151,6 @@ export class BrowserBridgeServer {
                 ),
           );
         };
-
         socket.on('data', (chunk) => {
           raw += chunk;
           if (raw.length > MAX_REQUEST_BYTES) {
@@ -250,7 +248,6 @@ export function registerBrowserBridgeRunAbort(
 export function unregisterBrowserBridgeRunAbort(runId: string): void {
   runAborters.delete(runId);
 }
-
 export async function ensureBrowserBridgeServer(): Promise<string> {
   if (!bridgeServer) {
     bridgeServer = new BrowserBridgeServer();

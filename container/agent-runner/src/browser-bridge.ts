@@ -47,7 +47,7 @@ export async function executeBrowserBridgeTool(input: {
     let settled = false;
 
     const finish = (
-      fn: (value?: any) => void,
+      fn: (value?: BrowserBridgeResponse | Error) => void,
       value?: BrowserBridgeResponse | Error,
     ) => {
       if (settled) return;
@@ -60,7 +60,9 @@ export async function executeBrowserBridgeTool(input: {
     const timer = setTimeout(() => {
       finish(
         reject,
-        new Error(`Browser bridge request timed out after ${input.timeoutMs ?? DEFAULT_TIMEOUT_MS}ms.`),
+        new Error(
+          `Browser bridge request timed out after ${input.timeoutMs ?? DEFAULT_TIMEOUT_MS}ms.`,
+        ),
       );
     }, input.timeoutMs ?? DEFAULT_TIMEOUT_MS);
 

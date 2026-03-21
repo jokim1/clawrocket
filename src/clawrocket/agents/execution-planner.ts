@@ -380,7 +380,6 @@ export function planExecution(
   const heavyToolFamilies = resolveHeavyToolFamilies(effectiveTools);
   const provider = getProviderRecord(agent.provider_id);
   const configuredAuthMode = getConfiguredExecutorAuthMode();
-
   if (browserEnabled) {
     const directPlan = tryResolveDirectExecutionPlan({
       agent,
@@ -431,7 +430,6 @@ export function planExecution(
       'DIRECT_EXECUTION_UNAVAILABLE',
     );
   }
-
   if (
     heavyToolFamilies.length === 0 &&
     agent.provider_id === 'provider.anthropic' &&

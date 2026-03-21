@@ -380,8 +380,13 @@ describe('execution-planner', () => {
           enabled: true,
           requiresApproval: false,
         },
+        {
+          toolFamily: 'browser',
+          runtimeTools: ['browser_open'],
+          enabled: true,
+          requiresApproval: false,
+        },
       ],
-      includeConnectorTools: true,
     });
 
     expect(allowedTools).toEqual(
