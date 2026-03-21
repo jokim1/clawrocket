@@ -170,6 +170,71 @@ describe('TalkDetailPage', () => {
     expect(openTalkStreamMock).toHaveBeenCalledTimes(1);
   });
 
+  it('renders blocked browser runs in the Talk timeline and approves confirmation inline', async () => {
+    const user = userEvent.setup();
+    installTalkDetailFetch({
+      messages: [
+        buildMessage({
+          id: 'msg-browser-1',
+          role: 'user',
+          content: 'Check my LinkedIn messages.',
+          createdAt: '2026-03-20T20:30:00.000Z',
+        }),
+      ],
+      runs: [
+        buildRun({
+          id: 'run-browser-confirm',
+          status: 'awaiting_confirmation',
+          createdAt: '2026-03-20T20:30:01.000Z',
+          startedAt: '2026-03-20T20:30:02.000Z',
+          triggerMessageId: 'msg-browser-1',
+          targetAgentNickname: 'Claude Sonnet 4.6',
+          browserBlock: {
+            kind: 'confirmation_required',
+            sessionId: 'session-browser-1',
+            siteKey: 'linkedin',
+            accountLabel: null,
+            url: 'https://www.linkedin.com/messaging/',
+            title: 'LinkedIn Messaging',
+            message: 'This browser action will send a real message.',
+            riskReason: 'send button',
+            setupCommand: null,
+            artifacts: [],
+            confirmationId: 'confirmation-browser-1',
+            pendingToolCall: {
+              toolName: 'browser_act',
+              args: { action: 'click' },
+            },
+            createdAt: '2026-03-20T20:30:03.000Z',
+            updatedAt: '2026-03-20T20:30:03.000Z',
+          },
+          executionDecision: {
+            backend: 'container',
+            authPath: 'subscription',
+            credentialSource: 'oauth_token',
+            plannerReason: 'Browser ran in the container-backed path.',
+            providerId: 'provider.anthropic',
+            modelId: 'claude-sonnet-4-6',
+          },
+        }),
+      ],
+    });
+
+    renderDetailPage('/app/talks/talk-1');
+
+    await screen.findByText('Browser approval required');
+    expect(screen.getByText('This browser action will send a real message.')).toBeTruthy();
+    expect(screen.getByText('Browser ran in the container-backed path.')).toBeTruthy();
+
+    await user.click(screen.getByRole('button', { name: 'Approve action' }));
+
+    await waitFor(() =>
+      expect(
+        screen.queryByText('Browser approval required'),
+      ).toBeNull(),
+    );
+  });
+
   it('hides the response-mode selector until the talk has at least two assigned agents', async () => {
     installTalkDetailFetch({
       messages: [],
@@ -2619,6 +2684,7 @@ describe('TalkDetailPage', () => {
 
     renderDetailPage('/app/talks/talk-1');
     await screen.findByRole('heading', { name: /Cal Football/i });
+    await screen.findByText('Can we pull retention data?');
 
     if (!streamInput) {
       throw new Error('Expected talk stream input');
@@ -2704,6 +2770,7 @@ describe('TalkDetailPage', () => {
 
     renderDetailPage('/app/talks/talk-1');
     await screen.findByRole('heading', { name: /Cal Football/i });
+    await screen.findByText('Can we pull retention data?');
 
     if (!streamInput) {
       throw new Error('Expected talk stream input');
@@ -2752,6 +2819,7 @@ describe('TalkDetailPage', () => {
 
     renderDetailPage('/app/talks/talk-1');
     await screen.findByRole('heading', { name: /Cal Football/i });
+    await screen.findByText('Can we pull retention data?');
 
     if (!streamInput) {
       throw new Error('Expected talk stream input');
@@ -2817,6 +2885,7 @@ describe('TalkDetailPage', () => {
 
     renderDetailPage('/app/talks/talk-1');
     await screen.findByRole('heading', { name: /Cal Football/i });
+    await screen.findByText('Can we pull retention data?');
 
     if (!streamInput) {
       throw new Error('Expected talk stream input');
@@ -3399,6 +3468,10 @@ function buildRun(
     cancelReason: input.cancelReason ?? null,
     executorAlias: input.executorAlias ?? null,
     executorModel: input.executorModel ?? null,
+    browserBlock: input.browserBlock ?? null,
+    browserResume: input.browserResume ?? null,
+    carriedBrowserSessions: input.carriedBrowserSessions ?? [],
+    executionDecision: input.executionDecision ?? null,
   };
 }
 
@@ -3835,7 +3908,7 @@ function installTalkDetailFetch(input?: {
           .at(-1)?.createdAt ?? null,
     }),
   ];
-  const runs = input?.runs ?? [
+  let runs = input?.runs ?? [
     buildRun({
       id: 'run-1',
       status: 'completed',
@@ -4192,6 +4265,153 @@ function installTalkDetailFetch(input?: {
           data: {
             talkId: 'talk-1',
             runs,
+          },
+        });
+      }
+
+      if (path === '/api/v1/browser/setup' && method === 'POST') {
+        const body = JSON.parse(String(init?.body || '{}')) as {
+          siteKey?: string;
+          accountLabel?: string | null;
+          url?: string | null;
+        };
+        return jsonResponse(200, {
+          ok: true,
+          data: {
+            status: 'ok',
+            siteKey: body.siteKey ?? 'linkedin',
+            accountLabel: body.accountLabel ?? null,
+            sessionId: 'session-browser-1',
+            url: body.url ?? 'https://www.linkedin.com/login',
+            title: 'LinkedIn',
+            reusedSession: false,
+            createdProfile: false,
+            message: 'Browser setup session opened.',
+          },
+        });
+      }
+
+      const browserTakeoverMatch = path.match(
+        /^\/api\/v1\/browser\/sessions\/([^/]+)\/takeover$/,
+      );
+      if (browserTakeoverMatch && method === 'POST') {
+        const sessionId = decodeURIComponent(browserTakeoverMatch[1] || '');
+        return jsonResponse(200, {
+          ok: true,
+          data: {
+            sessionId,
+            siteKey: 'linkedin',
+            accountLabel: null,
+            headed: true,
+            state: 'takeover',
+            owner: 'user',
+            blockedKind: 'human_step_required',
+            blockedMessage: 'Complete the step manually.',
+            currentUrl: 'https://www.linkedin.com/feed/',
+            currentTitle: 'LinkedIn',
+            lastUpdatedAt: '2026-03-20T20:40:00.000Z',
+          },
+        });
+      }
+
+      const browserResumeMatch = path.match(
+        /^\/api\/v1\/browser\/runs\/([^/]+)\/resume$/,
+      );
+      if (browserResumeMatch && method === 'POST') {
+        const runId = decodeURIComponent(browserResumeMatch[1] || '');
+        runs = runs.map((run) =>
+          run.id === runId
+            ? {
+                ...run,
+                status: 'queued',
+                browserBlock: null,
+                browserResume: {
+                  kind: 'human_step_completed',
+                  resumedAt: '2026-03-20T20:41:00.000Z',
+                  resumedBy: 'user-1',
+                  sessionId: run.browserBlock?.sessionId ?? null,
+                  confirmationId: run.browserBlock?.confirmationId ?? null,
+                  note: null,
+                  pendingToolCall: run.browserBlock?.pendingToolCall ?? null,
+                },
+              }
+            : run,
+        );
+        return jsonResponse(200, {
+          ok: true,
+          data: {
+            runId,
+            resumed: true,
+            browserResume: runs.find((run) => run.id === runId)?.browserResume,
+          },
+        });
+      }
+
+      const browserApproveMatch = path.match(
+        /^\/api\/v1\/browser\/confirmations\/([^/]+)\/approve$/,
+      );
+      if (browserApproveMatch && method === 'POST') {
+        const confirmationId = decodeURIComponent(browserApproveMatch[1] || '');
+        const run = runs.find(
+          (entry) => entry.browserBlock?.confirmationId === confirmationId,
+        );
+        if (run) {
+          runs = runs.map((entry) =>
+            entry.id === run.id
+              ? {
+                  ...entry,
+                  status: 'queued',
+                  browserBlock: null,
+                  browserResume: {
+                    kind: 'confirmation_approved',
+                    resumedAt: '2026-03-20T20:42:00.000Z',
+                    resumedBy: 'user-1',
+                    sessionId: run.browserBlock?.sessionId ?? null,
+                    confirmationId,
+                    note: null,
+                    pendingToolCall: run.browserBlock?.pendingToolCall ?? null,
+                  },
+                }
+              : entry,
+          );
+        }
+        return jsonResponse(200, {
+          ok: true,
+          data: {
+            confirmationId,
+            runId: run?.id ?? 'run-missing',
+            approved: true,
+            browserResume: runs.find((entry) => entry.id === run?.id)
+              ?.browserResume,
+          },
+        });
+      }
+
+      const browserRejectMatch = path.match(
+        /^\/api\/v1\/browser\/confirmations\/([^/]+)\/reject$/,
+      );
+      if (browserRejectMatch && method === 'POST') {
+        const confirmationId = decodeURIComponent(browserRejectMatch[1] || '');
+        const run = runs.find(
+          (entry) => entry.browserBlock?.confirmationId === confirmationId,
+        );
+        if (run) {
+          runs = runs.map((entry) =>
+            entry.id === run.id
+              ? {
+                  ...entry,
+                  status: 'cancelled',
+                  browserBlock: null,
+                }
+              : entry,
+          );
+        }
+        return jsonResponse(200, {
+          ok: true,
+          data: {
+            confirmationId,
+            runId: run?.id ?? 'run-missing',
+            rejected: true,
           },
         });
       }

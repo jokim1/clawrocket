@@ -2317,6 +2317,22 @@ a {
   color: #8e2e2e;
 }
 
+.execution-decision-summary {
+  display: grid;
+  gap: 0.2rem;
+  margin-top: 0.5rem;
+  padding: 0.55rem 0.65rem;
+  border: 1px solid #d9e2f3;
+  border-radius: 10px;
+  background: #f8fbff;
+  font-size: 0.8rem;
+  color: #405172;
+}
+
+.execution-decision-summary p {
+  margin: 0;
+}
+
 .timeline {
   position: relative;
   min-height: 280px;
@@ -2362,6 +2378,142 @@ a {
 .main-run-chip {
   border-color: #d8dde7;
   background: #fafbfd;
+}
+
+.browser-block-card {
+  display: grid;
+  gap: 0.7rem;
+}
+
+.browser-block-card-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.8rem;
+}
+
+.browser-block-card-header h3 {
+  margin: 0;
+  font-size: 0.95rem;
+  color: #21314f;
+}
+
+.browser-block-site {
+  margin: 0.15rem 0 0;
+  font-size: 0.8rem;
+  color: #60708f;
+}
+
+.browser-block-kind {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 0.2rem 0.55rem;
+  border: 1px solid transparent;
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: capitalize;
+  white-space: nowrap;
+}
+
+.browser-block-kind-auth_required,
+.browser-block-kind-human_step_required {
+  border-color: #d6def5;
+  background: #f5f8ff;
+  color: #30559a;
+}
+
+.browser-block-kind-confirmation_required {
+  border-color: #f2d9a7;
+  background: #fff8e6;
+  color: #8a6420;
+}
+
+.browser-block-message {
+  margin: 0;
+  font-size: 0.9rem;
+  color: #23324f;
+}
+
+.browser-block-details {
+  margin: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 0.55rem;
+}
+
+.browser-block-details div {
+  display: grid;
+  gap: 0.14rem;
+}
+
+.browser-block-details dt {
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: #6b7a98;
+}
+
+.browser-block-details dd {
+  margin: 0;
+  font-size: 0.84rem;
+  color: #31425f;
+  overflow-wrap: anywhere;
+}
+
+.browser-block-planner-reason {
+  margin: 0;
+  font-size: 0.8rem;
+  color: #5c6f90;
+}
+
+.browser-block-artifacts {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.45rem;
+}
+
+.browser-block-artifacts li {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+  font-size: 0.82rem;
+}
+
+.browser-block-artifacts a {
+  color: #1a4fa6;
+  text-decoration: none;
+}
+
+.browser-block-artifacts a:hover {
+  text-decoration: underline;
+}
+
+.browser-block-artifacts code {
+  font-size: 0.76rem;
+  color: #566684;
+}
+
+.browser-block-setup-command {
+  display: grid;
+  gap: 0.3rem;
+  font-size: 0.8rem;
+  color: #556883;
+}
+
+.browser-block-setup-command code {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.browser-block-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
 }
 
 .timeline-new-indicator {

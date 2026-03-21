@@ -34,6 +34,8 @@ import {
   type MainThreadSummary,
 } from '../lib/api';
 import { stripInternalAssistantText } from '../lib/assistantText';
+import { BrowserBlockedRunCard } from '../components/BrowserBlockedRunCard';
+import { ExecutionDecisionSummary } from '../components/ExecutionDecisionSummary';
 import { InlineEditableTitle } from '../components/InlineEditableTitle';
 import { TalkHistoryEditor } from '../components/TalkHistoryEditor';
 import { ThreadContextMenu } from '../components/ThreadContextMenu';
@@ -158,6 +160,22 @@ function createInitialState(): MainState {
 
 const SCROLL_STICK_THRESHOLD_PX = 120;
 const MAIN_MESSAGE_MAX_CHARS = 20_000;
+
+function getBrowserBlockStatusLabel(
+  browserBlock: MainRun['browserBlock'],
+): string {
+  if (!browserBlock) {
+    return 'Waiting for approval';
+  }
+  switch (browserBlock.kind) {
+    case 'auth_required':
+      return 'Authentication required';
+    case 'confirmation_required':
+      return 'Approval required';
+    case 'human_step_required':
+      return 'Manual step required';
+  }
+}
 
 function sortMainThreads(threads: MainThreadSummary[]): MainThreadSummary[] {
   return [...threads].sort((left, right) => {
@@ -481,15 +499,11 @@ function mainReducer(state: MainState, action: MainAction): MainState {
     case 'HISTORY_DELETED': {
       if (action.threadId !== state.activeThreadId) return state;
       const deletedIds = new Set(action.deletedMessageIds);
-      const messages = state.messages.filter(
-        (message) => !deletedIds.has(message.id),
-      );
+      const messages = state.messages.filter((message) => !deletedIds.has(message.id));
       if (messages.length === 0) {
         return {
           ...state,
-          threads: state.threads.filter(
-            (thread) => thread.threadId !== action.threadId,
-          ),
+          threads: state.threads.filter((thread) => thread.threadId !== action.threadId),
           activeThreadId: null,
           messages: [],
           runsById: {},
@@ -704,6 +718,28 @@ export function MainChannelPage({
       firstVisibleReportedRunIdsRef.current.delete(runId);
     });
   }, []);
+
+  const refreshActiveThread = useCallback(async () => {
+    const threadId = activeThreadIdRef.current;
+    if (!threadId) return;
+    try {
+      const [messages, runs] = await Promise.all([
+        getMainThread(threadId),
+        listMainRuns(threadId),
+      ]);
+      if (threadId !== activeThreadIdRef.current) return;
+      dispatch({
+        type: 'MESSAGES_LOADED_FOR_THREAD',
+        threadId,
+        messages,
+      });
+      dispatch({ type: 'RUNS_LOADED', threadId, runs });
+    } catch (err) {
+      if (err instanceof UnauthorizedError) {
+        onUnauthorized();
+      }
+    }
+  }, [onUnauthorized]);
 
   // ── Load threads ──
   useEffect(() => {
@@ -1039,7 +1075,9 @@ export function MainChannelPage({
       const isActivePromotionRun =
         run.kind === 'main_promotion' &&
         ['queued', 'running', 'awaiting_confirmation'].includes(run.status);
-      if (isPromotionPending || isActivePromotionRun) {
+      const isBlockedBrowserRun =
+        run.status === 'awaiting_confirmation' && Boolean(run.browserBlock);
+      if (isPromotionPending || isActivePromotionRun || isBlockedBrowserRun) {
         entries.push({ kind: 'run', run });
       }
     }
@@ -1588,7 +1626,7 @@ export function MainChannelPage({
                   run.promotionState === 'pending'
                     ? 'Starting background task…'
                     : run.status === 'awaiting_confirmation'
-                      ? 'Waiting for approval'
+                      ? getBrowserBlockStatusLabel(run.browserBlock)
                       : run.status === 'queued'
                         ? 'Queued'
                         : 'Working';
@@ -1601,16 +1639,29 @@ export function MainChannelPage({
                       <strong>Nanoclaw</strong>
                       <time>{statusLabel}</time>
                     </header>
-                    <p>
-                      <em>
-                        * {run.userVisibleSummary || 'Heavy execution in progress'}
-                      </em>
-                    </p>
+                    {run.browserBlock ? (
+                      <BrowserBlockedRunCard
+                        runId={run.id}
+                        browserBlock={run.browserBlock}
+                        executionDecision={run.executionDecision}
+                        onUnauthorized={onUnauthorized}
+                        onStateChanged={refreshActiveThread}
+                      />
+                    ) : (
+                      <p>
+                        <em>
+                          *{' '}
+                          {run.userVisibleSummary ||
+                            'Heavy execution in progress'}
+                        </em>
+                      </p>
+                    )}
                   </article>
                 );
               }
 
               const { response } = entry;
+              const run = state.runsById[response.runId];
               return (
                 <article
                   key={`live-${response.runId}`}
@@ -1631,6 +1682,11 @@ export function MainChannelPage({
                   </p>
                   {response.errorMessage ? (
                     <p className="run-history-error">{response.errorMessage}</p>
+                  ) : null}
+                  {response.terminalStatus === 'failed' ? (
+                    <ExecutionDecisionSummary
+                      executionDecision={run?.executionDecision}
+                    />
                   ) : null}
                 </article>
               );
@@ -1661,14 +1717,6 @@ export function MainChannelPage({
         {state.sendState === 'error' && state.sendError ? (
           <p className="main-send-error">{state.sendError}</p>
         ) : null}
-        <TalkHistoryEditor
-          isOpen={historyEditorOpen}
-          messages={historyEditorMessages}
-          busy={historyEditState.status === 'saving'}
-          onClose={handleCloseHistoryEditor}
-          onConfirm={handleDeleteHistoryMessages}
-          resolveActorLabel={resolveHistoryActorLabel}
-        />
         {threadMenu && menuThread ? (
           <ThreadContextMenu
             x={threadMenu.x}
@@ -1692,6 +1740,19 @@ export function MainChannelPage({
             onDelete={() => void handleDeleteThread(menuThread)}
           />
         ) : null}
+        <TalkHistoryEditor
+          isOpen={historyEditorOpen}
+          messages={historyEditorMessages}
+          busy={historyEditState.status === 'saving'}
+          errorMessage={
+            historyEditorOpen && historyEditState.status === 'error'
+              ? historyEditState.message || null
+              : null
+          }
+          onClose={handleCloseHistoryEditor}
+          onConfirm={handleDeleteHistoryMessages}
+          resolveActorLabel={resolveHistoryActorLabel}
+        />
       </div>
     </div>
   );
