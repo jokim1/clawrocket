@@ -658,8 +658,9 @@ export async function executeContainerAgentTurn(
       }
       throw new Error(output.error || 'Container execution failed.');
     }
-    const finalContent =
-      hasNonEmptyText(output.result) ? output.result : streamedContent;
+    const finalContent = hasNonEmptyText(output.result)
+      ? output.result
+      : streamedContent;
     if (!hasNonEmptyText(finalContent)) {
       throw new Error(
         'Container execution completed without a final response.',
