@@ -48,6 +48,7 @@ import {
 import {
   openMainStream,
   type MainMessageAppendedEvent,
+  type MainProgressUpdateEvent,
   type MainResponseDeltaEvent,
   type MainResponseFailedEvent,
   type MainResponseStartedEvent,
@@ -65,6 +66,7 @@ type LiveResponse = {
   threadId: string;
   rawText: string;
   text: string;
+  progressMessage?: string;
   agentName?: string;
   errorMessage?: string;
   terminalStatus?: 'failed';
@@ -122,6 +124,7 @@ type MainAction =
       deletedMessageIds: string[];
     }
   | { type: 'RESPONSE_STARTED'; event: MainResponseStartedEvent }
+  | { type: 'RESPONSE_PROGRESS'; event: MainProgressUpdateEvent }
   | { type: 'RESPONSE_DELTA'; event: MainResponseDeltaEvent }
   | { type: 'RESPONSE_COMPLETED'; runId: string; threadId: string }
   | { type: 'RESPONSE_FAILED'; event: MainResponseFailedEvent }
@@ -546,8 +549,28 @@ function mainReducer(state: MainState, action: MainAction): MainState {
             threadId: action.event.threadId,
             rawText: '',
             text: '',
+            progressMessage: undefined,
             agentName: action.event.agentName,
             startedAt: Date.now(),
+          },
+        },
+      };
+    }
+    case 'RESPONSE_PROGRESS': {
+      if (action.event.threadId !== state.activeThreadId) return state;
+      const existing = state.liveResponses[action.event.runId];
+      return {
+        ...state,
+        liveResponses: {
+          ...state.liveResponses,
+          [action.event.runId]: {
+            runId: action.event.runId,
+            threadId: action.event.threadId,
+            rawText: existing?.rawText || '',
+            text: existing?.text || '',
+            progressMessage: action.event.message,
+            agentName: existing?.agentName,
+            startedAt: existing?.startedAt || Date.now(),
           },
         },
       };
@@ -565,6 +588,7 @@ function mainReducer(state: MainState, action: MainAction): MainState {
             threadId: action.event.threadId,
             rawText,
             text: stripInternalAssistantText(rawText),
+            progressMessage: existing?.progressMessage,
             agentName: existing?.agentName,
             startedAt: existing?.startedAt || Date.now(),
           },
@@ -600,6 +624,7 @@ function mainReducer(state: MainState, action: MainAction): MainState {
             threadId: action.event.threadId,
             rawText: existing?.rawText || '',
             text: existing?.text || '',
+            progressMessage: existing?.progressMessage,
             agentName: existing?.agentName,
             errorMessage: action.event.errorMessage,
             terminalStatus: 'failed',
@@ -980,6 +1005,10 @@ export function MainChannelPage({
       onResponseStarted: (event) => {
         reportRunVisible(event.runId);
         dispatch({ type: 'RESPONSE_STARTED', event });
+      },
+      onProgressUpdate: (event) => {
+        reportRunVisible(event.runId);
+        dispatch({ type: 'RESPONSE_PROGRESS', event });
       },
       onResponseDelta: (event) => {
         reportRunVisible(event.runId);
@@ -1677,8 +1706,14 @@ export function MainChannelPage({
                         : 'Streaming…'}
                     </time>
                   </header>
-                  <p className={response.text ? undefined : 'message-pending-copy'}>
-                    {response.text || '* Thinking…'}
+                  <p
+                    className={
+                      response.text || response.progressMessage
+                        ? undefined
+                        : 'message-pending-copy'
+                    }
+                  >
+                    {response.text || response.progressMessage || '* Thinking…'}
                   </p>
                   {response.errorMessage ? (
                     <p className="run-history-error">{response.errorMessage}</p>

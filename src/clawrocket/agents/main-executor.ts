@@ -43,6 +43,7 @@ import {
 } from './main-context-loader.js';
 import { resolveValidatedProjectMountPath } from './project-mounts.js';
 import { executeContainerAgentTurn } from './container-turn-executor.js';
+import { executeCodexAgentTurn } from './codex-turn-executor.js';
 import {
   BROWSER_TOOL_DEFINITIONS,
   executeBrowserTool,
@@ -79,6 +80,7 @@ export interface MainExecutorOutput {
   promotionRequest?: MainPromotionRequest | null;
   usage?: {
     inputTokens: number;
+    cachedInputTokens?: number;
     outputTokens: number;
     estimatedCostUsd?: number;
   };
@@ -108,11 +110,18 @@ export type MainExecutionEvent =
       text: string;
     }
   | {
+      type: 'main_progress_update';
+      runId: string;
+      threadId: string;
+      message: string;
+    }
+  | {
       type: 'main_response_usage';
       runId: string;
       threadId: string;
       usage: {
         inputTokens: number;
+        cachedInputTokens?: number;
         outputTokens: number;
         estimatedCostUsd?: number;
       };
@@ -308,7 +317,7 @@ function validatePromotionRequest(
 function buildExecutionDecisionForMain(input: {
   agent: RegisteredAgentRecord;
   mainPlan: MainExecutionPlan;
-  backend: 'direct_http' | 'container';
+  backend: 'direct_http' | 'container' | 'host_codex';
 }): ExecutionDecisionMetadata {
   if (input.backend === 'container') {
     const containerPlan = input.mainPlan.containerPlan;
@@ -319,6 +328,21 @@ function buildExecutionDecisionForMain(input: {
       backend: 'container',
       authPath: containerPlan.containerCredential.authMode,
       credentialSource: containerPlan.containerCredential.credentialSource,
+      plannerReason: input.mainPlan.policy,
+      providerId: input.agent.provider_id,
+      modelId: input.agent.model_id,
+    };
+  }
+
+  if (input.backend === 'host_codex') {
+    const hostCodexPlan = input.mainPlan.hostCodexPlan;
+    if (!hostCodexPlan) {
+      throw new Error('Missing Codex host plan for Main execution decision');
+    }
+    return {
+      backend: 'host_codex',
+      authPath: hostCodexPlan.authPath,
+      credentialSource: hostCodexPlan.credentialSource,
       plannerReason: input.mainPlan.policy,
       providerId: input.agent.provider_id,
       modelId: input.agent.model_id,
@@ -381,6 +405,7 @@ export async function executeMainChannel(
   }
 
   const mainPlan = planMainExecution(agent, input.requestedBy);
+  const useHostCodex = mainPlan.policy === 'host_codex_only';
   const runMetadata = parseObject(getTalkRunById(input.runId)?.metadata_json);
   const browserResumeSection = buildBrowserResumeSection(runMetadata);
   const promotedRun =
@@ -433,13 +458,15 @@ export async function executeMainChannel(
     executionDecision: buildExecutionDecisionForMain({
       agent,
       mainPlan,
-      backend:
-        promotedRun || mainPlan.policy === 'container_only'
+      backend: useHostCodex
+        ? 'host_codex'
+        : promotedRun || mainPlan.policy === 'container_only'
           ? 'container'
           : 'direct_http',
     }),
-    renderer:
-      promotedRun || mainPlan.policy === 'container_only'
+    renderer: useHostCodex
+      ? 'host_codex'
+      : promotedRun || mainPlan.policy === 'container_only'
         ? 'container'
         : 'direct_http',
     executionPolicy: mainPlan.policy,
@@ -449,37 +476,37 @@ export async function executeMainChannel(
   // Main channel has web tools but no context-source or connector tools.
   const shouldUseContainer =
     Boolean(promotedRun) || mainPlan.policy === 'container_only';
+  const projectMountHostPath = resolveValidatedProjectMountPath(
+    getSettingValue(EXECUTOR_MAIN_PROJECT_PATH_KEY),
+    true,
+  );
+  let systemPrompt = agent.system_prompt?.trim() || '';
+  if (mainContext.summaryText) {
+    systemPrompt = appendSystemSection(
+      systemPrompt,
+      'Main Thread Context',
+      mainContext.summaryText,
+    );
+  }
+  if (browserResumeSection) {
+    systemPrompt = appendSystemSection(
+      systemPrompt,
+      'Browser Resume Context',
+      browserResumeSection,
+    );
+  }
+  if (promotedRun) {
+    systemPrompt = appendSystemSection(
+      systemPrompt,
+      'Promotion Handoff',
+      buildPromotionHandoffSection(promotedRun),
+    );
+  }
   if (shouldUseContainer) {
     const containerPlan = mainPlan.containerPlan;
     if (!containerPlan) {
       throw new Error(
         'Main container execution is not configured for this agent',
-      );
-    }
-    const projectMountHostPath = resolveValidatedProjectMountPath(
-      getSettingValue(EXECUTOR_MAIN_PROJECT_PATH_KEY),
-      true,
-    );
-    let systemPrompt = agent.system_prompt?.trim() || '';
-    if (mainContext.summaryText) {
-      systemPrompt = appendSystemSection(
-        systemPrompt,
-        'Main Thread Context',
-        mainContext.summaryText,
-      );
-    }
-    if (browserResumeSection) {
-      systemPrompt = appendSystemSection(
-        systemPrompt,
-        'Browser Resume Context',
-        browserResumeSection,
-      );
-    }
-    if (promotedRun) {
-      systemPrompt = appendSystemSection(
-        systemPrompt,
-        'Promotion Handoff',
-        buildPromotionHandoffSection(promotedRun),
       );
     }
     const containerEffectiveTools = promotedRun
@@ -527,6 +554,82 @@ export async function executeMainChannel(
       threadId: input.threadId,
       latencyMs: Date.now() - startTime,
       promotionRequest: null,
+    };
+  }
+
+  if (useHostCodex) {
+    const hostCodexPlan = mainPlan.hostCodexPlan;
+    if (!hostCodexPlan) {
+      throw new Error(
+        'Main Codex host execution is not configured for this agent',
+      );
+    }
+    const result = await executeCodexAgentTurn({
+      runId: input.runId,
+      userId: input.requestedBy,
+      agent,
+      promptLabel: 'main',
+      userMessage: renderMainPromptPayload(mainContext, input.triggerContent),
+      signal,
+      context: {
+        systemPrompt,
+        history: mainContext.history,
+      },
+      modelContextWindow,
+      threadId: input.threadId,
+      projectMountHostPath,
+      enableWebTools: hostCodexPlan.effectiveTools.some(
+        (tool) => tool.toolFamily === 'web' && tool.enabled,
+      ),
+      enableBrowserTools: hostCodexPlan.effectiveTools.some(
+        (tool) => tool.toolFamily === 'browser' && tool.enabled,
+      ),
+      onProgressUpdate: (message) => {
+        emitEvent({
+          type: 'main_progress_update',
+          runId: input.runId,
+          threadId: input.threadId,
+          message,
+        });
+      },
+    });
+
+    if (
+      result.usage?.inputTokens !== undefined ||
+      result.usage?.cachedInputTokens !== undefined ||
+      result.usage?.outputTokens !== undefined
+    ) {
+      emitEvent({
+        type: 'main_response_usage',
+        runId: input.runId,
+        threadId: input.threadId,
+        usage: {
+          inputTokens: result.usage.inputTokens ?? 0,
+          cachedInputTokens: result.usage.cachedInputTokens,
+          outputTokens: result.usage.outputTokens ?? 0,
+        },
+      });
+    }
+
+    updateRunTiming(input.runId, {
+      completedAt: new Date().toISOString(),
+    });
+    return {
+      content: result.content,
+      agentId: agent.id,
+      agentName: agent.name,
+      providerId: agent.provider_id,
+      modelId: agent.model_id,
+      threadId: input.threadId,
+      latencyMs: Date.now() - startTime,
+      promotionRequest: null,
+      usage: result.usage
+        ? {
+            inputTokens: result.usage.inputTokens ?? 0,
+            cachedInputTokens: result.usage.cachedInputTokens,
+            outputTokens: result.usage.outputTokens ?? 0,
+          }
+        : undefined,
     };
   }
 

@@ -20,13 +20,14 @@ import {
 
 export const EXECUTOR_MAIN_PROJECT_PATH_KEY = 'executor.mainProjectPath';
 
-export type ExecutionBackend = 'direct_http' | 'container';
+export type ExecutionBackend = 'direct_http' | 'container' | 'host_codex';
 export type ExecutionRouteReason = 'normal' | 'subscription_fallback';
 export type ExecutionCredentialSource =
   | 'db_secret'
   | 'env'
   | 'oauth_token'
   | 'auth_token'
+  | 'host_auth'
   | 'missing';
 
 export interface ContainerCredentialConfig {
@@ -56,12 +57,27 @@ export interface ContainerExecutionPlan {
   containerCredential: ContainerCredentialConfig;
 }
 
-export type ExecutionPlan = DirectHttpExecutionPlan | ContainerExecutionPlan;
+export interface HostCodexExecutionPlan {
+  backend: 'host_codex';
+  routeReason: 'normal';
+  authPath: 'host_login';
+  credentialSource: 'host_auth';
+  effectiveTools: EffectiveToolAccess[];
+  providerId: string;
+  modelId: string;
+  heavyToolFamilies: string[];
+}
+
+export type ExecutionPlan =
+  | DirectHttpExecutionPlan
+  | ContainerExecutionPlan
+  | HostCodexExecutionPlan;
 
 export type MainExecutionPolicy =
   | 'direct_only'
   | 'direct_with_promotion'
-  | 'container_only';
+  | 'container_only'
+  | 'host_codex_only';
 
 export interface MainExecutionPlan {
   policy: MainExecutionPolicy;
@@ -69,6 +85,7 @@ export interface MainExecutionPlan {
   heavyToolFamilies: string[];
   directPlan: DirectHttpExecutionPlan | null;
   containerPlan: ContainerExecutionPlan | null;
+  hostCodexPlan: HostCodexExecutionPlan | null;
 }
 
 export class ExecutionPlannerError extends Error {
@@ -78,6 +95,9 @@ export class ExecutionPlannerError extends Error {
       | 'CONTAINER_BROWSER_REQUIRES_SHELL'
       | 'CONTAINER_PROVIDER_INCOMPATIBLE'
       | 'CONTAINER_CREDENTIAL_MISSING'
+      | 'CODEX_HOST_UNAVAILABLE'
+      | 'CODEX_REQUIRES_HEAVY_TOOLS'
+      | 'CODEX_UNSUPPORTED_TOOLS'
       | 'DIRECT_EXECUTION_UNAVAILABLE',
     public readonly details?: Record<string, unknown>,
   ) {
@@ -102,6 +122,35 @@ function getProviderRecord(providerId: string): LlmProviderRecord | undefined {
   return getDb()
     .prepare(`SELECT * FROM llm_providers WHERE id = ? LIMIT 1`)
     .get(providerId) as LlmProviderRecord | undefined;
+}
+
+function getProviderVerificationStatus(
+  providerId: string,
+):
+  | 'missing'
+  | 'not_verified'
+  | 'verifying'
+  | 'verified'
+  | 'invalid'
+  | 'unavailable'
+  | null {
+  const row = getDb()
+    .prepare(
+      `SELECT status FROM llm_provider_verifications WHERE provider_id = ? LIMIT 1`,
+    )
+    .get(providerId) as { status: string } | undefined;
+  if (!row?.status) return null;
+  if (
+    row.status === 'missing' ||
+    row.status === 'not_verified' ||
+    row.status === 'verifying' ||
+    row.status === 'verified' ||
+    row.status === 'invalid' ||
+    row.status === 'unavailable'
+  ) {
+    return row.status;
+  }
+  return null;
 }
 
 function getAnthropicApiKeyFromDb(): string | null {
@@ -217,6 +266,96 @@ function resolveHeavyToolFamilies(
   if (enabled.has('shell')) heavyFamilies.push('shell');
   if (enabled.has('filesystem')) heavyFamilies.push('filesystem');
   return heavyFamilies;
+}
+
+function hasEnabledToolFamily(
+  effectiveTools: EffectiveToolAccess[],
+  family: string,
+): boolean {
+  return effectiveTools.some(
+    (tool) => tool.toolFamily === family && tool.enabled,
+  );
+}
+
+function getUnsupportedCodexToolFamilies(
+  effectiveTools: EffectiveToolAccess[],
+): string[] {
+  const unsupported = new Set<string>();
+  for (const tool of effectiveTools) {
+    if (!tool.enabled) continue;
+    if (
+      tool.toolFamily === 'shell' ||
+      tool.toolFamily === 'filesystem' ||
+      tool.toolFamily === 'web' ||
+      tool.toolFamily === 'browser'
+    ) {
+      continue;
+    }
+    unsupported.add(tool.toolFamily);
+  }
+  return Array.from(unsupported);
+}
+
+function resolveCodexHostExecutionPlan(input: {
+  agent: RegisteredAgentRecord;
+  effectiveTools: EffectiveToolAccess[];
+  heavyToolFamilies: string[];
+}): HostCodexExecutionPlan {
+  const shellEnabled = hasEnabledToolFamily(input.effectiveTools, 'shell');
+  const filesystemEnabled = hasEnabledToolFamily(
+    input.effectiveTools,
+    'filesystem',
+  );
+  if (!shellEnabled || !filesystemEnabled) {
+    throw new ExecutionPlannerError(
+      'Codex host execution requires both shell and filesystem tools to be enabled for this agent.',
+      'CODEX_REQUIRES_HEAVY_TOOLS',
+      {
+        providerId: input.agent.provider_id,
+        shellEnabled,
+        filesystemEnabled,
+      },
+    );
+  }
+
+  const unsupportedFamilies = getUnsupportedCodexToolFamilies(
+    input.effectiveTools,
+  );
+  if (unsupportedFamilies.length > 0) {
+    throw new ExecutionPlannerError(
+      `Codex host execution does not support these enabled tool families: ${unsupportedFamilies.join(', ')}.`,
+      'CODEX_UNSUPPORTED_TOOLS',
+      {
+        providerId: input.agent.provider_id,
+        unsupportedFamilies,
+      },
+    );
+  }
+
+  const verificationStatus = getProviderVerificationStatus(
+    input.agent.provider_id,
+  );
+  if (verificationStatus !== 'verified') {
+    throw new ExecutionPlannerError(
+      'Codex host runtime is not verified. Verify the OpenAI Codex host provider from AI Agents before using this agent.',
+      'CODEX_HOST_UNAVAILABLE',
+      {
+        providerId: input.agent.provider_id,
+        verificationStatus,
+      },
+    );
+  }
+
+  return {
+    backend: 'host_codex',
+    routeReason: 'normal',
+    authPath: 'host_login',
+    credentialSource: 'host_auth',
+    effectiveTools: input.effectiveTools,
+    providerId: input.agent.provider_id,
+    modelId: input.agent.model_id,
+    heavyToolFamilies: input.heavyToolFamilies,
+  };
 }
 
 function isContainerCompatibleProvider(
@@ -380,6 +519,15 @@ export function planExecution(
   const heavyToolFamilies = resolveHeavyToolFamilies(effectiveTools);
   const provider = getProviderRecord(agent.provider_id);
   const configuredAuthMode = getConfiguredExecutorAuthMode();
+
+  if (agent.provider_id === 'provider.openai_codex') {
+    return resolveCodexHostExecutionPlan({
+      agent,
+      effectiveTools,
+      heavyToolFamilies,
+    });
+  }
+
   if (browserEnabled) {
     const directPlan = tryResolveDirectExecutionPlan({
       agent,
@@ -503,6 +651,21 @@ export function planMainExecution(
   const provider = getProviderRecord(agent.provider_id);
   const configuredAuthMode = getConfiguredExecutorAuthMode();
 
+  if (agent.provider_id === 'provider.openai_codex') {
+    return {
+      policy: 'host_codex_only',
+      effectiveTools,
+      heavyToolFamilies,
+      directPlan: null,
+      containerPlan: null,
+      hostCodexPlan: resolveCodexHostExecutionPlan({
+        agent,
+        effectiveTools,
+        heavyToolFamilies,
+      }),
+    };
+  }
+
   let directPlan: DirectHttpExecutionPlan | null = null;
   try {
     directPlan = tryResolveDirectExecutionPlan({
@@ -543,6 +706,7 @@ export function planMainExecution(
           ...containerPlan,
           routeReason: 'normal',
         },
+        hostCodexPlan: null,
       };
     }
     if (shouldPreferSubscriptionContainer && !containerPlan) {
@@ -558,6 +722,7 @@ export function planMainExecution(
         heavyToolFamilies,
         directPlan,
         containerPlan,
+        hostCodexPlan: null,
       };
     }
     if (containerPlan) {
@@ -567,6 +732,7 @@ export function planMainExecution(
         heavyToolFamilies,
         directPlan: null,
         containerPlan,
+        hostCodexPlan: null,
       };
     }
     throw new ExecutionPlannerError(
@@ -583,6 +749,7 @@ export function planMainExecution(
         heavyToolFamilies,
         directPlan,
         containerPlan,
+        hostCodexPlan: null,
       };
     }
     if (containerPlan) {
@@ -592,6 +759,7 @@ export function planMainExecution(
         heavyToolFamilies,
         directPlan: null,
         containerPlan,
+        hostCodexPlan: null,
       };
     }
     throw new ExecutionPlannerError(
@@ -611,6 +779,7 @@ export function planMainExecution(
           ...containerPlan,
           routeReason: 'normal',
         },
+        hostCodexPlan: null,
       };
     }
     if (directPlan) {
@@ -620,6 +789,7 @@ export function planMainExecution(
         heavyToolFamilies,
         directPlan,
         containerPlan: null,
+        hostCodexPlan: null,
       };
     }
   }
@@ -631,6 +801,7 @@ export function planMainExecution(
       heavyToolFamilies,
       directPlan,
       containerPlan,
+      hostCodexPlan: null,
     };
   }
 
@@ -641,6 +812,7 @@ export function planMainExecution(
       heavyToolFamilies,
       directPlan,
       containerPlan,
+      hostCodexPlan: null,
     };
   }
 
@@ -651,6 +823,7 @@ export function planMainExecution(
       heavyToolFamilies,
       directPlan,
       containerPlan: null,
+      hostCodexPlan: null,
     };
   }
 

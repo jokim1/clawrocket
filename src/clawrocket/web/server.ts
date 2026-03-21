@@ -1034,7 +1034,7 @@ function buildApp(opts: WebServerOptions): Hono {
   app.get('/api/v1/agents', async (c) => {
     const auth = requireAuth(c);
     if (!auth) return unauthorized(c);
-    const result = getAiAgentsRoute();
+    const result = await getAiAgentsRoute();
     return new Response(JSON.stringify(result.body), {
       status: result.statusCode,
       headers: { 'content-type': 'application/json; charset=utf-8' },
@@ -1090,7 +1090,7 @@ function buildApp(opts: WebServerOptions): Hono {
     const auth = requireAuth(c);
     if (!auth) return unauthorized(c);
     const body = await c.req.json();
-    const result = updateDefaultClaudeModelRoute(auth, body);
+    const result = await updateDefaultClaudeModelRoute(auth, body);
     return new Response(JSON.stringify(result.body), {
       status: result.statusCode,
       headers: { 'content-type': 'application/json; charset=utf-8' },
@@ -7383,12 +7383,15 @@ function resolveRequestOriginFromHeaders(
 function resolveForwardedProto(
   headers: ForwardedHeaderSnapshot,
 ): 'http' | 'https' | null {
-  const forwardedProto = headers.xForwardedProto
+  const normalizedXForwardedProto = headers.xForwardedProto
     ?.split(',')
     .map((value) => value.trim().toLowerCase())
     .find((value) => value === 'http' || value === 'https');
-  if (forwardedProto === 'http' || forwardedProto === 'https') {
-    return forwardedProto;
+  if (
+    normalizedXForwardedProto === 'http' ||
+    normalizedXForwardedProto === 'https'
+  ) {
+    return normalizedXForwardedProto;
   }
 
   if (TRUSTED_PROXY_MODE === 'cloudflare' && headers.cfVisitor) {
@@ -7406,12 +7409,12 @@ function resolveForwardedProto(
 }
 
 function resolveForwardedHost(headers: ForwardedHeaderSnapshot): string | null {
-  const forwardedHost = headers.xForwardedHost
+  const normalizedXForwardedHost = headers.xForwardedHost
     ?.split(',')
     .map((value) => value.trim())
     .find(Boolean);
-  if (forwardedHost) {
-    return forwardedHost;
+  if (normalizedXForwardedHost) {
+    return normalizedXForwardedHost;
   }
   return headers.host?.trim() || null;
 }

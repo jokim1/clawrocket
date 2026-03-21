@@ -233,7 +233,11 @@ function getEffectiveExecutorCredentialState(): EffectiveExecutorCredentialState
     apiKey: storedApiKey || envApiKey,
     apiKeySource: storedApiKey ? 'stored' : envApiKey ? 'env' : null,
     oauthToken: storedOauthToken || envOauthToken,
-    oauthTokenSource: storedOauthToken ? 'stored' : envOauthToken ? 'env' : null,
+    oauthTokenSource: storedOauthToken
+      ? 'stored'
+      : envOauthToken
+        ? 'env'
+        : null,
     authToken: storedAuthToken || envAuthToken,
     authTokenSource: storedAuthToken ? 'stored' : envAuthToken ? 'env' : null,
   };

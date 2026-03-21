@@ -5,6 +5,9 @@ import {
   type CarriedBrowserSessionMetadata,
   type ExecutionDecisionMetadata,
 } from '../../browser/metadata.js';
+import { buildMainExecutionPreview } from '../../agents/execution-preview.js';
+import { getMainAgent } from '../../agents/agent-registry.js';
+import { getEffectiveToolsForAgent } from '../../db/agent-accessors.js';
 import {
   canUserAccessMainThread,
   deleteMainMessagesAtomic,
@@ -26,6 +29,28 @@ import {
 } from '../../db/thread-title-utils.js';
 import { getDb } from '../../../db.js';
 import type { AuthContext, ApiEnvelope } from '../types.js';
+
+const BROWSER_EXECUTION_SETUP_MESSAGE =
+  "Browser access is not configured for this agent. Configure the agent's execution credentials in AI Agents before retrying. For Claude agents, run `claude login` and import subscription auth, or add an Anthropic API key.";
+
+function normalizeBrowserExecutionMessage(message: string): string {
+  if (
+    message ===
+      'No valid Main execution path is currently configured for this agent.' ||
+    /container execution is not configured/i.test(message) ||
+    /direct execution is unavailable/i.test(message)
+  ) {
+    return BROWSER_EXECUTION_SETUP_MESSAGE;
+  }
+  return message;
+}
+
+function mainAgentHasBrowserAccess(userId: string): boolean {
+  const agent = getMainAgent();
+  return getEffectiveToolsForAgent(agent.id, userId).some(
+    (tool) => tool.toolFamily === 'browser' && tool.enabled,
+  );
+}
 
 // ---------------------------------------------------------------------------
 // List Main Threads Route
@@ -329,6 +354,37 @@ export function postMainMessageRoute(
   statusCode: number;
   body: ApiEnvelope<PostMainMessageResponse>;
 } {
+  try {
+    if (mainAgentHasBrowserAccess(auth.userId)) {
+      const preview = buildMainExecutionPreview(getMainAgent(), auth.userId);
+      if (!preview.ready) {
+        return {
+          statusCode: 409,
+          body: {
+            ok: false,
+            error: {
+              code: 'browser_execution_not_configured',
+              message: normalizeBrowserExecutionMessage(preview.message),
+            },
+          },
+        };
+      }
+    }
+  } catch (error) {
+    return {
+      statusCode: 409,
+      body: {
+        ok: false,
+        error: {
+          code: 'browser_execution_not_configured',
+          message: normalizeBrowserExecutionMessage(
+            error instanceof Error ? error.message : String(error),
+          ),
+        },
+      },
+    };
+  }
+
   // Validate content
   if (typeof body.content !== 'string' || !body.content.trim()) {
     return {

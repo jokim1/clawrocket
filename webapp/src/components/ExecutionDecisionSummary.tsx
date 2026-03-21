@@ -3,7 +3,14 @@ import type { ExecutionDecision } from '../lib/api';
 function getExecutionBackendLabel(
   executionDecision: ExecutionDecision,
 ): string {
-  return executionDecision.backend === 'container' ? 'Container' : 'Direct';
+  switch (executionDecision.backend) {
+    case 'container':
+      return 'Container';
+    case 'host_codex':
+      return 'Codex host';
+    default:
+      return 'Direct';
+  }
 }
 
 function getExecutionAuthLabel(executionDecision: ExecutionDecision): string {
@@ -12,6 +19,8 @@ function getExecutionAuthLabel(executionDecision: ExecutionDecision): string {
       return 'subscription';
     case 'api_key':
       return 'API key';
+    case 'host_login':
+      return 'host login';
     case 'none':
       return 'no auth';
   }

@@ -8,11 +8,12 @@ import {
 
 export interface AgentExecutionPreview {
   surface: 'main';
-  backend: 'direct_http' | 'container' | null;
-  authPath: 'api_key' | 'subscription' | null;
+  backend: 'direct_http' | 'container' | 'host_codex' | null;
+  authPath: 'api_key' | 'subscription' | 'host_login' | null;
   routeReason:
     | 'normal'
     | 'subscription_fallback'
+    | 'host_only'
     | 'direct_with_promotion'
     | 'no_valid_path';
   ready: boolean;
@@ -31,6 +32,10 @@ function buildReadyMessage(
       return 'Main will use Anthropic direct HTTP with an API key.';
     }
     return 'Main will use direct HTTP.';
+  }
+
+  if (plan.backend === 'host_codex') {
+    return 'Main will use the OpenAI Codex host runtime.';
   }
 
   if (
@@ -77,7 +82,9 @@ export function buildMainExecutionPreview(
     const plan =
       mainPlan.policy === 'container_only'
         ? mainPlan.containerPlan
-        : mainPlan.directPlan;
+        : mainPlan.policy === 'host_codex_only'
+          ? mainPlan.hostCodexPlan
+          : mainPlan.directPlan;
     if (!plan) {
       return {
         surface: 'main',
@@ -113,13 +120,25 @@ export function buildMainExecutionPreview(
           'Main will keep web and browser tools in the direct parent run and promote shell/filesystem work into a background container run only when needed.',
       };
     }
+    if (mainPlan.policy === 'host_codex_only') {
+      return {
+        surface: 'main',
+        backend: 'host_codex',
+        authPath: 'host_login',
+        routeReason: 'host_only',
+        ready: true,
+        message: buildReadyMessage(agent, plan),
+      };
+    }
     return {
       surface: 'main',
       backend: plan.backend,
       authPath:
         plan.backend === 'direct_http'
           ? plan.authPath
-          : plan.containerCredential.authMode,
+          : plan.backend === 'container'
+            ? plan.containerCredential.authMode
+            : plan.authPath,
       routeReason: plan.routeReason,
       ready: true,
       message: buildReadyMessage(agent, plan),

@@ -1982,6 +1982,63 @@ describe('talk routes', () => {
     expect(wakeCalls).toBe(1);
   });
 
+  it('rejects browser-capable talk runs with actionable setup guidance when execution is not configured', async () => {
+    const browserAgent = createRegisteredAgent({
+      name: 'Claude Browser',
+      providerId: 'provider.anthropic',
+      modelId: 'claude-sonnet-4-6',
+      toolPermissionsJson: JSON.stringify({ browser: true }),
+    });
+    getDb()
+      .prepare(
+        `
+        INSERT INTO talk_agents (
+          id, talk_id, registered_agent_id, nickname, is_primary, sort_order, created_at, updated_at
+        )
+        VALUES (?, ?, ?, ?, 0, 1, datetime('now'), datetime('now'))
+      `,
+      )
+      .run(
+        'ta-talk-owner-browser',
+        'talk-owner',
+        browserAgent.id,
+        browserAgent.name,
+      );
+
+    executionPlannerMocks.planExecutionMock.mockImplementation(
+      (agent: { id: string }) => {
+        if (agent.id === browserAgent.id) {
+          throw new executionPlannerMocks.MockExecutionPlannerError(
+            'Direct execution is unavailable.',
+            'DIRECT_EXECUTION_UNAVAILABLE',
+          );
+        }
+        return { backend: 'direct_http' };
+      },
+    );
+
+    const res = await server.request('/api/v1/talks/talk-owner/chat', {
+      method: 'POST',
+      headers: {
+        Authorization: 'Bearer owner-token',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        content: 'check linkedin',
+        targetAgentIds: [browserAgent.id],
+      }),
+    });
+
+    expect(res.status).toBe(409);
+    const body = (await res.json()) as any;
+    expect(body.ok).toBe(false);
+    expect(body.error.code).toBe('browser_execution_not_configured');
+    expect(body.error.message).toContain(
+      'Browser access for Claude Browser is not ready.',
+    );
+    expect(body.error.message).toContain('claude login');
+  });
+
   it('creates grouped ordered runs for multi-agent chat turns', async () => {
     const secondAgent = createRegisteredAgent({
       name: 'GPT-5',

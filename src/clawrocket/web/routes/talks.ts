@@ -1,5 +1,6 @@
 import { randomUUID } from 'crypto';
 
+import { getContainerRuntimeStatus } from '../../../container-runtime.js';
 import {
   AttachmentValidationError,
   TalkActiveRoundError,
@@ -54,10 +55,20 @@ import {
   getTalkAgentRows,
   type TalkAgentInput,
 } from '../../agents/agent-registry.js';
-import { getRegisteredAgent } from '../../db/agent-accessors.js';
+import {
+  getEffectiveToolsForAgent,
+  getRegisteredAgent,
+} from '../../db/agent-accessors.js';
+import {
+  ExecutionPlannerError,
+  planExecution,
+} from '../../agents/execution-planner.js';
 import { MAX_ATTACHMENTS_PER_MESSAGE } from '../../talks/attachment-extraction.js';
 import { canEditTalk } from '../middleware/acl.js';
 import { AuthContext, ApiEnvelope } from '../types.js';
+
+const TALK_BROWSER_EXECUTION_SETUP_MESSAGE =
+  "Browser access is not configured for this agent. Configure the agent's execution credentials in AI Agents before retrying. For Claude agents, run `claude login` and import subscription auth, or add an Anthropic API key.";
 
 interface TalkApiRecord {
   id: string;
@@ -474,6 +485,46 @@ function validateTalkProjectPath(rawPath: string): {
   }
 
   return { projectPath: result.realHostPath };
+}
+
+function normalizeTalkBrowserExecutionMessage(message: string): string {
+  if (
+    message === 'Direct execution is unavailable.' ||
+    /container execution is not configured/i.test(message) ||
+    /direct execution is unavailable/i.test(message)
+  ) {
+    return TALK_BROWSER_EXECUTION_SETUP_MESSAGE;
+  }
+  return message;
+}
+
+function getBrowserPreflightErrorForAgent(
+  agentId: string,
+  userId: string,
+): string | null {
+  const agent = getRegisteredAgent(agentId);
+  if (!agent) return null;
+
+  const browserEnabled = getEffectiveToolsForAgent(agent.id, userId).some(
+    (tool) => tool.toolFamily === 'browser' && tool.enabled,
+  );
+  if (!browserEnabled) return null;
+
+  try {
+    const plan = planExecution(agent, userId);
+    if (
+      plan.backend === 'container' &&
+      getContainerRuntimeStatus() !== 'ready'
+    ) {
+      return `Browser access for ${agent.name} needs the Claude container runtime. Start Docker, then retry.`;
+    }
+    return null;
+  } catch (error) {
+    if (error instanceof ExecutionPlannerError) {
+      return `Browser access for ${agent.name} is not ready. ${normalizeTalkBrowserExecutionMessage(error.message)}`;
+    }
+    throw error;
+  }
 }
 
 function validateAgentInputs(input: unknown): {
@@ -1980,6 +2031,25 @@ export function enqueueTalkChat(input: {
         },
       },
     };
+  }
+
+  for (const agent of selectedAgents) {
+    const browserPreflightError = getBrowserPreflightErrorForAgent(
+      agent.id,
+      input.auth.userId,
+    );
+    if (browserPreflightError) {
+      return {
+        statusCode: 409,
+        body: {
+          ok: false,
+          error: {
+            code: 'browser_execution_not_configured',
+            message: browserPreflightError,
+          },
+        },
+      };
+    }
   }
 
   const messageId = `msg_${randomUUID()}`;

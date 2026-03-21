@@ -746,6 +746,7 @@ export function createLlmAttempt(input: {
   failureClass?: string | null;
   latencyMs?: number | null;
   inputTokens?: number | null;
+  cachedInputTokens?: number | null;
   outputTokens?: number | null;
   estimatedCostUsd?: number | null;
   createdAt?: string;
@@ -756,8 +757,9 @@ export function createLlmAttempt(input: {
     INSERT INTO llm_attempts (
       run_id, talk_id, agent_id,
       provider_id, model_id, status, failure_class, latency_ms,
-      input_tokens, output_tokens, estimated_cost_usd, created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      input_tokens, cached_input_tokens, output_tokens,
+      estimated_cost_usd, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `,
     )
     .run(
@@ -770,6 +772,7 @@ export function createLlmAttempt(input: {
       input.failureClass || null,
       input.latencyMs ?? null,
       input.inputTokens ?? null,
+      input.cachedInputTokens ?? null,
       input.outputTokens ?? null,
       input.estimatedCostUsd ?? null,
       input.createdAt || new Date().toISOString(),

@@ -69,6 +69,20 @@ export type TalkResponseDeltaEvent = {
   modelId?: string | null;
 };
 
+export type TalkProgressUpdateEvent = {
+  talkId: string;
+  threadId?: string | null;
+  runId: string;
+  agentId?: string | null;
+  agentNickname?: string | null;
+  responseGroupId?: string | null;
+  sequenceIndex?: number | null;
+  routeStepPosition?: number | null;
+  providerId?: string | null;
+  modelId?: string | null;
+  message: string;
+};
+
 export type TalkResponseUsageEvent = {
   talkId: string;
   threadId?: string | null;
@@ -78,6 +92,7 @@ export type TalkResponseUsageEvent = {
   sequenceIndex?: number | null;
   usage?: {
     inputTokens?: number;
+    cachedInputTokens?: number;
     outputTokens?: number;
     estimatedCostUsd?: number;
   };
@@ -144,6 +159,7 @@ interface TalkStreamCallbacks {
   onRunStarted: (event: TalkRunStartedEvent) => void;
   onRunQueued: (event: TalkRunStartedEvent) => void;
   onResponseStarted?: (event: TalkResponseStartedEvent) => void;
+  onProgressUpdate?: (event: TalkProgressUpdateEvent) => void;
   onResponseDelta?: (event: TalkResponseDeltaEvent) => void;
   onResponseUsage?: (event: TalkResponseUsageEvent) => void;
   onResponseCompleted?: (event: TalkResponseTerminalEvent) => void;
@@ -340,6 +356,13 @@ export function openTalkStream(input: OpenTalkStreamInput): TalkStreamHandle {
       const payload = parse<TalkResponseDeltaEvent>(event);
       if (!payload) return;
       input.onResponseDelta?.(payload);
+    });
+
+    next.addEventListener('talk_progress_update', (event) => {
+      if (next !== source || stopped) return;
+      const payload = parse<TalkProgressUpdateEvent>(event);
+      if (!payload) return;
+      input.onProgressUpdate?.(payload);
     });
 
     next.addEventListener('talk_response_usage', (event) => {

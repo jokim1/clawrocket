@@ -48,7 +48,11 @@ function buildDefaultRegisteredAgentToolPermissions(): Record<string, boolean> {
 }
 
 const TOOL_FAMILY_GROUPS = {
-  'Heavy tools (container, Claude only)': ['shell', 'filesystem', 'browser'],
+  'Heavy tools (Claude container or Codex host)': [
+    'shell',
+    'filesystem',
+    'browser',
+  ],
   'Web tools': ['web'],
   Connectors: ['connectors'],
   'Google Workspace': [
@@ -94,7 +98,79 @@ function buildDraftExecutionPreview(input: {
   const provider = input.providers.find(
     (entry) => entry.id === input.draft.providerId,
   );
-  if (!provider || provider.id !== 'provider.anthropic') {
+  if (!provider) {
+    return null;
+  }
+
+  if (provider.id === 'provider.openai_codex') {
+    const unsupportedFamilies = [
+      input.draft.toolPermissions.connectors ? 'connectors' : null,
+      input.draft.toolPermissions.google_read ||
+      input.draft.toolPermissions.google_write
+        ? 'google'
+        : null,
+      input.draft.toolPermissions.gmail_read || input.draft.toolPermissions.gmail_send
+        ? 'gmail'
+        : null,
+      input.draft.toolPermissions.messaging ? 'messaging' : null,
+    ].filter(Boolean) as string[];
+    if (unsupportedFamilies.length > 0) {
+      return {
+        surface: 'main',
+        backend: null,
+        authPath: null,
+        routeReason: 'no_valid_path',
+        ready: false,
+        message: `Codex host runtime does not support these enabled tool families: ${unsupportedFamilies.join(', ')}.`,
+      };
+    }
+    if (
+      !input.draft.toolPermissions.shell ||
+      !input.draft.toolPermissions.filesystem
+    ) {
+      return {
+        surface: 'main',
+        backend: null,
+        authPath: null,
+        routeReason: 'no_valid_path',
+        ready: false,
+        message:
+          'Codex host runtime requires both shell and filesystem tools to be enabled.',
+      };
+    }
+    if (!provider.hasCredential) {
+      return {
+        surface: 'main',
+        backend: null,
+        authPath: null,
+        routeReason: 'no_valid_path',
+        ready: false,
+        message:
+          'Codex host runtime is not authenticated. Run the managed Codex login command and verify the provider first.',
+      };
+    }
+    if (provider.verificationStatus !== 'verified') {
+      return {
+        surface: 'main',
+        backend: null,
+        authPath: null,
+        routeReason: 'no_valid_path',
+        ready: false,
+        message:
+          'Codex host runtime is not verified. Verify the provider from AI Agents before saving this agent.',
+      };
+    }
+    return {
+      surface: 'main',
+      backend: 'host_codex',
+      authPath: 'host_login',
+      routeReason: 'host_only',
+      ready: true,
+      message: 'Main will use the OpenAI Codex host runtime.',
+    };
+  }
+
+  if (provider.id !== 'provider.anthropic') {
     return null;
   }
 
@@ -545,7 +621,9 @@ function AgentForm({
   const selectedProvider = providers.find((p) => p.id === draft.providerId);
   const heavyToolsEnabled = hasHeavyTools(draft.toolPermissions);
   const isNonClaudeProvider =
-    selectedProvider?.providerKind !== 'anthropic' && heavyToolsEnabled;
+    selectedProvider?.id !== 'provider.anthropic' &&
+    selectedProvider?.id !== 'provider.openai_codex' &&
+    heavyToolsEnabled;
   const saveDisabled = !canManage || executionPreview?.ready === false;
 
   return (
@@ -644,7 +722,7 @@ function AgentForm({
 
         {isNonClaudeProvider && (
           <div className="agent-form-warning">
-            ⚠️ Shell, Filesystem, and Browser tools require Claude provider.
+            ⚠️ Shell, Filesystem, and Browser tools require Claude or Codex host provider.
           </div>
         )}
         {executionPreview ? (

@@ -1,5 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+const mockGetCodexHostStatus = vi.fn();
+
+vi.mock('../../agents/codex-host-runtime.js', () => ({
+  CodexHostStatusService: class {
+    async getStatusView() {
+      return mockGetCodexHostStatus();
+    }
+  },
+}));
+
 import { getDb } from '../../../db.js';
 import { _initTestDatabase, upsertUser } from '../../db/index.js';
 import { encryptProviderSecret } from '../../llm/provider-secret-store.js';
@@ -69,6 +79,16 @@ function createOpenAiStreamResponse(): Response {
 describe('ai-agents routes', () => {
   beforeEach(() => {
     _initTestDatabase();
+    mockGetCodexHostStatus.mockReset();
+    mockGetCodexHostStatus.mockResolvedValue({
+      cliInstalled: true,
+      authenticated: false,
+      authMode: null,
+      sandboxAvailable: true,
+      managedHomePath: '/tmp/codex-test-home',
+      message: 'Codex login required.',
+      recommendedCommands: ["CODEX_HOME='/tmp/codex-test-home' codex login"],
+    });
     upsertUser({
       id: auth.userId,
       email: 'owner@example.com',
@@ -82,8 +102,8 @@ describe('ai-agents routes', () => {
     vi.restoreAllMocks();
   });
 
-  it('returns builtin additional provider cards on a fresh database', () => {
-    const result = getAiAgentsRoute();
+  it('returns builtin additional provider cards on a fresh database', async () => {
+    const result = await getAiAgentsRoute();
     expect(result.statusCode).toBe(200);
     expect(result.body.ok).toBe(true);
     if (!result.body.ok) {
@@ -92,7 +112,12 @@ describe('ai-agents routes', () => {
 
     expect(
       result.body.data.additionalProviders.map((provider) => provider.id),
-    ).toEqual(['provider.openai', 'provider.gemini', 'provider.nvidia']);
+    ).toEqual([
+      'provider.openai',
+      'provider.openai_codex',
+      'provider.gemini',
+      'provider.nvidia',
+    ]);
     expect(result.body.data.claudeModelSuggestions).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -135,6 +160,16 @@ describe('ai-agents routes', () => {
               supportsVision: true,
             }),
           ],
+        }),
+        expect.objectContaining({
+          id: 'provider.openai_codex',
+          credentialMode: 'host_login',
+          hasCredential: false,
+          hostStatus: expect.objectContaining({
+            cliInstalled: true,
+            authenticated: false,
+            managedHomePath: '/tmp/codex-test-home',
+          }),
         }),
       ]),
     );
@@ -262,5 +297,52 @@ describe('ai-agents routes', () => {
         )
         .get(),
     ).toBeUndefined();
+  });
+
+  it('rejects API-key saves for the Codex host provider', async () => {
+    const result = await putAiProviderCredentialRoute(
+      auth,
+      'provider.openai_codex',
+      {
+        apiKey: 'sk-should-not-save',
+      },
+    );
+
+    expect(result.statusCode).toBe(400);
+    expect(result.body.ok).toBe(false);
+  });
+
+  it('verifies the Codex host provider from live host status', async () => {
+    mockGetCodexHostStatus.mockResolvedValue({
+      cliInstalled: true,
+      authenticated: true,
+      authMode: 'chatgpt',
+      sandboxAvailable: true,
+      managedHomePath: '/tmp/codex-test-home',
+      message: 'Codex is ready.',
+      recommendedCommands: ["CODEX_HOME='/tmp/codex-test-home' codex login"],
+    });
+
+    const result = await verifyAiProviderCredentialRoute(
+      auth,
+      'provider.openai_codex',
+    );
+
+    expect(result.statusCode).toBe(200);
+    expect(result.body.ok).toBe(true);
+    if (!result.body.ok) {
+      throw new Error('Expected ok response');
+    }
+
+    expect(result.body.data.provider).toMatchObject({
+      id: 'provider.openai_codex',
+      credentialMode: 'host_login',
+      hasCredential: true,
+      verificationStatus: 'verified',
+      hostStatus: expect.objectContaining({
+        authenticated: true,
+        authMode: 'chatgpt',
+      }),
+    });
   });
 });

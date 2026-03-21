@@ -48,9 +48,14 @@ import {
   getContainerAllowedTools,
   planExecution,
 } from '../agents/execution-planner.js';
-import { getMainAgent, resolvePrimaryAgent } from '../agents/agent-registry.js';
+import {
+  getMainAgent,
+  listTalkAgents,
+  resolvePrimaryAgent,
+} from '../agents/agent-registry.js';
 import { resolveValidatedProjectMountPath } from '../agents/project-mounts.js';
 import { executeContainerAgentTurn } from '../agents/container-turn-executor.js';
+import { executeCodexAgentTurn } from '../agents/codex-turn-executor.js';
 import { modelSupportsVision } from '../llm/capabilities.js';
 import type { TalkPersonaRole } from '../llm/types.js';
 import { executeWebFetch, executeWebSearch } from '../tools/web-tools.js';
@@ -176,6 +181,16 @@ function buildExecutionDecision(
       modelId: agent.model_id,
     };
   }
+  if (plan.backend === 'host_codex') {
+    return {
+      backend: 'host_codex',
+      authPath: plan.authPath,
+      credentialSource: plan.credentialSource,
+      plannerReason: plan.routeReason,
+      providerId: agent.provider_id,
+      modelId: agent.model_id,
+    };
+  }
   return {
     backend: 'direct_http',
     authPath: plan.authPath,
@@ -184,6 +199,46 @@ function buildExecutionDecision(
     providerId: agent.provider_id,
     modelId: agent.model_id,
   };
+}
+
+function talkUsesUnsupportedCodexExecution(talkId: string): {
+  supported: boolean;
+  message?: string;
+} {
+  const talk = getTalkById(talkId);
+  if (talk?.orchestration_mode === 'panel') {
+    return {
+      supported: false,
+      message:
+        'Codex host execution does not support panel Talks. Use a single-agent ordered Talk instead.',
+    };
+  }
+
+  if (listTalkAgents(talkId).length > 1) {
+    return {
+      supported: false,
+      message: 'Codex host execution only supports single-agent Talks in v1.',
+    };
+  }
+
+  return { supported: true };
+}
+
+function contextUsesUnsupportedCodexTools(context: ExecutionContext): string[] {
+  const unsupportedToolNames = new Set<string>();
+  for (const tool of context.contextTools) {
+    if (
+      tool.name === 'list_outputs' ||
+      tool.name === 'read_output' ||
+      tool.name === 'write_output'
+    ) {
+      unsupportedToolNames.add(tool.name);
+    }
+  }
+  if (context.connectorTools.length > 0) {
+    unsupportedToolNames.add('connectors');
+  }
+  return Array.from(unsupportedToolNames);
 }
 
 /** @internal Exported for integration testing only. */
@@ -1409,6 +1464,24 @@ export class CleanTalkExecutor implements TalkExecutor {
         connectorTools: contextPackage.connectorTools,
         history: contextPackage.history,
       };
+      const talkCodexSupport = talkUsesUnsupportedCodexExecution(input.talkId);
+      if (plan.backend === 'host_codex' && !talkCodexSupport.supported) {
+        throw new TalkExecutorError(
+          'CODEX_TALK_UNSUPPORTED',
+          talkCodexSupport.message ||
+            'Codex host execution is not supported for this Talk.',
+        );
+      }
+      if (plan.backend === 'host_codex') {
+        const unsupportedContextTools =
+          contextUsesUnsupportedCodexTools(context);
+        if (unsupportedContextTools.length > 0) {
+          throw new TalkExecutorError(
+            'CODEX_TALK_UNSUPPORTED',
+            `Codex host execution does not support this Talk context yet: ${unsupportedContextTools.join(', ')}.`,
+          );
+        }
+      }
 
       const orderedStep = buildStepUserMessageText({
         triggerContent: input.triggerContent,
@@ -1492,6 +1565,144 @@ export class CleanTalkExecutor implements TalkExecutor {
           agentNickname: resolvedAgent.name,
           providerId: resolvedAgent.provider_id,
           modelId: resolvedAgent.model_id,
+          responseSequenceInRun: 1,
+          metadataJson: buildResponseMetadataJson({
+            runId: input.runId,
+            providerId: resolvedAgent.provider_id,
+            modelId: resolvedAgent.model_id,
+            estimatedContextTokens: contextPackage.estimatedTokens,
+            responseGroupId: input.responseGroupId,
+            sequenceIndex: input.sequenceIndex,
+            isSynthesis: orderedStep.isSynthesis,
+          }),
+        };
+      }
+
+      if (plan.backend === 'host_codex') {
+        const talk = getTalkById(input.talkId);
+        const projectMountHostPath = resolveValidatedProjectMountPath(
+          talk?.project_path ?? null,
+          false,
+        );
+        emitTalkEvent({
+          type: 'talk_response_started',
+          runId: input.runId,
+          talkId: input.talkId,
+          threadId: input.threadId,
+          agentId: resolvedAgent.id,
+          agentNickname: resolvedAgent.name,
+          responseGroupId: input.responseGroupId ?? null,
+          sequenceIndex: input.sequenceIndex ?? null,
+          providerId: resolvedAgent.provider_id,
+          modelId: resolvedAgent.model_id,
+        });
+
+        const codexResult = await executeCodexAgentTurn({
+          runId: input.runId,
+          userId: input.requestedBy,
+          agent: resolvedAgent,
+          promptLabel: 'talk',
+          userMessage: orderedStep.userMessageText,
+          signal,
+          context: {
+            systemPrompt: [
+              contextPackage.systemPrompt,
+              browserResumeSection
+                ? `# Browser Resume Context\n\n${browserResumeSection}`
+                : '',
+              resolvedAgent.system_prompt?.trim() || '',
+            ]
+              .filter(Boolean)
+              .join('\n\n'),
+            history: contextPackage.history,
+          },
+          modelContextWindow,
+          talkId: input.talkId,
+          threadId: input.threadId,
+          triggerMessageId: input.triggerMessageId,
+          historyMessageIds: contextPackage.metadata.historyMessageIds,
+          projectMountHostPath,
+          jobPolicy,
+          enableWebTools: scopedEffectiveTools.some(
+            (tool) => tool.toolFamily === 'web' && tool.enabled,
+          ),
+          enableBrowserTools: scopedEffectiveTools.some(
+            (tool) => tool.toolFamily === 'browser' && tool.enabled,
+          ),
+          onProgressUpdate: (message) => {
+            const activeAgent = resolvedAgent!;
+            emitTalkEvent({
+              type: 'talk_progress_update',
+              runId: input.runId,
+              talkId: input.talkId,
+              threadId: input.threadId,
+              agentId: activeAgent.id,
+              agentNickname: activeAgent.name,
+              responseGroupId: input.responseGroupId ?? null,
+              sequenceIndex: input.sequenceIndex ?? null,
+              providerId: activeAgent.provider_id,
+              modelId: activeAgent.model_id,
+              message,
+            });
+          },
+        });
+
+        if (
+          codexResult.usage?.inputTokens !== undefined ||
+          codexResult.usage?.cachedInputTokens !== undefined ||
+          codexResult.usage?.outputTokens !== undefined
+        ) {
+          emitTalkEvent({
+            type: 'talk_response_usage',
+            runId: input.runId,
+            talkId: input.talkId,
+            threadId: input.threadId,
+            agentId: resolvedAgent.id,
+            responseGroupId: input.responseGroupId ?? null,
+            sequenceIndex: input.sequenceIndex ?? null,
+            providerId: resolvedAgent.provider_id,
+            modelId: resolvedAgent.model_id,
+            usage: {
+              inputTokens: codexResult.usage.inputTokens,
+              cachedInputTokens: codexResult.usage.cachedInputTokens,
+              outputTokens: codexResult.usage.outputTokens,
+            },
+          });
+        }
+
+        emitTalkEvent({
+          type: 'talk_response_completed',
+          runId: input.runId,
+          talkId: input.talkId,
+          threadId: input.threadId,
+          agentId: resolvedAgent.id,
+          agentNickname: resolvedAgent.name,
+          responseGroupId: input.responseGroupId ?? null,
+          sequenceIndex: input.sequenceIndex ?? null,
+          providerId: resolvedAgent.provider_id,
+          modelId: resolvedAgent.model_id,
+          usage: codexResult.usage
+            ? {
+                inputTokens: codexResult.usage.inputTokens,
+                cachedInputTokens: codexResult.usage.cachedInputTokens,
+                outputTokens: codexResult.usage.outputTokens,
+              }
+            : undefined,
+        });
+
+        return {
+          content: codexResult.content,
+          agentId: resolvedAgent.id,
+          agentNickname: resolvedAgent.name,
+          providerId: resolvedAgent.provider_id,
+          modelId: resolvedAgent.model_id,
+          usage: codexResult.usage
+            ? {
+                inputTokens: codexResult.usage.inputTokens,
+                cachedInputTokens: codexResult.usage.cachedInputTokens,
+                outputTokens: codexResult.usage.outputTokens,
+              }
+            : undefined,
           responseSequenceInRun: 1,
           metadataJson: buildResponseMetadataJson({
             runId: input.runId,

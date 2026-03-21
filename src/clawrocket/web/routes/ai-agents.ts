@@ -4,6 +4,10 @@ import {
   BUILTIN_ADDITIONAL_PROVIDERS,
 } from '../../agents/builtin-additional-providers.js';
 import {
+  CodexHostStatusService,
+  type CodexHostStatusView,
+} from '../../agents/codex-host-runtime.js';
+import {
   LlmClientError,
   callLlm,
   type LlmProviderConfig,
@@ -41,11 +45,13 @@ export type AgentProviderCard = {
   baseUrl: string;
   authScheme: 'bearer';
   enabled: boolean;
+  credentialMode: 'api_key' | 'host_login';
   hasCredential: boolean;
   credentialHint: string | null;
   verificationStatus: AdditionalProviderVerificationStatus;
   lastVerifiedAt: string | null;
   lastVerificationError: string | null;
+  hostStatus?: CodexHostStatusView;
   modelSuggestions: Array<{
     modelId: string;
     displayName: string;
@@ -100,6 +106,8 @@ type ProviderVerificationResult = {
   lastVerifiedAt: string | null;
   lastError: string | null;
 };
+
+const CODEX_PROVIDER_ID = 'provider.openai_codex';
 
 const PROVIDER_VERIFY_TIMEOUT_MS = 20_000;
 
@@ -255,18 +263,50 @@ function listProviderVerifications(): Map<string, ProviderVerificationRow> {
   );
 }
 
-function buildAdditionalProviderCards(): AgentProviderCard[] {
+async function buildAdditionalProviderCards(): Promise<AgentProviderCard[]> {
   const providerRows = listAdditionalProviderRows();
   const modelsByProvider = listAdditionalProviderModels();
   const secretsByProvider = listProviderSecrets();
   const verificationsByProvider = listProviderVerifications();
+  const codexHostStatus = providerRows.some(
+    (provider) => provider.id === CODEX_PROVIDER_ID,
+  )
+    ? await new CodexHostStatusService().getStatusView()
+    : null;
 
   return providerRows.map((provider) => {
+    const builtinProvider = BUILTIN_ADDITIONAL_PROVIDERS.find(
+      (entry) => entry.id === provider.id,
+    );
+    const credentialMode = builtinProvider?.credentialMode ?? 'api_key';
     const secret = secretsByProvider.get(provider.id) ?? null;
     const verification = verificationsByProvider.get(provider.id);
-    const hasCredential = !!secret;
+    const hostStatus =
+      provider.id === CODEX_PROVIDER_ID
+        ? (codexHostStatus ?? undefined)
+        : undefined;
+    const hasCredential =
+      credentialMode === 'host_login' ? !!hostStatus?.authenticated : !!secret;
     const verificationStatus: AdditionalProviderVerificationStatus =
-      !hasCredential ? 'missing' : (verification?.status ?? 'not_verified');
+      credentialMode === 'host_login'
+        ? !hostStatus?.cliInstalled || !hostStatus?.sandboxAvailable
+          ? 'unavailable'
+          : !hostStatus.authenticated
+            ? 'missing'
+            : (verification?.status ?? 'not_verified')
+        : !hasCredential
+          ? 'missing'
+          : (verification?.status ?? 'not_verified');
+    const credentialHint =
+      credentialMode === 'host_login'
+        ? hostStatus?.authMode === 'chatgpt'
+          ? 'ChatGPT login'
+          : hostStatus?.authMode === 'apikey'
+            ? 'API key login'
+            : null
+        : secret
+          ? maskApiKey(secret.apiKey)
+          : null;
 
     return {
       id: provider.id,
@@ -276,8 +316,9 @@ function buildAdditionalProviderCards(): AgentProviderCard[] {
       baseUrl: provider.base_url,
       authScheme: provider.auth_scheme,
       enabled: provider.enabled === 1,
+      credentialMode,
       hasCredential,
-      credentialHint: secret ? maskApiKey(secret.apiKey) : null,
+      credentialHint,
       verificationStatus,
       lastVerifiedAt:
         verificationStatus === 'verified'
@@ -286,7 +327,10 @@ function buildAdditionalProviderCards(): AgentProviderCard[] {
       lastVerificationError:
         verificationStatus === 'invalid' || verificationStatus === 'unavailable'
           ? (verification?.last_error ?? null)
-          : null,
+          : credentialMode === 'host_login'
+            ? (hostStatus?.message ?? null)
+            : null,
+      hostStatus,
       modelSuggestions: (modelsByProvider.get(provider.id) ?? []).map(
         (model) => {
           const capabilities = resolveModelCapabilities({
@@ -307,7 +351,7 @@ function buildAdditionalProviderCards(): AgentProviderCard[] {
   });
 }
 
-export function buildAiAgentsPageData(): AiAgentsPageData {
+export async function buildAiAgentsPageData(): Promise<AiAgentsPageData> {
   const claudeModelSuggestions = getClaudeModelSuggestions();
   return {
     defaultClaudeModelId:
@@ -315,7 +359,7 @@ export function buildAiAgentsPageData(): AiAgentsPageData {
       claudeModelSuggestions[0]?.modelId ||
       'claude-sonnet-4-6',
     claudeModelSuggestions,
-    additionalProviders: buildAdditionalProviderCards(),
+    additionalProviders: await buildAdditionalProviderCards(),
   };
 }
 
@@ -434,6 +478,28 @@ async function verifyProviderSecret(providerId: string): Promise<void> {
     throw new Error(`Provider '${providerId}' is not supported.`);
   }
 
+  if (providerId === CODEX_PROVIDER_ID) {
+    const hostStatus = await new CodexHostStatusService().getStatusView();
+    if (!hostStatus.cliInstalled || !hostStatus.sandboxAvailable) {
+      upsertProviderVerification(providerId, {
+        status: 'unavailable',
+        lastVerifiedAt: null,
+        lastError: hostStatus.message,
+      });
+      return;
+    }
+    if (!hostStatus.authenticated) {
+      deleteProviderVerification(providerId);
+      return;
+    }
+    upsertProviderVerification(providerId, {
+      status: 'verified',
+      lastVerifiedAt: new Date().toISOString(),
+      lastError: null,
+    });
+    return;
+  }
+
   const db = getDb();
   const secretRow = db
     .prepare(
@@ -485,11 +551,11 @@ async function verifyProviderSecret(providerId: string): Promise<void> {
   }
 }
 
-function getProviderCardOrNotFound(providerId: string): {
+async function getProviderCardOrNotFound(providerId: string): Promise<{
   statusCode: number;
   body: ApiEnvelope<{ provider: AgentProviderCard }>;
-} {
-  const provider = buildAdditionalProviderCards().find(
+}> {
+  const provider = (await buildAdditionalProviderCards()).find(
     (entry) => entry.id === providerId,
   );
   if (!provider) {
@@ -513,26 +579,26 @@ function getProviderCardOrNotFound(providerId: string): {
   };
 }
 
-export function getAiAgentsRoute(): {
+export async function getAiAgentsRoute(): Promise<{
   statusCode: number;
   body: ApiEnvelope<AiAgentsPageData>;
-} {
+}> {
   return {
     statusCode: 200,
     body: {
       ok: true,
-      data: buildAiAgentsPageData(),
+      data: await buildAiAgentsPageData(),
     },
   };
 }
 
-export function updateDefaultClaudeModelRoute(
+export async function updateDefaultClaudeModelRoute(
   auth: AuthContext,
   body: { modelId?: unknown },
-): {
+): Promise<{
   statusCode: number;
   body: ApiEnvelope<AiAgentsPageData>;
-} {
+}> {
   if (!isAdminLike(auth.role)) {
     return {
       statusCode: 403,
@@ -573,7 +639,7 @@ export function updateDefaultClaudeModelRoute(
     statusCode: 200,
     body: {
       ok: true,
-      data: buildAiAgentsPageData(),
+      data: await buildAiAgentsPageData(),
     },
   };
 }
@@ -607,6 +673,20 @@ export async function putAiProviderCredentialRoute(
         error: {
           code: 'not_found',
           message: `Provider '${providerId}' not found.`,
+        },
+      },
+    };
+  }
+
+  if (providerId === CODEX_PROVIDER_ID) {
+    return {
+      statusCode: 400,
+      body: {
+        ok: false,
+        error: {
+          code: 'invalid_input',
+          message:
+            'Host-login providers do not accept API keys here. Use Verify after running the managed Codex login command.',
         },
       },
     };

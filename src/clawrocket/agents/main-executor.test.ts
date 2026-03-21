@@ -90,6 +90,7 @@ describe('main-executor (pure)', () => {
         },
       },
       containerPlan: null,
+      hostCodexPlan: null,
     });
   });
 
@@ -325,6 +326,7 @@ describe('main-executor (pure)', () => {
           },
         },
       },
+      hostCodexPlan: null,
     });
     vi.mocked(resolveValidatedProjectMountPath).mockReturnValue(
       '/resolved/main-project',
@@ -503,6 +505,7 @@ describe('main-executor (pure)', () => {
         },
       },
       containerPlan: null,
+      hostCodexPlan: null,
     });
 
     let toolNames: string[] = [];
@@ -581,6 +584,7 @@ describe('main-executor (pure)', () => {
         },
       },
       containerPlan: null,
+      hostCodexPlan: null,
     });
     vi.mocked(executeBrowserTool).mockResolvedValue({
       result: '{"status":"ok"}',
@@ -812,6 +816,7 @@ describe('main-executor (pure)', () => {
           },
         },
       },
+      hostCodexPlan: null,
     });
     vi.mocked(executeContainerAgentTurn).mockImplementation(async (input) => ({
       content: input.userMessage.includes('Orion')

@@ -98,6 +98,7 @@ export function SlackChannelConnectorPanel({
   const [clientIdDraft, setClientIdDraft] = useState('');
   const [clientSecretDraft, setClientSecretDraft] = useState('');
   const [signingSecretDraft, setSigningSecretDraft] = useState('');
+  const [configDraftTouched, setConfigDraftTouched] = useState(false);
   const [searchByConnection, setSearchByConnection] = useState<
     Record<string, string>
   >({});
@@ -109,7 +110,9 @@ export function SlackChannelConnectorPanel({
     try {
       const next = await getSlackChannelConnector();
       setConnector(next);
-      setClientIdDraft(next.config.clientId || '');
+      if (!configDraftTouched) {
+        setClientIdDraft(next.config.clientId || '');
+      }
       const targets = await Promise.all(
         next.workspaces.map(async (workspace) => [
           workspace.id,
@@ -151,7 +154,7 @@ export function SlackChannelConnectorPanel({
       cancelled = true;
       window.clearInterval(interval);
     };
-  }, [onUnauthorized]);
+  }, [configDraftTouched, onUnauthorized]);
 
   const workspaceEntries = useMemo(
     () =>
@@ -177,8 +180,10 @@ export function SlackChannelConnectorPanel({
         signingSecret: signingSecretDraft || undefined,
       });
       setConnector(next);
+      setClientIdDraft(next.config.clientId || '');
       setClientSecretDraft('');
       setSigningSecretDraft('');
+      setConfigDraftTouched(false);
       setNotice('Slack app configuration saved.');
       setError(null);
     } catch (err) {
@@ -204,6 +209,7 @@ export function SlackChannelConnectorPanel({
       setClientIdDraft('');
       setClientSecretDraft('');
       setSigningSecretDraft('');
+      setConfigDraftTouched(false);
       setNotice('Slack app configuration cleared.');
       setError(null);
     } catch (err) {
@@ -454,7 +460,10 @@ export function SlackChannelConnectorPanel({
                 <input
                   type="text"
                   value={clientIdDraft}
-                  onChange={(event) => setClientIdDraft(event.target.value)}
+                  onChange={(event) => {
+                    setClientIdDraft(event.target.value);
+                    setConfigDraftTouched(true);
+                  }}
                   placeholder="1234567890.1234567890"
                   autoComplete="off"
                 />
@@ -464,7 +473,10 @@ export function SlackChannelConnectorPanel({
                 <input
                   type="password"
                   value={clientSecretDraft}
-                  onChange={(event) => setClientSecretDraft(event.target.value)}
+                  onChange={(event) => {
+                    setClientSecretDraft(event.target.value);
+                    setConfigDraftTouched(true);
+                  }}
                   placeholder={
                     connector.config.hasClientSecret
                       ? 'Stored in ClawTalk'
@@ -478,9 +490,10 @@ export function SlackChannelConnectorPanel({
                 <input
                   type="password"
                   value={signingSecretDraft}
-                  onChange={(event) =>
-                    setSigningSecretDraft(event.target.value)
-                  }
+                  onChange={(event) => {
+                    setSigningSecretDraft(event.target.value);
+                    setConfigDraftTouched(true);
+                  }}
                   placeholder={
                     connector.config.hasSigningSecret
                       ? 'Stored in ClawTalk'

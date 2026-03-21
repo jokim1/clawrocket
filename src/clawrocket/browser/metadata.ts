@@ -50,7 +50,7 @@ export interface BrowserResumeMetadata {
 
 export interface ExecutionDecisionMetadata {
   backend: ExecutionBackend;
-  authPath: 'api_key' | 'subscription' | 'none';
+  authPath: 'api_key' | 'subscription' | 'host_login' | 'none';
   credentialSource: ExecutionCredentialSource;
   plannerReason: string;
   providerId: string;

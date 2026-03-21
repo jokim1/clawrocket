@@ -3904,6 +3904,7 @@ function buildAiAgentsData(): AiAgentsPageData {
         id: 'provider.openai',
         name: 'OpenAI',
         providerKind: 'openai',
+        credentialMode: 'api_key',
         apiFormat: 'openai_chat_completions',
         baseUrl: 'https://api.openai.com/v1',
         authScheme: 'bearer',
