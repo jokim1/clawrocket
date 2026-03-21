@@ -1413,6 +1413,9 @@ export class CleanTalkExecutor implements TalkExecutor {
           historyMessageIds: contextPackage.metadata.historyMessageIds,
           projectMountHostPath,
           jobPolicy,
+          enableBrowserTools: scopedEffectiveTools.some(
+            (tool) => tool.toolFamily === 'browser' && tool.enabled,
+          ),
         });
 
         emitTalkEvent({

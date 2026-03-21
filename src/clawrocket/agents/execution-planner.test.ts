@@ -13,7 +13,6 @@ import {
   upsertUserToolPermission,
 } from '../db/agent-accessors.js';
 import {
-  ExecutionPlannerError,
   getContainerAllowedTools,
   planMainExecution,
   planExecution,
@@ -135,7 +134,7 @@ describe('execution-planner', () => {
     expect(plan.backend).toBe('direct_http');
   });
 
-  it('rejects agents that mix browser with shell/filesystem in the same run', () => {
+  it('routes browser + shell/filesystem Talk agents through the container runtime', () => {
     seedAnthropicSecret();
     const agent = createRegisteredAgent({
       name: 'Claude Browser Builder',
@@ -148,21 +147,14 @@ describe('execution-planner', () => {
       }),
     });
 
-    try {
-      planExecution(agent, 'owner-1');
-      expect.unreachable('expected mixed browser/container tool plan to throw');
-    } catch (error) {
-      expect(error).toBeInstanceOf(ExecutionPlannerError);
-      expect((error as ExecutionPlannerError).code).toBe(
-        'BROWSER_AND_CONTAINER_TOOLS_MIXED_UNSUPPORTED',
-      );
-      expect((error as ExecutionPlannerError).message).toBe(
-        'This agent has both browser and shell/filesystem tools enabled, which is not supported in the same run. Browser runs host-side and shell/filesystem run in the container in v1. Create separate agents for browser and shell work, or disable one tool family.',
-      );
+    const plan = planExecution(agent, 'owner-1');
+    expect(plan.backend).toBe('container');
+    if (plan.backend === 'container') {
+      expect(plan.heavyToolFamilies).toEqual(['shell', 'filesystem']);
     }
   });
 
-  it('requires direct execution for browser-enabled agents', () => {
+  it('routes browser-only agents through the container runtime when direct execution is unavailable', () => {
     upsertSettingValue({
       key: 'executor.claudeOauthToken',
       value: 'oauth-token-123',
@@ -175,19 +167,11 @@ describe('execution-planner', () => {
       toolPermissionsJson: JSON.stringify({ browser: true }),
     });
 
-    try {
-      planExecution(agent, 'owner-1');
-      expect.unreachable(
-        'expected browser direct-execution requirement to throw',
-      );
-    } catch (error) {
-      expect(error).toBeInstanceOf(ExecutionPlannerError);
-      expect((error as ExecutionPlannerError).code).toBe(
-        'BROWSER_REQUIRES_DIRECT_EXECUTION',
-      );
-      expect((error as ExecutionPlannerError).message).toBe(
-        'This agent has browser tools enabled, but browser runs require direct execution in v1. Configure a direct-execution-compatible provider/credential set, or disable browser tools for this agent.',
-      );
+    const plan = planExecution(agent, 'owner-1');
+    expect(plan.backend).toBe('container');
+    expect(plan.routeReason).toBe('subscription_fallback');
+    if (plan.backend === 'container') {
+      expect(plan.containerCredential.authMode).toBe('subscription');
     }
   });
 
@@ -206,7 +190,7 @@ describe('execution-planner', () => {
     expect(plan.containerPlan).toBeNull();
   });
 
-  it('rejects Main agents that mix browser with shell/filesystem before browser direct-only routing', () => {
+  it('keeps browser in the direct Main parent and promotes only heavy tools', () => {
     seedAnthropicSecret();
     const agent = createRegisteredAgent({
       name: 'Claude Browser Builder Main',
@@ -219,18 +203,10 @@ describe('execution-planner', () => {
       }),
     });
 
-    try {
-      planMainExecution(agent, 'owner-1');
-      expect.unreachable('expected mixed browser/container Main plan to throw');
-    } catch (error) {
-      expect(error).toBeInstanceOf(ExecutionPlannerError);
-      expect((error as ExecutionPlannerError).code).toBe(
-        'BROWSER_AND_CONTAINER_TOOLS_MIXED_UNSUPPORTED',
-      );
-      expect((error as ExecutionPlannerError).message).toBe(
-        'This agent has both browser and shell/filesystem tools enabled, which is not supported in the same run. Browser runs host-side and shell/filesystem run in the container in v1. Create separate agents for browser and shell work, or disable one tool family.',
-      );
-    }
+    const plan = planMainExecution(agent, 'owner-1');
+    expect(plan.policy).toBe('direct_with_promotion');
+    expect(plan.directPlan?.backend).toBe('direct_http');
+    expect(plan.containerPlan?.backend).toBe('container');
   });
 
   it('rejects heavy-tool agents on providers that are not Claude-SDK compatible', () => {
@@ -404,8 +380,13 @@ describe('execution-planner', () => {
           enabled: true,
           requiresApproval: false,
         },
+        {
+          toolFamily: 'browser',
+          runtimeTools: ['browser_open'],
+          enabled: true,
+          requiresApproval: false,
+        },
       ],
-      includeConnectorTools: true,
     });
 
     expect(allowedTools).toEqual(

@@ -4,6 +4,7 @@ import path from 'path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const runContainerAgentMock = vi.hoisted(() => vi.fn());
+const ensureBrowserBridgeServerMock = vi.hoisted(() => vi.fn());
 
 vi.mock('../../container-runner.js', async () => {
   const actual = await vi.importActual<
@@ -14,6 +15,10 @@ vi.mock('../../container-runner.js', async () => {
     runContainerAgent: runContainerAgentMock,
   };
 });
+
+vi.mock('../browser/bridge.js', () => ({
+  ensureBrowserBridgeServer: ensureBrowserBridgeServerMock,
+}));
 
 import { executeContainerAgentTurn } from './container-turn-executor.js';
 import type { RegisteredAgentRecord } from '../db/agent-accessors.js';
@@ -38,6 +43,8 @@ describe('container-turn-executor', () => {
       status: 'success',
       result: 'Container response',
     });
+    ensureBrowserBridgeServerMock.mockReset();
+    ensureBrowserBridgeServerMock.mockResolvedValue('/tmp/browser.sock');
   });
 
   it('routes Talk/Main turns through the web runtime target', async () => {
@@ -162,5 +169,58 @@ describe('container-turn-executor', () => {
     });
 
     expect(result.content).toBe('Main container response');
+  });
+
+  it('passes browser bridge details into talk_main container runs when browser tools are enabled', async () => {
+    fs.mkdirSync(path.join(process.cwd(), 'data'), { recursive: true });
+    const controller = new AbortController();
+    const agent: RegisteredAgentRecord = {
+      id: 'agent.browser',
+      name: 'Browser Agent',
+      provider_id: 'provider.anthropic',
+      model_id: 'claude-opus-4-6',
+      tool_permissions_json: JSON.stringify({ browser: true, shell: true }),
+      persona_role: 'assistant',
+      system_prompt: 'Use the browser when needed.',
+      enabled: 1,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    };
+
+    await executeContainerAgentTurn({
+      runId: 'run-browser-1',
+      userId: 'owner-1',
+      agent,
+      talkId: 'talk-1',
+      promptLabel: 'talk',
+      userMessage: 'open the site',
+      signal: controller.signal,
+      allowedTools: ['Bash', 'mcp__nanoclaw__*'],
+      context: {
+        systemPrompt: 'System prompt',
+        history: [],
+      },
+      modelContextWindow: 200_000,
+      containerCredential: {
+        authMode: 'api_key',
+        secrets: {
+          ANTHROPIC_API_KEY: 'sk-ant-test',
+        },
+      },
+      threadId: 'thread-browser-1',
+      enableBrowserTools: true,
+    });
+
+    expect(ensureBrowserBridgeServerMock).toHaveBeenCalledTimes(1);
+    expect(runContainerAgentMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        browserBridgeHostSocketPath: '/tmp/browser.sock',
+        browserRunId: 'run-browser-1',
+        browserUserId: 'owner-1',
+        browserTalkId: 'talk-1',
+      }),
+      expect.any(Function),
+    );
   });
 });

@@ -69,8 +69,6 @@ export class ExecutionPlannerError extends Error {
       | 'CONTAINER_BROWSER_REQUIRES_SHELL'
       | 'CONTAINER_PROVIDER_INCOMPATIBLE'
       | 'CONTAINER_CREDENTIAL_MISSING'
-      | 'BROWSER_REQUIRES_DIRECT_EXECUTION'
-      | 'BROWSER_AND_CONTAINER_TOOLS_MIXED_UNSUPPORTED'
       | 'DIRECT_EXECUTION_UNAVAILABLE',
     public readonly details?: Record<string, unknown>,
   ) {
@@ -204,22 +202,6 @@ function resolveHeavyToolFamilies(
       .map((tool) => tool.toolFamily),
   );
 
-  if (
-    enabled.has('browser') &&
-    (enabled.has('shell') || enabled.has('filesystem'))
-  ) {
-    throw new ExecutionPlannerError(
-      'This agent has both browser and shell/filesystem tools enabled, which is not supported in the same run. Browser runs host-side and shell/filesystem run in the container in v1. Create separate agents for browser and shell work, or disable one tool family.',
-      'BROWSER_AND_CONTAINER_TOOLS_MIXED_UNSUPPORTED',
-      {
-        blockingToolFamily: 'browser',
-        conflictingFamilies: Array.from(enabled).filter(
-          (toolFamily) => toolFamily === 'shell' || toolFamily === 'filesystem',
-        ),
-      },
-    );
-  }
-
   const heavyFamilies: string[] = [];
   if (enabled.has('shell')) heavyFamilies.push('shell');
   if (enabled.has('filesystem')) heavyFamilies.push('filesystem');
@@ -267,7 +249,7 @@ export function getContainerAllowedTools(input: {
     allowed.add('WebFetch');
   }
 
-  if (input.includeConnectorTools) {
+  if (enabled.has('browser') || input.includeConnectorTools) {
     allowed.add('mcp__nanoclaw__*');
   }
 
@@ -372,28 +354,9 @@ export function planExecution(
   userId: string,
 ): ExecutionPlan {
   const effectiveTools = getEffectiveToolsForAgent(agent.id, userId);
-  const browserEnabled = effectiveTools.some(
-    (tool) => tool.toolFamily === 'browser' && tool.enabled,
-  );
   const heavyToolFamilies = resolveHeavyToolFamilies(effectiveTools);
   const provider = getProviderRecord(agent.provider_id);
   const configuredAuthMode = getConfiguredExecutorAuthMode();
-
-  if (browserEnabled) {
-    const directPlan = tryResolveDirectExecutionPlan({
-      agent,
-      effectiveTools,
-      provider,
-      configuredAuthMode,
-    });
-    if (directPlan) {
-      return directPlan;
-    }
-    throw new ExecutionPlannerError(
-      'This agent has browser tools enabled, but browser runs require direct execution in v1. Configure a direct-execution-compatible provider/credential set, or disable browser tools for this agent.',
-      'BROWSER_REQUIRES_DIRECT_EXECUTION',
-    );
-  }
 
   if (
     heavyToolFamilies.length === 0 &&
@@ -461,34 +424,9 @@ export function planMainExecution(
   userId: string,
 ): MainExecutionPlan {
   const effectiveTools = getEffectiveToolsForAgent(agent.id, userId);
-  const browserEnabled = effectiveTools.some(
-    (tool) => tool.toolFamily === 'browser' && tool.enabled,
-  );
   const heavyToolFamilies = resolveHeavyToolFamilies(effectiveTools);
   const provider = getProviderRecord(agent.provider_id);
   const configuredAuthMode = getConfiguredExecutorAuthMode();
-
-  if (browserEnabled) {
-    const directPlan = tryResolveDirectExecutionPlan({
-      agent,
-      effectiveTools,
-      provider,
-      configuredAuthMode,
-    });
-    if (directPlan) {
-      return {
-        policy: 'direct_only',
-        effectiveTools,
-        heavyToolFamilies,
-        directPlan,
-        containerPlan: null,
-      };
-    }
-    throw new ExecutionPlannerError(
-      'This agent has browser tools enabled, but browser runs require direct execution in v1. Configure a direct-execution-compatible provider/credential set, or disable browser tools for this agent.',
-      'BROWSER_REQUIRES_DIRECT_EXECUTION',
-    );
-  }
 
   let directPlan: DirectHttpExecutionPlan | null = null;
   try {
