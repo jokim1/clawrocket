@@ -998,6 +998,22 @@ describe('phase 0 schema and reliability tables', () => {
       content: 'old answer',
       createdAt: '2024-01-01T00:00:01.000Z',
     });
+    createTalkRun({
+      id: 'run-edit-history-1',
+      talk_id: 'talk-1',
+      thread_id: TALK_THREAD_ID,
+      requested_by: 'owner-1',
+      status: 'completed',
+      trigger_message_id: 'tm-edit-1',
+      target_agent_id: null,
+      idempotency_key: null,
+      executor_alias: 'Claude',
+      executor_model: 'claude-sonnet-4-6',
+      created_at: '2024-01-01T00:00:00.500Z',
+      started_at: '2024-01-01T00:00:00.500Z',
+      ended_at: '2024-01-01T00:00:01.500Z',
+      cancel_reason: null,
+    });
     createTalkMessage({
       id: 'tm-edit-3',
       talkId: 'talk-1',
@@ -1024,6 +1040,7 @@ describe('phase 0 schema and reliability tables', () => {
         (message) => message.id,
       ),
     ).toEqual(['tm-edit-3']);
+    expect(getTalkRunById('run-edit-history-1')?.trigger_message_id).toBeNull();
     expect(getTalkExecutorSession('talk-1')).toBeUndefined();
 
     const historyEvent = getOutboxEventsForTopics(['talk:talk-1'], 0, 20).find(
@@ -1082,6 +1099,82 @@ describe('phase 0 schema and reliability tables', () => {
         messageIds: [messageId],
       }),
     ).toThrow(/retain at least one user message/i);
+  });
+
+  it('deletes selected main messages even when historical runs reference the deleted prompt', () => {
+    const threadId = 'main-thread-edit-2';
+    const messageId = 'main-msg-user-2';
+    const runId = 'main-run-2';
+
+    enqueueMainTurnAtomic({
+      threadId,
+      userId: 'owner-1',
+      content: 'Remove this old main prompt',
+      messageId,
+      runId,
+    });
+    getDb()
+      .prepare(
+        `
+        UPDATE talk_runs
+        SET status = 'completed', ended_at = '2024-01-01T00:00:01.000Z'
+        WHERE id = ?
+      `,
+      )
+      .run(runId);
+    getDb()
+      .prepare(
+        `
+        INSERT INTO talk_messages (
+          id, talk_id, thread_id, role, content, created_by, created_at
+        ) VALUES (?, NULL, ?, 'assistant', ?, NULL, ?)
+      `,
+      )
+      .run(
+        'main-msg-assistant-2',
+        threadId,
+        'Remove this old main reply',
+        '2024-01-01T00:00:02.000Z',
+      );
+    getDb()
+      .prepare(
+        `
+        INSERT INTO talk_messages (
+          id, talk_id, thread_id, role, content, created_by, created_at
+        ) VALUES (?, NULL, ?, 'user', ?, ?, ?)
+      `,
+      )
+      .run(
+        'main-msg-user-keep',
+        threadId,
+        'Keep this latest main note',
+        'owner-1',
+        '2024-01-01T00:00:03.000Z',
+      );
+
+    const result = deleteMainMessagesAtomic({
+      threadId,
+      userId: 'owner-1',
+      messageIds: [messageId, 'main-msg-assistant-2'],
+    });
+
+    expect(result).toEqual({
+      deletedCount: 2,
+      deletedMessageIds: [messageId, 'main-msg-assistant-2'],
+      threadDeleted: false,
+    });
+    expect(getTalkRunById(runId)?.trigger_message_id).toBeNull();
+    const remaining = getDb()
+      .prepare(
+        `
+        SELECT id
+        FROM talk_messages
+        WHERE talk_id IS NULL AND thread_id = ?
+        ORDER BY created_at ASC
+      `,
+      )
+      .all(threadId) as Array<{ id: string }>;
+    expect(remaining.map((row) => row.id)).toEqual(['main-msg-user-keep']);
   });
 
   it('orders same-timestamp talk messages by sequence_in_run and includes runtime metadata in outbox events', () => {
