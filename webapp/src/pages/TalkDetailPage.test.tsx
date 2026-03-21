@@ -3257,13 +3257,13 @@ describe('TalkDetailPage', () => {
       buildMessage({
         id: 'msg-1',
         role: 'user',
-        content: 'can you try to access my linkedin again? 1',
+        content: 'Old user prompt',
         createdAt: '2026-03-06T00:00:00.000Z',
       }),
       buildMessage({
         id: 'msg-2',
-        role: 'user',
-        content: 'can you try to access my linkedin again? 2',
+        role: 'assistant',
+        content: 'Old assistant answer',
         createdAt: '2026-03-06T00:00:01.000Z',
       }),
       buildMessage({
@@ -3304,11 +3304,9 @@ describe('TalkDetailPage', () => {
       await screen.findByRole('dialog', { name: 'Edit history' }),
     ).toBeTruthy();
 
+    await user.click(screen.getByLabelText(/You.*Old user prompt/i));
     await user.click(
-      screen.getByLabelText(/You.*can you try to access my linkedin again\? 1/i),
-    );
-    await user.click(
-      screen.getByLabelText(/You.*can you try to access my linkedin again\? 2/i),
+      screen.getByLabelText(/Assistant.*Old assistant answer/i),
     );
     await user.click(screen.getByRole('button', { name: 'Delete selected' }));
 
@@ -3321,24 +3319,103 @@ describe('TalkDetailPage', () => {
 
     staleReplay.resolve(initialMessages);
     await waitFor(() => {
-      expect(
-        screen.queryByText('can you try to access my linkedin again? 1'),
-      ).toBeNull();
-      expect(
-        screen.queryByText('can you try to access my linkedin again? 2'),
-      ).toBeNull();
+      expect(screen.queryByText('Old user prompt')).toBeNull();
+      expect(screen.queryByText('Old assistant answer')).toBeNull();
     });
 
     await user.type(composer, '/edit');
     await user.keyboard('{Enter}');
     const dialog = await screen.findByRole('dialog', { name: 'Edit history' });
-    expect(
-      within(dialog).queryByText('can you try to access my linkedin again? 1'),
-    ).toBeNull();
-    expect(
-      within(dialog).queryByText('can you try to access my linkedin again? 2'),
-    ).toBeNull();
+    expect(within(dialog).queryByText('Old user prompt')).toBeNull();
+    expect(within(dialog).queryByText('Old assistant answer')).toBeNull();
     expect(within(dialog).getByText('Keep this latest note')).toBeTruthy();
+  });
+
+  it('ignores replayed deleted message events after sending the same prompt again', async () => {
+    const user = userEvent.setup();
+    const repeatedPrompt = 'can you try to access my linkedin again?';
+
+    installTalkDetailFetch({
+      messages: [
+        buildMessage({
+          id: 'msg-1',
+          role: 'user',
+          content: repeatedPrompt,
+          createdAt: '2026-03-06T00:00:00.000Z',
+        }),
+        buildMessage({
+          id: 'msg-2',
+          role: 'user',
+          content: repeatedPrompt,
+          createdAt: '2026-03-06T00:00:01.000Z',
+        }),
+        buildMessage({
+          id: 'msg-3',
+          role: 'user',
+          content: 'Keep this latest note',
+          createdAt: '2026-03-06T00:00:02.000Z',
+        }),
+      ],
+      runs: [],
+    });
+
+    renderDetailPage('/app/talks/talk-1');
+    const composer = await screen.findByPlaceholderText(
+      'Send a message to this thread',
+    );
+
+    await user.type(composer, '/edit');
+    await user.keyboard('{Enter}');
+    expect(
+      await screen.findByRole('dialog', { name: 'Edit history' }),
+    ).toBeTruthy();
+
+    const repeatedRows = screen.getAllByLabelText(
+      /You.*can you try to access my linkedin again\?/i,
+    );
+    await user.click(repeatedRows[0]!);
+    await user.click(repeatedRows[1]!);
+    await user.click(screen.getByRole('button', { name: 'Delete selected' }));
+
+    await waitFor(() =>
+      expect(screen.queryByRole('dialog', { name: 'Edit history' })).toBeNull(),
+    );
+    expect(screen.queryByText(repeatedPrompt)).toBeNull();
+
+    await user.type(composer, repeatedPrompt);
+    await user.keyboard('{Enter}');
+
+    await waitFor(() =>
+      expect(screen.getAllByText(repeatedPrompt)).toHaveLength(1),
+    );
+
+    expect(streamInput).toBeTruthy();
+    act(() => {
+      streamInput?.onMessageAppended({
+        talkId: 'talk-1',
+        threadId: DEFAULT_THREAD_ID,
+        messageId: 'msg-1',
+        runId: null,
+        role: 'user',
+        createdBy: 'user-1',
+        content: repeatedPrompt,
+        createdAt: '2026-03-06T00:00:00.000Z',
+      });
+      streamInput?.onMessageAppended({
+        talkId: 'talk-1',
+        threadId: DEFAULT_THREAD_ID,
+        messageId: 'msg-2',
+        runId: null,
+        role: 'user',
+        createdBy: 'user-1',
+        content: repeatedPrompt,
+        createdAt: '2026-03-06T00:00:01.000Z',
+      });
+    });
+
+    await waitFor(() =>
+      expect(screen.getAllByText(repeatedPrompt)).toHaveLength(1),
+    );
   });
 });
 

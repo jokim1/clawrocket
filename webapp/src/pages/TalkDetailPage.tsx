@@ -2251,6 +2251,7 @@ export function TalkDetailPage({
   const pendingRunHistoryScrollRef = useRef<string | null>(null);
   const activeThreadIdRef = useRef<string | null>(null);
   const threadSnapshotVersionRef = useRef(0);
+  const deletedMessageIdsRef = useRef<Set<string>>(new Set());
   const threadStateRef = useRef<ThreadListState>(threadState);
   const searchQueryRef = useRef(searchQuery);
   const orchestrationMenuRef = useRef<HTMLDivElement | null>(null);
@@ -2491,6 +2492,27 @@ export function TalkDetailPage({
     }
   }, [handleUnauthorized, talkId]);
 
+  const rememberDeletedMessageIds = useCallback((messageIds: string[]) => {
+    if (messageIds.length === 0) return;
+    const next = new Set(deletedMessageIdsRef.current);
+    for (const messageId of messageIds) {
+      const normalized = messageId.trim();
+      if (normalized) {
+        next.add(normalized);
+      }
+    }
+    deletedMessageIdsRef.current = next;
+  }, []);
+
+  const reconcileDeletedMessageIds = useCallback((messages: TalkMessage[]) => {
+    if (deletedMessageIdsRef.current.size === 0) return;
+    const next = new Set(deletedMessageIdsRef.current);
+    for (const message of messages) {
+      next.delete(message.id);
+    }
+    deletedMessageIdsRef.current = next;
+  }, []);
+
   const scheduleThreadListRefresh = useCallback(() => {
     threadRefreshDirtyRef.current = true;
     if (threadRefreshTimerRef.current) return;
@@ -2528,6 +2550,7 @@ export function TalkDetailPage({
             error: null,
           });
         }
+        reconcileDeletedMessageIds(messages);
         dispatch({ type: 'RESET_FROM_RESYNC', threadId, messages, runs });
         autoStickToBottomRef.current = true;
       } catch (err) {
@@ -2536,7 +2559,7 @@ export function TalkDetailPage({
         }
       }
     },
-    [handleUnauthorized, talkId],
+    [handleUnauthorized, reconcileDeletedMessageIds, talkId],
   );
 
   const refreshBrowserRuns = useCallback(
@@ -2764,6 +2787,7 @@ export function TalkDetailPage({
     dispatch({ type: 'BOOTSTRAP_LOADING' });
     messageElementRefs.current.clear();
     setThreadState({ threads: [], loading: true, error: null });
+    deletedMessageIdsRef.current = new Set();
     setActiveThreadId(null);
     setSearchQuery('');
     setSearchResults([]);
@@ -2920,6 +2944,7 @@ export function TalkDetailPage({
         ) {
           return;
         }
+        reconcileDeletedMessageIds(messages);
         dispatch({
           type: 'THREAD_MESSAGES_LOADED',
           threadId: activeThreadId,
@@ -2957,7 +2982,14 @@ export function TalkDetailPage({
     return () => {
       cancelled = true;
     };
-  }, [activeThreadId, handleUnauthorized, scrollToBottom, state.kind, talkId]);
+  }, [
+    activeThreadId,
+    handleUnauthorized,
+    reconcileDeletedMessageIds,
+    scrollToBottom,
+    state.kind,
+    talkId,
+  ]);
 
   useEffect(() => {
     let cancelled = false;
@@ -3040,6 +3072,7 @@ export function TalkDetailPage({
       onUnauthorized: handleUnauthorized,
       onMessageAppended: (event: MessageAppendedEvent) => {
         if (event.talkId !== talkId) return;
+        if (deletedMessageIdsRef.current.has(event.messageId)) return;
         if (event.threadId) {
           ensureKnownThread(event.threadId);
         }
@@ -3184,6 +3217,7 @@ export function TalkDetailPage({
       onHistoryEdited: (event: TalkHistoryEditedEvent) => {
         if (event.talkId !== talkId) return;
         if (event.threadIds?.includes(activeThreadIdRef.current || '')) {
+          rememberDeletedMessageIds(event.deletedMessageIds || []);
           void resyncTalkState({ refreshThreads: true });
           return;
         }
@@ -3221,6 +3255,7 @@ export function TalkDetailPage({
     ensureKnownThread,
     handleUnauthorized,
     isNearBottom,
+    rememberDeletedMessageIds,
     resyncTalkState,
     scheduleThreadListRefresh,
     state.kind,
@@ -5401,6 +5436,7 @@ export function TalkDetailPage({
           threadId,
         });
         threadSnapshotVersionRef.current += 1;
+        rememberDeletedMessageIds(result.deletedMessageIds);
         await resyncTalkState({ refreshThreads: true });
         setHistoryEditorOpen(false);
         setHistoryEditState({
@@ -5416,6 +5452,7 @@ export function TalkDetailPage({
         }
         if (err instanceof ApiError && err.code === 'message_not_found') {
           threadSnapshotVersionRef.current += 1;
+          rememberDeletedMessageIds(messageIds);
           void resyncTalkState({ refreshThreads: true });
         }
         setHistoryEditState({
@@ -5425,7 +5462,13 @@ export function TalkDetailPage({
         });
       }
     },
-    [activeThreadId, handleUnauthorized, resyncTalkState, state],
+    [
+      activeThreadId,
+      handleUnauthorized,
+      rememberDeletedMessageIds,
+      resyncTalkState,
+      state,
+    ],
   );
 
   const handleDraftChange = (value: string) => {
