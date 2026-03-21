@@ -16,6 +16,10 @@ import {
 const REF_ATTRIBUTE = 'data-nanoclaw-ref';
 const DEFAULT_NAVIGATION_TIMEOUT_MS = 30000;
 const DEFAULT_ACTION_TIMEOUT_MS = 15000;
+const HUMAN_ONLY_CHECKPOINT_REGEX =
+  /\b(captcha|not a robot|verify you are human|security check|complete the challenge|press and hold)\b/i;
+const INTERACTIVE_AUTH_CHECKPOINT_REGEX =
+  /\b(sign in|log in|login|verify your identity|approve sign[- ]?in|check your phone|check your device|open (the )?(linkedin )?app|authentication app|verification code|enter the code|two-step verification|2-step verification|two factor authentication|two-factor authentication|2fa|confirm (that )?it'?s you|use your passkey)\b/i;
 
 export type BrowserResultStatus =
   | 'ok'
@@ -228,20 +232,17 @@ async function detectBlockedState(page: Page): Promise<{
     }
 
     const bodyText = await page.locator('body').innerText();
-    if (
-      /\b(captcha|not a robot|verify you are human|security check|complete the challenge|press and hold)\b/i.test(
-        bodyText,
-      )
-    ) {
+    if (HUMAN_ONLY_CHECKPOINT_REGEX.test(bodyText)) {
       return {
         kind: 'human_step_required',
         reason: 'Page content suggests a human-only verification step.',
       };
     }
-    if (/\b(sign in|log in|login|verify your identity)\b/i.test(bodyText)) {
+    if (INTERACTIVE_AUTH_CHECKPOINT_REGEX.test(bodyText)) {
       return {
         kind: 'auth_required',
-        reason: 'Page content suggests interactive authentication.',
+        reason:
+          'Page content suggests interactive authentication or device verification.',
       };
     }
   } catch {

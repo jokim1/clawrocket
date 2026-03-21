@@ -228,6 +228,32 @@ function clearFailedLiveResponsesForThread(
   return next;
 }
 
+function clearLiveResponse(
+  liveResponses: Record<string, LiveResponse>,
+  runId: string,
+): Record<string, LiveResponse> {
+  if (!(runId in liveResponses)) return liveResponses;
+  const next = { ...liveResponses };
+  delete next[runId];
+  return next;
+}
+
+function syncLiveResponsesWithRuns(
+  liveResponses: Record<string, LiveResponse>,
+  runsById: Record<string, MainRun>,
+  threadId: string,
+): Record<string, LiveResponse> {
+  let next = liveResponses;
+  for (const [runId, response] of Object.entries(liveResponses)) {
+    if (response.threadId !== threadId) continue;
+    const run = runsById[runId];
+    if (!run || run.status !== 'running') {
+      next = clearLiveResponse(next, runId);
+    }
+  }
+  return next;
+}
+
 function withThreadActivity(
   threads: MainThreadSummary[],
   runsById: Record<string, MainRun>,
@@ -365,6 +391,11 @@ function mainReducer(state: MainState, action: MainAction): MainState {
       return {
         ...state,
         runsById,
+        liveResponses: syncLiveResponsesWithRuns(
+          state.liveResponses,
+          runsById,
+          action.threadId,
+        ),
         threads: withThreadActivity(state.threads, runsById, action.threadId),
       };
     }
@@ -390,6 +421,10 @@ function mainReducer(state: MainState, action: MainAction): MainState {
         ...state,
         runsById,
         threads,
+        liveResponses:
+          action.run.status === 'running'
+            ? state.liveResponses
+            : clearLiveResponse(state.liveResponses, action.run.id),
       };
     }
     case 'PROMOTION_PENDING': {
@@ -440,6 +475,7 @@ function mainReducer(state: MainState, action: MainAction): MainState {
         ...state,
         runsById,
         threads: withThreadActivity(state.threads, runsById, action.threadId),
+        liveResponses: clearLiveResponse(state.liveResponses, action.runId),
       };
     }
     case 'MESSAGES_ERROR':
@@ -1073,6 +1109,14 @@ export function MainChannelPage({
       onPromotionPending: (event: MainPromotionPendingEvent) => {
         reportRunVisible(event.runId);
         dispatch({ type: 'PROMOTION_PENDING', event });
+      },
+      onBrowserBlocked: (event) => {
+        if (event.threadId !== activeThreadIdRef.current) return;
+        void refreshActiveThread({ refreshThreads: true });
+      },
+      onBrowserUnblocked: (event) => {
+        if (event.threadId !== activeThreadIdRef.current) return;
+        void refreshActiveThread({ refreshThreads: true });
       },
       onResponseStarted: (event) => {
         reportRunVisible(event.runId);

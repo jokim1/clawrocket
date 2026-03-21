@@ -140,6 +140,8 @@ import { openGoogleDrivePicker } from '../lib/googlePicker';
 import { displayThreadTitle } from '../lib/threadTitles';
 import { openTalkStream } from '../lib/talkStream';
 import type {
+  TalkBrowserBlockedEvent,
+  TalkBrowserUnblockedEvent,
   MessageAppendedEvent,
   TalkHistoryEditedEvent,
   TalkProgressUpdateEvent,
@@ -3219,6 +3221,34 @@ export function TalkDetailPage({
         if (event.talkId !== talkId) return;
         if (event.threadIds?.includes(activeThreadIdRef.current || '')) {
           rememberDeletedMessageIds(event.deletedMessageIds || []);
+          void resyncTalkState({ refreshThreads: true });
+          return;
+        }
+        scheduleThreadListRefresh();
+      },
+      onBrowserBlocked: (event: TalkBrowserBlockedEvent) => {
+        if (event.talkId !== talkId) return;
+        if (event.threadId) {
+          ensureKnownThread(event.threadId);
+        }
+        if (
+          event.threadId &&
+          event.threadId === activeThreadIdRef.current
+        ) {
+          void resyncTalkState({ refreshThreads: true });
+          return;
+        }
+        scheduleThreadListRefresh();
+      },
+      onBrowserUnblocked: (event: TalkBrowserUnblockedEvent) => {
+        if (event.talkId !== talkId) return;
+        if (event.threadId) {
+          ensureKnownThread(event.threadId);
+        }
+        if (
+          event.threadId &&
+          event.threadId === activeThreadIdRef.current
+        ) {
           void resyncTalkState({ refreshThreads: true });
           return;
         }

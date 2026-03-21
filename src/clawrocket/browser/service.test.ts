@@ -69,7 +69,23 @@ describe('browser service helpers', () => {
 
     expect(result).toEqual({
       kind: 'auth_required',
-      reason: 'Page content suggests interactive authentication.',
+      reason:
+        'Page content suggests interactive authentication or device verification.',
+    });
+  });
+
+  it('detects auth when the page body requests phone approval or MFA', async () => {
+    const result = await _testOnly.detectBlockedState(
+      makePage({
+        bodyText:
+          'Check your phone and approve sign in in the LinkedIn app to continue.',
+      }),
+    );
+
+    expect(result).toEqual({
+      kind: 'auth_required',
+      reason:
+        'Page content suggests interactive authentication or device verification.',
     });
   });
 
