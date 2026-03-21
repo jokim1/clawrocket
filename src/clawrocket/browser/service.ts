@@ -173,25 +173,22 @@ async function detectAuthState(page: Page): Promise<{
   }
 
   try {
-    const authSignals = await page.evaluate(() => {
-      const documentRef = (globalThis as { document?: any }).document;
-      const passwordInput = documentRef?.querySelector?.(
-        'input[type="password"]',
-      );
-      if (passwordInput) {
-        return 'Page contains a password field.';
-      }
+    const passwordFieldCount = await page
+      .locator('input[type="password"]')
+      .count();
+    if (passwordFieldCount > 0) {
+      return {
+        needsAuth: true,
+        reason: 'Page contains a password field.',
+      };
+    }
 
-      const bodyText = documentRef?.body?.innerText || '';
-      if (/\b(sign in|log in|login|verify your identity)\b/i.test(bodyText)) {
-        return 'Page content suggests interactive authentication.';
-      }
-
-      return null;
-    });
-
-    if (authSignals) {
-      return { needsAuth: true, reason: authSignals };
+    const bodyText = await page.locator('body').innerText();
+    if (/\b(sign in|log in|login|verify your identity)\b/i.test(bodyText)) {
+      return {
+        needsAuth: true,
+        reason: 'Page content suggests interactive authentication.',
+      };
     }
   } catch {
     // Ignore auth detection failures and fall back to the page state we have.
@@ -277,7 +274,6 @@ function classifyRisk(input: {
     descriptor.tag || '',
     descriptor.type || '',
     descriptor.href || '',
-    input.currentUrl,
   ]
     .join(' ')
     .toLowerCase();
@@ -967,3 +963,8 @@ export function getBrowserService(): BrowserService {
 export function _resetBrowserServiceForTests(): void {
   browserService = null;
 }
+
+export const _testOnly = {
+  detectAuthState,
+  classifyRisk,
+};

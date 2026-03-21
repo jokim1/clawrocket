@@ -206,6 +206,35 @@ describe('execution-planner', () => {
     expect(plan.containerPlan).toBeNull();
   });
 
+  it('rejects Main agents that mix browser with shell/filesystem before browser direct-only routing', () => {
+    seedAnthropicSecret();
+    const agent = createRegisteredAgent({
+      name: 'Claude Browser Builder Main',
+      providerId: 'provider.anthropic',
+      modelId: 'claude-sonnet-4-6',
+      toolPermissionsJson: JSON.stringify({
+        browser: true,
+        shell: true,
+        filesystem: true,
+      }),
+    });
+
+    try {
+      planMainExecution(agent, 'owner-1');
+      expect.unreachable(
+        'expected mixed browser/container Main plan to throw',
+      );
+    } catch (error) {
+      expect(error).toBeInstanceOf(ExecutionPlannerError);
+      expect((error as ExecutionPlannerError).code).toBe(
+        'BROWSER_AND_CONTAINER_TOOLS_MIXED_UNSUPPORTED',
+      );
+      expect((error as ExecutionPlannerError).message).toBe(
+        'This agent has both browser and shell/filesystem tools enabled, which is not supported in the same run. Browser runs host-side and shell/filesystem run in the container in v1. Create separate agents for browser and shell work, or disable one tool family.',
+      );
+    }
+  });
+
   it('rejects heavy-tool agents on providers that are not Claude-SDK compatible', () => {
     const agent = createRegisteredAgent({
       name: 'GPT Builder',

@@ -16,7 +16,20 @@ vi.mock('./project-mounts.js', () => ({
   resolveValidatedProjectMountPath: vi.fn(),
 }));
 vi.mock('../tools/browser-tools.js', () => ({
-  BROWSER_TOOL_DEFINITIONS: [],
+  BROWSER_TOOL_DEFINITIONS: [
+    {
+      name: 'browser_open',
+      description: 'Open a persistent browser session.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          siteKey: { type: 'string' },
+          url: { type: 'string' },
+        },
+        required: ['siteKey', 'url'],
+      },
+    },
+  ],
   executeBrowserTool: vi.fn(),
 }));
 
@@ -35,6 +48,7 @@ import { executeWithAgent } from './agent-router.js';
 import { planMainExecution } from './execution-planner.js';
 import { executeContainerAgentTurn } from './container-turn-executor.js';
 import { resolveValidatedProjectMountPath } from './project-mounts.js';
+import { executeBrowserTool } from '../tools/browser-tools.js';
 
 describe('main-executor (pure)', () => {
   beforeEach(() => {
@@ -49,6 +63,7 @@ describe('main-executor (pure)', () => {
     vi.mocked(planMainExecution).mockReset();
     vi.mocked(executeContainerAgentTurn).mockReset();
     vi.mocked(resolveValidatedProjectMountPath).mockReset();
+    vi.mocked(executeBrowserTool).mockReset();
     vi.mocked(resolveValidatedProjectMountPath).mockImplementation((path) =>
       path ? String(path) : null,
     );
@@ -434,6 +449,225 @@ describe('main-executor (pure)', () => {
       'What is the launch code?',
       expect.any(Object),
     );
+  });
+
+  it('exposes browser tools to direct Main agents when browser is enabled', async () => {
+    const now = new Date().toISOString();
+    createMessage({
+      id: 'msg-browser-tools',
+      talkId: null,
+      threadId: 'thread-browser-tools',
+      role: 'user',
+      content: 'Open LinkedIn',
+      createdBy: 'owner-1',
+      createdAt: now,
+    });
+
+    vi.mocked(planMainExecution).mockReturnValue({
+      policy: 'direct_only',
+      effectiveTools: [
+        {
+          toolFamily: 'browser',
+          runtimeTools: ['browser_open'],
+          enabled: true,
+          requiresApproval: false,
+        },
+      ],
+      heavyToolFamilies: [],
+      directPlan: {
+        backend: 'direct_http',
+        routeReason: 'normal',
+        effectiveTools: [
+          {
+            toolFamily: 'browser',
+            runtimeTools: ['browser_open'],
+            enabled: true,
+            requiresApproval: false,
+          },
+        ],
+        providerId: 'provider.anthropic',
+        modelId: 'claude-sonnet-4-6',
+        binding: {
+          providerConfig: {
+            providerId: 'provider.anthropic',
+            baseUrl: 'https://api.anthropic.com',
+            apiFormat: 'anthropic_messages',
+            authScheme: 'x_api_key',
+          },
+          secret: { apiKey: 'sk-ant-test' },
+        },
+      },
+      containerPlan: null,
+    });
+
+    let toolNames: string[] = [];
+    vi.mocked(executeWithAgent).mockImplementation(async (_agentId, context) => {
+      toolNames = (context?.contextTools ?? []).map((tool) => tool.name);
+      return {
+        content: 'Browser-ready',
+        agentId: 'agent.main',
+        providerId: 'provider.anthropic',
+        modelId: 'claude-sonnet-4-6',
+      };
+    });
+
+    await executeMainChannel(
+      {
+        runId: 'run-main-browser-tools',
+        threadId: 'thread-browser-tools',
+        requestedBy: 'owner-1',
+        triggerMessageId: 'msg-browser-tools',
+        triggerContent: 'Open LinkedIn',
+      },
+      new AbortController().signal,
+    );
+
+    expect(toolNames).toContain('browser_open');
+  });
+
+  it('dispatches browser tool calls from Main through executeBrowserTool', async () => {
+    const now = new Date().toISOString();
+    createMessage({
+      id: 'msg-browser-dispatch',
+      talkId: null,
+      threadId: 'thread-browser-dispatch',
+      role: 'user',
+      content: 'Use browser tools',
+      createdBy: 'owner-1',
+      createdAt: now,
+    });
+
+    vi.mocked(planMainExecution).mockReturnValue({
+      policy: 'direct_only',
+      effectiveTools: [
+        {
+          toolFamily: 'browser',
+          runtimeTools: ['browser_open'],
+          enabled: true,
+          requiresApproval: false,
+        },
+      ],
+      heavyToolFamilies: [],
+      directPlan: {
+        backend: 'direct_http',
+        routeReason: 'normal',
+        effectiveTools: [
+          {
+            toolFamily: 'browser',
+            runtimeTools: ['browser_open'],
+            enabled: true,
+            requiresApproval: false,
+          },
+        ],
+        providerId: 'provider.anthropic',
+        modelId: 'claude-sonnet-4-6',
+        binding: {
+          providerConfig: {
+            providerId: 'provider.anthropic',
+            baseUrl: 'https://api.anthropic.com',
+            apiFormat: 'anthropic_messages',
+            authScheme: 'x_api_key',
+          },
+          secret: { apiKey: 'sk-ant-test' },
+        },
+      },
+      containerPlan: null,
+    });
+    vi.mocked(executeBrowserTool).mockResolvedValue({
+      result: '{"status":"ok"}',
+    });
+    vi.mocked(executeWithAgent).mockImplementation(
+      async (_agentId, _context, _content, options) => {
+        const toolResult = await options!.executeToolCall!(
+          'browser_open',
+          {
+            siteKey: 'linkedin',
+            url: 'https://www.linkedin.com/messaging/',
+          },
+        );
+        expect(toolResult).toEqual({
+          result: '{"status":"ok"}',
+        });
+        return {
+          content: 'Browser tool executed',
+          agentId: 'agent.main',
+          providerId: 'provider.anthropic',
+          modelId: 'claude-sonnet-4-6',
+        };
+      },
+    );
+
+    await executeMainChannel(
+      {
+        runId: 'run-main-browser-dispatch',
+        threadId: 'thread-browser-dispatch',
+        requestedBy: 'owner-1',
+        triggerMessageId: 'msg-browser-dispatch',
+        triggerContent: 'Use browser tools',
+      },
+      new AbortController().signal,
+    );
+
+    expect(executeBrowserTool).toHaveBeenCalledWith({
+      toolName: 'browser_open',
+      args: {
+        siteKey: 'linkedin',
+        url: 'https://www.linkedin.com/messaging/',
+      },
+      context: {
+        signal: expect.any(AbortSignal),
+        userId: 'owner-1',
+        runId: 'run-main-browser-dispatch',
+      },
+    });
+  });
+
+  it('rejects browser tool calls in Main when browser is not enabled', async () => {
+    const now = new Date().toISOString();
+    createMessage({
+      id: 'msg-browser-disabled',
+      talkId: null,
+      threadId: 'thread-browser-disabled',
+      role: 'user',
+      content: 'Try browser anyway',
+      createdBy: 'owner-1',
+      createdAt: now,
+    });
+
+    vi.mocked(executeWithAgent).mockImplementation(
+      async (_agentId, _context, _content, options) => {
+        const toolResult = await options!.executeToolCall!(
+          'browser_open',
+          {
+            siteKey: 'linkedin',
+            url: 'https://www.linkedin.com/messaging/',
+          },
+        );
+        expect(toolResult).toEqual({
+          result: "Tool 'browser_open' is not enabled for this Main agent",
+          isError: true,
+        });
+        return {
+          content: 'Rejected hidden browser tool',
+          agentId: 'agent.main',
+          providerId: 'provider.anthropic',
+          modelId: 'claude-sonnet-4-6',
+        };
+      },
+    );
+
+    await executeMainChannel(
+      {
+        runId: 'run-main-browser-disabled',
+        threadId: 'thread-browser-disabled',
+        requestedBy: 'owner-1',
+        triggerMessageId: 'msg-browser-disabled',
+        triggerContent: 'Try browser anyway',
+      },
+      new AbortController().signal,
+    );
+
+    expect(executeBrowserTool).not.toHaveBeenCalled();
   });
 
   it('persists a Main run context snapshot on the talk_runs row', async () => {
