@@ -8,6 +8,7 @@ export { _initClawrocketTestSchema, initClawrocketSchema } from './init.js';
 export * from './accessors.js';
 export * from './agent-accessors.js';
 export * from './browser-accessors.js';
+export * from './browser-run-accessors.js';
 export * from './channel-accessors.js';
 export * from './connector-accessors.js';
 export * from './context-accessors.js';

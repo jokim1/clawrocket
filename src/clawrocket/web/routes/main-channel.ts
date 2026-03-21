@@ -1,5 +1,11 @@
 import { randomUUID } from 'crypto';
 import {
+  type BrowserBlockMetadata,
+  type BrowserResumeMetadata,
+  type CarriedBrowserSessionMetadata,
+  type ExecutionDecisionMetadata,
+} from '../../browser/metadata.js';
+import {
   canUserAccessMainThread,
   deleteMainThread,
   enqueueMainTurnAtomic,
@@ -214,6 +220,10 @@ export interface MainRunApiRecord {
   promotionChildRunId: string | null;
   requestedToolFamilies: string[];
   userVisibleSummary: string | null;
+  browserBlock: BrowserBlockMetadata | null;
+  browserResume: BrowserResumeMetadata | null;
+  carriedBrowserSessions: CarriedBrowserSessionMetadata[];
+  executionDecision: ExecutionDecisionMetadata | null;
 }
 
 function parseRunMetadata(
@@ -229,6 +239,15 @@ function parseRunMetadata(
     // ignored
   }
   return {};
+}
+
+function parseMetadataObject<T>(
+  value: unknown,
+): T | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return null;
+  }
+  return value as T;
 }
 
 function toMainRunApiRecord(run: {
@@ -281,6 +300,27 @@ function toMainRunApiRecord(run: {
       typeof metadata.userVisibleSummary === 'string'
         ? metadata.userVisibleSummary
         : null,
+    browserBlock: parseMetadataObject<BrowserBlockMetadata>(
+      metadata.browserBlock,
+    ),
+    browserResume: parseMetadataObject<BrowserResumeMetadata>(
+      metadata.browserResume,
+    ),
+    carriedBrowserSessions: Array.isArray(metadata.carriedBrowserSessions)
+      ? metadata.carriedBrowserSessions.filter(
+          (
+            entry,
+          ): entry is CarriedBrowserSessionMetadata =>
+            Boolean(entry) &&
+            typeof entry === 'object' &&
+            !Array.isArray(entry) &&
+            typeof (entry as { sessionId?: unknown }).sessionId === 'string' &&
+            typeof (entry as { siteKey?: unknown }).siteKey === 'string',
+        )
+      : [],
+    executionDecision: parseMetadataObject<ExecutionDecisionMetadata>(
+      metadata.executionDecision,
+    ),
   };
 }
 

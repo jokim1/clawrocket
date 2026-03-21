@@ -22,15 +22,24 @@ export const EXECUTOR_MAIN_PROJECT_PATH_KEY = 'executor.mainProjectPath';
 
 export type ExecutionBackend = 'direct_http' | 'container';
 export type ExecutionRouteReason = 'normal' | 'subscription_fallback';
+export type ExecutionCredentialSource =
+  | 'db_secret'
+  | 'env'
+  | 'oauth_token'
+  | 'auth_token'
+  | 'missing';
 
 export interface ContainerCredentialConfig {
   authMode: 'api_key' | 'subscription';
+  credentialSource: ExecutionCredentialSource;
   secrets: Record<string, string>;
 }
 
 export interface DirectHttpExecutionPlan {
   backend: 'direct_http';
   routeReason: 'normal';
+  authPath: 'api_key';
+  credentialSource: ExecutionCredentialSource;
   effectiveTools: EffectiveToolAccess[];
   providerId: string;
   modelId: string;
@@ -69,8 +78,6 @@ export class ExecutionPlannerError extends Error {
       | 'CONTAINER_BROWSER_REQUIRES_SHELL'
       | 'CONTAINER_PROVIDER_INCOMPATIBLE'
       | 'CONTAINER_CREDENTIAL_MISSING'
-      | 'BROWSER_REQUIRES_DIRECT_EXECUTION'
-      | 'BROWSER_AND_CONTAINER_TOOLS_MIXED_UNSUPPORTED'
       | 'DIRECT_EXECUTION_UNAVAILABLE',
     public readonly details?: Record<string, unknown>,
   ) {
@@ -161,6 +168,7 @@ export function resolveContainerCredential(input?: {
     }
     return {
       authMode: 'api_key',
+      credentialSource: getAnthropicApiKeyFromDb() ? 'db_secret' : 'env',
       secrets: {
         ANTHROPIC_API_KEY: normalizedApiKey,
       },
@@ -185,6 +193,7 @@ export function resolveContainerCredential(input?: {
     }
     return {
       authMode: 'subscription',
+      credentialSource: oauthToken ? 'oauth_token' : 'auth_token',
       secrets,
     };
   }
@@ -203,22 +212,6 @@ function resolveHeavyToolFamilies(
       .filter((tool) => tool.enabled)
       .map((tool) => tool.toolFamily),
   );
-
-  if (
-    enabled.has('browser') &&
-    (enabled.has('shell') || enabled.has('filesystem'))
-  ) {
-    throw new ExecutionPlannerError(
-      'This agent has both browser and shell/filesystem tools enabled, which is not supported in the same run. Browser runs host-side and shell/filesystem run in the container in v1. Create separate agents for browser and shell work, or disable one tool family.',
-      'BROWSER_AND_CONTAINER_TOOLS_MIXED_UNSUPPORTED',
-      {
-        blockingToolFamily: 'browser',
-        conflictingFamilies: Array.from(enabled).filter(
-          (toolFamily) => toolFamily === 'shell' || toolFamily === 'filesystem',
-        ),
-      },
-    );
-  }
 
   const heavyFamilies: string[] = [];
   if (enabled.has('shell')) heavyFamilies.push('shell');
@@ -267,7 +260,7 @@ export function getContainerAllowedTools(input: {
     allowed.add('WebFetch');
   }
 
-  if (input.includeConnectorTools) {
+  if (enabled.has('browser') || input.includeConnectorTools) {
     allowed.add('mcp__nanoclaw__*');
   }
 
@@ -285,6 +278,15 @@ function tryResolveDirectExecutionPlan(input: {
     return {
       backend: 'direct_http',
       routeReason: 'normal',
+      authPath: 'api_key',
+      credentialSource:
+        input.agent.provider_id === 'provider.anthropic'
+          ? getAnthropicApiKeyFromDb()
+            ? 'db_secret'
+            : TALK_EXECUTOR_ANTHROPIC_API_KEY
+              ? 'env'
+              : 'missing'
+          : 'db_secret',
       effectiveTools: input.effectiveTools,
       providerId: input.agent.provider_id,
       modelId: input.agent.model_id,
@@ -386,12 +388,47 @@ export function planExecution(
       provider,
       configuredAuthMode,
     });
+    const shouldPreferSubscriptionContainer =
+      agent.provider_id === 'provider.anthropic' &&
+      configuredAuthMode === 'subscription';
+    const containerPlan = tryResolveContainerExecutionPlan({
+      agent,
+      effectiveTools,
+      heavyToolFamilies,
+      provider,
+      configuredAuthMode,
+    });
+
+    if (heavyToolFamilies.length > 0) {
+      if (containerPlan) return containerPlan;
+      if (directPlan) return directPlan;
+      throw new ExecutionPlannerError(
+        'Container execution is not configured for this agent.',
+        'CONTAINER_CREDENTIAL_MISSING',
+      );
+    }
+
+    if (shouldPreferSubscriptionContainer && containerPlan) {
+      return {
+        ...containerPlan,
+        routeReason: 'normal',
+      };
+    }
+    if (shouldPreferSubscriptionContainer && !containerPlan) {
+      throw new ExecutionPlannerError(
+        'Container execution is not configured for this agent.',
+        'CONTAINER_CREDENTIAL_MISSING',
+      );
+    }
     if (directPlan) {
       return directPlan;
     }
+    if (containerPlan) {
+      return containerPlan;
+    }
     throw new ExecutionPlannerError(
-      'This agent has browser tools enabled, but browser runs require direct execution in v1. Configure a direct-execution-compatible provider/credential set, or disable browser tools for this agent.',
-      'BROWSER_REQUIRES_DIRECT_EXECUTION',
+      'Direct execution is unavailable.',
+      'DIRECT_EXECUTION_UNAVAILABLE',
     );
   }
 
@@ -468,28 +505,6 @@ export function planMainExecution(
   const provider = getProviderRecord(agent.provider_id);
   const configuredAuthMode = getConfiguredExecutorAuthMode();
 
-  if (browserEnabled) {
-    const directPlan = tryResolveDirectExecutionPlan({
-      agent,
-      effectiveTools,
-      provider,
-      configuredAuthMode,
-    });
-    if (directPlan) {
-      return {
-        policy: 'direct_only',
-        effectiveTools,
-        heavyToolFamilies,
-        directPlan,
-        containerPlan: null,
-      };
-    }
-    throw new ExecutionPlannerError(
-      'This agent has browser tools enabled, but browser runs require direct execution in v1. Configure a direct-execution-compatible provider/credential set, or disable browser tools for this agent.',
-      'BROWSER_REQUIRES_DIRECT_EXECUTION',
-    );
-  }
-
   let directPlan: DirectHttpExecutionPlan | null = null;
   try {
     directPlan = tryResolveDirectExecutionPlan({
@@ -514,6 +529,54 @@ export function planMainExecution(
     configuredAuthMode,
   });
 
+  const shouldPreferSubscriptionContainer =
+    browserEnabled &&
+    agent.provider_id === 'provider.anthropic' &&
+    configuredAuthMode === 'subscription';
+
+  if (browserEnabled && heavyToolFamilies.length === 0) {
+    if (shouldPreferSubscriptionContainer && containerPlan) {
+      return {
+        policy: 'container_only',
+        effectiveTools,
+        heavyToolFamilies,
+        directPlan,
+        containerPlan: {
+          ...containerPlan,
+          routeReason: 'normal',
+        },
+      };
+    }
+    if (shouldPreferSubscriptionContainer && !containerPlan) {
+      throw new ExecutionPlannerError(
+        'No valid Main execution path is currently configured for this agent.',
+        'DIRECT_EXECUTION_UNAVAILABLE',
+      );
+    }
+    if (directPlan) {
+      return {
+        policy: 'direct_only',
+        effectiveTools,
+        heavyToolFamilies,
+        directPlan,
+        containerPlan,
+      };
+    }
+    if (containerPlan) {
+      return {
+        policy: 'container_only',
+        effectiveTools,
+        heavyToolFamilies,
+        directPlan: null,
+        containerPlan,
+      };
+    }
+    throw new ExecutionPlannerError(
+      'No valid Main execution path is currently configured for this agent.',
+      'DIRECT_EXECUTION_UNAVAILABLE',
+    );
+  }
+
   if (heavyToolFamilies.length === 0) {
     if (directPlan) {
       return {
@@ -537,6 +600,30 @@ export function planMainExecution(
       'No valid Main execution path is currently configured for this agent.',
       'DIRECT_EXECUTION_UNAVAILABLE',
     );
+  }
+
+  if (browserEnabled && shouldPreferSubscriptionContainer) {
+    if (containerPlan) {
+      return {
+        policy: 'container_only',
+        effectiveTools,
+        heavyToolFamilies,
+        directPlan,
+        containerPlan: {
+          ...containerPlan,
+          routeReason: 'normal',
+        },
+      };
+    }
+    if (directPlan) {
+      return {
+        policy: 'direct_only',
+        effectiveTools,
+        heavyToolFamilies,
+        directPlan,
+        containerPlan: null,
+      };
+    }
   }
 
   if (directPlan && containerPlan) {

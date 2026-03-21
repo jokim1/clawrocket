@@ -35,6 +35,12 @@ import {
 } from '../../db/index.js';
 import type { TalkPersonaRole } from '../../llm/types.js';
 import type { TalkRunContextSnapshot } from '../../talks/context-loader.js';
+import type {
+  BrowserBlockMetadata,
+  BrowserResumeMetadata,
+  CarriedBrowserSessionMetadata,
+  ExecutionDecisionMetadata,
+} from '../../browser/metadata.js';
 import { validateMount } from '../../../mount-security.js';
 import {
   parsePolicyAgentsForExecution,
@@ -166,6 +172,10 @@ export interface TalkRunApiRecord {
   cancelReason: string | null;
   executorAlias: string | null;
   executorModel: string | null;
+  browserBlock: BrowserBlockMetadata | null;
+  browserResume: BrowserResumeMetadata | null;
+  carriedBrowserSessions: CarriedBrowserSessionMetadata[];
+  executionDecision: ExecutionDecisionMetadata | null;
 }
 
 function parseTalkRunContextSnapshot(
@@ -183,6 +193,28 @@ function parseTalkRunContextSnapshot(
   } catch {
     return null;
   }
+}
+
+function parseRunMetadataObject<T>(value: unknown): T | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return null;
+  }
+  return value as T;
+}
+
+function parseRunMetadata(
+  metadataJson: string | null | undefined,
+): Record<string, unknown> {
+  if (!metadataJson) return {};
+  try {
+    const parsed = JSON.parse(metadataJson) as unknown;
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      return parsed as Record<string, unknown>;
+    }
+  } catch {
+    // ignored
+  }
+  return {};
 }
 
 const DEFAULT_TALK_AGENTS = ['Claude'];
@@ -2131,6 +2163,7 @@ function toTalkRunApiRecord(
   run: ReturnType<typeof listTalkRunsForTalk>[number],
 ): TalkRunApiRecord {
   const parsedError = parseTalkRunError(run);
+  const metadata = parseRunMetadata(run.metadata_json);
   return {
     id: run.id,
     threadId: run.thread_id,
@@ -2148,6 +2181,27 @@ function toTalkRunApiRecord(
     cancelReason: run.cancel_reason,
     executorAlias: run.executor_alias,
     executorModel: run.executor_model,
+    browserBlock: parseRunMetadataObject<BrowserBlockMetadata>(
+      metadata.browserBlock,
+    ),
+    browserResume: parseRunMetadataObject<BrowserResumeMetadata>(
+      metadata.browserResume,
+    ),
+    carriedBrowserSessions: Array.isArray(metadata.carriedBrowserSessions)
+      ? metadata.carriedBrowserSessions.filter(
+          (
+            entry,
+          ): entry is CarriedBrowserSessionMetadata =>
+            Boolean(entry) &&
+            typeof entry === 'object' &&
+            !Array.isArray(entry) &&
+            typeof (entry as { sessionId?: unknown }).sessionId === 'string' &&
+            typeof (entry as { siteKey?: unknown }).siteKey === 'string',
+        )
+      : [],
+    executionDecision: parseRunMetadataObject<ExecutionDecisionMetadata>(
+      metadata.executionDecision,
+    ),
   };
 }
 

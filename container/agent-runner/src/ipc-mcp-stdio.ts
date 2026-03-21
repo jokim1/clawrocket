@@ -18,6 +18,7 @@ import {
   readWebTalkOutputToolNamesFromEnv,
   registerOutputTools,
 } from './connectors.js';
+import { executeBrowserBridgeTool } from './browser-bridge.js';
 
 const IPC_DIR = '/workspace/ipc';
 const MESSAGES_DIR = path.join(IPC_DIR, 'messages');
@@ -27,6 +28,11 @@ const TASKS_DIR = path.join(IPC_DIR, 'tasks');
 const chatJid = process.env.NANOCLAW_CHAT_JID!;
 const groupFolder = process.env.NANOCLAW_GROUP_FOLDER!;
 const isMain = process.env.NANOCLAW_IS_MAIN === '1';
+const browserBridgeSocketPath =
+  process.env.NANOCLAW_BROWSER_BRIDGE_SOCKET_PATH || '';
+const browserRunId = process.env.NANOCLAW_BROWSER_RUN_ID || '';
+const browserUserId = process.env.NANOCLAW_BROWSER_USER_ID || '';
+const browserTalkId = process.env.NANOCLAW_BROWSER_TALK_ID || '';
 
 function writeIpcFile(dir: string, data: object): string {
   fs.mkdirSync(dir, { recursive: true });
@@ -46,6 +52,119 @@ const server = new McpServer({
   name: 'nanoclaw',
   version: '1.0.0',
 });
+
+function registerBrowserTools(): void {
+  if (!browserBridgeSocketPath || !browserRunId || !browserUserId) {
+    return;
+  }
+
+  const proxyBrowserTool = async (
+    toolName: string,
+    args: Record<string, unknown>,
+  ) => {
+    const response = await executeBrowserBridgeTool({
+      socketPath: browserBridgeSocketPath,
+      toolName,
+      args,
+      runId: browserRunId,
+      userId: browserUserId,
+      talkId: browserTalkId || null,
+    });
+    return {
+      content: [{ type: 'text' as const, text: response.result }],
+      ...(response.isError ? { isError: true } : {}),
+    };
+  };
+
+  server.tool(
+    'browser_open',
+    'Open a browser session for a site using a persistent on-disk browser profile.',
+    {
+      siteKey: z.string(),
+      url: z.string(),
+      accountLabel: z.string().optional(),
+      headed: z.boolean().optional(),
+      reuseSession: z.boolean().optional(),
+    },
+    async (args) => proxyBrowserTool('browser_open', args),
+  );
+
+  server.tool(
+    'browser_snapshot',
+    'Capture a fresh page snapshot and return visible page elements with stable refs for later actions.',
+    {
+      sessionId: z.string(),
+      interactiveOnly: z.boolean().optional(),
+      maxElements: z.number().optional(),
+    },
+    async (args) => proxyBrowserTool('browser_snapshot', args),
+  );
+
+  server.tool(
+    'browser_act',
+    'Perform a browser action using a session and, when needed, a target ref from browser_snapshot.',
+    {
+      sessionId: z.string(),
+      action: z.enum([
+        'navigate',
+        'click',
+        'dblclick',
+        'fill',
+        'type',
+        'press',
+        'select',
+        'check',
+        'uncheck',
+        'hover',
+        'scroll',
+        'upload',
+        'back',
+        'forward',
+        'reload',
+      ]),
+      target: z.string().optional(),
+      value: z.string().optional(),
+      files: z.array(z.string()).optional(),
+      confirm: z.boolean().optional(),
+      timeoutMs: z.number().optional(),
+    },
+    async (args) => proxyBrowserTool('browser_act', args),
+  );
+
+  server.tool(
+    'browser_wait',
+    'Wait for a browser condition such as URL change, text, element presence, or page load state.',
+    {
+      sessionId: z.string(),
+      conditionType: z.enum(['url', 'text', 'element', 'load']),
+      value: z.string().optional(),
+      timeoutMs: z.number().optional(),
+    },
+    async (args) => proxyBrowserTool('browser_wait', args),
+  );
+
+  server.tool(
+    'browser_screenshot',
+    'Capture a screenshot from the live browser session and optionally save it into the Talk attachment store.',
+    {
+      sessionId: z.string(),
+      fullPage: z.boolean().optional(),
+      saveToTalk: z.boolean().optional(),
+      label: z.string().optional(),
+    },
+    async (args) => proxyBrowserTool('browser_screenshot', args),
+  );
+
+  server.tool(
+    'browser_close',
+    'Close a live browser session while preserving the on-disk profile.',
+    {
+      sessionId: z.string(),
+      keepProfile: z.boolean().optional(),
+    },
+    async (args) => proxyBrowserTool('browser_close', args),
+  );
+}
 
 const webTalkConnectorBundle = readWebTalkConnectorBundleFromEnv();
 const webTalkOutputBridgeDir = readWebTalkOutputBridgeDirFromEnv();
@@ -300,6 +419,8 @@ Use available_groups.json to find the JID for a group. The folder name must be c
   },
 );
 }
+
+registerBrowserTools();
 
 // Start the stdio transport
 const transport = new StdioServerTransport();

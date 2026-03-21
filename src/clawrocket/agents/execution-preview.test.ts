@@ -86,4 +86,29 @@ describe('execution-preview', () => {
       authPath: 'api_key',
     });
   });
+
+  it('marks mixed browser and heavy-tool Main routes as ready via promotion', () => {
+    seedAnthropicSecret();
+
+    const agent = createRegisteredAgent({
+      name: 'Claude Browser Builder Main',
+      providerId: 'provider.anthropic',
+      modelId: 'claude-sonnet-4-6',
+      toolPermissionsJson: JSON.stringify({
+        browser: true,
+        shell: true,
+        filesystem: true,
+      }),
+    });
+
+    expect(buildMainExecutionPreview(agent, 'owner-1')).toMatchObject({
+      ready: true,
+      backend: 'direct_http',
+      authPath: 'api_key',
+      routeReason: 'direct_with_promotion',
+    });
+    expect(buildMainExecutionPreview(agent, 'owner-1').message).toMatch(
+      /promote shell\/filesystem work into a background container run/i,
+    );
+  });
 });

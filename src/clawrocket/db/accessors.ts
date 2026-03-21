@@ -317,6 +317,8 @@ export interface OAuthStateRecord {
   code_verifier: string | null;
   redirect_uri: string;
   return_to: string | null;
+  requested_by_user_id: string | null;
+  requested_by_session_id: string | null;
   created_at: string;
   expires_at: string;
   used_at: string | null;
@@ -331,6 +333,8 @@ export function createOAuthState(input: {
   codeVerifier?: string;
   redirectUri: string;
   returnTo?: string;
+  requestedByUserId?: string | null;
+  requestedBySessionId?: string | null;
   expiresAt: string;
 }): void {
   getDb()
@@ -338,8 +342,8 @@ export function createOAuthState(input: {
       `
     INSERT INTO oauth_state (
       id, provider, state_hash, nonce_hash, code_verifier_hash, code_verifier, redirect_uri, return_to,
-      created_at, expires_at, used_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
+      requested_by_user_id, requested_by_session_id, created_at, expires_at, used_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
   `,
     )
     .run(
@@ -351,6 +355,8 @@ export function createOAuthState(input: {
       input.codeVerifier || null,
       input.redirectUri,
       input.returnTo || null,
+      input.requestedByUserId || null,
+      input.requestedBySessionId || null,
       new Date().toISOString(),
       input.expiresAt,
     );
@@ -4433,6 +4439,7 @@ export function createMainPromotionRunAtomic(input: {
   handoffNote?: string | null;
   taskDescription: string;
   requiresApproval: boolean;
+  carriedBrowserSessions?: Array<Record<string, unknown>>;
   now?: string;
 }): TalkRunRecord | null {
   const tx = getDb().transaction(
@@ -4462,6 +4469,7 @@ export function createMainPromotionRunAtomic(input: {
         userVisibleSummary: txInput.userVisibleSummary,
         handoffNote: txInput.handoffNote ?? null,
         taskDescription: txInput.taskDescription,
+        carriedBrowserSessions: txInput.carriedBrowserSessions ?? [],
       });
 
       getDb()

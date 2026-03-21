@@ -69,6 +69,10 @@ interface ContainerInput {
       clientSecret: string;
     };
   };
+  browserBridgeSocketPath?: string | null;
+  browserRunId?: string;
+  browserUserId?: string;
+  browserTalkId?: string | null;
 }
 
 interface ContainerOutput {
@@ -418,8 +422,11 @@ async function runQuery(
   const hasWebTalkOutputTools =
     (useWebTalkProfile || useTalkMainProfile) &&
     containerInput.enableWebTalkOutputTools === true;
+  const hasBrowserMcpTools =
+    (useWebTalkProfile || useTalkMainProfile) &&
+    Boolean(containerInput.browserBridgeSocketPath);
   const hasWebTalkMcpTools =
-    hasWebTalkConnectorTools || hasWebTalkOutputTools;
+    hasWebTalkConnectorTools || hasWebTalkOutputTools || hasBrowserMcpTools;
 
   // Poll IPC for follow-up messages and _close sentinel during the query.
   // Single-turn profiles close the input stream immediately.
@@ -552,6 +559,22 @@ async function runQuery(
                                 JSON.stringify(
                                   containerInput.webTalkOutputToolNames,
                                 ),
+                            }
+                          : {}),
+                      }
+                    : {}),
+                  ...(hasBrowserMcpTools
+                    ? {
+                        NANOCLAW_BROWSER_BRIDGE_SOCKET_PATH:
+                          containerInput.browserBridgeSocketPath || '',
+                        NANOCLAW_BROWSER_RUN_ID:
+                          containerInput.browserRunId || '',
+                        NANOCLAW_BROWSER_USER_ID:
+                          containerInput.browserUserId || '',
+                        ...(containerInput.browserTalkId
+                          ? {
+                              NANOCLAW_BROWSER_TALK_ID:
+                                containerInput.browserTalkId,
                             }
                           : {}),
                       }

@@ -18,7 +18,7 @@ import {
   type EffectiveToolAccess,
   type RegisteredAgentRecord,
 } from '../db/agent-accessors.js';
-import { getTalkById } from '../db/accessors.js';
+import { getTalkById, getTalkRunById } from '../db/accessors.js';
 import { getTalkJobById } from '../db/job-accessors.js';
 import {
   listConnectorsForTalkRun,
@@ -55,6 +55,8 @@ import { modelSupportsVision } from '../llm/capabilities.js';
 import type { TalkPersonaRole } from '../llm/types.js';
 import { executeWebFetch, executeWebSearch } from '../tools/web-tools.js';
 import { executeBrowserTool } from '../tools/browser-tools.js';
+import { buildBrowserResumeSection } from '../browser/run-context.js';
+import type { ExecutionDecisionMetadata } from '../browser/metadata.js';
 import { loadTalkContext } from './context-loader.js';
 import { executeGoogleDriveTalkTool } from './google-drive-tools.js';
 import { executeTalkOutputTool } from './output-tools.js';
@@ -143,6 +145,45 @@ function mapExecutionEvent(
       return exhaustive;
     }
   }
+}
+
+function parseRunMetadata(
+  metadataJson: string | null | undefined,
+): Record<string, unknown> {
+  if (!metadataJson) return {};
+  try {
+    const parsed = JSON.parse(metadataJson) as unknown;
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      return parsed as Record<string, unknown>;
+    }
+  } catch {
+    // ignored
+  }
+  return {};
+}
+
+function buildExecutionDecision(
+  agent: RegisteredAgentRecord,
+  plan: ReturnType<typeof planExecution>,
+): ExecutionDecisionMetadata {
+  if (plan.backend === 'container') {
+    return {
+      backend: 'container',
+      authPath: plan.containerCredential.authMode,
+      credentialSource: plan.containerCredential.credentialSource,
+      plannerReason: plan.routeReason,
+      providerId: agent.provider_id,
+      modelId: agent.model_id,
+    };
+  }
+  return {
+    backend: 'direct_http',
+    authPath: plan.authPath,
+    credentialSource: plan.credentialSource,
+    plannerReason: plan.routeReason,
+    providerId: agent.provider_id,
+    modelId: agent.model_id,
+  };
 }
 
 /** @internal Exported for integration testing only. */
@@ -1329,6 +1370,11 @@ export class CleanTalkExecutor implements TalkExecutor {
       const modelContextWindow = getModelContextWindow(resolvedAgent);
       const jobPolicy = buildTalkJobExecutionPolicy(input.jobId);
       const plan = planExecution(resolvedAgent, input.requestedBy);
+      const existingRunMetadata = parseRunMetadata(
+        getTalkRunById(input.runId)?.metadata_json,
+      );
+      const browserResumeSection =
+        buildBrowserResumeSection(existingRunMetadata);
       const scopedEffectiveTools = filterEffectiveToolsForJob(
         plan.effectiveTools,
         jobPolicy,
@@ -1348,11 +1394,17 @@ export class CleanTalkExecutor implements TalkExecutor {
       );
       setTalkRunMetadataJson(
         input.runId,
-        JSON.stringify(contextPackage.contextSnapshot),
+        JSON.stringify({
+          ...existingRunMetadata,
+          ...contextPackage.contextSnapshot,
+          executionDecision: buildExecutionDecision(resolvedAgent, plan),
+        }),
       );
 
       const context: ExecutionContext = {
-        systemPrompt: contextPackage.systemPrompt,
+        systemPrompt: browserResumeSection
+          ? `${contextPackage.systemPrompt}\n\n# Browser Resume Context\n\n${browserResumeSection}`
+          : contextPackage.systemPrompt,
         contextTools: contextPackage.contextTools,
         connectorTools: contextPackage.connectorTools,
         history: contextPackage.history,
@@ -1399,6 +1451,9 @@ export class CleanTalkExecutor implements TalkExecutor {
           context: {
             systemPrompt: [
               contextPackage.systemPrompt,
+              browserResumeSection
+                ? `# Browser Resume Context\n\n${browserResumeSection}`
+                : '',
               resolvedAgent.system_prompt?.trim() || '',
             ]
               .filter(Boolean)
@@ -1413,6 +1468,9 @@ export class CleanTalkExecutor implements TalkExecutor {
           historyMessageIds: contextPackage.metadata.historyMessageIds,
           projectMountHostPath,
           jobPolicy,
+          enableBrowserTools: scopedEffectiveTools.some(
+            (tool) => tool.toolFamily === 'browser' && tool.enabled,
+          ),
         });
 
         emitTalkEvent({

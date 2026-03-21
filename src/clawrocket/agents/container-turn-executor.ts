@@ -29,6 +29,13 @@ import type { TalkJobExecutionPolicy } from '../talks/executor.js';
 import type { ContainerCredentialConfig } from './execution-planner.js';
 import type { ExecutionContext } from './agent-router.js';
 import type { LlmMessage } from './llm-client.js';
+import {
+  ensureBrowserBridgeServer,
+  registerBrowserBridgeRunAbort,
+  unregisterBrowserBridgeRunAbort,
+} from '../browser/bridge.js';
+import { BrowserRunPausedError } from '../browser/run-paused-error.js';
+import { getBrowserBlockForRun, getTalkRunById } from '../db/index.js';
 
 interface ExecuteContainerTurnInput {
   runId: string;
@@ -47,6 +54,7 @@ interface ExecuteContainerTurnInput {
   historyMessageIds?: string[];
   projectMountHostPath?: string | null;
   jobPolicy?: TalkJobExecutionPolicy | null;
+  enableBrowserTools?: boolean;
 }
 
 interface ExecuteContainerTurnOutput {
@@ -557,6 +565,9 @@ export async function executeContainerAgentTurn(
 ): Promise<ExecuteContainerTurnOutput> {
   const target = createWebRuntimeExecutionTarget();
   const contextDir = createContextDirectory(input);
+  const browserBridgeHostSocketPath = input.enableBrowserTools
+    ? await ensureBrowserBridgeServer()
+    : null;
   const outputBridge =
     input.talkId && contextDir.outputBridgeDir
       ? startOutputBridge({
@@ -574,6 +585,9 @@ export async function executeContainerAgentTurn(
     activeProcess.kill('SIGKILL');
   };
   input.signal.addEventListener('abort', onAbort, { once: true });
+  if (input.enableBrowserTools) {
+    registerBrowserBridgeRunAbort(input.runId, onAbort);
+  }
 
   try {
     const output = await runContainerAgent(
@@ -593,12 +607,25 @@ export async function executeContainerAgentTurn(
         webTalkConnectorBundle: contextDir.connectorBundle,
         ephemeralContextDir: contextDir.path,
         projectMountHostPath: input.projectMountHostPath ?? null,
+        browserBridgeHostSocketPath,
+        browserRunId: input.runId,
+        browserUserId: input.userId,
+        browserTalkId: input.talkId ?? null,
         secrets: input.containerCredential.secrets,
       },
       (proc) => {
         activeProcess = proc;
       },
     );
+
+    const pausedRun = getTalkRunById(input.runId);
+    const browserBlock =
+      pausedRun?.status === 'awaiting_confirmation'
+        ? getBrowserBlockForRun(input.runId)
+        : null;
+    if (browserBlock) {
+      throw new BrowserRunPausedError(input.runId, browserBlock);
+    }
 
     if (output.status !== 'success') {
       throw new Error(output.error || 'Container execution failed.');
@@ -626,6 +653,9 @@ export async function executeContainerAgentTurn(
     throw error;
   } finally {
     input.signal.removeEventListener('abort', onAbort);
+    if (input.enableBrowserTools) {
+      unregisterBrowserBridgeRunAbort(input.runId);
+    }
     outputBridge?.stop();
     await outputBridge?.done;
     fs.rmSync(contextDir.path, { recursive: true, force: true });

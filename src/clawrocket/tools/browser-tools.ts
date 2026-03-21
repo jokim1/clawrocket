@@ -1,12 +1,23 @@
 import { randomUUID } from 'crypto';
+import fs from 'fs';
 import path from 'path';
 
+import { DATA_DIR } from '../../config.js';
 import type { LlmToolDefinition } from '../agents/llm-client.js';
+import type { BrowserBlockedKind } from '../browser/service.js';
 import { getBrowserService } from '../browser/service.js';
+import type {
+  BrowserBlockArtifact,
+  BrowserBlockMetadata,
+  BrowserPendingToolCall,
+} from '../browser/metadata.js';
+import { BrowserRunPausedError } from '../browser/run-paused-error.js';
 import {
   createMessageAttachment,
+  createRunConfirmation,
   createTalkOutput,
   getTalkStateEntry,
+  pauseRunForBrowserBlock,
   updateAttachmentExtraction,
   upsertTalkStateEntry,
 } from '../db/index.js';
@@ -239,6 +250,55 @@ function jsonResult(
   };
 }
 
+function abortReason(signal: AbortSignal): Error {
+  const { reason } = signal;
+  if (reason instanceof Error) {
+    return reason;
+  }
+  if (typeof reason === 'string' && reason.trim().length > 0) {
+    return new Error(reason);
+  }
+  return new Error('Browser tool execution was aborted.');
+}
+
+function throwIfAborted(signal: AbortSignal): void {
+  if (signal.aborted) {
+    throw abortReason(signal);
+  }
+}
+
+async function runAbortable<T>(
+  signal: AbortSignal,
+  operation: () => Promise<T>,
+): Promise<T> {
+  throwIfAborted(signal);
+  return new Promise<T>((resolve, reject) => {
+    let settled = false;
+    const onAbort = () => {
+      if (settled) return;
+      settled = true;
+      reject(abortReason(signal));
+    };
+
+    signal.addEventListener('abort', onAbort, { once: true });
+
+    void operation().then(
+      (value) => {
+        if (settled) return;
+        settled = true;
+        signal.removeEventListener('abort', onAbort);
+        resolve(value);
+      },
+      (error) => {
+        if (settled) return;
+        settled = true;
+        signal.removeEventListener('abort', onAbort);
+        reject(error);
+      },
+    );
+  });
+}
+
 function browserSetupCommand(input: {
   siteKey: string;
   accountLabel?: string | null;
@@ -310,7 +370,7 @@ function recordTalkPending(input: {
   talkId: string;
   userId: string;
   runId: string;
-  status: 'needs_auth' | 'awaiting_confirmation';
+  status: 'needs_auth' | 'awaiting_confirmation' | 'human_step_required';
   siteKey: string;
   accountLabel: string | null;
   url: string;
@@ -329,7 +389,9 @@ function recordTalkPending(input: {
       reason:
         input.status === 'needs_auth'
           ? 'auth_required'
-          : 'confirmation_required',
+          : input.status === 'human_step_required'
+            ? 'human_step_required'
+            : 'confirmation_required',
       siteKey: input.siteKey,
       accountLabel: input.accountLabel,
       url: input.url,
@@ -347,6 +409,8 @@ function recordTalkPending(input: {
     title:
       input.status === 'needs_auth'
         ? `Browser auth required: ${input.siteKey}`
+        : input.status === 'human_step_required'
+          ? `Browser human step required: ${input.siteKey}`
         : `Browser confirmation required: ${input.siteKey}`,
     contentMarkdown: [
       `Status: ${input.status}`,
@@ -433,6 +497,167 @@ function browserActionSummary(args: {
     .join(' ');
 }
 
+function buildPendingToolCall(input: {
+  toolName: BrowserToolName;
+  args: Record<string, unknown>;
+}): BrowserPendingToolCall {
+  return {
+    toolName: input.toolName,
+    args: { ...input.args },
+  };
+}
+
+async function captureBlockedArtifact(input: {
+  sessionId: string | null;
+  runId: string;
+  talkId?: string | null;
+  userId: string;
+  signal: AbortSignal;
+  service: ReturnType<typeof getBrowserService>;
+  label: string;
+}): Promise<BrowserBlockArtifact[]> {
+  if (!input.sessionId) {
+    return [];
+  }
+
+  const screenshot = await runAbortable(input.signal, () =>
+    input.service.screenshot({
+      sessionId: input.sessionId!,
+      label: input.label,
+    }),
+  );
+
+  if (input.talkId) {
+    const attachment = await saveTalkScreenshot({
+      talkId: input.talkId,
+      userId: input.userId,
+      content: screenshot.content,
+      fileName: `${input.label}.png`,
+    });
+    return [
+      {
+        attachmentId: attachment.attachmentId,
+        fileName: `${input.label}.png`,
+        contentType: screenshot.contentType,
+        label: input.label,
+      },
+    ];
+  }
+
+  const dir = path.join(DATA_DIR, 'browser-artifacts', 'runs', input.runId);
+  fs.mkdirSync(dir, { recursive: true });
+  const targetPath = path.join(dir, path.basename(screenshot.path));
+  fs.copyFileSync(screenshot.path, targetPath);
+  return [
+    {
+      path: targetPath,
+      fileName: path.basename(targetPath),
+      contentType: screenshot.contentType,
+      label: input.label,
+    },
+  ];
+}
+
+async function throwBrowserRunPaused(input: {
+  toolName: BrowserToolName;
+  args: Record<string, unknown>;
+  context: BrowserToolExecutionContext;
+  service: ReturnType<typeof getBrowserService>;
+  result: {
+    status:
+      | 'needs_auth'
+      | 'awaiting_confirmation'
+      | 'human_step_required'
+      | 'ok'
+      | 'error';
+    siteKey: string;
+    accountLabel: string | null;
+    url: string;
+    title: string;
+    message: string;
+    riskReason?: string;
+    sessionId?: string;
+  };
+}): Promise<never> {
+  const now = new Date().toISOString();
+  const pendingToolCall = buildPendingToolCall({
+    toolName: input.toolName,
+    args: input.args,
+  });
+  const artifacts = await captureBlockedArtifact({
+    sessionId:
+      input.result.sessionId ||
+      (typeof input.args.sessionId === 'string' ? input.args.sessionId : null),
+    runId: input.context.runId,
+    talkId: input.context.talkId,
+    userId: input.context.userId,
+    signal: input.context.signal,
+    service: input.service,
+    label: 'browser-blocked',
+  });
+
+  let confirmationId: string | null = null;
+  if (input.result.status === 'awaiting_confirmation') {
+    confirmationId = createRunConfirmation({
+      runId: input.context.runId,
+      talkId: input.context.talkId ?? null,
+      toolId: input.toolName,
+      actionSummary: browserActionSummary(input.args),
+      metadata: {
+        siteKey: input.result.siteKey,
+        accountLabel: input.result.accountLabel,
+        url: input.result.url,
+        sessionId:
+          input.result.sessionId ||
+          (typeof input.args.sessionId === 'string'
+            ? input.args.sessionId
+            : null),
+        pendingToolCall,
+      },
+    });
+  }
+
+  const kind: BrowserBlockedKind =
+    input.result.status === 'needs_auth'
+      ? 'auth_required'
+      : input.result.status === 'human_step_required'
+        ? 'human_step_required'
+        : 'confirmation_required';
+
+  const browserBlock: BrowserBlockMetadata = {
+    kind,
+    sessionId:
+      input.result.sessionId ||
+      (typeof input.args.sessionId === 'string' ? input.args.sessionId : null),
+    siteKey: input.result.siteKey,
+    accountLabel: input.result.accountLabel,
+    url: input.result.url,
+    title: input.result.title,
+    message: input.result.message,
+    riskReason: input.result.riskReason ?? null,
+    setupCommand:
+      input.result.status === 'needs_auth' ||
+      input.result.status === 'human_step_required'
+        ? browserSetupCommand({
+            siteKey: input.result.siteKey,
+            accountLabel: input.result.accountLabel,
+          })
+        : null,
+    artifacts,
+    confirmationId,
+    pendingToolCall,
+    createdAt: now,
+    updatedAt: now,
+  };
+
+  pauseRunForBrowserBlock({
+    runId: input.context.runId,
+    browserBlock,
+  });
+
+  throw new BrowserRunPausedError(input.context.runId, browserBlock);
+}
+
 export async function executeBrowserTool(input: {
   toolName: string;
   args: Record<string, unknown>;
@@ -469,13 +694,18 @@ export async function executeBrowserTool(input: {
           );
         }
 
-        const result = await service.open({
-          siteKey,
-          url,
-          accountLabel,
-          headed,
-          reuseSession,
-        });
+        const result = await runAbortable(input.context.signal, () =>
+          service.open({
+            siteKey,
+            url,
+            accountLabel,
+            headed,
+            reuseSession,
+          }),
+        );
+        if (result.sessionId) {
+          service.recordRunSessionTouch(input.context.runId, result.sessionId);
+        }
 
         updateBrowserProfileState({
           talkId: input.context.talkId,
@@ -495,12 +725,16 @@ export async function executeBrowserTool(input: {
           status: result.status,
         });
 
-        if (result.status === 'needs_auth' && input.context.talkId) {
+        if (
+          (result.status === 'needs_auth' ||
+            result.status === 'human_step_required') &&
+          input.context.talkId
+        ) {
           recordTalkPending({
             talkId: input.context.talkId,
             userId: input.context.userId,
             runId: input.context.runId,
-            status: 'needs_auth',
+            status: result.status,
             siteKey: result.siteKey,
             accountLabel: result.accountLabel,
             url: result.url,
@@ -513,20 +747,20 @@ export async function executeBrowserTool(input: {
           });
         }
 
-        return jsonResult(
-          {
-            ...result,
-            ...(result.status === 'needs_auth'
-              ? {
-                  setupCommand: browserSetupCommand({
-                    siteKey: result.siteKey,
-                    accountLabel: result.accountLabel,
-                  }),
-                }
-              : {}),
-          },
-          result.status === 'error',
-        );
+        if (
+          result.status === 'needs_auth' ||
+          result.status === 'human_step_required'
+        ) {
+          await throwBrowserRunPaused({
+            toolName: 'browser_open',
+            args: input.args,
+            context: input.context,
+            service,
+            result,
+          });
+        }
+
+        return jsonResult(result, result.status === 'error');
       }
 
       case 'browser_snapshot': {
@@ -541,14 +775,19 @@ export async function executeBrowserTool(input: {
             true,
           );
         }
-        const result = await service.snapshot({
-          sessionId,
-          interactiveOnly: input.args.interactiveOnly as boolean | undefined,
-          maxElements:
-            typeof input.args.maxElements === 'number'
-              ? input.args.maxElements
-              : undefined,
-        });
+        const result = await runAbortable(input.context.signal, () =>
+          service.snapshot({
+            sessionId,
+            interactiveOnly: input.args.interactiveOnly as
+              | boolean
+              | undefined,
+            maxElements:
+              typeof input.args.maxElements === 'number'
+                ? input.args.maxElements
+                : undefined,
+          }),
+        );
+        service.recordRunSessionTouch(input.context.runId, sessionId);
         updateBrowserLastState({
           talkId: input.context.talkId,
           userId: input.context.userId,
@@ -576,34 +815,37 @@ export async function executeBrowserTool(input: {
             true,
           );
         }
-        const result = await service.act(
-          {
-            sessionId,
-            action,
-            target:
-              typeof input.args.target === 'string'
-                ? input.args.target
+        const result = await runAbortable(input.context.signal, () =>
+          service.act(
+            {
+              sessionId,
+              action,
+              target:
+                typeof input.args.target === 'string'
+                  ? input.args.target
+                  : undefined,
+              value:
+                typeof input.args.value === 'string'
+                  ? input.args.value
+                  : undefined,
+              files: Array.isArray(input.args.files)
+                ? input.args.files.filter(
+                    (file): file is string => typeof file === 'string',
+                  )
                 : undefined,
-            value:
-              typeof input.args.value === 'string'
-                ? input.args.value
-                : undefined,
-            files: Array.isArray(input.args.files)
-              ? input.args.files.filter(
-                  (file): file is string => typeof file === 'string',
-                )
-              : undefined,
-            confirm: input.args.confirm === true,
-            timeoutMs:
-              typeof input.args.timeoutMs === 'number'
-                ? input.args.timeoutMs
-                : undefined,
-          },
-          {
-            talkId: input.context.talkId,
-            runId: input.context.runId,
-          },
+              confirm: input.args.confirm === true,
+              timeoutMs:
+                typeof input.args.timeoutMs === 'number'
+                  ? input.args.timeoutMs
+                  : undefined,
+            },
+            {
+              talkId: input.context.talkId,
+              runId: input.context.runId,
+            },
+          ),
         );
+        service.recordRunSessionTouch(input.context.runId, sessionId);
 
         updateBrowserLastState({
           talkId: input.context.talkId,
@@ -618,7 +860,8 @@ export async function executeBrowserTool(input: {
 
         if (
           (result.status === 'needs_auth' ||
-            result.status === 'awaiting_confirmation') &&
+            result.status === 'awaiting_confirmation' ||
+            result.status === 'human_step_required') &&
           input.context.talkId
         ) {
           recordTalkPending({
@@ -628,6 +871,8 @@ export async function executeBrowserTool(input: {
             status:
               result.status === 'needs_auth'
                 ? 'needs_auth'
+                : result.status === 'human_step_required'
+                  ? 'human_step_required'
                 : 'awaiting_confirmation',
             siteKey: result.siteKey,
             accountLabel: result.accountLabel,
@@ -645,17 +890,21 @@ export async function executeBrowserTool(input: {
           });
         }
 
-        return jsonResult({
-          ...result,
-          ...(result.status === 'needs_auth'
-            ? {
-                setupCommand: browserSetupCommand({
-                  siteKey: result.siteKey,
-                  accountLabel: result.accountLabel,
-                }),
-              }
-            : {}),
-        });
+        if (
+          result.status === 'needs_auth' ||
+          result.status === 'awaiting_confirmation' ||
+          result.status === 'human_step_required'
+        ) {
+          await throwBrowserRunPaused({
+            toolName: 'browser_act',
+            args: input.args,
+            context: input.context,
+            service,
+            result,
+          });
+        }
+
+        return jsonResult(result);
       }
 
       case 'browser_wait': {
@@ -674,16 +923,21 @@ export async function executeBrowserTool(input: {
             true,
           );
         }
-        const result = await service.wait({
-          sessionId,
-          conditionType,
-          value:
-            typeof input.args.value === 'string' ? input.args.value : undefined,
-          timeoutMs:
-            typeof input.args.timeoutMs === 'number'
-              ? input.args.timeoutMs
-              : undefined,
-        });
+        const result = await runAbortable(input.context.signal, () =>
+          service.wait({
+            sessionId,
+            conditionType,
+            value:
+              typeof input.args.value === 'string'
+                ? input.args.value
+                : undefined,
+            timeoutMs:
+              typeof input.args.timeoutMs === 'number'
+                ? input.args.timeoutMs
+                : undefined,
+          }),
+        );
+        service.recordRunSessionTouch(input.context.runId, sessionId);
         updateBrowserLastState({
           talkId: input.context.talkId,
           userId: input.context.userId,
@@ -694,12 +948,16 @@ export async function executeBrowserTool(input: {
           title: result.title,
           status: result.status,
         });
-        if (result.status === 'needs_auth' && input.context.talkId) {
+        if (
+          (result.status === 'needs_auth' ||
+            result.status === 'human_step_required') &&
+          input.context.talkId
+        ) {
           recordTalkPending({
             talkId: input.context.talkId,
             userId: input.context.userId,
             runId: input.context.runId,
-            status: 'needs_auth',
+            status: result.status,
             siteKey: result.siteKey,
             accountLabel: result.accountLabel,
             url: result.url,
@@ -711,17 +969,19 @@ export async function executeBrowserTool(input: {
             }),
           });
         }
-        return jsonResult({
-          ...result,
-          ...(result.status === 'needs_auth'
-            ? {
-                setupCommand: browserSetupCommand({
-                  siteKey: result.siteKey,
-                  accountLabel: result.accountLabel,
-                }),
-              }
-            : {}),
-        });
+        if (
+          result.status === 'needs_auth' ||
+          result.status === 'human_step_required'
+        ) {
+          await throwBrowserRunPaused({
+            toolName: 'browser_wait',
+            args: input.args,
+            context: input.context,
+            service,
+            result,
+          });
+        }
+        return jsonResult(result);
       }
 
       case 'browser_screenshot': {
@@ -736,12 +996,17 @@ export async function executeBrowserTool(input: {
             true,
           );
         }
-        const result = await service.screenshot({
-          sessionId,
-          fullPage: input.args.fullPage === true,
-          label:
-            typeof input.args.label === 'string' ? input.args.label : undefined,
-        });
+        const result = await runAbortable(input.context.signal, () =>
+          service.screenshot({
+            sessionId,
+            fullPage: input.args.fullPage === true,
+            label:
+              typeof input.args.label === 'string'
+                ? input.args.label
+                : undefined,
+          }),
+        );
+        service.recordRunSessionTouch(input.context.runId, sessionId);
         updateBrowserLastState({
           talkId: input.context.talkId,
           userId: input.context.userId,
@@ -815,14 +1080,20 @@ export async function executeBrowserTool(input: {
             true,
           );
         }
-        const result = await service.close({
-          sessionId,
-          keepProfile: input.args.keepProfile !== false,
-        });
+        const result = await runAbortable(input.context.signal, () =>
+          service.close({
+            sessionId,
+            keepProfile: input.args.keepProfile !== false,
+          }),
+        );
+        service.recordRunSessionTouch(input.context.runId, sessionId);
         return jsonResult(result);
       }
     }
   } catch (error) {
+    if (error instanceof BrowserRunPausedError) {
+      throw error;
+    }
     return jsonResult(
       {
         status: 'error',
