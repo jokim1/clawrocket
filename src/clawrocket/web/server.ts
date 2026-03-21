@@ -3484,7 +3484,7 @@ function buildApp(opts: WebServerOptions): Hono {
 
     const result = getSlackChannelConnectorRoute({
       auth,
-      requestOrigin: new URL(c.req.url).origin,
+      requestOrigin: resolveRequestOrigin(c),
     });
     return new Response(JSON.stringify(result.body), {
       status: result.statusCode,
@@ -3502,7 +3502,7 @@ function buildApp(opts: WebServerOptions): Hono {
     >;
     const result = saveSlackProviderConfigRoute({
       auth,
-      requestOrigin: new URL(c.req.url).origin,
+      requestOrigin: resolveRequestOrigin(c),
       clientId: typeof body.clientId === 'string' ? body.clientId : '',
       clientSecret:
         typeof body.clientSecret === 'string' ? body.clientSecret : null,
@@ -3521,7 +3521,7 @@ function buildApp(opts: WebServerOptions): Hono {
 
     const result = clearSlackProviderConfigRoute({
       auth,
-      requestOrigin: new URL(c.req.url).origin,
+      requestOrigin: resolveRequestOrigin(c),
     });
     return new Response(JSON.stringify(result.body), {
       status: result.statusCode,
@@ -3539,7 +3539,7 @@ function buildApp(opts: WebServerOptions): Hono {
     >;
     const result = await startSlackOAuthInstallRoute({
       auth,
-      requestOrigin: new URL(c.req.url).origin,
+      requestOrigin: resolveRequestOrigin(c),
       returnTo:
         typeof body.returnTo === 'string'
           ? normalizeReturnToPath(body.returnTo)
@@ -3563,7 +3563,7 @@ function buildApp(opts: WebServerOptions): Hono {
 
     const result = await completeSlackOAuthInstallRoute({
       auth,
-      requestOrigin: new URL(c.req.url).origin,
+      requestOrigin: resolveRequestOrigin(c),
       state: c.req.query('state') || '',
       code: c.req.query('code') || '',
       reloadConnection: opts.reloadChannelConnection,
@@ -7230,7 +7230,11 @@ function normalizeUser(user: UserLike) {
 
 type ForwardedHeaderSnapshot = {
   xForwardedFor?: string;
+  xForwardedProto?: string;
+  xForwardedHost?: string;
   cfConnectingIp?: string;
+  cfVisitor?: string;
+  host?: string;
 };
 
 export function _resetForwardedHeaderWarningStateForTests(): void {
@@ -7321,8 +7325,95 @@ function resolveClientIpFromHeaders(
 function getForwardedHeaders(c: Context): ForwardedHeaderSnapshot {
   return {
     xForwardedFor: c.req.header('x-forwarded-for') || undefined,
+    xForwardedProto: c.req.header('x-forwarded-proto') || undefined,
+    xForwardedHost: c.req.header('x-forwarded-host') || undefined,
     cfConnectingIp: c.req.header('cf-connecting-ip') || undefined,
+    cfVisitor: c.req.header('cf-visitor') || undefined,
+    host: c.req.header('host') || undefined,
   };
+}
+
+export function _resolveRequestOriginForTests(input: {
+  requestUrl: string;
+  xForwardedProto?: string;
+  xForwardedHost?: string;
+  cfVisitor?: string;
+  host?: string;
+}): string {
+  return resolveRequestOriginFromHeaders(input.requestUrl, {
+    xForwardedProto: input.xForwardedProto,
+    xForwardedHost: input.xForwardedHost,
+    cfVisitor: input.cfVisitor,
+    host: input.host,
+  });
+}
+
+function resolveRequestOrigin(c: Context): string {
+  return resolveRequestOriginFromHeaders(c.req.url, getForwardedHeaders(c));
+}
+
+function resolveRequestOriginFromHeaders(
+  requestUrl: string,
+  headers: ForwardedHeaderSnapshot,
+): string {
+  let parsed: URL;
+  try {
+    parsed = new URL(requestUrl);
+  } catch {
+    return requestUrl;
+  }
+
+  let protocol = parsed.protocol.replace(/:$/, '');
+  let host = parsed.host;
+
+  if (TRUSTED_PROXY_MODE !== 'none') {
+    const forwardedProto = resolveForwardedProto(headers);
+    const forwardedHost = resolveForwardedHost(headers);
+    if (forwardedProto) {
+      protocol = forwardedProto;
+    }
+    if (forwardedHost) {
+      host = forwardedHost;
+    }
+  }
+
+  return `${protocol}://${host}`;
+}
+
+function resolveForwardedProto(
+  headers: ForwardedHeaderSnapshot,
+): 'http' | 'https' | null {
+  const forwardedProto = headers.xForwardedProto
+    ?.split(',')
+    .map((value) => value.trim().toLowerCase())
+    .find((value) => value === 'http' || value === 'https');
+  if (forwardedProto === 'http' || forwardedProto === 'https') {
+    return forwardedProto;
+  }
+
+  if (TRUSTED_PROXY_MODE === 'cloudflare' && headers.cfVisitor) {
+    try {
+      const parsed = JSON.parse(headers.cfVisitor) as { scheme?: unknown };
+      if (parsed.scheme === 'http' || parsed.scheme === 'https') {
+        return parsed.scheme;
+      }
+    } catch {
+      return null;
+    }
+  }
+
+  return null;
+}
+
+function resolveForwardedHost(headers: ForwardedHeaderSnapshot): string | null {
+  const forwardedHost = headers.xForwardedHost
+    ?.split(',')
+    .map((value) => value.trim())
+    .find(Boolean);
+  if (forwardedHost) {
+    return forwardedHost;
+  }
+  return headers.host?.trim() || null;
 }
 
 function getClientIp(c: Context): string | undefined {
