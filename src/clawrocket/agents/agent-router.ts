@@ -153,6 +153,7 @@ export async function executeWithAgent(
       toolName: string,
       args: Record<string, unknown>,
     ) => Promise<{ result: string; isError?: boolean }>;
+    alwaysAllowedContextToolNames?: string[];
   },
 ): Promise<AgentExecutionResult> {
   const emit = options.emit || (() => {});
@@ -217,6 +218,10 @@ export async function executeWithAgent(
 
   // Resolve enabled tools from TOOL_FAMILY_MAP
   const enabledToolNames = new Set<string>();
+  const alwaysAllowedToolNames = new Set(ALWAYS_ALLOWED_CONTEXT_TOOLS);
+  for (const toolName of options.alwaysAllowedContextToolNames || []) {
+    alwaysAllowedToolNames.add(toolName);
+  }
   const connectorsEnabled = agentPermissions['connectors'] === true;
   for (const [family, enabled] of Object.entries(agentPermissions)) {
     if (enabled === true) {
@@ -234,7 +239,7 @@ export async function executeWithAgent(
    * - All other tools are allowed only if they appear in enabledToolNames.
    */
   function isToolPermitted(toolName: string): boolean {
-    if (ALWAYS_ALLOWED_CONTEXT_TOOLS.has(toolName)) {
+    if (alwaysAllowedToolNames.has(toolName)) {
       return true; // Always allowed — Talk-internal context access
     }
     if (toolName.startsWith('connector_')) {

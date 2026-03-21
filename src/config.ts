@@ -51,6 +51,8 @@ export const MAX_CONCURRENT_CONTAINERS = Math.max(
   1,
   parseInt(process.env.MAX_CONCURRENT_CONTAINERS || '5', 10) || 5,
 );
+export const CONTAINER_SYNC_AGENT_RUNNER_SOURCE =
+  process.env.CONTAINER_SYNC_AGENT_RUNNER_SOURCE === 'true';
 
 function escapeRegex(str: string): string {
   return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');

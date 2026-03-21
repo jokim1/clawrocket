@@ -15,6 +15,7 @@ import {
 import {
   ExecutionPlannerError,
   getContainerAllowedTools,
+  planMainExecution,
   planExecution,
 } from './execution-planner.js';
 
@@ -121,7 +122,7 @@ describe('execution-planner', () => {
     });
   });
 
-  it('requires shell when browser is enabled in 5A', () => {
+  it('routes browser-only agents through direct_http when direct credentials exist', () => {
     seedAnthropicSecret();
     const agent = createRegisteredAgent({
       name: 'Claude Browser',
@@ -130,12 +131,79 @@ describe('execution-planner', () => {
       toolPermissionsJson: JSON.stringify({ browser: true }),
     });
 
-    expect(() => planExecution(agent, 'owner-1')).toThrowError(
-      ExecutionPlannerError,
-    );
-    expect(() => planExecution(agent, 'owner-1')).toThrowError(
-      /requires shell/i,
-    );
+    const plan = planExecution(agent, 'owner-1');
+    expect(plan.backend).toBe('direct_http');
+  });
+
+  it('rejects agents that mix browser with shell/filesystem in the same run', () => {
+    seedAnthropicSecret();
+    const agent = createRegisteredAgent({
+      name: 'Claude Browser Builder',
+      providerId: 'provider.anthropic',
+      modelId: 'claude-sonnet-4-6',
+      toolPermissionsJson: JSON.stringify({
+        browser: true,
+        shell: true,
+        filesystem: true,
+      }),
+    });
+
+    try {
+      planExecution(agent, 'owner-1');
+      expect.unreachable('expected mixed browser/container tool plan to throw');
+    } catch (error) {
+      expect(error).toBeInstanceOf(ExecutionPlannerError);
+      expect((error as ExecutionPlannerError).code).toBe(
+        'BROWSER_AND_CONTAINER_TOOLS_MIXED_UNSUPPORTED',
+      );
+      expect((error as ExecutionPlannerError).message).toBe(
+        'This agent has both browser and shell/filesystem tools enabled, which is not supported in the same run. Browser runs host-side and shell/filesystem run in the container in v1. Create separate agents for browser and shell work, or disable one tool family.',
+      );
+    }
+  });
+
+  it('requires direct execution for browser-enabled agents', () => {
+    upsertSettingValue({
+      key: 'executor.claudeOauthToken',
+      value: 'oauth-token-123',
+      updatedBy: 'owner-1',
+    });
+    const agent = createRegisteredAgent({
+      name: 'Claude Browser',
+      providerId: 'provider.anthropic',
+      modelId: 'claude-sonnet-4-6',
+      toolPermissionsJson: JSON.stringify({ browser: true }),
+    });
+
+    try {
+      planExecution(agent, 'owner-1');
+      expect.unreachable(
+        'expected browser direct-execution requirement to throw',
+      );
+    } catch (error) {
+      expect(error).toBeInstanceOf(ExecutionPlannerError);
+      expect((error as ExecutionPlannerError).code).toBe(
+        'BROWSER_REQUIRES_DIRECT_EXECUTION',
+      );
+      expect((error as ExecutionPlannerError).message).toBe(
+        'This agent has browser tools enabled, but browser runs require direct execution in v1. Configure a direct-execution-compatible provider/credential set, or disable browser tools for this agent.',
+      );
+    }
+  });
+
+  it('keeps browser-enabled Main agents on direct_only policy', () => {
+    seedAnthropicSecret();
+    const agent = createRegisteredAgent({
+      name: 'Claude Browser',
+      providerId: 'provider.anthropic',
+      modelId: 'claude-sonnet-4-6',
+      toolPermissionsJson: JSON.stringify({ browser: true }),
+    });
+
+    const plan = planMainExecution(agent, 'owner-1');
+    expect(plan.policy).toBe('direct_only');
+    expect(plan.directPlan?.backend).toBe('direct_http');
+    expect(plan.containerPlan).toBeNull();
   });
 
   it('rejects heavy-tool agents on providers that are not Claude-SDK compatible', () => {

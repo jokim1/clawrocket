@@ -31,6 +31,7 @@ describe('clawrocket schema init', () => {
     expect(tableNames).toContain('talk_messages');
     expect(tableNames).toContain('talk_runs');
     expect(tableNames).toContain('registered_agents');
+    expect(tableNames).toContain('browser_profiles');
     expect(tableNames).toContain('talk_agents');
     expect(tableNames).toContain('talk_llm_policies');
     expect(tableNames).toContain('talk_executor_sessions');
@@ -222,6 +223,44 @@ describe('clawrocket schema init', () => {
         value: 'agent.main',
       },
     ]);
+
+    const toolPermissionsRow = db
+      .prepare(
+        `SELECT tool_permissions_json FROM registered_agents WHERE id = 'agent.main'`,
+      )
+      .get() as { tool_permissions_json: string } | undefined;
+    expect(toolPermissionsRow).toBeTruthy();
+    expect(JSON.parse(toolPermissionsRow!.tool_permissions_json)).toMatchObject(
+      {
+        shell: true,
+        filesystem: true,
+        web: true,
+      },
+    );
+    expect(
+      JSON.parse(toolPermissionsRow!.tool_permissions_json),
+    ).not.toMatchObject({
+      browser: true,
+    });
+  });
+
+  it('creates browser_profiles indexes for canonical profile lookup', () => {
+    _initTestDatabase();
+    const db = getDb();
+
+    const indexes = db
+      .prepare(
+        `SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'browser_profiles' ORDER BY name`,
+      )
+      .all() as Array<{ name: string }>;
+
+    expect(indexes.map((row) => row.name)).toEqual(
+      expect.arrayContaining([
+        'idx_browser_profiles_path',
+        'idx_browser_profiles_site_account',
+        'idx_browser_profiles_site_last_used',
+      ]),
+    );
   });
 
   it('defines main_thread_summaries coverage with ON DELETE SET NULL', () => {

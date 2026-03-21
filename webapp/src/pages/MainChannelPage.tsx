@@ -21,10 +21,13 @@ import {
   deleteMainThread,
   ApiError,
   getMainThread,
+  listMainRuns,
   listMainThreads,
+  postMainRunVisible,
   postMainMessage,
   UnauthorizedError,
   updateMainThread,
+  type MainRun,
   type MainThreadMessage,
   type MainThreadSummary,
 } from '../lib/api';
@@ -43,6 +46,8 @@ import {
   type MainResponseDeltaEvent,
   type MainResponseFailedEvent,
   type MainResponseStartedEvent,
+  type MainRunEvent,
+  type MainPromotionPendingEvent,
   type MainStreamState,
 } from '../lib/mainStream';
 
@@ -67,6 +72,7 @@ type MainState = {
   threadsError: string | null;
   activeThreadId: string | null;
   messages: MainThreadMessage[];
+  runsById: Record<string, MainRun>;
   messagesLoading: boolean;
   messagesError: string | null;
   liveResponses: Record<string, LiveResponse>;
@@ -90,6 +96,19 @@ type MainAction =
     }
   | { type: 'MESSAGES_LOADING' }
   | { type: 'MESSAGES_LOADED'; messages: MainThreadMessage[] }
+  | { type: 'RUNS_LOADED'; threadId: string; runs: MainRun[] }
+  | { type: 'RUN_UPSERTED'; run: MainRun }
+  | {
+      type: 'PROMOTION_PENDING';
+      event: MainPromotionPendingEvent;
+    }
+  | {
+      type: 'RUN_TERMINAL';
+      runId: string;
+      threadId: string;
+      status: 'completed' | 'failed' | 'cancelled';
+      cancelReason?: string | null;
+    }
   | { type: 'MESSAGES_ERROR'; message: string }
   | { type: 'MESSAGE_APPENDED'; message: MainThreadMessage }
   | { type: 'RESPONSE_STARTED'; event: MainResponseStartedEvent }
@@ -119,6 +138,7 @@ function createInitialState(): MainState {
     threadsError: null,
     activeThreadId: null,
     messages: [],
+    runsById: {},
     messagesLoading: false,
     messagesError: null,
     liveResponses: {},
@@ -152,6 +172,43 @@ function updateThreadRunState(
   return threads.map((thread) =>
     thread.threadId === threadId ? { ...thread, hasActiveRun } : thread,
   );
+}
+
+function threadHasActiveRun(
+  runsById: Record<string, MainRun>,
+  threadId: string,
+): boolean {
+  return Object.values(runsById).some(
+    (run) =>
+      run.threadId === threadId &&
+      (run.promotionState === 'pending' ||
+        ['queued', 'running', 'awaiting_confirmation'].includes(run.status)),
+  );
+}
+
+function withThreadActivity(
+  threads: MainThreadSummary[],
+  runsById: Record<string, MainRun>,
+  threadId: string,
+): MainThreadSummary[] {
+  const hasActiveRun = threadHasActiveRun(runsById, threadId);
+  return threads.map((thread) =>
+    thread.threadId === threadId ? { ...thread, hasActiveRun } : thread,
+  );
+}
+
+function upsertRun(
+  runsById: Record<string, MainRun>,
+  run: MainRun | undefined,
+): Record<string, MainRun> {
+  if (!run) return runsById;
+  return {
+    ...runsById,
+    [run.id]: {
+      ...runsById[run.id],
+      ...run,
+    },
+  };
 }
 
 function ThreadPinIcon(): JSX.Element {
@@ -202,6 +259,14 @@ function mainReducer(state: MainState, action: MainAction): MainState {
             : state.messagesLoading,
         messagesError:
           state.activeThreadId === action.threadId ? null : state.messagesError,
+        runsById:
+          state.activeThreadId === action.threadId
+            ? {}
+            : Object.fromEntries(
+                Object.entries(state.runsById).filter(
+                  ([, run]) => run.threadId !== action.threadId,
+                ),
+              ),
         liveResponses:
           state.activeThreadId === action.threadId ? {} : state.liveResponses,
       };
@@ -219,6 +284,7 @@ function mainReducer(state: MainState, action: MainAction): MainState {
         ...state,
         activeThreadId: action.threadId,
         messages: [],
+        runsById: {},
         messagesLoading: true,
         messagesError: null,
         liveResponses: {},
@@ -245,6 +311,95 @@ function mainReducer(state: MainState, action: MainAction): MainState {
         messagesLoading: false,
         messagesError: null,
       };
+    case 'RUNS_LOADED': {
+      if (action.threadId !== state.activeThreadId) return state;
+      const runsById = action.runs.reduce<Record<string, MainRun>>(
+        (acc, run) => {
+          acc[run.id] = run;
+          return acc;
+        },
+        {},
+      );
+      return {
+        ...state,
+        runsById,
+        threads: withThreadActivity(state.threads, runsById, action.threadId),
+      };
+    }
+    case 'RUN_UPSERTED': {
+      if (!action.run) return state;
+      const runsById = upsertRun(state.runsById, action.run);
+      const threads = withThreadActivity(
+        state.threads,
+        runsById,
+        action.run.threadId,
+      );
+      if (
+        action.run.parentRunId &&
+        runsById[action.run.parentRunId]?.promotionState === 'pending'
+      ) {
+        runsById[action.run.parentRunId] = {
+          ...runsById[action.run.parentRunId],
+          promotionState: null,
+          promotionChildRunId: action.run.id,
+        };
+      }
+      return {
+        ...state,
+        runsById,
+        threads,
+      };
+    }
+    case 'PROMOTION_PENDING': {
+      const existingRun = state.runsById[action.event.runId];
+      const runsById = upsertRun(state.runsById, {
+        id: action.event.runId,
+        threadId: action.event.threadId,
+        status: existingRun?.status || 'running',
+        createdAt: existingRun?.createdAt || new Date().toISOString(),
+        startedAt: existingRun?.startedAt || new Date().toISOString(),
+        endedAt: existingRun?.endedAt || null,
+        triggerMessageId: existingRun?.triggerMessageId || null,
+        targetAgentId: existingRun?.targetAgentId || null,
+        cancelReason: existingRun?.cancelReason || null,
+        kind: existingRun?.kind || null,
+        parentRunId: existingRun?.parentRunId || null,
+        promotionState: 'pending',
+        promotionChildRunId: existingRun?.promotionChildRunId || null,
+        requestedToolFamilies: action.event.requestedToolFamilies,
+        userVisibleSummary: action.event.userVisibleSummary,
+      });
+      return {
+        ...state,
+        runsById,
+        threads: withThreadActivity(
+          state.threads,
+          runsById,
+          action.event.threadId,
+        ),
+      };
+    }
+    case 'RUN_TERMINAL': {
+      const existingRun = state.runsById[action.runId];
+      if (!existingRun) return state;
+      const runsById = {
+        ...state.runsById,
+        [action.runId]: {
+          ...existingRun,
+          status: action.status,
+          endedAt: new Date().toISOString(),
+          cancelReason:
+            action.cancelReason !== undefined
+              ? action.cancelReason
+              : existingRun.cancelReason,
+        },
+      };
+      return {
+        ...state,
+        runsById,
+        threads: withThreadActivity(state.threads, runsById, action.threadId),
+      };
+    }
     case 'MESSAGES_ERROR':
       return {
         ...state,
@@ -430,6 +585,7 @@ function mainReducer(state: MainState, action: MainAction): MainState {
         threads,
         activeThreadId: action.threadId,
         messages: [],
+        runsById: {},
         messagesLoading: false,
         messagesError: null,
         liveResponses: {},
@@ -440,6 +596,7 @@ function mainReducer(state: MainState, action: MainAction): MainState {
         ...state,
         activeThreadId: null,
         messages: [],
+        runsById: {},
         messagesLoading: false,
         messagesError: null,
         liveResponses: {},
@@ -466,6 +623,8 @@ export function MainChannelPage({
   const endRef = useRef<HTMLDivElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const activeThreadIdRef = useRef<string | null>(state.activeThreadId);
+  const runsByIdRef = useRef<Record<string, MainRun>>(state.runsById);
+  const firstVisibleReportedRunIdsRef = useRef<Set<string>>(new Set());
   const [editingThreadId, setEditingThreadId] = useState<string | null>(null);
   const [threadMenu, setThreadMenu] = useState<{
     threadId: string;
@@ -485,6 +644,17 @@ export function MainChannelPage({
 
   const scrollToBottom = useCallback(() => {
     endRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, []);
+
+  const reportRunVisible = useCallback((runId: string) => {
+    if (firstVisibleReportedRunIdsRef.current.has(runId)) return;
+    firstVisibleReportedRunIdsRef.current.add(runId);
+    void postMainRunVisible({
+      runId,
+      firstVisibleAt: new Date().toISOString(),
+    }).catch(() => {
+      firstVisibleReportedRunIdsRef.current.delete(runId);
+    });
   }, []);
 
   // ── Load threads ──
@@ -543,6 +713,7 @@ export function MainChannelPage({
 
   // Keep ref in sync for use in SSE callbacks (avoids SSE effect depending on activeThreadId)
   activeThreadIdRef.current = state.activeThreadId;
+  runsByIdRef.current = state.runsById;
 
   // ── Load messages when activeThreadId changes ──
   useEffect(() => {
@@ -575,6 +746,34 @@ export function MainChannelPage({
     };
   }, [navigate, onUnauthorized, scrollToBottom, state.activeThreadId]);
 
+  useEffect(() => {
+    if (!state.activeThreadId) return;
+    const threadId = state.activeThreadId;
+    let cancelled = false;
+    listMainRuns(threadId)
+      .then((runs) => {
+        if (cancelled) return;
+        dispatch({ type: 'RUNS_LOADED', threadId, runs });
+        for (const run of runs) {
+          if (
+            run.promotionState === 'pending' ||
+            ['queued', 'running', 'awaiting_confirmation'].includes(run.status)
+          ) {
+            reportRunVisible(run.id);
+          }
+        }
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        if (err instanceof UnauthorizedError) {
+          onUnauthorized();
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [onUnauthorized, reportRunVisible, state.activeThreadId]);
+
   // ── SSE Stream ──
   useEffect(() => {
     const handle = openMainStream({
@@ -593,10 +792,113 @@ export function MainChannelPage({
           requestAnimationFrame(() => scrollToBottom());
         }
       },
+      onRunQueued: (event: MainRunEvent) => {
+        reportRunVisible(event.runId);
+        dispatch({
+          type: 'RUN_UPSERTED',
+          run: {
+            id: event.runId,
+            threadId: event.threadId,
+            status: 'queued',
+            createdAt: event.createdAt || new Date().toISOString(),
+            startedAt: null,
+            endedAt: null,
+            triggerMessageId: event.triggerMessageId || null,
+            targetAgentId: null,
+            cancelReason: null,
+            kind: 'main_promotion',
+            parentRunId: event.parentRunId || null,
+            promotionState: null,
+            promotionChildRunId: null,
+            requestedToolFamilies: event.requestedToolFamilies || [],
+            userVisibleSummary: event.userVisibleSummary || null,
+          },
+        });
+      },
+      onRunStarted: (event: MainRunEvent) => {
+        reportRunVisible(event.runId);
+        const existing = runsByIdRef.current[event.runId];
+        dispatch({
+          type: 'RUN_UPSERTED',
+          run: {
+            id: event.runId,
+            threadId: event.threadId,
+            status: 'running',
+            createdAt: existing?.createdAt || new Date().toISOString(),
+            startedAt: event.startedAt || new Date().toISOString(),
+            endedAt: null,
+            triggerMessageId: existing?.triggerMessageId || null,
+            targetAgentId: existing?.targetAgentId || null,
+            cancelReason: null,
+            kind: existing?.kind || null,
+            parentRunId: existing?.parentRunId || null,
+            promotionState: existing?.promotionState || null,
+            promotionChildRunId: existing?.promotionChildRunId || null,
+            requestedToolFamilies: existing?.requestedToolFamilies || [],
+            userVisibleSummary: existing?.userVisibleSummary || null,
+          },
+        });
+      },
+      onRunWaitingApproval: (event: MainRunEvent) => {
+        reportRunVisible(event.runId);
+        const existing = runsByIdRef.current[event.runId];
+        dispatch({
+          type: 'RUN_UPSERTED',
+          run: {
+            id: event.runId,
+            threadId: event.threadId,
+            status: 'awaiting_confirmation',
+            createdAt: event.createdAt || existing?.createdAt || new Date().toISOString(),
+            startedAt: event.startedAt || existing?.startedAt || null,
+            endedAt: null,
+            triggerMessageId: event.triggerMessageId || existing?.triggerMessageId || null,
+            targetAgentId: existing?.targetAgentId || null,
+            cancelReason: null,
+            kind: 'main_promotion',
+            parentRunId: event.parentRunId || existing?.parentRunId || null,
+            promotionState: null,
+            promotionChildRunId: null,
+            requestedToolFamilies: event.requestedToolFamilies || existing?.requestedToolFamilies || [],
+            userVisibleSummary: event.userVisibleSummary || existing?.userVisibleSummary || null,
+          },
+        });
+      },
+      onRunCompleted: (event: MainRunEvent) => {
+        dispatch({
+          type: 'RUN_TERMINAL',
+          runId: event.runId,
+          threadId: event.threadId,
+          status: 'completed',
+        });
+      },
+      onRunFailed: (event: MainRunEvent) => {
+        dispatch({
+          type: 'RUN_TERMINAL',
+          runId: event.runId,
+          threadId: event.threadId,
+          status: 'failed',
+          cancelReason: event.errorMessage || null,
+        });
+      },
+      onRunCancelled: (event: MainRunEvent) => {
+        dispatch({
+          type: 'RUN_TERMINAL',
+          runId: event.runId,
+          threadId: event.threadId,
+          status: 'cancelled',
+          cancelReason: event.cancelReason || null,
+        });
+      },
+      onPromotionPending: (event: MainPromotionPendingEvent) => {
+        reportRunVisible(event.runId);
+        dispatch({ type: 'PROMOTION_PENDING', event });
+      },
       onResponseStarted: (event) => {
+        reportRunVisible(event.runId);
         dispatch({ type: 'RESPONSE_STARTED', event });
       },
       onResponseDelta: (event) => {
+        reportRunVisible(event.runId);
         dispatch({ type: 'RESPONSE_DELTA', event });
         if (isNearBottom()) {
           requestAnimationFrame(() => scrollToBottom());
@@ -629,13 +931,16 @@ export function MainChannelPage({
               }),
             )
             .catch(() => {});
+          listMainRuns(tid)
+            .then((runs) => dispatch({ type: 'RUNS_LOADED', threadId: tid, runs }))
+            .catch(() => {});
         }
       },
       onUnauthorized,
     });
 
     return () => handle.close();
-  }, [onUnauthorized, isNearBottom, scrollToBottom]);
+  }, [onUnauthorized, isNearBottom, reportRunVisible, scrollToBottom]);
 
   // ── Send message ──
   const handleSend = useCallback(
@@ -652,6 +957,9 @@ export function MainChannelPage({
           content,
           threadId: state.activeThreadId || undefined,
         });
+
+        dispatch({ type: 'RUN_UPSERTED', run: result.run });
+        reportRunVisible(result.run.id);
 
         if (!state.activeThreadId) {
           // New thread — add to thread list and navigate
@@ -738,16 +1046,41 @@ export function MainChannelPage({
   const timeline = useMemo(() => {
     const entries: Array<
       | { kind: 'message'; message: MainThreadMessage }
+      | { kind: 'run'; run: MainRun }
       | { kind: 'live'; response: LiveResponse }
     > = [];
     for (const message of state.messages) {
       entries.push({ kind: 'message', message });
     }
+    for (const run of Object.values(state.runsById)) {
+      if (run.threadId !== state.activeThreadId) continue;
+      const isPromotionPending = run.promotionState === 'pending';
+      const isActivePromotionRun =
+        run.kind === 'main_promotion' &&
+        ['queued', 'running', 'awaiting_confirmation'].includes(run.status);
+      if (isPromotionPending || isActivePromotionRun) {
+        entries.push({ kind: 'run', run });
+      }
+    }
     for (const response of Object.values(state.liveResponses)) {
       entries.push({ kind: 'live', response });
     }
-    return entries;
-  }, [state.messages, state.liveResponses]);
+    return entries.sort((left, right) => {
+      const leftAt =
+        left.kind === 'message'
+          ? Date.parse(left.message.createdAt)
+          : left.kind === 'run'
+            ? Date.parse(left.run.createdAt)
+            : left.response.startedAt;
+      const rightAt =
+        right.kind === 'message'
+          ? Date.parse(right.message.createdAt)
+          : right.kind === 'run'
+            ? Date.parse(right.run.createdAt)
+            : right.response.startedAt;
+      return leftAt - rightAt;
+    });
+  }, [state.activeThreadId, state.messages, state.liveResponses, state.runsById]);
 
   // ── Stream badge ──
   const streamBadgeClass = `stream-badge stream-${state.streamState}`;
@@ -1038,6 +1371,34 @@ export function MainChannelPage({
                       {message.role === 'assistant'
                         ? stripInternalAssistantText(message.content)
                         : message.content}
+                    </p>
+                  </article>
+                );
+              }
+
+              if (entry.kind === 'run') {
+                const { run } = entry;
+                const statusLabel =
+                  run.promotionState === 'pending'
+                    ? 'Starting background task…'
+                    : run.status === 'awaiting_confirmation'
+                      ? 'Waiting for approval'
+                      : run.status === 'queued'
+                        ? 'Queued'
+                        : 'Working';
+                return (
+                  <article
+                    key={`run-${run.id}`}
+                    className="message message-system main-run-chip"
+                  >
+                    <header>
+                      <strong>Nanoclaw</strong>
+                      <time>{statusLabel}</time>
+                    </header>
+                    <p>
+                      <em>
+                        * {run.userVisibleSummary || 'Heavy execution in progress'}
+                      </em>
                     </p>
                   </article>
                 );

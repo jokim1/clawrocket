@@ -54,6 +54,7 @@ import { executeContainerAgentTurn } from '../agents/container-turn-executor.js'
 import { modelSupportsVision } from '../llm/capabilities.js';
 import type { TalkPersonaRole } from '../llm/types.js';
 import { executeWebFetch, executeWebSearch } from '../tools/web-tools.js';
+import { executeBrowserTool } from '../tools/browser-tools.js';
 import { loadTalkContext } from './context-loader.js';
 import { executeGoogleDriveTalkTool } from './google-drive-tools.js';
 import { executeTalkOutputTool } from './output-tools.js';
@@ -151,8 +152,14 @@ export function buildToolExecutor(
   runId: string,
   signal: AbortSignal,
   jobPolicy?: TalkJobExecutionPolicy | null,
+  effectiveTools?: EffectiveToolAccess[],
 ) {
   let connectorCache: Map<string, TalkRunConnectorRecord> | null = null;
+  const enabledToolFamilies = new Set(
+    (effectiveTools ?? [])
+      .filter((tool) => tool.enabled)
+      .map((tool) => tool.toolFamily),
+  );
 
   function loadConnectors(): Map<string, TalkRunConnectorRecord> {
     if (connectorCache) return connectorCache;
@@ -426,6 +433,12 @@ export function buildToolExecutor(
     }
 
     if (toolName === 'web_fetch') {
+      if (effectiveTools && !enabledToolFamilies.has('web')) {
+        return {
+          result: 'Error: web tools are not enabled for this agent',
+          isError: true,
+        };
+      }
       if (jobPolicy && !jobPolicy.allowWeb) {
         return {
           result: 'Error: web_fetch is not available for this scheduled job',
@@ -435,6 +448,12 @@ export function buildToolExecutor(
       return executeWebFetch(args, signal);
     }
     if (toolName === 'web_search') {
+      if (effectiveTools && !enabledToolFamilies.has('web')) {
+        return {
+          result: 'Error: web tools are not enabled for this agent',
+          isError: true,
+        };
+      }
       if (jobPolicy && !jobPolicy.allowWeb) {
         return {
           result: 'Error: web_search is not available for this scheduled job',
@@ -442,6 +461,31 @@ export function buildToolExecutor(
         };
       }
       return executeWebSearch(args, signal);
+    }
+    if (toolName.startsWith('browser_')) {
+      if (effectiveTools && !enabledToolFamilies.has('browser')) {
+        return {
+          result: 'Error: browser tools are not enabled for this agent',
+          isError: true,
+        };
+      }
+      if (jobPolicy && !jobPolicy.allowWeb) {
+        return {
+          result:
+            'Error: browser tools are not available for this scheduled job',
+          isError: true,
+        };
+      }
+      return executeBrowserTool({
+        toolName,
+        args,
+        context: {
+          signal,
+          talkId,
+          userId,
+          runId,
+        },
+      });
     }
     if (
       toolName === 'google_drive_search' ||
@@ -490,7 +534,9 @@ function filterEffectiveToolsForJob(
     return effectiveTools;
   }
   return effectiveTools.map((tool) =>
-    tool.toolFamily === 'web' ? { ...tool, enabled: false } : tool,
+    tool.toolFamily === 'web' || tool.toolFamily === 'browser'
+      ? { ...tool, enabled: false }
+      : tool,
   );
 }
 
@@ -1282,6 +1328,11 @@ export class CleanTalkExecutor implements TalkExecutor {
       resolvedAgent = resolveTalkAgent(input.talkId, input.targetAgentId);
       const modelContextWindow = getModelContextWindow(resolvedAgent);
       const jobPolicy = buildTalkJobExecutionPolicy(input.jobId);
+      const plan = planExecution(resolvedAgent, input.requestedBy);
+      const scopedEffectiveTools = filterEffectiveToolsForJob(
+        plan.effectiveTools,
+        jobPolicy,
+      );
       const contextPackage = await loadTalkContext(
         input.talkId,
         modelContextWindow,
@@ -1292,6 +1343,7 @@ export class CleanTalkExecutor implements TalkExecutor {
           personaRole: resolvedAgent.persona_role as TalkPersonaRole | null,
           retrievalQuery: input.triggerContent,
           jobPolicy,
+          effectiveTools: scopedEffectiveTools,
         },
       );
       setTalkRunMetadataJson(
@@ -1313,12 +1365,6 @@ export class CleanTalkExecutor implements TalkExecutor {
         responseGroupId: input.responseGroupId,
         sequenceIndex: input.sequenceIndex,
       });
-
-      const plan = planExecution(resolvedAgent, input.requestedBy);
-      const scopedEffectiveTools = filterEffectiveToolsForJob(
-        plan.effectiveTools,
-        jobPolicy,
-      );
 
       if (plan.backend === 'container') {
         const talk = getTalkById(input.talkId);
@@ -1407,6 +1453,7 @@ export class CleanTalkExecutor implements TalkExecutor {
         input.runId,
         signal,
         jobPolicy,
+        scopedEffectiveTools,
       );
       const currentAttachmentRows = listMessageAttachmentRecords(
         input.triggerMessageId,

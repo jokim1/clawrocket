@@ -227,7 +227,6 @@ function seedMainAgent(database: Database.Database): void {
     shell: true,
     filesystem: true,
     web: true,
-    browser: true,
     connectors: true,
     google_read: true,
     google_write: true,
@@ -767,6 +766,28 @@ function createClawrocketSchema(database: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_talk_message_attachments_talk_created
       ON talk_message_attachments(talk_id, created_at);
 
+    CREATE TABLE IF NOT EXISTS browser_profiles (
+      id TEXT PRIMARY KEY,
+      site_key TEXT NOT NULL,
+      account_label TEXT,
+      profile_path TEXT NOT NULL,
+      channel TEXT NOT NULL,
+      locale TEXT NOT NULL,
+      timezone_id TEXT NOT NULL,
+      user_agent TEXT,
+      viewport_json TEXT NOT NULL,
+      download_dir TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      last_used_at TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_browser_profiles_site_last_used
+      ON browser_profiles(site_key, last_used_at DESC, created_at DESC);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_browser_profiles_site_account
+      ON browser_profiles(site_key, COALESCE(account_label, ''));
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_browser_profiles_path
+      ON browser_profiles(profile_path);
+
     CREATE TABLE IF NOT EXISTS talk_context_summary (
       talk_id TEXT PRIMARY KEY REFERENCES talks(id) ON DELETE CASCADE,
       summary_text TEXT NOT NULL,
@@ -1228,6 +1249,7 @@ function createClawrocketSchema(database: Database.Database): void {
   seedDefaultTalkAgent(database);
   seedSystemUsers(database);
   seedDefaultSettings(database);
+  migrateMainAgentBrowserConflict(database);
 }
 
 /**
@@ -2992,6 +3014,40 @@ function migrateChannelTargetRegistryColumns(
     database.exec(`
       ALTER TABLE channel_targets ADD COLUMN registered_by TEXT REFERENCES users(id);
     `);
+  }
+}
+
+function migrateMainAgentBrowserConflict(database: Database.Database): void {
+  const row = database
+    .prepare(
+      `SELECT tool_permissions_json FROM registered_agents WHERE id = 'agent.main'`,
+    )
+    .get() as { tool_permissions_json: string | null } | undefined;
+  if (!row?.tool_permissions_json) return;
+
+  let parsed: Record<string, boolean> | null = null;
+  try {
+    parsed = JSON.parse(row.tool_permissions_json);
+  } catch {
+    parsed = null;
+  }
+  if (!parsed) return;
+
+  if (
+    parsed.browser === true &&
+    (parsed.shell === true || parsed.filesystem === true)
+  ) {
+    parsed.browser = false;
+    database
+      .prepare(
+        `
+        UPDATE registered_agents
+        SET tool_permissions_json = ?,
+            updated_at = ?
+        WHERE id = 'agent.main'
+      `,
+      )
+      .run(JSON.stringify(parsed), new Date().toISOString());
   }
 }
 

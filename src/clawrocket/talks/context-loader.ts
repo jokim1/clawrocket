@@ -15,6 +15,7 @@
 import { getDb } from '../../db.js';
 import { listConnectorsForTalkRun } from '../db/connector-accessors.js';
 import { listTalkStateEntries } from '../db/context-accessors.js';
+import type { EffectiveToolAccess } from '../db/agent-accessors.js';
 import { listTalkOutputs } from '../db/output-accessors.js';
 import {
   buildConnectorToolDefinitions,
@@ -26,6 +27,7 @@ import {
 } from '../agents/llm-client.js';
 import type { TalkPersonaRole } from '../llm/types.js';
 import { WEB_TOOL_DEFINITIONS } from '../tools/web-tools.js';
+import { BROWSER_TOOL_DEFINITIONS } from '../tools/browser-tools.js';
 import {
   buildBoundGoogleDrivePromptSection,
   buildGoogleDriveContextTools,
@@ -312,6 +314,7 @@ export async function loadTalkContext(
     personaRole?: TalkPersonaRole | null;
     retrievalQuery?: string | null;
     jobPolicy?: TalkJobExecutionPolicy | null;
+    effectiveTools?: EffectiveToolAccess[];
   },
 ): Promise<ContextPackage> {
   const db = getDb();
@@ -371,7 +374,12 @@ export async function loadTalkContext(
   const systemPromptTokens = Math.ceil(systemPrompt.length * CHARS_TO_TOKENS);
 
   // Step 5: Build context tools (always included)
-  const contextTools = buildContextTools(talkId, userId, options?.jobPolicy);
+  const contextTools = buildContextTools(
+    talkId,
+    userId,
+    options?.jobPolicy,
+    options?.effectiveTools,
+  );
 
   // Step 6: Load message history with token budgeting (thread-scoped if threadId provided)
   const availableBudget =
@@ -819,6 +827,7 @@ function buildContextTools(
   talkId: string,
   userId?: string | null,
   jobPolicy?: TalkJobExecutionPolicy | null,
+  effectiveTools?: EffectiveToolAccess[],
 ): LlmToolDefinition[] {
   const tools: LlmToolDefinition[] = [
     ...buildTalkOutputToolDefinitions({
@@ -920,8 +929,20 @@ function buildContextTools(
     );
   }
 
-  if (!jobPolicy || jobPolicy.allowWeb) {
+  const enabledToolFamilies = new Set(
+    (effectiveTools ?? [])
+      .filter((tool) => tool.enabled)
+      .map((tool) => tool.toolFamily),
+  );
+  const webEnabled = !effectiveTools || enabledToolFamilies.has('web');
+  const browserEnabled = !effectiveTools || enabledToolFamilies.has('browser');
+
+  if ((!jobPolicy || jobPolicy.allowWeb) && webEnabled) {
     tools.push(...WEB_TOOL_DEFINITIONS);
+  }
+
+  if ((!jobPolicy || jobPolicy.allowWeb) && browserEnabled) {
+    tools.push(...BROWSER_TOOL_DEFINITIONS);
   }
 
   return tools;

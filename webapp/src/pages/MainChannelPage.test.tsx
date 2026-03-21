@@ -7,7 +7,7 @@ import {
   within,
 } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 
 import { MainChannelPage } from './MainChannelPage';
@@ -16,6 +16,8 @@ import { ApiError } from '../lib/api';
 const {
   listMainThreadsMock,
   getMainThreadMock,
+  listMainRunsMock,
+  postMainRunVisibleMock,
   postMainMessageMock,
   updateMainThreadMock,
   deleteMainThreadMock,
@@ -23,6 +25,8 @@ const {
 } = vi.hoisted(() => ({
   listMainThreadsMock: vi.fn(),
   getMainThreadMock: vi.fn(),
+  listMainRunsMock: vi.fn(),
+  postMainRunVisibleMock: vi.fn(),
   postMainMessageMock: vi.fn(),
   updateMainThreadMock: vi.fn(),
   deleteMainThreadMock: vi.fn(),
@@ -36,6 +40,8 @@ vi.mock('../lib/api', async () => {
     ...actual,
     listMainThreads: listMainThreadsMock,
     getMainThread: getMainThreadMock,
+    listMainRuns: listMainRunsMock,
+    postMainRunVisible: postMainRunVisibleMock,
     postMainMessage: postMainMessageMock,
     updateMainThread: updateMainThreadMock,
     deleteMainThread: deleteMainThreadMock,
@@ -54,6 +60,11 @@ vi.mock('../lib/mainStream', async () => {
 });
 
 describe('MainChannelPage', () => {
+  beforeEach(() => {
+    listMainRunsMock.mockResolvedValue([]);
+    postMainRunVisibleMock.mockResolvedValue({ recorded: true });
+  });
+
   afterEach(() => {
     cleanup();
     vi.unstubAllGlobals();
@@ -211,6 +222,23 @@ describe('MainChannelPage', () => {
       threadId: 'thread-main-1',
       runId: 'run-1',
       title: null,
+      run: {
+        id: 'run-1',
+        threadId: 'thread-main-1',
+        status: 'queued',
+        createdAt: '2026-03-18T12:00:00.000Z',
+        startedAt: null,
+        endedAt: null,
+        triggerMessageId: 'msg-1',
+        targetAgentId: null,
+        cancelReason: null,
+        kind: null,
+        parentRunId: null,
+        promotionState: null,
+        promotionChildRunId: null,
+        requestedToolFamilies: [],
+        userVisibleSummary: null,
+      },
     });
 
     render(
@@ -254,6 +282,25 @@ describe('MainChannelPage', () => {
       },
     ]);
     getMainThreadMock.mockResolvedValue([]);
+    listMainRunsMock.mockResolvedValue([
+      {
+        id: 'run-main-1',
+        threadId: 'thread-main-1',
+        status: 'running',
+        createdAt: '2026-03-18T12:00:00.000Z',
+        startedAt: '2026-03-18T12:00:01.000Z',
+        endedAt: null,
+        triggerMessageId: 'msg-1',
+        targetAgentId: null,
+        cancelReason: null,
+        kind: null,
+        parentRunId: null,
+        promotionState: null,
+        promotionChildRunId: null,
+        requestedToolFamilies: [],
+        userVisibleSummary: null,
+      },
+    ]);
 
     render(
       <MemoryRouter initialEntries={['/app/main/thread-main-1']}>

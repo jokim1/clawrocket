@@ -55,6 +55,30 @@ export type MainResponseFailedEvent = {
   errorMessage: string;
 };
 
+export type MainRunEvent = {
+  runId: string;
+  threadId: string;
+  status?: string;
+  triggerMessageId?: string | null;
+  startedAt?: string | null;
+  endedAt?: string | null;
+  responseMessageId?: string;
+  errorCode?: string;
+  errorMessage?: string;
+  cancelReason?: string | null;
+  requestedToolFamilies?: string[];
+  userVisibleSummary?: string | null;
+  parentRunId?: string | null;
+  createdAt?: string;
+};
+
+export type MainPromotionPendingEvent = {
+  runId: string;
+  threadId: string;
+  requestedToolFamilies: string[];
+  userVisibleSummary: string;
+};
+
 interface EventSourceLike {
   onopen: ((event: Event) => void) | null;
   onerror: ((event: Event) => void) | null;
@@ -67,6 +91,13 @@ interface EventSourceLike {
 
 interface MainStreamCallbacks {
   onMessageAppended: (event: MainMessageAppendedEvent) => void;
+  onRunQueued?: (event: MainRunEvent) => void;
+  onRunStarted?: (event: MainRunEvent) => void;
+  onRunWaitingApproval?: (event: MainRunEvent) => void;
+  onRunCompleted?: (event: MainRunEvent) => void;
+  onRunFailed?: (event: MainRunEvent) => void;
+  onRunCancelled?: (event: MainRunEvent) => void;
+  onPromotionPending?: (event: MainPromotionPendingEvent) => void;
   onResponseStarted?: (event: MainResponseStartedEvent) => void;
   onResponseDelta?: (event: MainResponseDeltaEvent) => void;
   onResponseCompleted?: (event: MainResponseCompletedEvent) => void;
@@ -254,6 +285,55 @@ export function openMainStream(input: OpenMainStreamInput): MainStreamHandle {
       const payload = parse<MainResponseFailedEvent>(event);
       if (!payload) return;
       input.onResponseFailed?.(payload);
+    });
+
+    next.addEventListener('main_run_queued', (event) => {
+      if (next !== source || stopped) return;
+      const payload = parse<MainRunEvent>(event);
+      if (!payload) return;
+      input.onRunQueued?.(payload);
+    });
+
+    next.addEventListener('main_run_started', (event) => {
+      if (next !== source || stopped) return;
+      const payload = parse<MainRunEvent>(event);
+      if (!payload) return;
+      input.onRunStarted?.(payload);
+    });
+
+    next.addEventListener('main_run_waiting_approval', (event) => {
+      if (next !== source || stopped) return;
+      const payload = parse<MainRunEvent>(event);
+      if (!payload) return;
+      input.onRunWaitingApproval?.(payload);
+    });
+
+    next.addEventListener('main_run_completed', (event) => {
+      if (next !== source || stopped) return;
+      const payload = parse<MainRunEvent>(event);
+      if (!payload) return;
+      input.onRunCompleted?.(payload);
+    });
+
+    next.addEventListener('main_run_failed', (event) => {
+      if (next !== source || stopped) return;
+      const payload = parse<MainRunEvent>(event);
+      if (!payload) return;
+      input.onRunFailed?.(payload);
+    });
+
+    next.addEventListener('main_run_cancelled', (event) => {
+      if (next !== source || stopped) return;
+      const payload = parse<MainRunEvent>(event);
+      if (!payload) return;
+      input.onRunCancelled?.(payload);
+    });
+
+    next.addEventListener('main_promotion_pending', (event) => {
+      if (next !== source || stopped) return;
+      const payload = parse<MainPromotionPendingEvent>(event);
+      if (!payload) return;
+      input.onPromotionPending?.(payload);
     });
 
     next.addEventListener('replay_gap', () => {

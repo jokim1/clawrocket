@@ -1,6 +1,7 @@
 import { randomUUID } from 'crypto';
 
 import { getDb } from '../../db.js';
+import { notifyOutboxEvent } from '../channels/outbox-notifier.js';
 import {
   inferThreadTitleFromContent,
   isLegacyPlaceholderTalkThreadTitle,
@@ -2502,40 +2503,25 @@ export function enqueueTalkTurnAtomic(input: {
 
       touchTalkUpdatedAt(txInput.talkId, now);
 
-      getDb()
-        .prepare(
-          `
-        INSERT INTO event_outbox (topic, event_type, payload, created_at)
-        VALUES (?, ?, ?, ?)
-      `,
-        )
-        .run(
-          `talk:${txInput.talkId}`,
-          'message_appended',
-          JSON.stringify({
-            talkId: txInput.talkId,
-            threadId,
-            messageId: txInput.messageId,
-            runId: null,
-            role: 'user',
-            createdBy: txInput.userId,
-            content: txInput.content,
-            createdAt: now,
-          }),
-          now,
-        );
-
-      const outboxStmt = getDb().prepare(
-        `
-        INSERT INTO event_outbox (topic, event_type, payload, created_at)
-        VALUES (?, ?, ?, ?)
-      `,
-      );
+      appendOutboxEvent({
+        topic: `talk:${txInput.talkId}`,
+        eventType: 'message_appended',
+        payload: JSON.stringify({
+          talkId: txInput.talkId,
+          threadId,
+          messageId: txInput.messageId,
+          runId: null,
+          role: 'user',
+          createdBy: txInput.userId,
+          content: txInput.content,
+          createdAt: now,
+        }),
+      });
       for (const run of runs) {
-        outboxStmt.run(
-          `talk:${txInput.talkId}`,
-          'talk_run_queued',
-          JSON.stringify({
+        appendOutboxEvent({
+          topic: `talk:${txInput.talkId}`,
+          eventType: 'talk_run_queued',
+          payload: JSON.stringify({
             talkId: txInput.talkId,
             threadId,
             runId: run.id,
@@ -2547,8 +2533,7 @@ export function enqueueTalkTurnAtomic(input: {
             executorAlias: run.executor_alias,
             executorModel: run.executor_model,
           }),
-          now,
-        );
+        });
       }
 
       // Validate and link attachments inside the same transaction so the
@@ -2856,7 +2841,13 @@ export function appendOutboxEvent(input: {
     input.payload,
     new Date().toISOString(),
   );
-  return Number(result.lastInsertRowid);
+  const eventId = Number(result.lastInsertRowid);
+  // Defer wakeups until the surrounding transaction scope has fully unwound so
+  // subscribers do not race a still-uncommitted outbox row.
+  queueMicrotask(() => {
+    notifyOutboxEvent({ topic: input.topic, eventId });
+  });
+  return eventId;
 }
 
 export function getOutboxEventsForTopics(
@@ -3134,6 +3125,45 @@ export function setTalkRunMetadataJson(
     .run(metadataJson, runId);
 }
 
+function parseRunMetadataJson(
+  metadataJson: string | null | undefined,
+): Record<string, unknown> {
+  if (!metadataJson) return {};
+  try {
+    const parsed = JSON.parse(metadataJson) as unknown;
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      return parsed as Record<string, unknown>;
+    }
+  } catch {
+    // ignored
+  }
+  return {};
+}
+
+export function updateTalkRunMetadata(
+  runId: string,
+  updater: (current: Record<string, unknown>) => Record<string, unknown> | null,
+): string | null {
+  const current = getDb()
+    .prepare(
+      `
+      SELECT metadata_json
+      FROM talk_runs
+      WHERE id = ?
+      LIMIT 1
+    `,
+    )
+    .get(runId) as { metadata_json: string | null } | undefined;
+
+  const nextValue = updater(parseRunMetadataJson(current?.metadata_json));
+  const nextJson =
+    nextValue && Object.keys(nextValue).length > 0
+      ? JSON.stringify(nextValue)
+      : null;
+  setTalkRunMetadataJson(runId, nextJson);
+  return nextJson;
+}
+
 export function setTalkRunExecutorProfile(input: {
   runId: string;
   executorAlias: string;
@@ -3345,31 +3375,23 @@ export function appendAssistantMessageWithOutbox(input: {
     });
 
     touchTalkUpdatedAt(txInput.talkId, createdAt);
-    getDb()
-      .prepare(
-        `
-        INSERT INTO event_outbox (topic, event_type, payload, created_at)
-        VALUES (?, ?, ?, ?)
-      `,
-      )
-      .run(
-        `talk:${txInput.talkId}`,
-        'message_appended',
-        JSON.stringify({
-          talkId: txInput.talkId,
-          threadId: txInput.threadId,
-          messageId: txInput.messageId,
-          runId: txInput.runId,
-          role: 'assistant',
-          createdBy: null,
-          content: txInput.content,
-          createdAt,
-          agentId: txInput.agentId || null,
-          agentNickname: txInput.agentNickname || null,
-          metadata,
-        }),
+    appendOutboxEvent({
+      topic: `talk:${txInput.talkId}`,
+      eventType: 'message_appended',
+      payload: JSON.stringify({
+        talkId: txInput.talkId,
+        threadId: txInput.threadId,
+        messageId: txInput.messageId,
+        runId: txInput.runId,
+        role: 'assistant',
+        createdBy: null,
+        content: txInput.content,
         createdAt,
-      );
+        agentId: txInput.agentId || null,
+        agentNickname: txInput.agentNickname || null,
+        metadata,
+      }),
+    });
 
     return message;
   });
@@ -3419,31 +3441,23 @@ export function appendRuntimeTalkMessage(input: {
     });
 
     touchTalkUpdatedAt(txInput.talkId, createdAt);
-    getDb()
-      .prepare(
-        `
-        INSERT INTO event_outbox (topic, event_type, payload, created_at)
-        VALUES (?, ?, ?, ?)
-      `,
-      )
-      .run(
-        `talk:${txInput.talkId}`,
-        'message_appended',
-        JSON.stringify({
-          talkId: txInput.talkId,
-          threadId: txInput.threadId,
-          messageId: txInput.id,
-          runId: txInput.runId,
-          role: txInput.role,
-          createdBy: null,
-          content: txInput.content,
-          createdAt,
-          agentId: actor.agentId,
-          agentNickname: actor.agentNickname,
-          metadata,
-        }),
+    appendOutboxEvent({
+      topic: `talk:${txInput.talkId}`,
+      eventType: 'message_appended',
+      payload: JSON.stringify({
+        talkId: txInput.talkId,
+        threadId: txInput.threadId,
+        messageId: txInput.id,
+        runId: txInput.runId,
+        role: txInput.role,
+        createdBy: null,
+        content: txInput.content,
         createdAt,
-      );
+        agentId: actor.agentId,
+        agentNickname: actor.agentNickname,
+        metadata,
+      }),
+    });
 
     return message;
   });
@@ -3493,13 +3507,6 @@ export function claimQueuedTalkRuns(
         WHERE id = ? AND status = 'queued'
       `,
       );
-      const outboxStmt = getDb().prepare(
-        `
-        INSERT INTO event_outbox (topic, event_type, payload, created_at)
-        VALUES (?, ?, ?, ?)
-      `,
-      );
-
       const claimed: TalkRunRecord[] = [];
       for (const run of queued) {
         const updated = updateStmt.run(startedAt, run.id);
@@ -3512,10 +3519,10 @@ export function claimQueuedTalkRuns(
           cancel_reason: null,
         };
         claimed.push(claimedRun);
-        outboxStmt.run(
-          `talk:${run.talk_id}`,
-          'talk_run_started',
-          JSON.stringify({
+        appendOutboxEvent({
+          topic: `talk:${run.talk_id}`,
+          eventType: 'talk_run_started',
+          payload: JSON.stringify({
             talkId: run.talk_id,
             threadId: run.thread_id,
             runId: run.id,
@@ -3527,8 +3534,7 @@ export function claimQueuedTalkRuns(
             executorAlias: run.executor_alias,
             executorModel: run.executor_model,
           }),
-          startedAt,
-        );
+        });
       }
 
       return claimed;
@@ -3712,29 +3718,21 @@ export function completeRunAndPromoteNextAtomic(input: {
         }
       }
 
-      getDb()
-        .prepare(
-          `
-        INSERT INTO event_outbox (topic, event_type, payload, created_at)
-        VALUES (?, ?, ?, ?)
-      `,
-        )
-        .run(
-          `talk:${run.talk_id}`,
-          'talk_run_completed',
-          JSON.stringify({
-            talkId: run.talk_id,
-            threadId: run.thread_id,
-            runId: run.id,
-            triggerMessageId: run.trigger_message_id,
-            responseMessageId: responseMessage.id,
-            responseGroupId: run.response_group_id,
-            sequenceIndex: run.sequence_index,
-            executorAlias: run.executor_alias,
-            executorModel: run.executor_model,
-          }),
-          now,
-        );
+      appendOutboxEvent({
+        topic: `talk:${run.talk_id}`,
+        eventType: 'talk_run_completed',
+        payload: JSON.stringify({
+          talkId: run.talk_id,
+          threadId: run.thread_id,
+          runId: run.id,
+          triggerMessageId: run.trigger_message_id,
+          responseMessageId: responseMessage.id,
+          responseGroupId: run.response_group_id,
+          sequenceIndex: run.sequence_index,
+          executorAlias: run.executor_alias,
+          executorModel: run.executor_model,
+        }),
+      });
 
       return {
         applied: true,
@@ -3810,30 +3808,22 @@ export function failRunAndPromoteNextAtomic(input: {
         return { applied: false, talkId: run.talk_id };
       }
 
-      getDb()
-        .prepare(
-          `
-        INSERT INTO event_outbox (topic, event_type, payload, created_at)
-        VALUES (?, ?, ?, ?)
-      `,
-        )
-        .run(
-          `talk:${run.talk_id}`,
-          'talk_run_failed',
-          JSON.stringify({
-            talkId: run.talk_id,
-            threadId: run.thread_id,
-            runId: run.id,
-            triggerMessageId: run.trigger_message_id,
-            responseGroupId: run.response_group_id,
-            sequenceIndex: run.sequence_index,
-            errorCode: txInput.errorCode,
-            errorMessage: txInput.errorMessage,
-            executorAlias: run.executor_alias,
-            executorModel: run.executor_model,
-          }),
-          now,
-        );
+      appendOutboxEvent({
+        topic: `talk:${run.talk_id}`,
+        eventType: 'talk_run_failed',
+        payload: JSON.stringify({
+          talkId: run.talk_id,
+          threadId: run.thread_id,
+          runId: run.id,
+          triggerMessageId: run.trigger_message_id,
+          responseGroupId: run.response_group_id,
+          sequenceIndex: run.sequence_index,
+          errorCode: txInput.errorCode,
+          errorMessage: txInput.errorMessage,
+          executorAlias: run.executor_alias,
+          executorModel: run.executor_model,
+        }),
+      });
 
       if (
         run.response_group_id &&
@@ -3880,24 +3870,16 @@ export function failRunAndPromoteNextAtomic(input: {
           }
 
           if (cancelledRunIds.length > 0) {
-            getDb()
-              .prepare(
-                `
-                INSERT INTO event_outbox (topic, event_type, payload, created_at)
-                VALUES (?, ?, ?, ?)
-              `,
-              )
-              .run(
-                `talk:${run.talk_id}`,
-                'talk_run_cancelled',
-                JSON.stringify({
-                  talkId: run.talk_id,
-                  cancelledBy: 'system',
-                  runIds: cancelledRunIds,
-                  threadIds: [run.thread_id],
-                }),
-                now,
-              );
+            appendOutboxEvent({
+              topic: `talk:${run.talk_id}`,
+              eventType: 'talk_run_cancelled',
+              payload: JSON.stringify({
+                talkId: run.talk_id,
+                cancelledBy: 'system',
+                runIds: cancelledRunIds,
+                threadIds: [run.thread_id],
+              }),
+            });
           }
         }
       }
@@ -3969,12 +3951,6 @@ export function cancelTalkRunsAtomic(input: {
         WHERE id = ? AND status IN ('queued', 'running', 'awaiting_confirmation')
       `,
       );
-      const eventStmt = getDb().prepare(
-        `
-        INSERT INTO event_outbox (topic, event_type, payload, created_at)
-        VALUES (?, ?, ?, ?)
-      `,
-      );
       for (const run of activeRuns) {
         const updated = cancelStmt.run(
           now,
@@ -3994,10 +3970,10 @@ export function cancelTalkRunsAtomic(input: {
         });
         if (run.status === 'running') {
           cancelledRunning = true;
-          eventStmt.run(
-            `talk:${txInput.talkId}`,
-            'talk_response_cancelled',
-            JSON.stringify({
+          appendOutboxEvent({
+            topic: `talk:${txInput.talkId}`,
+            eventType: 'talk_response_cancelled',
+            payload: JSON.stringify({
               talkId: txInput.talkId,
               threadId: run.thread_id,
               runId: run.id,
@@ -4005,16 +3981,15 @@ export function cancelTalkRunsAtomic(input: {
               responseGroupId: run.response_group_id,
               sequenceIndex: run.sequence_index,
             }),
-            now,
-          );
+          });
         }
       }
 
       if (cancelledRunIds.length > 0) {
-        eventStmt.run(
-          `talk:${txInput.talkId}`,
-          'talk_run_cancelled',
-          JSON.stringify({
+        appendOutboxEvent({
+          topic: `talk:${txInput.talkId}`,
+          eventType: 'talk_run_cancelled',
+          payload: JSON.stringify({
             talkId: txInput.talkId,
             cancelledBy: txInput.cancelledBy,
             runIds: cancelledRunIds,
@@ -4027,8 +4002,7 @@ export function cancelTalkRunsAtomic(input: {
               ),
             ),
           }),
-          now,
-        );
+        });
       }
 
       return {
@@ -4085,28 +4059,20 @@ export function failInterruptedRunsOnStartup(now?: string): {
         if (updated.changes !== 1) continue;
 
         failedRunIds.push(run.id);
-        getDb()
-          .prepare(
-            `
-          INSERT INTO event_outbox (topic, event_type, payload, created_at)
-          VALUES (?, ?, ?, ?)
-        `,
-          )
-          .run(
-            `talk:${run.talk_id}`,
-            'talk_run_failed',
-            JSON.stringify({
-              talkId: run.talk_id,
-              threadId: run.thread_id,
-              runId: run.id,
-              triggerMessageId: run.trigger_message_id,
-              errorCode: 'interrupted_by_restart',
-              errorMessage: 'Run interrupted by process restart',
-              executorAlias: run.executor_alias,
-              executorModel: run.executor_model,
-            }),
-            currentNow,
-          );
+        appendOutboxEvent({
+          topic: `talk:${run.talk_id}`,
+          eventType: 'talk_run_failed',
+          payload: JSON.stringify({
+            talkId: run.talk_id,
+            threadId: run.thread_id,
+            runId: run.id,
+            triggerMessageId: run.trigger_message_id,
+            errorCode: 'interrupted_by_restart',
+            errorMessage: 'Run interrupted by process restart',
+            executorAlias: run.executor_alias,
+            executorModel: run.executor_model,
+          }),
+        });
       }
 
       return { failedRunIds, promotedRunIds: [] };
@@ -4400,6 +4366,261 @@ export function deleteMainThread(input: {
   return tx(input);
 }
 
+function parseMainRunMetadata(metadataJson: string | null | undefined): {
+  kind: string | null;
+  parentRunId: string | null;
+  promotionState: 'pending' | 'superseded' | null;
+} {
+  const metadata = parseRunMetadataJson(metadataJson);
+  const kind =
+    typeof metadata.kind === 'string' && metadata.kind ? metadata.kind : null;
+  const parentRunId =
+    typeof metadata.parentRunId === 'string' && metadata.parentRunId
+      ? metadata.parentRunId
+      : null;
+  const promotionState =
+    metadata.promotionState === 'pending' ||
+    metadata.promotionState === 'superseded'
+      ? metadata.promotionState
+      : null;
+  return { kind, parentRunId, promotionState };
+}
+
+function isMainPromotionChildRun(run: TalkRunRecord): boolean {
+  return parseMainRunMetadata(run.metadata_json).kind === 'main_promotion';
+}
+
+function updateParentPromotionState(
+  parentRunId: string,
+  input: {
+    promotionState: 'pending' | 'superseded' | null;
+    promotionChildRunId?: string | null;
+  },
+): void {
+  updateTalkRunMetadata(parentRunId, (current) => ({
+    ...current,
+    promotionRequested: true,
+    promotionState: input.promotionState,
+    promotionChildRunId:
+      input.promotionChildRunId === undefined
+        ? ((current.promotionChildRunId as string | null | undefined) ?? null)
+        : input.promotionChildRunId,
+  }));
+}
+
+export function listMainRunsForThread(threadId: string): TalkRunRecord[] {
+  return getDb()
+    .prepare(
+      `
+      SELECT *
+      FROM talk_runs
+      WHERE talk_id IS NULL AND thread_id = ?
+      ORDER BY created_at DESC, id DESC
+    `,
+    )
+    .all(threadId) as TalkRunRecord[];
+}
+
+export function createMainPromotionRunAtomic(input: {
+  parentRunId: string;
+  childRunId: string;
+  threadId: string;
+  requestedBy: string;
+  triggerMessageId: string;
+  targetAgentId?: string | null;
+  requiredToolFamilies: string[];
+  userVisibleSummary: string;
+  handoffNote?: string | null;
+  taskDescription: string;
+  requiresApproval: boolean;
+  now?: string;
+}): TalkRunRecord | null {
+  const tx = getDb().transaction(
+    (txInput: typeof input): TalkRunRecord | null => {
+      const now = txInput.now || new Date().toISOString();
+      const parent = getDb()
+        .prepare(
+          `
+        SELECT id
+        FROM talk_runs
+        WHERE id = ? AND talk_id IS NULL AND thread_id = ?
+        LIMIT 1
+      `,
+        )
+        .get(txInput.parentRunId, txInput.threadId) as
+        | { id: string }
+        | undefined;
+      if (!parent) return null;
+
+      const status: TalkRunStatus = txInput.requiresApproval
+        ? 'awaiting_confirmation'
+        : 'queued';
+      const metadataJson = JSON.stringify({
+        kind: 'main_promotion',
+        parentRunId: txInput.parentRunId,
+        requestedToolFamilies: txInput.requiredToolFamilies,
+        userVisibleSummary: txInput.userVisibleSummary,
+        handoffNote: txInput.handoffNote ?? null,
+        taskDescription: txInput.taskDescription,
+      });
+
+      getDb()
+        .prepare(
+          `
+        INSERT INTO talk_runs (
+          id, talk_id, thread_id, requested_by, status,
+          trigger_message_id, target_agent_id, created_at, metadata_json
+        ) VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?)
+      `,
+        )
+        .run(
+          txInput.childRunId,
+          txInput.threadId,
+          txInput.requestedBy,
+          status,
+          txInput.triggerMessageId,
+          txInput.targetAgentId ?? null,
+          now,
+          metadataJson,
+        );
+
+      updateParentPromotionState(txInput.parentRunId, {
+        promotionState: null,
+        promotionChildRunId: txInput.childRunId,
+      });
+
+      const eventType =
+        status === 'awaiting_confirmation'
+          ? 'main_run_waiting_approval'
+          : 'main_run_queued';
+      appendOutboxEvent({
+        topic: `user:${txInput.requestedBy}`,
+        eventType,
+        payload: JSON.stringify({
+          runId: txInput.childRunId,
+          threadId: txInput.threadId,
+          parentRunId: txInput.parentRunId,
+          status,
+          requestedToolFamilies: txInput.requiredToolFamilies,
+          userVisibleSummary: txInput.userVisibleSummary,
+          createdAt: now,
+          triggerMessageId: txInput.triggerMessageId,
+        }),
+      });
+
+      return {
+        id: txInput.childRunId,
+        talk_id: null,
+        thread_id: txInput.threadId,
+        requested_by: txInput.requestedBy,
+        status,
+        trigger_message_id: txInput.triggerMessageId,
+        target_agent_id: txInput.targetAgentId ?? null,
+        idempotency_key: null,
+        executor_alias: null,
+        executor_model: null,
+        created_at: now,
+        started_at: null,
+        ended_at: null,
+        cancel_reason: null,
+        metadata_json: metadataJson,
+      };
+    },
+  );
+
+  return tx(input);
+}
+
+export function supersedePendingMainPromotionRunsAtomic(input: {
+  threadId: string;
+  requestedBy: string;
+  now?: string;
+}): string[] {
+  const tx = getDb().transaction((txInput: typeof input): string[] => {
+    const now = txInput.now || new Date().toISOString();
+    const candidates = getDb()
+      .prepare(
+        `
+        SELECT *
+        FROM talk_runs
+        WHERE talk_id IS NULL
+          AND thread_id = ?
+          AND status IN ('queued', 'awaiting_confirmation')
+        ORDER BY created_at ASC
+      `,
+      )
+      .all(txInput.threadId) as TalkRunRecord[];
+
+    const cancelledRunIds: string[] = [];
+    for (const run of candidates) {
+      if (!isMainPromotionChildRun(run)) continue;
+      const updated = getDb()
+        .prepare(
+          `
+          UPDATE talk_runs
+          SET status = 'cancelled',
+              ended_at = ?,
+              cancel_reason = ?
+          WHERE id = ? AND status IN ('queued', 'awaiting_confirmation')
+        `,
+        )
+        .run(now, 'superseded_by_new_user_message', run.id);
+      if (updated.changes !== 1) continue;
+      cancelledRunIds.push(run.id);
+
+      const metadata = parseMainRunMetadata(run.metadata_json);
+      if (metadata.parentRunId) {
+        updateParentPromotionState(metadata.parentRunId, {
+          promotionState: 'superseded',
+        });
+      }
+
+      appendOutboxEvent({
+        topic: `user:${txInput.requestedBy}`,
+        eventType: 'main_run_cancelled',
+        payload: JSON.stringify({
+          runId: run.id,
+          threadId: txInput.threadId,
+          cancelReason: 'superseded_by_new_user_message',
+        }),
+      });
+    }
+
+    return cancelledRunIds;
+  });
+
+  return tx(input);
+}
+
+export function recordMainRunFirstVisibleAt(input: {
+  runId: string;
+  firstVisibleAt: string;
+}): boolean {
+  const existing = getTalkRunById(input.runId);
+  if (!existing || existing.talk_id !== null) {
+    return false;
+  }
+  updateTalkRunMetadata(input.runId, (current) => {
+    const clientTiming =
+      current.clientTiming &&
+      typeof current.clientTiming === 'object' &&
+      !Array.isArray(current.clientTiming)
+        ? { ...(current.clientTiming as Record<string, unknown>) }
+        : {};
+    if (typeof clientTiming.firstVisibleAt === 'string') {
+      return current;
+    }
+    return {
+      ...current,
+      clientTiming: {
+        ...clientTiming,
+        firstVisibleAt: input.firstVisibleAt,
+      },
+    };
+  });
+  return true;
+}
+
 /**
  * Atomically create a user message and a queued run for the Main channel.
  * Guards: one active run per thread.
@@ -4416,6 +4637,12 @@ export function enqueueMainTurnAtomic(input: {
       txInput: typeof input,
     ): { message: TalkMessageRecord; run: TalkRunRecord } => {
       const now = new Date().toISOString();
+
+      supersedePendingMainPromotionRunsAtomic({
+        threadId: txInput.threadId,
+        requestedBy: txInput.userId,
+        now,
+      });
 
       // Active-run guard: one active run per thread
       const active = getDb()
@@ -4465,8 +4692,8 @@ export function enqueueMainTurnAtomic(input: {
           `
           INSERT INTO talk_runs (
             id, talk_id, thread_id, requested_by, status,
-            trigger_message_id, created_at
-          ) VALUES (?, NULL, ?, ?, 'queued', ?, ?)
+            trigger_message_id, created_at, metadata_json
+          ) VALUES (?, NULL, ?, ?, 'queued', ?, ?, ?)
         `,
         )
         .run(
@@ -4475,29 +4702,36 @@ export function enqueueMainTurnAtomic(input: {
           txInput.userId,
           txInput.messageId,
           now,
+          JSON.stringify({
+            timing: {
+              enqueuedAt: now,
+            },
+          }),
         );
 
-      // Append user message outbox event (so other tabs see it)
-      getDb()
-        .prepare(
-          `
-          INSERT INTO event_outbox (topic, event_type, payload, created_at)
-          VALUES (?, ?, ?, ?)
-        `,
-        )
-        .run(
-          `user:${txInput.userId}`,
-          'message_appended',
-          JSON.stringify({
-            threadId: txInput.threadId,
-            messageId: txInput.messageId,
-            role: 'user',
-            createdBy: txInput.userId,
-            content: txInput.content,
-            createdAt: now,
-          }),
-          now,
-        );
+      appendOutboxEvent({
+        topic: `user:${txInput.userId}`,
+        eventType: 'message_appended',
+        payload: JSON.stringify({
+          threadId: txInput.threadId,
+          messageId: txInput.messageId,
+          role: 'user',
+          createdBy: txInput.userId,
+          content: txInput.content,
+          createdAt: now,
+        }),
+      });
+      appendOutboxEvent({
+        topic: `user:${txInput.userId}`,
+        eventType: 'main_run_queued',
+        payload: JSON.stringify({
+          runId: txInput.runId,
+          threadId: txInput.threadId,
+          triggerMessageId: txInput.messageId,
+          status: 'queued',
+          createdAt: now,
+        }),
+      });
 
       const message: TalkMessageRecord = {
         id: txInput.messageId,
@@ -4526,6 +4760,11 @@ export function enqueueMainTurnAtomic(input: {
         started_at: null,
         ended_at: null,
         cancel_reason: null,
+        metadata_json: JSON.stringify({
+          timing: {
+            enqueuedAt: now,
+          },
+        }),
       };
 
       return { message, run };
@@ -4583,6 +4822,31 @@ export function claimQueuedMainRuns(
       for (const run of queued) {
         const result = updateStmt.run(startedAt, run.id);
         if (result.changes === 1) {
+          updateTalkRunMetadata(run.id, (current) => {
+            const timing =
+              current.timing &&
+              typeof current.timing === 'object' &&
+              !Array.isArray(current.timing)
+                ? { ...(current.timing as Record<string, unknown>) }
+                : {};
+            return {
+              ...current,
+              timing: {
+                ...timing,
+                claimedAt: startedAt,
+              },
+            };
+          });
+          appendOutboxEvent({
+            topic: `user:${run.requested_by}`,
+            eventType: 'main_run_started',
+            payload: JSON.stringify({
+              runId: run.id,
+              threadId: run.thread_id,
+              status: 'running',
+              startedAt,
+            }),
+          });
           claimed.push({
             ...run,
             status: 'running' as TalkRunStatus,
@@ -4633,6 +4897,21 @@ export function completeMainRunAtomic(input: {
       if (updated.changes !== 1) {
         return { applied: false };
       }
+      updateTalkRunMetadata(txInput.runId, (current) => {
+        const timing =
+          current.timing &&
+          typeof current.timing === 'object' &&
+          !Array.isArray(current.timing)
+            ? { ...(current.timing as Record<string, unknown>) }
+            : {};
+        return {
+          ...current,
+          timing: {
+            ...timing,
+            completedAt: now,
+          },
+        };
+      });
 
       // 2. Insert assistant message
       getDb()
@@ -4681,18 +4960,10 @@ export function completeMainRunAtomic(input: {
           now,
         );
 
-      // 4. Emit message_appended outbox event (so other tabs get the content)
-      const outboxStmt = getDb().prepare(
-        `
-        INSERT INTO event_outbox (topic, event_type, payload, created_at)
-        VALUES (?, ?, ?, ?)
-      `,
-      );
-
-      outboxStmt.run(
-        `user:${txInput.requestedBy}`,
-        'message_appended',
-        JSON.stringify({
+      appendOutboxEvent({
+        topic: `user:${txInput.requestedBy}`,
+        eventType: 'message_appended',
+        payload: JSON.stringify({
           threadId: txInput.threadId,
           messageId: txInput.responseMessageId,
           runId: txInput.runId,
@@ -4701,22 +4972,30 @@ export function completeMainRunAtomic(input: {
           content: txInput.responseContent,
           createdAt: now,
         }),
-        now,
-      );
+      });
 
-      // 5. Emit terminal main_response_completed event
-      outboxStmt.run(
-        `user:${txInput.requestedBy}`,
-        'main_response_completed',
-        JSON.stringify({
+      appendOutboxEvent({
+        topic: `user:${txInput.requestedBy}`,
+        eventType: 'main_response_completed',
+        payload: JSON.stringify({
           type: 'main_response_completed',
           runId: txInput.runId,
           threadId: txInput.threadId,
           agentId: txInput.agentId,
           responseMessageId: txInput.responseMessageId,
         }),
-        now,
-      );
+      });
+      appendOutboxEvent({
+        topic: `user:${txInput.requestedBy}`,
+        eventType: 'main_run_completed',
+        payload: JSON.stringify({
+          runId: txInput.runId,
+          threadId: txInput.threadId,
+          status: 'completed',
+          responseMessageId: txInput.responseMessageId,
+          endedAt: now,
+        }),
+      });
 
       return { applied: true };
     },
@@ -4754,26 +5033,45 @@ export function failMainRunAtomic(input: {
       if (updated.changes !== 1) {
         return { applied: false };
       }
+      updateTalkRunMetadata(txInput.runId, (current) => {
+        const timing =
+          current.timing &&
+          typeof current.timing === 'object' &&
+          !Array.isArray(current.timing)
+            ? { ...(current.timing as Record<string, unknown>) }
+            : {};
+        return {
+          ...current,
+          timing: {
+            ...timing,
+            completedAt: now,
+          },
+        };
+      });
 
-      getDb()
-        .prepare(
-          `
-          INSERT INTO event_outbox (topic, event_type, payload, created_at)
-          VALUES (?, ?, ?, ?)
-        `,
-        )
-        .run(
-          `user:${txInput.requestedBy}`,
-          'main_response_failed',
-          JSON.stringify({
-            type: 'main_response_failed',
-            runId: txInput.runId,
-            threadId: txInput.threadId,
-            errorCode: txInput.errorCode,
-            errorMessage: txInput.errorMessage,
-          }),
-          now,
-        );
+      appendOutboxEvent({
+        topic: `user:${txInput.requestedBy}`,
+        eventType: 'main_response_failed',
+        payload: JSON.stringify({
+          type: 'main_response_failed',
+          runId: txInput.runId,
+          threadId: txInput.threadId,
+          errorCode: txInput.errorCode,
+          errorMessage: txInput.errorMessage,
+        }),
+      });
+      appendOutboxEvent({
+        topic: `user:${txInput.requestedBy}`,
+        eventType: 'main_run_failed',
+        payload: JSON.stringify({
+          runId: txInput.runId,
+          threadId: txInput.threadId,
+          status: 'failed',
+          errorCode: txInput.errorCode,
+          errorMessage: txInput.errorMessage,
+          endedAt: now,
+        }),
+      });
 
       return { applied: true };
     },
@@ -4822,25 +5120,29 @@ export function failInterruptedMainRunsOnStartup(now?: string): {
         if (updated.changes !== 1) continue;
 
         failedRunIds.push(run.id);
-        getDb()
-          .prepare(
-            `
-            INSERT INTO event_outbox (topic, event_type, payload, created_at)
-            VALUES (?, ?, ?, ?)
-          `,
-          )
-          .run(
-            `user:${run.requested_by}`,
-            'main_response_failed',
-            JSON.stringify({
-              type: 'main_response_failed',
-              runId: run.id,
-              threadId: run.thread_id,
-              errorCode: 'interrupted_by_restart',
-              errorMessage: 'Execution interrupted by server restart',
-            }),
-            currentNow,
-          );
+        appendOutboxEvent({
+          topic: `user:${run.requested_by}`,
+          eventType: 'main_response_failed',
+          payload: JSON.stringify({
+            type: 'main_response_failed',
+            runId: run.id,
+            threadId: run.thread_id,
+            errorCode: 'interrupted_by_restart',
+            errorMessage: 'Execution interrupted by server restart',
+          }),
+        });
+        appendOutboxEvent({
+          topic: `user:${run.requested_by}`,
+          eventType: 'main_run_failed',
+          payload: JSON.stringify({
+            runId: run.id,
+            threadId: run.thread_id,
+            status: 'failed',
+            errorCode: 'interrupted_by_restart',
+            errorMessage: 'Execution interrupted by server restart',
+            endedAt: currentNow,
+          }),
+        });
       }
 
       return { failedRunIds };

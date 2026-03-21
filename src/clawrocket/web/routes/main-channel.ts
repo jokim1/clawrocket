@@ -4,8 +4,11 @@ import {
   deleteMainThread,
   enqueueMainTurnAtomic,
   getMainThreadTitle,
+  getTalkRunById,
   listMainThreadsForUser,
+  listMainRunsForThread,
   MainThreadBusyError,
+  recordMainRunFirstVisibleAt,
   ThreadDeleteConflictError,
   updateMainThreadMetadata,
 } from '../../db/index.js';
@@ -186,6 +189,99 @@ interface PostMainMessageResponse {
   threadId: string;
   runId: string;
   title: string | null;
+  run: MainRunApiRecord;
+}
+
+export interface MainRunApiRecord {
+  id: string;
+  threadId: string;
+  status:
+    | 'queued'
+    | 'running'
+    | 'awaiting_confirmation'
+    | 'cancelled'
+    | 'completed'
+    | 'failed';
+  createdAt: string;
+  startedAt: string | null;
+  endedAt: string | null;
+  triggerMessageId: string | null;
+  targetAgentId: string | null;
+  cancelReason: string | null;
+  kind: string | null;
+  parentRunId: string | null;
+  promotionState: 'pending' | 'superseded' | null;
+  promotionChildRunId: string | null;
+  requestedToolFamilies: string[];
+  userVisibleSummary: string | null;
+}
+
+function parseRunMetadata(
+  metadataJson: string | null | undefined,
+): Record<string, unknown> {
+  if (!metadataJson) return {};
+  try {
+    const parsed = JSON.parse(metadataJson) as unknown;
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      return parsed as Record<string, unknown>;
+    }
+  } catch {
+    // ignored
+  }
+  return {};
+}
+
+function toMainRunApiRecord(run: {
+  id: string;
+  thread_id: string;
+  status:
+    | 'queued'
+    | 'running'
+    | 'awaiting_confirmation'
+    | 'cancelled'
+    | 'completed'
+    | 'failed';
+  created_at: string;
+  started_at: string | null;
+  ended_at: string | null;
+  trigger_message_id: string | null;
+  target_agent_id?: string | null;
+  cancel_reason: string | null;
+  metadata_json?: string | null;
+}): MainRunApiRecord {
+  const metadata = parseRunMetadata(run.metadata_json);
+  return {
+    id: run.id,
+    threadId: run.thread_id,
+    status: run.status,
+    createdAt: run.created_at,
+    startedAt: run.started_at,
+    endedAt: run.ended_at,
+    triggerMessageId: run.trigger_message_id,
+    targetAgentId: run.target_agent_id ?? null,
+    cancelReason: run.cancel_reason,
+    kind: typeof metadata.kind === 'string' ? metadata.kind : null,
+    parentRunId:
+      typeof metadata.parentRunId === 'string' ? metadata.parentRunId : null,
+    promotionState:
+      metadata.promotionState === 'pending' ||
+      metadata.promotionState === 'superseded'
+        ? metadata.promotionState
+        : null,
+    promotionChildRunId:
+      typeof metadata.promotionChildRunId === 'string'
+        ? metadata.promotionChildRunId
+        : null,
+    requestedToolFamilies: Array.isArray(metadata.requestedToolFamilies)
+      ? metadata.requestedToolFamilies.filter(
+          (entry): entry is string => typeof entry === 'string',
+        )
+      : [],
+    userVisibleSummary:
+      typeof metadata.userVisibleSummary === 'string'
+        ? metadata.userVisibleSummary
+        : null,
+  };
 }
 
 export function postMainMessageRoute(
@@ -266,6 +362,7 @@ export function postMainMessageRoute(
           threadId,
           runId: result.run.id,
           title: getMainThreadTitle(threadId, auth.userId),
+          run: toMainRunApiRecord(result.run),
         },
       },
     };
@@ -294,6 +391,105 @@ export function postMainMessageRoute(
       },
     };
   }
+}
+
+export function listMainRunsRoute(
+  auth: AuthContext,
+  threadId: string,
+): {
+  statusCode: number;
+  body: ApiEnvelope<MainRunApiRecord[]>;
+} {
+  try {
+    if (!canUserAccessMainThread(threadId, auth.userId)) {
+      return {
+        statusCode: 404,
+        body: {
+          ok: false,
+          error: {
+            code: 'not_found',
+            message: `Thread '${threadId}' not found`,
+          },
+        },
+      };
+    }
+
+    return {
+      statusCode: 200,
+      body: {
+        ok: true,
+        data: listMainRunsForThread(threadId).map(toMainRunApiRecord),
+      },
+    };
+  } catch (err) {
+    return {
+      statusCode: 500,
+      body: {
+        ok: false,
+        error: {
+          code: 'internal_error',
+          message: `Failed to list main runs: ${String(err)}`,
+        },
+      },
+    };
+  }
+}
+
+export function postMainRunVisibleRoute(
+  auth: AuthContext,
+  runId: string,
+  body: { firstVisibleAt?: unknown },
+): {
+  statusCode: number;
+  body: ApiEnvelope<{ recorded: boolean }>;
+} {
+  const run = getTalkRunById(runId);
+  if (
+    !run ||
+    run.talk_id !== null ||
+    !canUserAccessMainThread(run.thread_id, auth.userId)
+  ) {
+    return {
+      statusCode: 404,
+      body: {
+        ok: false,
+        error: {
+          code: 'not_found',
+          message: `Run '${runId}' not found`,
+        },
+      },
+    };
+  }
+
+  if (
+    typeof body.firstVisibleAt !== 'string' ||
+    !body.firstVisibleAt.trim() ||
+    Number.isNaN(Date.parse(body.firstVisibleAt))
+  ) {
+    return {
+      statusCode: 400,
+      body: {
+        ok: false,
+        error: {
+          code: 'invalid_input',
+          message: 'firstVisibleAt must be an ISO timestamp string',
+        },
+      },
+    };
+  }
+
+  return {
+    statusCode: 200,
+    body: {
+      ok: true,
+      data: {
+        recorded: recordMainRunFirstVisibleAt({
+          runId,
+          firstVisibleAt: body.firstVisibleAt,
+        }),
+      },
+    },
+  };
 }
 
 interface PatchMainThreadBody {
