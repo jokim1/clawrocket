@@ -266,6 +266,38 @@ describe('execution-planner', () => {
     expect(plan.containerPlan?.backend).toBe('container');
   });
 
+  it('keeps explicit Claude subscription Main routes on the container runtime even when an API key exists', () => {
+    seedAnthropicSecret('sk-ant-stale');
+    upsertSettingValue({
+      key: 'executor.authMode',
+      value: 'subscription',
+      updatedBy: 'owner-1',
+    });
+    upsertSettingValue({
+      key: 'executor.claudeOauthToken',
+      value: 'oauth-token-123',
+      updatedBy: 'owner-1',
+    });
+    const agent = createRegisteredAgent({
+      name: 'Claude Browser Builder Main',
+      providerId: 'provider.anthropic',
+      modelId: 'claude-sonnet-4-6',
+      toolPermissionsJson: JSON.stringify({
+        browser: true,
+        shell: true,
+        filesystem: true,
+      }),
+    });
+
+    const plan = planMainExecution(agent, 'owner-1');
+    expect(plan.policy).toBe('container_only');
+    expect(plan.directPlan).toBeNull();
+    expect(plan.containerPlan?.backend).toBe('container');
+    expect(plan.containerPlan?.containerCredential.authMode).toBe(
+      'subscription',
+    );
+  });
+
   it('rejects heavy-tool agents on providers that are not Claude-SDK compatible', () => {
     const agent = createRegisteredAgent({
       name: 'GPT Builder',

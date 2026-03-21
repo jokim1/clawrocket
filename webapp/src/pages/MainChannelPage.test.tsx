@@ -12,6 +12,9 @@ import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 
 import { MainChannelPage } from './MainChannelPage';
 import { ApiError } from '../lib/api';
+import type { openMainStream } from '../lib/mainStream';
+
+type MainStreamCallbacks = Parameters<typeof openMainStream>[0];
 
 const {
   deleteMainMessagesMock,
@@ -415,6 +418,25 @@ describe('MainChannelPage', () => {
     );
 
     const composer = await screen.findByPlaceholderText('Message Nanoclaw…');
+    const streamCallbacks = (
+      openMainStreamMock.mock.calls as unknown as Array<[MainStreamCallbacks]>
+    )[0]?.[0];
+    expect(streamCallbacks).toBeTruthy();
+    streamCallbacks?.onResponseStarted?.({
+      runId: 'run-failed-1',
+      threadId: 'thread-main-1',
+      agentId: 'agent-1',
+      agentName: 'Sonnet Heavy',
+    });
+    streamCallbacks?.onResponseFailed?.({
+      runId: 'run-failed-1',
+      threadId: 'thread-main-1',
+      errorCode: 'unauthorized',
+      errorMessage: 'Anthropic API error: Unauthorized',
+    });
+    expect(
+      await screen.findByText('Anthropic API error: Unauthorized'),
+    ).toBeTruthy();
     await user.type(composer, '/edit');
     await user.keyboard('{Enter}');
 
@@ -437,7 +459,85 @@ describe('MainChannelPage', () => {
     ).toBeTruthy();
     expect(screen.queryByText('Old main prompt')).toBeNull();
     expect(screen.queryByText('Old main answer')).toBeNull();
+    expect(screen.queryByText('Anthropic API error: Unauthorized')).toBeNull();
     expect(screen.getByText('Keep this latest main note')).toBeTruthy();
+  });
+
+  it('clears stale failed live responses when a new user message arrives on the active Main thread', async () => {
+    listMainThreadsMock.mockResolvedValue([
+      {
+        threadId: 'thread-main-1',
+        title: 'Planning',
+        isPinned: false,
+        lastMessageAt: '2026-03-18T12:00:00.000Z',
+        messageCount: 1,
+        hasActiveRun: false,
+      },
+    ]);
+    getMainThreadMock.mockResolvedValue([
+      {
+        id: 'msg-1',
+        threadId: 'thread-main-1',
+        role: 'user',
+        content: 'Old main prompt',
+        agentId: null,
+        createdBy: 'user-1',
+        createdAt: '2026-03-18T12:00:00.000Z',
+      },
+    ]);
+
+    render(
+      <MemoryRouter initialEntries={['/app/main/thread-main-1']}>
+        <Routes>
+          <Route
+            path="/app/main"
+            element={<MainChannelPage onUnauthorized={vi.fn()} />}
+          />
+          <Route
+            path="/app/main/:threadId"
+            element={<MainChannelPage onUnauthorized={vi.fn()} />}
+          />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    await screen.findByText('Old main prompt');
+    const streamCallbacks = (
+      openMainStreamMock.mock.calls as unknown as Array<[MainStreamCallbacks]>
+    )[0]?.[0];
+    expect(streamCallbacks).toBeTruthy();
+    streamCallbacks?.onResponseStarted?.({
+      runId: 'run-failed-1',
+      threadId: 'thread-main-1',
+      agentId: 'agent-1',
+      agentName: 'Sonnet Heavy',
+    });
+    streamCallbacks?.onResponseFailed?.({
+      runId: 'run-failed-1',
+      threadId: 'thread-main-1',
+      errorCode: 'unauthorized',
+      errorMessage: 'Anthropic API error: Unauthorized',
+    });
+    expect(
+      await screen.findByText('Anthropic API error: Unauthorized'),
+    ).toBeTruthy();
+
+    streamCallbacks?.onMessageAppended({
+      talkId: null,
+      threadId: 'thread-main-1',
+      messageId: 'msg-2',
+      runId: null,
+      role: 'user',
+      createdBy: 'user-1',
+      content: 'Try LinkedIn again',
+      createdAt: '2026-03-18T12:05:00.000Z',
+      agentId: null,
+    });
+
+    await waitFor(() =>
+      expect(screen.queryByText('Anthropic API error: Unauthorized')).toBeNull(),
+    );
+    expect(screen.getByText('Try LinkedIn again')).toBeTruthy();
   });
 
   it('shows pending copy in the thread sidebar when a thread is still responding', async () => {

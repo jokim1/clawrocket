@@ -127,6 +127,41 @@ describe('execution-preview', () => {
     );
   });
 
+  it('shows explicit Claude subscription Main routes as container-backed even when an API key exists', () => {
+    seedAnthropicSecret('sk-ant-stale');
+    upsertSettingValue({
+      key: 'executor.authMode',
+      value: 'subscription',
+      updatedBy: 'owner-1',
+    });
+    upsertSettingValue({
+      key: 'executor.claudeOauthToken',
+      value: 'oauth-token-123',
+      updatedBy: 'owner-1',
+    });
+
+    const agent = createRegisteredAgent({
+      name: 'Claude Browser Builder Main',
+      providerId: 'provider.anthropic',
+      modelId: 'claude-sonnet-4-6',
+      toolPermissionsJson: JSON.stringify({
+        browser: true,
+        shell: true,
+        filesystem: true,
+      }),
+    });
+
+    expect(buildMainExecutionPreview(agent, 'owner-1')).toMatchObject({
+      ready: true,
+      backend: 'container',
+      authPath: 'subscription',
+      routeReason: 'normal',
+    });
+    expect(buildMainExecutionPreview(agent, 'owner-1').message).toMatch(
+      /Claude subscription via the container runtime/i,
+    );
+  });
+
   it('marks verified Codex host routes as ready', () => {
     seedProviderVerification('provider.openai_codex');
     const agent = createRegisteredAgent({
