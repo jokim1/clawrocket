@@ -2983,7 +2983,7 @@ export type MainThreadSummary = {
 export type MainThreadMessage = {
   id: string;
   threadId: string;
-  role: string;
+  role: 'user' | 'assistant' | 'system' | 'tool';
   content: string;
   agentId: string | null;
   createdBy: string | null;
@@ -3054,6 +3054,32 @@ export async function postMainMessage(input: {
       ...(input.threadId ? { threadId: input.threadId } : {}),
     }),
   });
+}
+
+export async function deleteMainMessages(input: {
+  threadId: string;
+  messageIds: string[];
+}): Promise<{
+  threadId: string;
+  deletedCount: number;
+  deletedMessageIds: string[];
+  threadDeleted: boolean;
+}> {
+  return apiMutationRequest<{
+    threadId: string;
+    deletedCount: number;
+    deletedMessageIds: string[];
+    threadDeleted: boolean;
+  }>(
+    `/api/v1/main/threads/${encodeURIComponent(input.threadId)}/messages/delete`,
+    {
+      method: 'POST',
+      includeJson: true,
+      body: JSON.stringify({
+        messageIds: input.messageIds,
+      }),
+    },
+  );
 }
 
 export async function listMainRuns(threadId: string): Promise<MainRun[]> {

@@ -7,6 +7,7 @@ import {
 } from '../../browser/metadata.js';
 import {
   canUserAccessMainThread,
+  deleteMainMessagesAtomic,
   deleteMainThread,
   enqueueMainTurnAtomic,
   getMainThreadTitle,
@@ -15,6 +16,7 @@ import {
   listMainRunsForThread,
   MainThreadBusyError,
   recordMainRunFirstVisibleAt,
+  TalkActiveRoundError,
   ThreadDeleteConflictError,
   updateMainThreadMetadata,
 } from '../../db/index.js';
@@ -465,6 +467,170 @@ export function listMainRunsRoute(
         error: {
           code: 'internal_error',
           message: `Failed to list main runs: ${String(err)}`,
+        },
+      },
+    };
+  }
+}
+
+interface DeleteMainMessagesBody {
+  messageIds?: unknown;
+}
+
+interface DeleteMainMessagesResponse {
+  threadId: string;
+  deletedCount: number;
+  deletedMessageIds: string[];
+  threadDeleted: boolean;
+}
+
+export function deleteMainMessagesRoute(
+  auth: AuthContext,
+  threadId: string,
+  body: DeleteMainMessagesBody,
+): {
+  statusCode: number;
+  body: ApiEnvelope<DeleteMainMessagesResponse>;
+} {
+  if (!canUserAccessMainThread(threadId, auth.userId)) {
+    return {
+      statusCode: 404,
+      body: {
+        ok: false,
+        error: {
+          code: 'not_found',
+          message: `Thread '${threadId}' not found`,
+        },
+      },
+    };
+  }
+
+  const normalizedIds = Array.from(
+    new Set(
+      (Array.isArray(body.messageIds) ? body.messageIds : [])
+        .filter((value): value is string => typeof value === 'string')
+        .map((messageId) => messageId.trim())
+        .filter((messageId) => messageId.length > 0),
+    ),
+  );
+  if (normalizedIds.length === 0) {
+    return {
+      statusCode: 400,
+      body: {
+        ok: false,
+        error: {
+          code: 'invalid_message_ids',
+          message: 'Select at least one message to delete.',
+        },
+      },
+    };
+  }
+  if (normalizedIds.length > 200) {
+    return {
+      statusCode: 400,
+      body: {
+        ok: false,
+        error: {
+          code: 'too_many_message_ids',
+          message: 'Delete at most 200 messages at a time.',
+        },
+      },
+    };
+  }
+
+  try {
+    const deleted = deleteMainMessagesAtomic({
+      threadId,
+      userId: auth.userId,
+      messageIds: normalizedIds,
+    });
+    return {
+      statusCode: 200,
+      body: {
+        ok: true,
+        data: {
+          threadId,
+          deletedCount: deleted.deletedCount,
+          deletedMessageIds: deleted.deletedMessageIds,
+          threadDeleted: deleted.threadDeleted,
+        },
+      },
+    };
+  } catch (error) {
+    if (error instanceof TalkActiveRoundError && error.scope === 'thread') {
+      return {
+        statusCode: 409,
+        body: {
+          ok: false,
+          error: {
+            code: 'thread_active_round',
+            message:
+              'Wait for the current response to finish or cancel it before editing history.',
+          },
+        },
+      };
+    }
+
+    const message =
+      error instanceof Error
+        ? error.message
+        : 'Unable to edit Main thread history';
+    if (message === 'main thread not found') {
+      return {
+        statusCode: 404,
+        body: {
+          ok: false,
+          error: {
+            code: 'not_found',
+            message: `Thread '${threadId}' not found`,
+          },
+        },
+      };
+    }
+    if (message === 'one or more main messages were not found') {
+      return {
+        statusCode: 404,
+        body: {
+          ok: false,
+          error: {
+            code: 'message_not_found',
+            message: 'One or more selected messages no longer exist.',
+          },
+        },
+      };
+    }
+    if (message === 'system messages cannot be deleted') {
+      return {
+        statusCode: 400,
+        body: {
+          ok: false,
+          error: {
+            code: 'invalid_message_role',
+            message: 'System messages cannot be deleted.',
+          },
+        },
+      };
+    }
+    if (message === 'main thread must retain at least one user message') {
+      return {
+        statusCode: 400,
+        body: {
+          ok: false,
+          error: {
+            code: 'main_thread_requires_user_message',
+            message:
+              'Main threads must keep at least one user message. Delete the whole thread if you want to remove everything else.',
+          },
+        },
+      };
+    }
+    return {
+      statusCode: 500,
+      body: {
+        ok: false,
+        error: {
+          code: 'main_history_edit_failed',
+          message,
         },
       },
     };

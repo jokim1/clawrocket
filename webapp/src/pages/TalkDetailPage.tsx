@@ -127,6 +127,8 @@ import {
   type RegisteredAgent,
   UnauthorizedError,
 } from '../lib/api';
+import { BrowserBlockedRunCard } from '../components/BrowserBlockedRunCard';
+import { ExecutionDecisionSummary } from '../components/ExecutionDecisionSummary';
 import { InlineEditableTitle } from '../components/InlineEditableTitle';
 import { ThreadContextMenu } from '../components/ThreadContextMenu';
 import { ThreadRowTitleEditor } from '../components/ThreadRowTitleEditor';
@@ -232,6 +234,13 @@ type TalkTimelineEntry =
       timestamp: number;
       sortOrder: number;
       response: LiveResponseView;
+    }
+  | {
+      kind: 'browser-run';
+      key: string;
+      timestamp: number;
+      sortOrder: number;
+      run: RunView;
     };
 
 type ThreadListState = {
@@ -1458,6 +1467,20 @@ function formatChannelPlatform(
   return platform === 'telegram' ? 'Telegram' : 'Slack';
 }
 
+function buildChannelTargetOptionLabel(
+  target: ChannelTarget,
+  connections: ChannelConnection[],
+): string {
+  const connection =
+    connections.find((candidate) => candidate.id === target.connectionId) ||
+    null;
+  const platformLabel = connection
+    ? formatChannelPlatform(connection.platform)
+    : 'Channel';
+  const connectionLabel = connection?.displayName || target.connectionId;
+  return `${platformLabel} · ${connectionLabel} · ${target.displayName}`;
+}
+
 function formatChannelReasonCode(value: string | null): string {
   if (!value) return 'None';
   switch (value) {
@@ -1809,19 +1832,22 @@ function buildDefaultChannelCreateDraft(): ChannelCreateDraft {
 }
 
 function buildChannelTargetKey(
-  target: Pick<ChannelTarget, 'targetKind' | 'targetId'>,
+  target: Pick<ChannelTarget, 'connectionId' | 'targetKind' | 'targetId'>,
 ): string {
-  return `${target.targetKind}::${target.targetId}`;
+  return `${target.connectionId}::${target.targetKind}::${target.targetId}`;
 }
 
 function parseChannelTargetKey(
   value: string,
-): { targetKind: string; targetId: string } | null {
-  const separatorIndex = value.indexOf('::');
-  if (separatorIndex <= 0) return null;
+): { connectionId: string; targetKind: string; targetId: string } | null {
+  const firstSeparatorIndex = value.indexOf('::');
+  if (firstSeparatorIndex <= 0) return null;
+  const secondSeparatorIndex = value.indexOf('::', firstSeparatorIndex + 2);
+  if (secondSeparatorIndex <= firstSeparatorIndex + 2) return null;
   return {
-    targetKind: value.slice(0, separatorIndex),
-    targetId: value.slice(separatorIndex + 2),
+    connectionId: value.slice(0, firstSeparatorIndex),
+    targetKind: value.slice(firstSeparatorIndex + 2, secondSeparatorIndex),
+    targetId: value.slice(secondSeparatorIndex + 2),
   };
 }
 
@@ -2324,6 +2350,7 @@ export function TalkDetailPage({
   >({});
   const [channelCreateDraft, setChannelCreateDraft] =
     useState<ChannelCreateDraft>(buildDefaultChannelCreateDraft());
+  const [channelTargetQuery, setChannelTargetQuery] = useState('');
   const [channelTargetsLoading, setChannelTargetsLoading] = useState(false);
   const [channelStatus, setChannelStatus] = useState<{
     status: 'idle' | 'loading' | 'saving' | 'error' | 'success';
@@ -2451,6 +2478,11 @@ export function TalkDetailPage({
       }
     },
     [handleUnauthorized, talkId],
+  );
+
+  const refreshBrowserRuns = useCallback(
+    async () => resyncTalkState({ refreshThreads: true }),
+    [resyncTalkState],
   );
 
   const refreshContext = useCallback(
@@ -3583,11 +3615,34 @@ export function TalkDetailPage({
             response,
           };
         }),
+        ...Object.values(state.runsById)
+          .filter(
+            (run) =>
+              run.threadId === activeThreadId &&
+              run.status === 'awaiting_confirmation' &&
+              Boolean(run.browserBlock),
+          )
+          .map((run, index) => {
+            const updatedAt = Date.parse(
+              run.browserBlock?.updatedAt || run.startedAt || run.createdAt,
+            );
+            return {
+              kind: 'browser-run' as const,
+              key: `browser-run-${run.id}`,
+              timestamp:
+                Number.isFinite(updatedAt) && updatedAt > 0
+                  ? updatedAt
+                  : Date.parse(run.createdAt) || 0,
+              sortOrder:
+                state.messages.length + liveResponses.length + index,
+              run,
+            };
+          }),
       ].sort(
         (left, right) =>
           left.timestamp - right.timestamp || left.sortOrder - right.sortOrder,
       ),
-    [liveResponses, state.messages, state.runsById],
+    [activeThreadId, liveResponses, state.messages, state.runsById],
   );
   const activeRound = useMemo(
     () =>
@@ -3635,6 +3690,27 @@ export function TalkDetailPage({
       ) || null,
     [channelCreateDraft.targetKey, channelTargets],
   );
+  const channelTargetOptions = useMemo(
+    () =>
+      channelTargets.map((target) => {
+        const key = buildChannelTargetKey(target);
+        const label = buildChannelTargetOptionLabel(target, channelConnections);
+        return {
+          key,
+          label,
+          searchLabel: label.toLowerCase(),
+          target,
+        };
+      }),
+    [channelConnections, channelTargets],
+  );
+  const filteredChannelTargets = useMemo(() => {
+    const normalized = channelTargetQuery.trim().toLowerCase();
+    if (!normalized) return channelTargetOptions;
+    return channelTargetOptions.filter((option) =>
+      option.searchLabel.includes(normalized),
+    );
+  }, [channelTargetOptions, channelTargetQuery]);
   const missingGoogleScopes = useMemo(() => {
     if (!talkTools) return [] as string[];
     const currentScopes = new Set(talkTools.googleAccount.scopes);
@@ -3856,11 +3932,6 @@ export function TalkDetailPage({
         setChannelCreateDraft((current) => {
           const nextConnectionId =
             connections.find(
-              (connection) =>
-                connection.platform === 'telegram' &&
-                connection.connectionMode === 'system_managed',
-            )?.id ||
-            connections.find(
               (connection) => connection.id === current.connectionId,
             )?.id ||
             connections[0]?.id ||
@@ -3897,7 +3968,7 @@ export function TalkDetailPage({
 
   useEffect(() => {
     if (state.kind !== 'ready' || currentTab !== 'channels') return;
-    if (!canBrowseChannelConnections || !channelCreateDraft.connectionId) {
+    if (!canBrowseChannelConnections || channelConnections.length === 0) {
       setChannelTargets([]);
       return;
     }
@@ -3907,23 +3978,26 @@ export function TalkDetailPage({
 
     const loadTargets = async () => {
       try {
-        const targets = await listChannelTargets({
-          connectionId: channelCreateDraft.connectionId,
-          limit: 50,
-          approval: 'approved',
-        });
+        const targetGroups = await Promise.all(
+          channelConnections.map((connection) =>
+            listChannelTargets({
+              connectionId: connection.id,
+              limit: 100,
+              approval: 'approved',
+            }),
+          ),
+        );
+        const targets = targetGroups.flat();
         if (cancelled) return;
         setChannelTargets(targets);
         setChannelCreateDraft((current) => {
-          if (current.connectionId !== channelCreateDraft.connectionId) {
-            return current;
-          }
           const existingTarget = targets.find(
             (target) => buildChannelTargetKey(target) === current.targetKey,
           );
           const nextTarget = existingTarget || targets[0] || null;
           return {
             ...current,
+            connectionId: nextTarget?.connectionId || current.connectionId,
             targetKey: nextTarget ? buildChannelTargetKey(nextTarget) : '',
             displayName:
               current.displayName || !nextTarget
@@ -3958,7 +4032,7 @@ export function TalkDetailPage({
     };
   }, [
     canBrowseChannelConnections,
-    channelCreateDraft.connectionId,
+    channelConnections,
     currentTab,
     handleUnauthorized,
     state.kind,
@@ -4889,11 +4963,11 @@ export function TalkDetailPage({
   const handleCreateChannel = useCallback(async () => {
     if (!canEditChannels) return;
     const parsedTarget = parseChannelTargetKey(channelCreateDraft.targetKey);
-    if (!channelCreateDraft.connectionId || !parsedTarget) {
+    if (!parsedTarget) {
       setChannelStatus({
         status: 'error',
         message:
-          'Select an approved Telegram destination before creating a channel binding.',
+          'Select an approved destination before creating a channel binding.',
       });
       return;
     }
@@ -4901,7 +4975,7 @@ export function TalkDetailPage({
     try {
       await createTalkChannel({
         talkId,
-        connectionId: channelCreateDraft.connectionId,
+        connectionId: parsedTarget.connectionId,
         targetKind: parsedTarget.targetKind,
         targetId: parsedTarget.targetId,
         displayName:
@@ -4929,7 +5003,7 @@ export function TalkDetailPage({
       await reloadTalkChannels({ quiet: true });
       setChannelCreateDraft((current) => ({
         ...buildDefaultChannelCreateDraft(),
-        connectionId: current.connectionId,
+        connectionId: parsedTarget.connectionId,
       }));
       setChannelStatus({
         status: 'success',
@@ -9143,11 +9217,11 @@ export function TalkDetailPage({
                 <h2>Connected Channels</h2>
               </div>
               <p className="policy-muted">
-                Bind this talk to external channels so inbound Telegram messages
-                can create Talk turns and completed replies can be delivered
-                back out. Telegram bot setup and destination approval are
-                managed in Connectors; this page only binds the talk to already
-                approved destinations.
+                Bind this talk to external channels so inbound platform
+                messages can create Talk turns and completed replies can be
+                delivered back out. Connector setup and destination approval
+                are managed in Connectors; this page only binds the talk to
+                already approved destinations.
               </p>
 
               {channelStatus.status === 'error' ? (
@@ -9181,9 +9255,9 @@ export function TalkDetailPage({
                     </p>
                   ) : channelTargets.length === 0 && !channelTargetsLoading ? (
                     <div className="inline-banner inline-banner-warning" role="status">
-                      No approved Telegram destinations are available yet.{' '}
+                      No approved channel destinations are available yet.{' '}
                       <Link to="/app/connectors?tab=channel-connectors">
-                        Manage Telegram in Connectors
+                        Manage Connectors
                       </Link>
                       .
                     </div>
@@ -9192,7 +9266,27 @@ export function TalkDetailPage({
                       <div className="connector-attach-row">
                         <label style={{ flex: 1 }}>
                           <span className="settings-label">
-                            Telegram destination
+                            Search approved destinations
+                          </span>
+                          <input
+                            type="text"
+                            value={channelTargetQuery}
+                            onChange={(event) =>
+                              setChannelTargetQuery(event.target.value)
+                            }
+                            placeholder="Slack · Workspace · #channel"
+                            style={{ width: '100%' }}
+                            disabled={
+                              channelStatus.status === 'saving' ||
+                              channelTargetsLoading
+                            }
+                          />
+                        </label>
+                      </div>
+                      <div className="connector-attach-row">
+                        <label style={{ flex: 1 }}>
+                          <span className="settings-label">
+                            Approved destination
                           </span>
                           <select
                             value={channelCreateDraft.targetKey ?? ''}
@@ -9205,6 +9299,9 @@ export function TalkDetailPage({
                                 ) || null;
                               setChannelCreateDraft((current) => ({
                                 ...current,
+                                connectionId:
+                                  nextTarget?.connectionId ||
+                                  current.connectionId,
                                 targetKey: event.target.value,
                                 displayName:
                                   current.displayName || !nextTarget
@@ -9220,16 +9317,16 @@ export function TalkDetailPage({
                             <option value="">
                               {channelTargetsLoading
                                 ? 'Loading approved destinations…'
-                                : channelTargets.length === 0
+                                : filteredChannelTargets.length === 0
                                   ? 'No approved destinations yet'
-                                  : 'Select a Telegram destination'}
+                                  : 'Select an approved destination'}
                             </option>
-                            {channelTargets.map((target) => (
+                            {filteredChannelTargets.map((option) => (
                               <option
-                                key={buildChannelTargetKey(target)}
-                                value={buildChannelTargetKey(target)}
+                                key={option.key}
+                                value={option.key}
                               >
-                                {target.displayName} [{target.targetKind}]
+                                {option.label}
                               </option>
                             ))}
                           </select>
@@ -9249,7 +9346,7 @@ export function TalkDetailPage({
                             }
                             placeholder={
                               selectedChannelTarget?.displayName ||
-                              'Telegram channel'
+                              'Destination name'
                             }
                             disabled={channelStatus.status === 'saving'}
                           />
@@ -9435,7 +9532,6 @@ export function TalkDetailPage({
                           onClick={() => void handleCreateChannel()}
                           disabled={
                             channelStatus.status === 'saving' ||
-                            !channelCreateDraft.connectionId ||
                             !channelCreateDraft.targetKey
                           }
                         >
@@ -10247,6 +10343,21 @@ export function TalkDetailPage({
                                 : 'View context'}
                           </button>
                         </div>
+                        {run.browserBlock ? (
+                          <BrowserBlockedRunCard
+                            runId={run.id}
+                            browserBlock={run.browserBlock}
+                            executionDecision={run.executionDecision}
+                            talkId={talkId}
+                            onUnauthorized={handleUnauthorized}
+                            onStateChanged={refreshBrowserRuns}
+                          />
+                        ) : null}
+                        {run.status === 'failed' ? (
+                          <ExecutionDecisionSummary
+                            executionDecision={run.executionDecision}
+                          />
+                        ) : null}
                         {runContextPanel?.open ? (
                           <section
                             className="run-context-shell"
@@ -10586,6 +10697,36 @@ export function TalkDetailPage({
                           );
                         }
 
+                        if (entry.kind === 'browser-run') {
+                          const { run } = entry;
+                          return run.browserBlock ? (
+                            <article
+                              key={entry.key}
+                              className="message message-system main-run-chip"
+                            >
+                              <header>
+                                <strong>
+                                  {run.targetAgentNickname || 'Browser'}
+                                </strong>
+                                <time>
+                                  {new Date(
+                                    run.browserBlock.updatedAt ||
+                                      run.createdAt,
+                                  ).toLocaleString()}
+                                </time>
+                              </header>
+                              <BrowserBlockedRunCard
+                                runId={run.id}
+                                browserBlock={run.browserBlock}
+                                executionDecision={run.executionDecision}
+                                talkId={talkId}
+                                onUnauthorized={handleUnauthorized}
+                                onStateChanged={refreshBrowserRuns}
+                              />
+                            </article>
+                          ) : null;
+                        }
+
                         const { response } = entry;
                         const label =
                           (response.agentId &&
@@ -10614,6 +10755,14 @@ export function TalkDetailPage({
                               <p className="run-history-error">
                                 {response.errorMessage}
                               </p>
+                            ) : null}
+                            {response.terminalStatus === 'failed' ? (
+                              <ExecutionDecisionSummary
+                                executionDecision={
+                                  state.runsById[response.runId]
+                                    ?.executionDecision
+                                }
+                              />
                             ) : null}
                             {response.terminalStatus === 'failed' ? (
                               <div className="run-history-links">

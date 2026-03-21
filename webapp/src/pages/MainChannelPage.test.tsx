@@ -14,20 +14,32 @@ import { MainChannelPage } from './MainChannelPage';
 import { ApiError } from '../lib/api';
 
 const {
+  deleteMainMessagesMock,
   listMainThreadsMock,
   getMainThreadMock,
   listMainRunsMock,
   postMainRunVisibleMock,
   postMainMessageMock,
+  startBrowserSetupSessionMock,
+  startBrowserTakeoverMock,
+  resumeBrowserBlockedRunMock,
+  approveBrowserConfirmationMock,
+  rejectBrowserConfirmationMock,
   updateMainThreadMock,
   deleteMainThreadMock,
   openMainStreamMock,
 } = vi.hoisted(() => ({
+  deleteMainMessagesMock: vi.fn(),
   listMainThreadsMock: vi.fn(),
   getMainThreadMock: vi.fn(),
   listMainRunsMock: vi.fn(),
   postMainRunVisibleMock: vi.fn(),
   postMainMessageMock: vi.fn(),
+  startBrowserSetupSessionMock: vi.fn(),
+  startBrowserTakeoverMock: vi.fn(),
+  resumeBrowserBlockedRunMock: vi.fn(),
+  approveBrowserConfirmationMock: vi.fn(),
+  rejectBrowserConfirmationMock: vi.fn(),
   updateMainThreadMock: vi.fn(),
   deleteMainThreadMock: vi.fn(),
   openMainStreamMock: vi.fn(() => ({ close: vi.fn() })),
@@ -38,11 +50,17 @@ vi.mock('../lib/api', async () => {
     await vi.importActual<typeof import('../lib/api')>('../lib/api');
   return {
     ...actual,
+    deleteMainMessages: deleteMainMessagesMock,
     listMainThreads: listMainThreadsMock,
     getMainThread: getMainThreadMock,
     listMainRuns: listMainRunsMock,
     postMainRunVisible: postMainRunVisibleMock,
     postMainMessage: postMainMessageMock,
+    startBrowserSetupSession: startBrowserSetupSessionMock,
+    startBrowserTakeover: startBrowserTakeoverMock,
+    resumeBrowserBlockedRun: resumeBrowserBlockedRunMock,
+    approveBrowserConfirmation: approveBrowserConfirmationMock,
+    rejectBrowserConfirmation: rejectBrowserConfirmationMock,
     updateMainThread: updateMainThreadMock,
     deleteMainThread: deleteMainThreadMock,
   };
@@ -61,8 +79,70 @@ vi.mock('../lib/mainStream', async () => {
 
 describe('MainChannelPage', () => {
   beforeEach(() => {
+    deleteMainMessagesMock.mockResolvedValue({
+      threadId: 'thread-main-1',
+      deletedCount: 2,
+      deletedMessageIds: ['msg-1', 'msg-2'],
+      threadDeleted: false,
+    });
     listMainRunsMock.mockResolvedValue([]);
     postMainRunVisibleMock.mockResolvedValue({ recorded: true });
+    startBrowserSetupSessionMock.mockResolvedValue({
+      status: 'ok',
+      siteKey: 'linkedin',
+      accountLabel: null,
+      sessionId: 'session-1',
+      url: 'https://www.linkedin.com/feed/',
+      title: 'LinkedIn',
+      reusedSession: false,
+      createdProfile: false,
+      message: 'Browser setup session opened.',
+    });
+    startBrowserTakeoverMock.mockResolvedValue({
+      sessionId: 'session-1',
+      siteKey: 'linkedin',
+      accountLabel: null,
+      headed: true,
+      state: 'takeover',
+      owner: 'user',
+      blockedKind: 'auth_required',
+      blockedMessage: 'Authenticate to continue.',
+      currentUrl: 'https://www.linkedin.com/login',
+      currentTitle: 'LinkedIn',
+      lastUpdatedAt: '2026-03-20T20:24:00.000Z',
+    });
+    resumeBrowserBlockedRunMock.mockResolvedValue({
+      runId: 'run-main-browser',
+      resumed: true,
+      browserResume: {
+        kind: 'auth_completed',
+        resumedAt: '2026-03-20T20:25:00.000Z',
+        resumedBy: 'user-1',
+        sessionId: 'session-1',
+        confirmationId: null,
+        note: null,
+        pendingToolCall: null,
+      },
+    });
+    approveBrowserConfirmationMock.mockResolvedValue({
+      confirmationId: 'confirmation-1',
+      runId: 'run-main-browser',
+      approved: true,
+      browserResume: {
+        kind: 'confirmation_approved',
+        resumedAt: '2026-03-20T20:25:00.000Z',
+        resumedBy: 'user-1',
+        sessionId: 'session-1',
+        confirmationId: 'confirmation-1',
+        note: null,
+        pendingToolCall: null,
+      },
+    });
+    rejectBrowserConfirmationMock.mockResolvedValue({
+      confirmationId: 'confirmation-1',
+      runId: 'run-main-browser',
+      rejected: true,
+    });
   });
 
   afterEach(() => {
@@ -270,6 +350,96 @@ describe('MainChannelPage', () => {
     expect(screen.queryByText('"Cal football recruiting notes"')).toBeNull();
   });
 
+  it('opens edit history from /edit and deletes selected Main thread messages', async () => {
+    const user = userEvent.setup();
+    vi.stubGlobal('confirm', vi.fn(() => true));
+    listMainThreadsMock.mockResolvedValue([
+      {
+        threadId: 'thread-main-1',
+        title: 'Planning',
+        isPinned: false,
+        lastMessageAt: '2026-03-18T12:00:02.000Z',
+        messageCount: 3,
+        hasActiveRun: false,
+      },
+    ]);
+    getMainThreadMock.mockResolvedValue([
+      {
+        id: 'msg-1',
+        threadId: 'thread-main-1',
+        role: 'user',
+        content: 'Old main prompt',
+        agentId: null,
+        createdBy: 'user-1',
+        createdAt: '2026-03-18T12:00:00.000Z',
+      },
+      {
+        id: 'msg-2',
+        threadId: 'thread-main-1',
+        role: 'assistant',
+        content: 'Old main answer',
+        agentId: null,
+        createdBy: null,
+        createdAt: '2026-03-18T12:00:01.000Z',
+      },
+      {
+        id: 'msg-3',
+        threadId: 'thread-main-1',
+        role: 'user',
+        content: 'Keep this latest main note',
+        agentId: null,
+        createdBy: 'user-1',
+        createdAt: '2026-03-18T12:00:02.000Z',
+      },
+    ]);
+    deleteMainMessagesMock.mockResolvedValue({
+      threadId: 'thread-main-1',
+      deletedCount: 2,
+      deletedMessageIds: ['msg-1', 'msg-2'],
+      threadDeleted: false,
+    });
+
+    render(
+      <MemoryRouter initialEntries={['/app/main/thread-main-1']}>
+        <Routes>
+          <Route
+            path="/app/main"
+            element={<MainChannelPage onUnauthorized={vi.fn()} />}
+          />
+          <Route
+            path="/app/main/:threadId"
+            element={<MainChannelPage onUnauthorized={vi.fn()} />}
+          />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    const composer = await screen.findByPlaceholderText('Message Nanoclaw…');
+    await user.type(composer, '/edit');
+    await user.keyboard('{Enter}');
+
+    expect(
+      await screen.findByRole('dialog', { name: 'Edit history' }),
+    ).toBeTruthy();
+    await user.click(screen.getByLabelText(/You.*Old main prompt/i));
+    await user.click(screen.getByLabelText(/Nanoclaw.*Old main answer/i));
+    await user.click(screen.getByRole('button', { name: 'Delete selected' }));
+
+    await waitFor(() =>
+      expect(screen.queryByRole('dialog', { name: 'Edit history' })).toBeNull(),
+    );
+    expect(deleteMainMessagesMock).toHaveBeenCalledWith({
+      threadId: 'thread-main-1',
+      messageIds: ['msg-1', 'msg-2'],
+    });
+    expect(
+      await screen.findByText('Deleted 2 messages from this Main thread history.'),
+    ).toBeTruthy();
+    expect(screen.queryByText('Old main prompt')).toBeNull();
+    expect(screen.queryByText('Old main answer')).toBeNull();
+    expect(screen.getByText('Keep this latest main note')).toBeTruthy();
+  });
+
   it('shows pending copy in the thread sidebar when a thread is still responding', async () => {
     listMainThreadsMock.mockResolvedValue([
       {
@@ -320,6 +490,110 @@ describe('MainChannelPage', () => {
     const threadRail = screen.getByLabelText('Threads');
     await within(threadRail).findByText('Capabilities');
     expect(within(threadRail).getByText('* Thinking…')).toBeTruthy();
+  });
+
+  it('renders blocked browser runs in the Main timeline and starts setup from the inline card', async () => {
+    const user = userEvent.setup();
+    listMainThreadsMock.mockResolvedValue([
+      {
+        threadId: 'thread-main-browser',
+        title: 'LinkedIn Messaging',
+        isPinned: false,
+        lastMessageAt: '2026-03-20T20:20:00.000Z',
+        messageCount: 1,
+        hasActiveRun: true,
+      },
+    ]);
+    getMainThreadMock.mockResolvedValue([
+      {
+        id: 'msg-main-1',
+        threadId: 'thread-main-browser',
+        role: 'user',
+        content: 'Check my LinkedIn inbox',
+        agentId: null,
+        createdBy: 'user-1',
+        createdAt: '2026-03-20T20:20:00.000Z',
+      },
+    ]);
+    listMainRunsMock.mockResolvedValue([
+      {
+        id: 'run-main-browser',
+        threadId: 'thread-main-browser',
+        status: 'awaiting_confirmation',
+        createdAt: '2026-03-20T20:20:01.000Z',
+        startedAt: '2026-03-20T20:20:03.000Z',
+        endedAt: null,
+        triggerMessageId: 'msg-main-1',
+        targetAgentId: null,
+        cancelReason: null,
+        kind: null,
+        parentRunId: null,
+        promotionState: null,
+        promotionChildRunId: null,
+        requestedToolFamilies: ['browser'],
+        userVisibleSummary: 'LinkedIn needs you to sign in.',
+        browserBlock: {
+          kind: 'auth_required',
+          sessionId: 'session-1',
+          siteKey: 'linkedin',
+          accountLabel: null,
+          url: 'https://www.linkedin.com/login',
+          title: 'LinkedIn Login',
+          message: 'LinkedIn needs interactive login before the run can continue.',
+          riskReason: null,
+          setupCommand: 'npx tsx src/clawrocket/browser/setup.ts --site linkedin',
+          artifacts: [],
+          confirmationId: null,
+          pendingToolCall: {
+            toolName: 'browser_open',
+            args: {},
+          },
+          createdAt: '2026-03-20T20:20:04.000Z',
+          updatedAt: '2026-03-20T20:20:04.000Z',
+        },
+        browserResume: null,
+        carriedBrowserSessions: [],
+        executionDecision: {
+          backend: 'direct_http',
+          authPath: 'subscription',
+          credentialSource: 'oauth_token',
+          plannerReason: 'Browser stayed in the direct Main parent.',
+          providerId: 'provider.anthropic',
+          modelId: 'claude-sonnet-4-6',
+        },
+      },
+    ]);
+
+    render(
+      <MemoryRouter initialEntries={['/app/main/thread-main-browser']}>
+        <Routes>
+          <Route
+            path="/app/main"
+            element={<MainChannelPage onUnauthorized={vi.fn()} />}
+          />
+          <Route
+            path="/app/main/:threadId"
+            element={<MainChannelPage onUnauthorized={vi.fn()} />}
+          />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    await screen.findByText('Browser authentication required');
+    expect(screen.getByText('LinkedIn needs interactive login before the run can continue.')).toBeTruthy();
+
+    await user.click(
+      screen.getByRole('button', { name: 'Authenticate browser' }),
+    );
+
+    await waitFor(() =>
+      expect(startBrowserSetupSessionMock).toHaveBeenCalledWith({
+        siteKey: 'linkedin',
+        accountLabel: null,
+        url: 'https://www.linkedin.com/login',
+      }),
+    );
+    expect(screen.getByText('Browser setup session opened.')).toBeTruthy();
   });
 
   it('opens a right-click menu and renames a thread inline', async () => {
