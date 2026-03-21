@@ -2189,9 +2189,7 @@ function toTalkRunApiRecord(
     ),
     carriedBrowserSessions: Array.isArray(metadata.carriedBrowserSessions)
       ? metadata.carriedBrowserSessions.filter(
-          (
-            entry,
-          ): entry is CarriedBrowserSessionMetadata =>
+          (entry): entry is CarriedBrowserSessionMetadata =>
             Boolean(entry) &&
             typeof entry === 'object' &&
             !Array.isArray(entry) &&

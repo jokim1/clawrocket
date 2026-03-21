@@ -1652,7 +1652,9 @@ function buildApp(opts: WebServerOptions): Hono {
       );
     }
 
-    const payload = parseJsonPayload<Record<string, unknown>>(await c.req.text());
+    const payload = parseJsonPayload<Record<string, unknown>>(
+      await c.req.text(),
+    );
     if (!payload.ok) {
       return c.json(
         { ok: false, error: { code: 'invalid_json', message: payload.error } },
@@ -1776,89 +1778,101 @@ function buildApp(opts: WebServerOptions): Hono {
     });
   });
 
-  app.post('/api/v1/browser/confirmations/:confirmationId/approve', async (c) => {
-    const auth = requireAuth(c);
-    if (!auth) return unauthorized(c);
-    const rateResult = checkRateLimit({
-      principalId: auth.userId,
-      bucket: 'write',
-    });
-    if (!rateResult.allowed) return rateLimitedResponse(c, rateResult);
-    const csrf = validateCsrfToken({
-      method: c.req.method,
-      authType: auth.authType,
-      cookieHeader: c.req.header('cookie'),
-      csrfHeader: c.req.header('x-csrf-token'),
-    });
-    if (!csrf.ok) {
-      return c.json(
-        { ok: false, error: { code: 'csrf_failed', message: csrf.reason } },
-        403,
-      );
-    }
+  app.post(
+    '/api/v1/browser/confirmations/:confirmationId/approve',
+    async (c) => {
+      const auth = requireAuth(c);
+      if (!auth) return unauthorized(c);
+      const rateResult = checkRateLimit({
+        principalId: auth.userId,
+        bucket: 'write',
+      });
+      if (!rateResult.allowed) return rateLimitedResponse(c, rateResult);
+      const csrf = validateCsrfToken({
+        method: c.req.method,
+        authType: auth.authType,
+        cookieHeader: c.req.header('cookie'),
+        csrfHeader: c.req.header('x-csrf-token'),
+      });
+      if (!csrf.ok) {
+        return c.json(
+          { ok: false, error: { code: 'csrf_failed', message: csrf.reason } },
+          403,
+        );
+      }
 
-    const payload = parseJsonPayload<{ note?: unknown }>(await c.req.text());
-    if (!payload.ok) {
-      return c.json(
-        { ok: false, error: { code: 'invalid_json', message: payload.error } },
-        400,
-      );
-    }
+      const payload = parseJsonPayload<{ note?: unknown }>(await c.req.text());
+      if (!payload.ok) {
+        return c.json(
+          {
+            ok: false,
+            error: { code: 'invalid_json', message: payload.error },
+          },
+          400,
+        );
+      }
 
-    const result = await approveBrowserConfirmationRoute({
-      auth,
-      confirmationId: c.req.param('confirmationId'),
-      note: typeof payload.data.note === 'string' ? payload.data.note : null,
-    });
-    if (result.wakeTalk) opts.runWorker.wake();
-    if (result.wakeMain) opts.mainRunWorker.wake();
-    return new Response(JSON.stringify(result.body), {
-      status: result.statusCode,
-      headers: { 'content-type': 'application/json; charset=utf-8' },
-    });
-  });
+      const result = await approveBrowserConfirmationRoute({
+        auth,
+        confirmationId: c.req.param('confirmationId'),
+        note: typeof payload.data.note === 'string' ? payload.data.note : null,
+      });
+      if (result.wakeTalk) opts.runWorker.wake();
+      if (result.wakeMain) opts.mainRunWorker.wake();
+      return new Response(JSON.stringify(result.body), {
+        status: result.statusCode,
+        headers: { 'content-type': 'application/json; charset=utf-8' },
+      });
+    },
+  );
 
-  app.post('/api/v1/browser/confirmations/:confirmationId/reject', async (c) => {
-    const auth = requireAuth(c);
-    if (!auth) return unauthorized(c);
-    const rateResult = checkRateLimit({
-      principalId: auth.userId,
-      bucket: 'write',
-    });
-    if (!rateResult.allowed) return rateLimitedResponse(c, rateResult);
-    const csrf = validateCsrfToken({
-      method: c.req.method,
-      authType: auth.authType,
-      cookieHeader: c.req.header('cookie'),
-      csrfHeader: c.req.header('x-csrf-token'),
-    });
-    if (!csrf.ok) {
-      return c.json(
-        { ok: false, error: { code: 'csrf_failed', message: csrf.reason } },
-        403,
-      );
-    }
+  app.post(
+    '/api/v1/browser/confirmations/:confirmationId/reject',
+    async (c) => {
+      const auth = requireAuth(c);
+      if (!auth) return unauthorized(c);
+      const rateResult = checkRateLimit({
+        principalId: auth.userId,
+        bucket: 'write',
+      });
+      if (!rateResult.allowed) return rateLimitedResponse(c, rateResult);
+      const csrf = validateCsrfToken({
+        method: c.req.method,
+        authType: auth.authType,
+        cookieHeader: c.req.header('cookie'),
+        csrfHeader: c.req.header('x-csrf-token'),
+      });
+      if (!csrf.ok) {
+        return c.json(
+          { ok: false, error: { code: 'csrf_failed', message: csrf.reason } },
+          403,
+        );
+      }
 
-    const payload = parseJsonPayload<{ note?: unknown }>(await c.req.text());
-    if (!payload.ok) {
-      return c.json(
-        { ok: false, error: { code: 'invalid_json', message: payload.error } },
-        400,
-      );
-    }
+      const payload = parseJsonPayload<{ note?: unknown }>(await c.req.text());
+      if (!payload.ok) {
+        return c.json(
+          {
+            ok: false,
+            error: { code: 'invalid_json', message: payload.error },
+          },
+          400,
+        );
+      }
 
-    const result = await rejectBrowserConfirmationRoute({
-      auth,
-      confirmationId: c.req.param('confirmationId'),
-      note: typeof payload.data.note === 'string' ? payload.data.note : null,
-    });
-    if (result.wakeTalk) opts.runWorker.wake();
-    if (result.wakeMain) opts.mainRunWorker.wake();
-    return new Response(JSON.stringify(result.body), {
-      status: result.statusCode,
-      headers: { 'content-type': 'application/json; charset=utf-8' },
-    });
-  });
+      const result = await rejectBrowserConfirmationRoute({
+        auth,
+        confirmationId: c.req.param('confirmationId'),
+        note: typeof payload.data.note === 'string' ? payload.data.note : null,
+      });
+      if (result.wakeTalk) opts.runWorker.wake();
+      if (result.wakeMain) opts.mainRunWorker.wake();
+      return new Response(JSON.stringify(result.body), {
+        status: result.statusCode,
+        headers: { 'content-type': 'application/json; charset=utf-8' },
+      });
+    },
+  );
 
   app.get('/api/v1/data-connectors', async (c) => {
     const auth = requireAuth(c);

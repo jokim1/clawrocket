@@ -1,8 +1,8 @@
+import type { BrowserBlockedKind, BrowserSessionState } from './service.js';
 import type {
-  BrowserBlockedKind,
-  BrowserSessionState,
-} from './service.js';
-import type { ExecutionBackend, ExecutionCredentialSource } from '../agents/execution-planner.js';
+  ExecutionBackend,
+  ExecutionCredentialSource,
+} from '../agents/execution-planner.js';
 
 export interface BrowserBlockArtifact {
   attachmentId?: string | null;

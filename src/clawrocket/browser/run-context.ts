@@ -3,9 +3,7 @@ import type {
   CarriedBrowserSessionMetadata,
 } from './metadata.js';
 
-function parseObject(
-  value: unknown,
-): Record<string, unknown> | null {
+function parseObject(value: unknown): Record<string, unknown> | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     return null;
   }
@@ -21,16 +19,11 @@ function parseBrowserResume(
   }
   return {
     kind: resume.kind as BrowserResumeMetadata['kind'],
-    resumedAt:
-      typeof resume.resumedAt === 'string' ? resume.resumedAt : '',
-    resumedBy:
-      typeof resume.resumedBy === 'string' ? resume.resumedBy : null,
-    sessionId:
-      typeof resume.sessionId === 'string' ? resume.sessionId : null,
+    resumedAt: typeof resume.resumedAt === 'string' ? resume.resumedAt : '',
+    resumedBy: typeof resume.resumedBy === 'string' ? resume.resumedBy : null,
+    sessionId: typeof resume.sessionId === 'string' ? resume.sessionId : null,
     confirmationId:
-      typeof resume.confirmationId === 'string'
-        ? resume.confirmationId
-        : null,
+      typeof resume.confirmationId === 'string' ? resume.confirmationId : null,
     note: typeof resume.note === 'string' ? resume.note : null,
     pendingToolCall:
       resume.pendingToolCall &&
@@ -38,13 +31,14 @@ function parseBrowserResume(
       !Array.isArray(resume.pendingToolCall)
         ? {
             toolName:
-              typeof (resume.pendingToolCall as { toolName?: unknown }).toolName ===
-              'string'
+              typeof (resume.pendingToolCall as { toolName?: unknown })
+                .toolName === 'string'
                 ? (resume.pendingToolCall as { toolName: string }).toolName
                 : 'browser_act',
             args:
-              parseObject((resume.pendingToolCall as { args?: unknown }).args) ||
-              {},
+              parseObject(
+                (resume.pendingToolCall as { args?: unknown }).args,
+              ) || {},
           }
         : null,
   };

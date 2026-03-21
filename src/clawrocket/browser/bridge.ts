@@ -8,10 +8,7 @@ import { BrowserRunPausedError } from './run-paused-error.js';
 import { executeBrowserTool } from '../tools/browser-tools.js';
 
 const BRIDGE_DIR = path.join(DATA_DIR, 'browser-bridge');
-export const BROWSER_BRIDGE_SOCKET_PATH = path.join(
-  BRIDGE_DIR,
-  'browser.sock',
-);
+export const BROWSER_BRIDGE_SOCKET_PATH = path.join(BRIDGE_DIR, 'browser.sock');
 const MAX_REQUEST_BYTES = 2 * 1024 * 1024;
 const runAborters = new Map<string, () => void>();
 

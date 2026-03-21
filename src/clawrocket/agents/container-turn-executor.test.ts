@@ -235,40 +235,45 @@ describe('container-turn-executor', () => {
       updated_at: new Date().toISOString(),
     };
 
-    runContainerAgentMock.mockImplementation(async (_target, _input, onProcess) => {
-      onProcess({ kill: vi.fn() } as unknown as ChildProcess, 'browser-container');
-      pauseRunForBrowserBlock({
-        runId: 'run-paused',
-        browserBlock: {
-          kind: 'auth_required',
-          sessionId: 'bs_linkedin',
-          siteKey: 'linkedin',
-          accountLabel: null,
-          url: 'https://www.linkedin.com/checkpoint/challenge',
-          title: 'LinkedIn Login',
-          message: 'This site requires interactive authentication.',
-          riskReason: null,
-          setupCommand:
-            "npx tsx src/clawrocket/browser/setup.ts --site 'linkedin'",
-          artifacts: [],
-          confirmationId: null,
-          pendingToolCall: {
-            toolName: 'browser_open',
-            args: {
-              siteKey: 'linkedin',
-              url: 'https://www.linkedin.com/messaging/',
+    runContainerAgentMock.mockImplementation(
+      async (_target, _input, onProcess) => {
+        onProcess(
+          { kill: vi.fn() } as unknown as ChildProcess,
+          'browser-container',
+        );
+        pauseRunForBrowserBlock({
+          runId: 'run-paused',
+          browserBlock: {
+            kind: 'auth_required',
+            sessionId: 'bs_linkedin',
+            siteKey: 'linkedin',
+            accountLabel: null,
+            url: 'https://www.linkedin.com/checkpoint/challenge',
+            title: 'LinkedIn Login',
+            message: 'This site requires interactive authentication.',
+            riskReason: null,
+            setupCommand:
+              "npx tsx src/clawrocket/browser/setup.ts --site 'linkedin'",
+            artifacts: [],
+            confirmationId: null,
+            pendingToolCall: {
+              toolName: 'browser_open',
+              args: {
+                siteKey: 'linkedin',
+                url: 'https://www.linkedin.com/messaging/',
+              },
             },
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
           },
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-        },
-      });
-      return {
-        status: 'error',
-        result: null,
-        error: 'Container exited with code 137',
-      };
-    });
+        });
+        return {
+          status: 'error',
+          result: null,
+          error: 'Container exited with code 137',
+        };
+      },
+    );
 
     await expect(
       executeContainerAgentTurn({

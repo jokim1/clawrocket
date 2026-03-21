@@ -89,10 +89,15 @@ export function createRunConfirmation(input: {
   return id;
 }
 
-export function getBrowserBlockForRun(runId: string): BrowserBlockMetadata | null {
+export function getBrowserBlockForRun(
+  runId: string,
+): BrowserBlockMetadata | null {
   const run = getTalkRunById(runId);
   if (!run) return null;
-  return parseMetadataField<BrowserBlockMetadata>(run.metadata_json, 'browserBlock');
+  return parseMetadataField<BrowserBlockMetadata>(
+    run.metadata_json,
+    'browserBlock',
+  );
 }
 
 export function getExecutionDecisionForRun(

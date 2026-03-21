@@ -411,7 +411,7 @@ function recordTalkPending(input: {
         ? `Browser auth required: ${input.siteKey}`
         : input.status === 'human_step_required'
           ? `Browser human step required: ${input.siteKey}`
-        : `Browser confirmation required: ${input.siteKey}`,
+          : `Browser confirmation required: ${input.siteKey}`,
     contentMarkdown: [
       `Status: ${input.status}`,
       `Site: ${input.siteKey}`,
@@ -778,9 +778,7 @@ export async function executeBrowserTool(input: {
         const result = await runAbortable(input.context.signal, () =>
           service.snapshot({
             sessionId,
-            interactiveOnly: input.args.interactiveOnly as
-              | boolean
-              | undefined,
+            interactiveOnly: input.args.interactiveOnly as boolean | undefined,
             maxElements:
               typeof input.args.maxElements === 'number'
                 ? input.args.maxElements
@@ -873,7 +871,7 @@ export async function executeBrowserTool(input: {
                 ? 'needs_auth'
                 : result.status === 'human_step_required'
                   ? 'human_step_required'
-                : 'awaiting_confirmation',
+                  : 'awaiting_confirmation',
             siteKey: result.siteKey,
             accountLabel: result.accountLabel,
             url: result.url,

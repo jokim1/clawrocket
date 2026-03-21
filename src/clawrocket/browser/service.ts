@@ -512,7 +512,10 @@ export class BrowserService {
     return carried;
   }
 
-  recordRunSessionTouch(runId: string | null | undefined, sessionId: string): void {
+  recordRunSessionTouch(
+    runId: string | null | undefined,
+    sessionId: string,
+  ): void {
     if (!runId) return;
     const session = this.sessionsById.get(sessionId);
     if (!session) return;
@@ -731,7 +734,11 @@ export class BrowserService {
     touchBrowserProfileLastUsed(profile.id);
     const blockedState = await detectBlockedState(session.page);
     if (blockedState.kind) {
-      this.markSessionBlocked(session, blockedState.kind, blockedState.reason || '');
+      this.markSessionBlocked(
+        session,
+        blockedState.kind,
+        blockedState.reason || '',
+      );
       return {
         status:
           blockedState.kind === 'human_step_required'

@@ -24,7 +24,10 @@ function buildReadyMessage(
   plan: ExecutionPlan,
 ): string {
   if (plan.backend === 'direct_http') {
-    if (plan.authPath === 'api_key' && agent.provider_id === 'provider.anthropic') {
+    if (
+      plan.authPath === 'api_key' &&
+      agent.provider_id === 'provider.anthropic'
+    ) {
       return 'Main will use Anthropic direct HTTP with an API key.';
     }
     return 'Main will use direct HTTP.';

@@ -241,9 +241,7 @@ function parseRunMetadata(
   return {};
 }
 
-function parseMetadataObject<T>(
-  value: unknown,
-): T | null {
+function parseMetadataObject<T>(value: unknown): T | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     return null;
   }
@@ -308,9 +306,7 @@ function toMainRunApiRecord(run: {
     ),
     carriedBrowserSessions: Array.isArray(metadata.carriedBrowserSessions)
       ? metadata.carriedBrowserSessions.filter(
-          (
-            entry,
-          ): entry is CarriedBrowserSessionMetadata =>
+          (entry): entry is CarriedBrowserSessionMetadata =>
             Boolean(entry) &&
             typeof entry === 'object' &&
             !Array.isArray(entry) &&

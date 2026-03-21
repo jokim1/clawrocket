@@ -3016,9 +3016,7 @@ function migrateChannelConnectionSecretsTable(
   `);
 }
 
-function migrateChannelProviderConfigTables(
-  database: Database.Database,
-): void {
+function migrateChannelProviderConfigTables(database: Database.Database): void {
   database.exec(`
     CREATE TABLE IF NOT EXISTS channel_provider_configs (
       platform TEXT PRIMARY KEY,
@@ -3061,9 +3059,7 @@ function migrateChannelTargetRegistryColumns(
   }
 }
 
-function migrateOAuthStateRequesterColumns(
-  database: Database.Database,
-): void {
+function migrateOAuthStateRequesterColumns(database: Database.Database): void {
   const columns = database
     .prepare(`PRAGMA table_info(oauth_state)`)
     .all() as Array<{ name: string }>;

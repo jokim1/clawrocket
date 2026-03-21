@@ -63,7 +63,9 @@ async function canAccessSession(
   return touchedRunIds.some((runId) => canAccessRun(auth, runId));
 }
 
-async function maybeResumeTakeover(sessionId: string | null | undefined): Promise<void> {
+async function maybeResumeTakeover(
+  sessionId: string | null | undefined,
+): Promise<void> {
   if (!sessionId) return;
   const service = getBrowserService();
   const snapshot = await service.getSessionStatus(sessionId);
