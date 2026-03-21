@@ -21,6 +21,7 @@ import {
   canUserAccessTalk,
   countRunningTalkRuns,
   deleteGoogleOAuthLinkRequest,
+  ensureSystemManagedTelegramConnection,
   getTalkForUser,
   getOutboxEventsForTopics,
   getOutboxMinEventIdForTopics,
@@ -53,7 +54,6 @@ import type { TalkRunWorkerControl } from '../talks/run-worker.js';
 import type { TalkJobWorkerControl } from '../talks/job-worker.js';
 import type { MainRunWorkerControl } from '../agents/main-run-worker.js';
 import { hashOpaqueToken } from '../security/hash.js';
-import type { TelegramBotIdentity } from '../channels/telegram-connector.js';
 import { waitForOutboxTopics } from '../channels/outbox-notifier.js';
 import { validateCsrfToken } from './middleware/csrf.js';
 import {
@@ -213,10 +213,17 @@ import {
   uploadTalkAttachmentRoute,
 } from './routes/talk-attachments.js';
 import {
+  approveChannelTargetRoute,
   adoptTelegramEnvTokenRoute,
   approveTelegramTargetRoute,
+  clearSlackProviderConfigRoute,
+  completeSlackOAuthInstallRoute,
   deleteTelegramChannelConnectorTokenRoute,
+  diagnoseSlackWorkspaceTargetRoute,
+  disconnectSlackWorkspaceRoute,
   getTelegramChannelConnectorRoute,
+  getSlackChannelConnectorRoute,
+  handleSlackEventsRoute,
   listChannelConnectionsRoute,
   listChannelTargetsRoute,
   listTalkChannelsRoute,
@@ -232,7 +239,11 @@ import {
   listTalkChannelDeliveryFailuresRoute,
   retryTalkChannelDeliveryFailureRoute,
   deleteTalkChannelDeliveryFailureRoute,
+  saveSlackProviderConfigRoute,
   saveTelegramChannelConnectorTokenRoute,
+  startSlackOAuthInstallRoute,
+  syncSlackWorkspaceRoute,
+  unapproveChannelTargetRoute,
   unapproveTelegramTargetRoute,
   validateTelegramChannelConnectorRoute,
 } from './routes/channels.js';
@@ -246,6 +257,7 @@ import { AuthContext } from './types.js';
 import { DataConnectorVerifier } from '../connectors/connector-verifier.js';
 import { persistGoogleOAuthIdentity } from '../identity/google-tools-service.js';
 import { logger } from '../../logger.js';
+import type { SlackEventEnvelope } from '../../channels/slack.js';
 
 const MAX_REQUEST_BODY_BYTES = 10 * 1024 * 1024; // 10 MB
 const SSE_RETRY_MS = 3000;
@@ -270,9 +282,12 @@ export interface WebServerOptions {
   sourceIngestion: TalkContextSourceIngestionService;
   onTalkTerminal?: (talkId: string) => void;
   sendChannelTestMessage?: (bindingId: string, text: string) => Promise<void>;
-  reloadTelegramConnector?: (input?: {
-    validatedBot?: TelegramBotIdentity;
-  }) => Promise<void>;
+  reloadChannelConnection?: (connectionId: string) => Promise<void>;
+  disconnectChannelConnection?: (connectionId: string) => Promise<void>;
+  handleSlackEvent?: (
+    connectionId: string,
+    event: SlackEventEnvelope,
+  ) => Promise<void>;
 }
 
 export interface WebServerHandle {
@@ -324,7 +339,9 @@ export function createWebServer(
       createDefaultTalkContextSourceIngestionService(),
     onTalkTerminal: input?.onTalkTerminal,
     sendChannelTestMessage: input?.sendChannelTestMessage,
-    reloadTelegramConnector: input?.reloadTelegramConnector,
+    reloadChannelConnection: input?.reloadChannelConnection,
+    disconnectChannelConnection: input?.disconnectChannelConnection,
+    handleSlackEvent: input?.handleSlackEvent,
   };
 
   const app = buildApp(opts);
@@ -3351,7 +3368,10 @@ function buildApp(opts: WebServerOptions): Hono {
     const result = await saveTelegramChannelConnectorTokenRoute({
       auth,
       botToken: typeof body.botToken === 'string' ? body.botToken : '',
-      reloadConnector: opts.reloadTelegramConnector,
+      reloadConnector: () =>
+        opts.reloadChannelConnection?.(
+          ensureSystemManagedTelegramConnection().id,
+        ) || Promise.resolve(),
     });
     return new Response(JSON.stringify(result.body), {
       status: result.statusCode,
@@ -3365,7 +3385,10 @@ function buildApp(opts: WebServerOptions): Hono {
 
     const result = await deleteTelegramChannelConnectorTokenRoute({
       auth,
-      reloadConnector: opts.reloadTelegramConnector,
+      reloadConnector: () =>
+        opts.reloadChannelConnection?.(
+          ensureSystemManagedTelegramConnection().id,
+        ) || Promise.resolve(),
     });
     return new Response(JSON.stringify(result.body), {
       status: result.statusCode,
@@ -3379,7 +3402,10 @@ function buildApp(opts: WebServerOptions): Hono {
 
     const result = await adoptTelegramEnvTokenRoute({
       auth,
-      reloadConnector: opts.reloadTelegramConnector,
+      reloadConnector: () =>
+        opts.reloadChannelConnection?.(
+          ensureSystemManagedTelegramConnection().id,
+        ) || Promise.resolve(),
     });
     return new Response(JSON.stringify(result.body), {
       status: result.statusCode,
@@ -3403,7 +3429,10 @@ function buildApp(opts: WebServerOptions): Hono {
       targetId: typeof body.targetId === 'string' ? body.targetId : undefined,
       displayName:
         typeof body.displayName === 'string' ? body.displayName : undefined,
-      reloadConnector: opts.reloadTelegramConnector,
+      reloadConnector: () =>
+        opts.reloadChannelConnection?.(
+          ensureSystemManagedTelegramConnection().id,
+        ) || Promise.resolve(),
     });
     return new Response(JSON.stringify(result.body), {
       status: result.statusCode,
@@ -3436,6 +3465,242 @@ function buildApp(opts: WebServerOptions): Hono {
         auth,
         targetKind,
         targetId,
+      });
+      return new Response(JSON.stringify(result.body), {
+        status: result.statusCode,
+        headers: { 'content-type': 'application/json; charset=utf-8' },
+      });
+    },
+  );
+
+  app.get('/api/v1/channel-connectors/slack', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+
+    const rateResult = checkRateLimit({ userId: auth.userId, bucket: 'read' });
+    if (!rateResult.allowed) {
+      return rateLimitedResponse(c, rateResult);
+    }
+
+    const result = getSlackChannelConnectorRoute({
+      auth,
+      requestOrigin: new URL(c.req.url).origin,
+    });
+    return new Response(JSON.stringify(result.body), {
+      status: result.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
+  });
+
+  app.put('/api/v1/channel-connectors/slack/config', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+
+    const body = (await c.req.json().catch(() => ({}))) as Record<
+      string,
+      unknown
+    >;
+    const result = saveSlackProviderConfigRoute({
+      auth,
+      requestOrigin: new URL(c.req.url).origin,
+      clientId: typeof body.clientId === 'string' ? body.clientId : '',
+      clientSecret:
+        typeof body.clientSecret === 'string' ? body.clientSecret : null,
+      signingSecret:
+        typeof body.signingSecret === 'string' ? body.signingSecret : null,
+    });
+    return new Response(JSON.stringify(result.body), {
+      status: result.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
+  });
+
+  app.delete('/api/v1/channel-connectors/slack/config', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+
+    const result = clearSlackProviderConfigRoute({
+      auth,
+      requestOrigin: new URL(c.req.url).origin,
+    });
+    return new Response(JSON.stringify(result.body), {
+      status: result.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
+  });
+
+  app.post('/api/v1/channel-connectors/slack/oauth/start', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+
+    const body = (await c.req.json().catch(() => ({}))) as Record<
+      string,
+      unknown
+    >;
+    const result = await startSlackOAuthInstallRoute({
+      auth,
+      requestOrigin: new URL(c.req.url).origin,
+      returnTo:
+        typeof body.returnTo === 'string'
+          ? normalizeReturnToPath(body.returnTo)
+          : null,
+    });
+    return new Response(JSON.stringify(result.body), {
+      status: result.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
+  });
+
+  app.get('/api/v1/channel-connectors/slack/oauth/callback', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) {
+      return renderSlackOAuthCallbackHtml({
+        status: 'error',
+        message: 'You must be signed in to finish Slack installation.',
+        returnTo: '/app/connectors?tab=channel-connectors',
+      });
+    }
+
+    const result = await completeSlackOAuthInstallRoute({
+      auth,
+      requestOrigin: new URL(c.req.url).origin,
+      state: c.req.query('state') || '',
+      code: c.req.query('code') || '',
+      reloadConnection: opts.reloadChannelConnection,
+    });
+
+    if (result.statusCode >= 400 || !result.body.ok) {
+      const message = result.body.ok
+        ? 'Slack installation failed.'
+        : result.body.error?.message || 'Slack installation failed.';
+      return renderSlackOAuthCallbackHtml({
+        status: 'error',
+        message,
+        returnTo: '/app/connectors?tab=channel-connectors',
+      });
+    }
+
+    const workspace = result.body.data?.workspace;
+    return renderSlackOAuthCallbackHtml({
+      status: 'success',
+      message: 'Slack workspace connected.',
+      returnTo: '/app/connectors?tab=channel-connectors',
+      workspaceName: workspace?.teamName || undefined,
+    });
+  });
+
+  app.post('/api/v1/channel-connectors/slack/events', async (c) => {
+    const rawBody = await c.req.text();
+    const result = await handleSlackEventsRoute({
+      rawBody,
+      timestampHeader: c.req.header('x-slack-request-timestamp') || null,
+      signatureHeader: c.req.header('x-slack-signature') || null,
+      enqueueEvent: (connectionId, event) => {
+        queueMicrotask(() => {
+          void opts.handleSlackEvent?.(connectionId, event);
+        });
+      },
+    });
+    return new Response(JSON.stringify(result.body), {
+      status: result.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
+  });
+
+  app.post(
+    '/api/v1/channel-connectors/slack/workspaces/:connectionId/sync',
+    async (c) => {
+      const auth = requireAuth(c);
+      if (!auth) return unauthorized(c);
+
+      const connectionId = safeDecodePathSegment(c.req.param('connectionId'));
+      if (!connectionId) {
+        return c.json(
+          {
+            ok: false,
+            error: {
+              code: 'invalid_connection_id',
+              message:
+                'Channel connection path segment is not valid URL encoding',
+            },
+          },
+          400,
+        );
+      }
+
+      const result = await syncSlackWorkspaceRoute({
+        auth,
+        connectionId,
+      });
+      return new Response(JSON.stringify(result.body), {
+        status: result.statusCode,
+        headers: { 'content-type': 'application/json; charset=utf-8' },
+      });
+    },
+  );
+
+  app.delete(
+    '/api/v1/channel-connectors/slack/workspaces/:connectionId',
+    async (c) => {
+      const auth = requireAuth(c);
+      if (!auth) return unauthorized(c);
+
+      const connectionId = safeDecodePathSegment(c.req.param('connectionId'));
+      if (!connectionId) {
+        return c.json(
+          {
+            ok: false,
+            error: {
+              code: 'invalid_connection_id',
+              message:
+                'Channel connection path segment is not valid URL encoding',
+            },
+          },
+          400,
+        );
+      }
+
+      const result = await disconnectSlackWorkspaceRoute({
+        auth,
+        connectionId,
+        disconnectConnection: opts.disconnectChannelConnection,
+      });
+      return new Response(JSON.stringify(result.body), {
+        status: result.statusCode,
+        headers: { 'content-type': 'application/json; charset=utf-8' },
+      });
+    },
+  );
+
+  app.post(
+    '/api/v1/channel-connectors/slack/workspaces/:connectionId/diagnose-target',
+    async (c) => {
+      const auth = requireAuth(c);
+      if (!auth) return unauthorized(c);
+
+      const connectionId = safeDecodePathSegment(c.req.param('connectionId'));
+      if (!connectionId) {
+        return c.json(
+          {
+            ok: false,
+            error: {
+              code: 'invalid_connection_id',
+              message:
+                'Channel connection path segment is not valid URL encoding',
+            },
+          },
+          400,
+        );
+      }
+
+      const body = (await c.req.json().catch(() => ({}))) as Record<
+        string,
+        unknown
+      >;
+      const result = await diagnoseSlackWorkspaceTargetRoute({
+        auth,
+        connectionId,
+        rawInput: typeof body.rawInput === 'string' ? body.rawInput : '',
       });
       return new Response(JSON.stringify(result.body), {
         status: result.statusCode,
@@ -3489,6 +3754,88 @@ function buildApp(opts: WebServerOptions): Hono {
       headers: { 'content-type': 'application/json; charset=utf-8' },
     });
   });
+
+  app.post(
+    '/api/v1/channel-connections/:connectionId/targets/approve',
+    async (c) => {
+      const auth = requireAuth(c);
+      if (!auth) return unauthorized(c);
+
+      const connectionId = safeDecodePathSegment(c.req.param('connectionId'));
+      if (!connectionId) {
+        return c.json(
+          {
+            ok: false,
+            error: {
+              code: 'invalid_connection_id',
+              message:
+                'Channel connection path segment is not valid URL encoding',
+            },
+          },
+          400,
+        );
+      }
+
+      const body = (await c.req.json().catch(() => ({}))) as Record<
+        string,
+        unknown
+      >;
+      const metadata =
+        body.metadata &&
+        typeof body.metadata === 'object' &&
+        !Array.isArray(body.metadata)
+          ? (body.metadata as Record<string, unknown>)
+          : null;
+      const result = approveChannelTargetRoute({
+        auth,
+        connectionId,
+        targetKind: typeof body.targetKind === 'string' ? body.targetKind : '',
+        targetId: typeof body.targetId === 'string' ? body.targetId : '',
+        displayName:
+          typeof body.displayName === 'string' ? body.displayName : undefined,
+        metadata,
+      });
+      return new Response(JSON.stringify(result.body), {
+        status: result.statusCode,
+        headers: { 'content-type': 'application/json; charset=utf-8' },
+      });
+    },
+  );
+
+  app.delete(
+    '/api/v1/channel-connections/:connectionId/targets/:targetKind/:targetId/approval',
+    async (c) => {
+      const auth = requireAuth(c);
+      if (!auth) return unauthorized(c);
+
+      const connectionId = safeDecodePathSegment(c.req.param('connectionId'));
+      const targetKind = safeDecodePathSegment(c.req.param('targetKind'));
+      const targetId = safeDecodePathSegment(c.req.param('targetId'));
+      if (!connectionId || !targetKind || !targetId) {
+        return c.json(
+          {
+            ok: false,
+            error: {
+              code: 'invalid_target',
+              message: 'Target path segments are not valid URL encoding',
+            },
+          },
+          400,
+        );
+      }
+
+      const result = unapproveChannelTargetRoute({
+        auth,
+        connectionId,
+        targetKind,
+        targetId,
+      });
+      return new Response(JSON.stringify(result.body), {
+        status: result.statusCode,
+        headers: { 'content-type': 'application/json; charset=utf-8' },
+      });
+    },
+  );
 
   app.get('/api/v1/talks/:talkId/channels', async (c) => {
     const auth = requireAuth(c);
@@ -6745,6 +7092,51 @@ function renderGoogleAccountCallbackHtml(input: {
   <head>
     <meta charset="utf-8" />
     <title>Google Account</title>
+  </head>
+  <body>
+    <script>
+      (function() {
+        var payload = ${payload};
+        if (window.opener && !window.opener.closed) {
+          window.opener.postMessage(payload, window.location.origin);
+          window.close();
+          return;
+        }
+        window.location.replace(${JSON.stringify(fallbackTarget)});
+      })();
+    </script>
+  </body>
+</html>`;
+  return new Response(html, {
+    status: 200,
+    headers: {
+      'cache-control': 'no-store',
+      'content-type': 'text/html; charset=utf-8',
+    },
+  });
+}
+
+function renderSlackOAuthCallbackHtml(input: {
+  status: 'success' | 'error';
+  returnTo: string;
+  message?: string;
+  workspaceName?: string;
+}): Response {
+  const payload = JSON.stringify({
+    type: 'clawrocket:slack-workspace-install',
+    status: input.status,
+    message: input.message ?? null,
+    workspaceName: input.workspaceName ?? null,
+  });
+  const fallbackTarget =
+    input.status === 'error' && input.message
+      ? appendQueryParam(input.returnTo, 'slackConnectError', input.message)
+      : input.returnTo;
+  const html = `<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Slack Workspace</title>
   </head>
   <body>
     <script>

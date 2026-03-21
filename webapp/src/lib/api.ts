@@ -140,6 +140,52 @@ export type TelegramChannelConnector = {
   targets: ChannelTarget[];
 };
 
+export type SlackProviderConfig = {
+  clientId: string | null;
+  hasClientSecret: boolean;
+  hasSigningSecret: boolean;
+  redirectUrl: string | null;
+  eventsApiUrl: string | null;
+  eventsApiReady: boolean;
+  oauthInstallReady: boolean;
+  available: boolean;
+  availabilityReason: string | null;
+  updatedAt: string | null;
+  updatedBy: string | null;
+};
+
+export type SlackChannelConnector = {
+  config: SlackProviderConfig;
+  workspaces: ChannelConnection[];
+};
+
+export type SlackWorkspaceIdentity = {
+  teamId: string;
+  teamName: string | null;
+  teamUrl: string | null;
+  botUserId: string | null;
+  botUserName: string | null;
+  scopeSet: string[];
+};
+
+export type SlackWorkspaceInstall = {
+  connectionId: string;
+  workspace: SlackWorkspaceIdentity;
+};
+
+export type SlackTargetDiagnostic = {
+  ok: true;
+  code: 'ok';
+  message: string;
+  target: {
+    ok: true;
+    targetKind: 'channel';
+    targetId: string;
+    displayName: string;
+    metadata: Record<string, unknown>;
+  };
+};
+
 export type BindingDiagnosisAction = {
   label: string;
   type: 'retry' | 'unquarantine' | 'test' | 'dismiss';
@@ -1986,6 +2032,20 @@ type ChannelConnectionApiRecord = {
   updated_at: string;
 };
 
+type SlackProviderConfigApiRecord = {
+  clientId: string | null;
+  hasClientSecret: boolean;
+  hasSigningSecret: boolean;
+  redirectUrl: string | null;
+  eventsApiUrl: string | null;
+  eventsApiReady: boolean;
+  oauthInstallReady: boolean;
+  available: boolean;
+  availabilityReason: string | null;
+  updatedAt: string | null;
+  updatedBy: string | null;
+};
+
 type ChannelTargetApiRecord = {
   connection_id: string;
   target_kind: string;
@@ -2071,6 +2131,24 @@ function mapChannelTarget(record: ChannelTargetApiRecord): ChannelTarget {
     lastSeenAt: record.last_seen_at,
     createdAt: record.created_at,
     updatedAt: record.updated_at,
+  };
+}
+
+function mapSlackProviderConfig(
+  record: SlackProviderConfigApiRecord,
+): SlackProviderConfig {
+  return {
+    clientId: record.clientId,
+    hasClientSecret: record.hasClientSecret,
+    hasSigningSecret: record.hasSigningSecret,
+    redirectUrl: record.redirectUrl,
+    eventsApiUrl: record.eventsApiUrl,
+    eventsApiReady: record.eventsApiReady,
+    oauthInstallReady: record.oauthInstallReady,
+    available: record.available,
+    availabilityReason: record.availabilityReason,
+    updatedAt: record.updatedAt,
+    updatedBy: record.updatedBy,
   };
 }
 
@@ -2222,6 +2300,99 @@ export async function adoptTelegramChannelConnectorEnvToken(): Promise<TelegramC
   };
 }
 
+export async function getSlackChannelConnector(): Promise<SlackChannelConnector> {
+  const envelope = await apiRequest<{
+    config: SlackProviderConfigApiRecord;
+    workspaces: ChannelConnectionApiRecord[];
+  }>('/api/v1/channel-connectors/slack');
+  return {
+    config: mapSlackProviderConfig(envelope.config),
+    workspaces: envelope.workspaces.map(mapChannelConnection),
+  };
+}
+
+export async function saveSlackChannelConnectorConfig(input: {
+  clientId: string;
+  clientSecret?: string;
+  signingSecret?: string;
+}): Promise<SlackChannelConnector> {
+  const envelope = await apiMutationRequest<{
+    config: SlackProviderConfigApiRecord;
+    workspaces: ChannelConnectionApiRecord[];
+  }>('/api/v1/channel-connectors/slack/config', {
+    method: 'PUT',
+    includeJson: true,
+    body: JSON.stringify(input),
+  });
+  return {
+    config: mapSlackProviderConfig(envelope.config),
+    workspaces: envelope.workspaces.map(mapChannelConnection),
+  };
+}
+
+export async function clearSlackChannelConnectorConfig(): Promise<SlackChannelConnector> {
+  const envelope = await apiMutationRequest<{
+    config: SlackProviderConfigApiRecord;
+    workspaces: ChannelConnectionApiRecord[];
+  }>('/api/v1/channel-connectors/slack/config', {
+    method: 'DELETE',
+  });
+  return {
+    config: mapSlackProviderConfig(envelope.config),
+    workspaces: envelope.workspaces.map(mapChannelConnection),
+  };
+}
+
+export async function startSlackChannelConnectorInstall(
+  returnTo?: string,
+): Promise<{ authorizationUrl: string; expiresInSec: number }> {
+  return apiMutationRequest('/api/v1/channel-connectors/slack/oauth/start', {
+    method: 'POST',
+    includeJson: true,
+    body: JSON.stringify({ returnTo }),
+  });
+}
+
+export async function syncSlackWorkspace(
+  connectionId: string,
+): Promise<{
+  syncedCount: number;
+  publicCount: number;
+  privateCount: number;
+}> {
+  return apiMutationRequest(
+    `/api/v1/channel-connectors/slack/workspaces/${encodeURIComponent(connectionId)}/sync`,
+    {
+      method: 'POST',
+    },
+  );
+}
+
+export async function disconnectSlackWorkspace(
+  connectionId: string,
+): Promise<void> {
+  await apiMutationRequest<{ deleted: true }>(
+    `/api/v1/channel-connectors/slack/workspaces/${encodeURIComponent(connectionId)}`,
+    {
+      method: 'DELETE',
+    },
+  );
+}
+
+export async function diagnoseSlackWorkspaceTarget(input: {
+  connectionId: string;
+  rawInput: string;
+}): Promise<SlackTargetDiagnostic> {
+  return apiMutationRequest(
+    `/api/v1/channel-connectors/slack/workspaces/${encodeURIComponent(input.connectionId)}/diagnose-target`,
+    {
+      method: 'POST',
+      includeJson: true,
+      body: JSON.stringify({ rawInput: input.rawInput }),
+    },
+  );
+}
+
 export async function listChannelTargets(input: {
   connectionId: string;
   query?: string;
@@ -2245,6 +2416,37 @@ export async function listChannelTargets(input: {
     `/api/v1/channel-connections/${encodeURIComponent(input.connectionId)}/targets${suffix}`,
   );
   return envelope.targets.map(mapChannelTarget);
+}
+
+export async function approveChannelTarget(input: {
+  connectionId: string;
+  targetKind: string;
+  targetId: string;
+  displayName?: string;
+  metadata?: Record<string, unknown> | null;
+}): Promise<ChannelTarget> {
+  const envelope = await apiMutationRequest<{ target: ChannelTargetApiRecord }>(
+    `/api/v1/channel-connections/${encodeURIComponent(input.connectionId)}/targets/approve`,
+    {
+      method: 'POST',
+      includeJson: true,
+      body: JSON.stringify(input),
+    },
+  );
+  return mapChannelTarget(envelope.target);
+}
+
+export async function unapproveChannelTarget(input: {
+  connectionId: string;
+  targetKind: string;
+  targetId: string;
+}): Promise<{ removed: true; deactivatedBindingCount?: number }> {
+  return apiMutationRequest(
+    `/api/v1/channel-connections/${encodeURIComponent(input.connectionId)}/targets/${encodeURIComponent(input.targetKind)}/${encodeURIComponent(input.targetId)}/approval`,
+    {
+      method: 'DELETE',
+    },
+  );
 }
 
 export async function approveTelegramChannelTarget(input: {

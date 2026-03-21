@@ -61,10 +61,11 @@ describe('TalkChannelRouter', () => {
       now: '2024-01-01T00:00:02.000Z',
     });
     const wake = vi.fn();
-    const router = new TalkChannelRouter(connection.id, { wake });
+    const router = new TalkChannelRouter({ wake });
 
     const firstAccepted = await router.handleInboundEvent({
       platform: 'telegram',
+      connection_id: connection.id,
       target_kind: 'chat',
       target_id: 'tg:chat:123',
       platform_event_id: 'evt-1',
@@ -79,6 +80,7 @@ describe('TalkChannelRouter', () => {
     });
     const secondAccepted = await router.handleInboundEvent({
       platform: 'telegram',
+      connection_id: connection.id,
       target_kind: 'chat',
       target_id: 'tg:chat:123',
       platform_event_id: 'evt-2',

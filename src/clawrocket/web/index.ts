@@ -6,11 +6,11 @@ import {
   WEB_PORT,
 } from '../config.js';
 import { MainRunWorker } from '../agents/main-run-worker.js';
-import type { TelegramBotIdentity } from '../channels/telegram-connector.js';
 import type { TalkExecutor } from '../talks/executor.js';
 import { TalkJobWorker } from '../talks/job-worker.js';
 import { CleanTalkExecutor } from '../talks/new-executor.js';
 import { TalkRunWorker } from '../talks/run-worker.js';
+import type { SlackEventEnvelope } from '../../channels/slack.js';
 
 import { createWebServer, WebServerHandle } from './server.js';
 
@@ -18,9 +18,12 @@ export interface StartWebServerOptions {
   onTalkTerminal?: (talkId: string) => void;
   onChannelDeliveryQueued?: () => void;
   sendChannelTestMessage?: (bindingId: string, text: string) => Promise<void>;
-  reloadTelegramConnector?: (input?: {
-    validatedBot?: TelegramBotIdentity;
-  }) => Promise<void>;
+  reloadChannelConnection?: (connectionId: string) => Promise<void>;
+  disconnectChannelConnection?: (connectionId: string) => Promise<void>;
+  handleSlackEvent?: (
+    connectionId: string,
+    event: SlackEventEnvelope,
+  ) => Promise<void>;
 }
 
 export async function startWebServer(
@@ -66,7 +69,9 @@ export async function startWebServer(
     jobWorker,
     mainRunWorker,
     sendChannelTestMessage: input?.sendChannelTestMessage,
-    reloadTelegramConnector: input?.reloadTelegramConnector,
+    reloadChannelConnection: input?.reloadChannelConnection,
+    disconnectChannelConnection: input?.disconnectChannelConnection,
+    handleSlackEvent: input?.handleSlackEvent,
   });
 
   let bound: { host: string; port: number };

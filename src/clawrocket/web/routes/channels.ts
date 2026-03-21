@@ -2,11 +2,14 @@ import {
   approveChannelTarget,
   clearBindingQuarantine,
   createTalkChannelBinding,
+  deleteChannelProviderConfig,
+  deleteChannelProviderSecret,
   deleteChannelConnectionSecret,
   deleteChannelDeliveryOutboxRow,
   deleteChannelIngressQueueRow,
   deleteTalkChannelBinding,
   ensureSystemManagedTelegramConnection,
+  getChannelConnectionByPlatformAccount,
   getChannelTarget,
   getChannelConnectionById,
   getTalkChannelBindingById,
@@ -19,6 +22,8 @@ import {
   retryChannelDeliveryFailuresCapped,
   retryChannelIngressFailure,
   searchChannelTargets,
+  setChannelProviderConfig,
+  setChannelProviderSecret,
   setChannelConnectionSecret,
   unapproveChannelTarget,
   updateBindingDeliveryResult,
@@ -30,6 +35,17 @@ import {
   type BindingDiagnosis,
 } from '../../channels/channel-diagnosis.js';
 import { encryptChannelSecret } from '../../channels/channel-secret-store.js';
+import { encryptChannelProviderSecret } from '../../channels/channel-provider-secret-store.js';
+import {
+  completeSlackOAuthInstall,
+  diagnoseSlackTarget,
+  disconnectSlackWorkspace,
+  getSlackProviderConfigState,
+  getSlackProviderSecretPayload,
+  startSlackOAuthInstall,
+  syncSlackWorkspaceTargets,
+  verifySlackRequestSignature,
+} from '../../channels/slack-connector.js';
 import {
   probeTelegramBotToken,
   resolveTelegramCredential,
@@ -40,6 +56,7 @@ import {
 import { canEditTalk } from '../middleware/acl.js';
 import { ApiEnvelope, AuthContext } from '../types.js';
 import { getTalkForUser } from '../../db/index.js';
+import type { SlackEventEnvelope } from '../../../channels/slack.js';
 
 export interface TalkChannelBindingApiRecord {
   id: string;
@@ -95,7 +112,23 @@ export interface ChannelConnectionApiRecord {
   has_stored_secret: number;
 }
 
+export interface SlackProviderConfigApiRecord {
+  clientId: string | null;
+  hasClientSecret: boolean;
+  hasSigningSecret: boolean;
+  redirectUrl: string | null;
+  eventsApiUrl: string | null;
+  eventsApiReady: boolean;
+  oauthInstallReady: boolean;
+  available: boolean;
+  availabilityReason: string | null;
+  updatedAt: string | null;
+  updatedBy: string | null;
+}
+
 const manualIngressRetryTimestamps = new Map<string, number[]>();
+const recentSlackEventReceipts = new Map<string, number>();
+const MAX_RECENT_SLACK_EVENT_RECEIPTS = 10_000;
 
 function canManageConnections(auth: AuthContext): boolean {
   return auth.role === 'owner' || auth.role === 'admin';
@@ -144,6 +177,35 @@ function trimManualRetryTimestamps(bindingId: string, nowMs: number): number[] {
   }
   manualIngressRetryTimestamps.set(bindingId, recent);
   return recent;
+}
+
+function trimRecentSlackEventReceipts(nowMs: number): void {
+  for (const [key, observedAt] of recentSlackEventReceipts) {
+    if (nowMs - observedAt > 15 * 60_000) {
+      recentSlackEventReceipts.delete(key);
+    }
+  }
+}
+
+function enforceRecentSlackEventReceiptCap(): void {
+  while (recentSlackEventReceipts.size >= MAX_RECENT_SLACK_EVENT_RECEIPTS) {
+    const oldestKey = recentSlackEventReceipts.keys().next().value;
+    if (!oldestKey) break;
+    recentSlackEventReceipts.delete(oldestKey);
+  }
+}
+
+function markRecentSlackEventReceipt(
+  dedupeKey: string,
+  nowMs: number,
+): boolean {
+  trimRecentSlackEventReceipts(nowMs);
+  if (recentSlackEventReceipts.has(dedupeKey)) {
+    return false;
+  }
+  enforceRecentSlackEventReceiptCap();
+  recentSlackEventReceipts.set(dedupeKey, nowMs);
+  return true;
 }
 
 function toBindingApiRecord(
@@ -206,6 +268,27 @@ function parseTargetMetadata(
   } catch {
     return null;
   }
+}
+
+function toSlackProviderConfigApiRecord(input: {
+  requestOrigin?: string | null;
+}): SlackProviderConfigApiRecord {
+  const state = getSlackProviderConfigState({
+    requestOrigin: input.requestOrigin,
+  });
+  return {
+    clientId: state.clientId,
+    hasClientSecret: state.hasClientSecret,
+    hasSigningSecret: state.hasSigningSecret,
+    redirectUrl: state.redirectUrl,
+    eventsApiUrl: state.eventsApiUrl,
+    eventsApiReady: state.eventsApiReady,
+    oauthInstallReady: state.oauthInstallReady,
+    available: state.available,
+    availabilityReason: state.availabilityReason,
+    updatedAt: state.updatedAt,
+    updatedBy: state.updatedBy,
+  };
 }
 
 function toChannelConnectionApiRecord(
@@ -599,6 +682,504 @@ export function unapproveTelegramTargetRoute(input: {
   };
 }
 
+export function getSlackChannelConnectorRoute(input: {
+  auth: AuthContext;
+  requestOrigin?: string | null;
+}) {
+  if (!canManageConnections(input.auth)) {
+    return forbidden(
+      'You do not have permission to manage channel connections.',
+    );
+  }
+  return {
+    statusCode: 200,
+    body: {
+      ok: true,
+      data: {
+        config: toSlackProviderConfigApiRecord({
+          requestOrigin: input.requestOrigin,
+        }),
+        workspaces: listChannelConnections()
+          .filter((connection) => connection.platform === 'slack')
+          .map(toChannelConnectionApiRecord),
+      },
+    },
+  };
+}
+
+export function saveSlackProviderConfigRoute(input: {
+  auth: AuthContext;
+  requestOrigin?: string | null;
+  clientId: string;
+  clientSecret?: string | null;
+  signingSecret?: string | null;
+}) {
+  if (!canManageConnections(input.auth)) {
+    return forbidden(
+      'You do not have permission to manage channel connections.',
+    );
+  }
+  const clientId = input.clientId.trim();
+  if (!clientId) {
+    return {
+      statusCode: 400,
+      body: {
+        ok: false,
+        error: {
+          code: 'missing_client_id',
+          message: 'Slack client ID is required.',
+        },
+      },
+    };
+  }
+
+  const existingSecrets = getSlackProviderSecretPayload();
+  const nextClientSecret =
+    input.clientSecret?.trim() || existingSecrets?.clientSecret || '';
+  const nextSigningSecret =
+    input.signingSecret?.trim() || existingSecrets?.signingSecret || '';
+
+  setChannelProviderConfig({
+    platform: 'slack',
+    configJson: JSON.stringify({ clientId }),
+    updatedBy: input.auth.userId,
+  });
+
+  if (nextClientSecret || nextSigningSecret) {
+    setChannelProviderSecret({
+      platform: 'slack',
+      ciphertext: encryptChannelProviderSecret({
+        kind: 'slack_app',
+        clientSecret: nextClientSecret,
+        signingSecret: nextSigningSecret,
+      }),
+      updatedBy: input.auth.userId,
+    });
+  }
+
+  return getSlackChannelConnectorRoute({
+    auth: input.auth,
+    requestOrigin: input.requestOrigin,
+  });
+}
+
+export function clearSlackProviderConfigRoute(input: {
+  auth: AuthContext;
+  requestOrigin?: string | null;
+}) {
+  if (!canManageConnections(input.auth)) {
+    return forbidden(
+      'You do not have permission to manage channel connections.',
+    );
+  }
+  deleteChannelProviderConfig('slack');
+  deleteChannelProviderSecret('slack');
+  return getSlackChannelConnectorRoute({
+    auth: input.auth,
+    requestOrigin: input.requestOrigin,
+  });
+}
+
+export async function startSlackOAuthInstallRoute(input: {
+  auth: AuthContext;
+  requestOrigin?: string | null;
+  returnTo?: string | null;
+}) {
+  if (!canManageConnections(input.auth)) {
+    return forbidden(
+      'You do not have permission to manage channel connections.',
+    );
+  }
+  try {
+    const result = await startSlackOAuthInstall({
+      auth: input.auth,
+      requestOrigin: input.requestOrigin,
+      returnTo: input.returnTo,
+    });
+    return {
+      statusCode: 200,
+      body: {
+        ok: true,
+        data: result,
+      },
+    };
+  } catch (error) {
+    return {
+      statusCode: 400,
+      body: {
+        ok: false,
+        error: {
+          code: 'slack_oauth_unavailable',
+          message:
+            error instanceof Error ? error.message : 'Slack install failed.',
+        },
+      },
+    };
+  }
+}
+
+export async function completeSlackOAuthInstallRoute(input: {
+  auth: AuthContext;
+  requestOrigin?: string | null;
+  state: string;
+  code: string;
+  reloadConnection?: (connectionId: string) => Promise<void>;
+}) {
+  if (!canManageConnections(input.auth)) {
+    return forbidden(
+      'You do not have permission to manage channel connections.',
+    );
+  }
+  try {
+    const result = await completeSlackOAuthInstall({
+      state: input.state,
+      code: input.code,
+      auth: input.auth,
+      requestOrigin: input.requestOrigin,
+    });
+    await input.reloadConnection?.(result.connectionId);
+    return {
+      statusCode: 200,
+      body: {
+        ok: true,
+        data: result,
+      },
+    };
+  } catch (error) {
+    return {
+      statusCode: 400,
+      body: {
+        ok: false,
+        error: {
+          code: 'slack_oauth_failed',
+          message:
+            error instanceof Error
+              ? error.message
+              : 'Slack OAuth callback failed.',
+        },
+      },
+    };
+  }
+}
+
+export async function syncSlackWorkspaceRoute(input: {
+  auth: AuthContext;
+  connectionId: string;
+}) {
+  if (!canManageConnections(input.auth)) {
+    return forbidden(
+      'You do not have permission to manage channel connections.',
+    );
+  }
+  const connection = getChannelConnectionById(input.connectionId);
+  if (!connection || connection.platform !== 'slack') {
+    return notFound('Slack workspace not found.');
+  }
+  try {
+    const result = await syncSlackWorkspaceTargets({
+      connectionId: input.connectionId,
+    });
+    return {
+      statusCode: 200,
+      body: {
+        ok: true,
+        data: result,
+      },
+    };
+  } catch (error) {
+    return {
+      statusCode: 400,
+      body: {
+        ok: false,
+        error: {
+          code: 'slack_sync_failed',
+          message:
+            error instanceof Error ? error.message : 'Slack sync failed.',
+        },
+      },
+    };
+  }
+}
+
+export async function disconnectSlackWorkspaceRoute(input: {
+  auth: AuthContext;
+  connectionId: string;
+  disconnectConnection?: (connectionId: string) => Promise<void>;
+}) {
+  if (!canManageConnections(input.auth)) {
+    return forbidden(
+      'You do not have permission to manage channel connections.',
+    );
+  }
+  const connection = getChannelConnectionById(input.connectionId);
+  if (!connection || connection.platform !== 'slack') {
+    return notFound('Slack workspace not found.');
+  }
+  await input.disconnectConnection?.(input.connectionId);
+  const deleted = await disconnectSlackWorkspace({
+    connectionId: input.connectionId,
+  });
+  return {
+    statusCode: deleted ? 200 : 404,
+    body: deleted
+      ? {
+          ok: true,
+          data: { deleted: true },
+        }
+      : {
+          ok: false,
+          error: {
+            code: 'not_found',
+            message: 'Slack workspace not found.',
+          },
+        },
+  };
+}
+
+export async function diagnoseSlackWorkspaceTargetRoute(input: {
+  auth: AuthContext;
+  connectionId: string;
+  rawInput: string;
+}) {
+  if (!canManageConnections(input.auth)) {
+    return forbidden(
+      'You do not have permission to manage channel connections.',
+    );
+  }
+  const connection = getChannelConnectionById(input.connectionId);
+  if (!connection || connection.platform !== 'slack') {
+    return notFound('Slack workspace not found.');
+  }
+  try {
+    const result = await diagnoseSlackTarget({
+      connectionId: input.connectionId,
+      rawInput: input.rawInput,
+    });
+    return {
+      statusCode: result.ok ? 200 : 400,
+      body: result.ok
+        ? {
+            ok: true,
+            data: result,
+          }
+        : {
+            ok: false,
+            error: {
+              code: result.code,
+              message: result.message,
+            },
+          },
+    };
+  } catch (error) {
+    return {
+      statusCode: 400,
+      body: {
+        ok: false,
+        error: {
+          code: 'slack_target_check_failed',
+          message:
+            error instanceof Error
+              ? error.message
+              : 'Slack channel lookup failed.',
+        },
+      },
+    };
+  }
+}
+
+export function approveChannelTargetRoute(input: {
+  auth: AuthContext;
+  connectionId: string;
+  targetKind: string;
+  targetId: string;
+  displayName?: string | null;
+  metadata?: Record<string, unknown> | null;
+}) {
+  if (!canManageConnections(input.auth)) {
+    return forbidden(
+      'You do not have permission to manage channel connections.',
+    );
+  }
+  const connection = getChannelConnectionById(input.connectionId);
+  if (!connection) {
+    return notFound('Channel connection not found.');
+  }
+  const existing = getChannelTarget({
+    connectionId: input.connectionId,
+    targetKind: input.targetKind,
+    targetId: input.targetId,
+  });
+  const target = approveChannelTarget({
+    connectionId: input.connectionId,
+    targetKind: input.targetKind,
+    targetId: input.targetId,
+    displayName:
+      input.displayName?.trim() || existing?.display_name || input.targetId,
+    metadata:
+      input.metadata ??
+      parseTargetMetadata(existing?.metadata_json || null) ??
+      null,
+    registeredBy: input.auth.userId,
+  });
+  return {
+    statusCode: 200,
+    body: {
+      ok: true,
+      data: { target },
+    },
+  };
+}
+
+export function unapproveChannelTargetRoute(input: {
+  auth: AuthContext;
+  connectionId: string;
+  targetKind: string;
+  targetId: string;
+}) {
+  if (!canManageConnections(input.auth)) {
+    return forbidden(
+      'You do not have permission to manage channel connections.',
+    );
+  }
+  const connection = getChannelConnectionById(input.connectionId);
+  if (!connection) {
+    return notFound('Channel connection not found.');
+  }
+  const result = unapproveChannelTarget({
+    connectionId: input.connectionId,
+    targetKind: input.targetKind,
+    targetId: input.targetId,
+    updatedBy: input.auth.userId,
+  });
+  if (!result.removed) {
+    return notFound('Channel destination not found.');
+  }
+  return {
+    statusCode: 200,
+    body: {
+      ok: true,
+      data: {
+        removed: true,
+        deactivatedBindingCount: result.deactivatedBindingCount,
+      },
+    },
+  };
+}
+
+export async function handleSlackEventsRoute(input: {
+  rawBody: string;
+  timestampHeader: string | null;
+  signatureHeader: string | null;
+  enqueueEvent?: (connectionId: string, event: SlackEventEnvelope) => void;
+}) {
+  const secrets = getSlackProviderSecretPayload();
+  const signingSecret = secrets?.signingSecret.trim() || '';
+  if (!signingSecret) {
+    return {
+      statusCode: 503,
+      body: {
+        ok: false,
+        error: {
+          code: 'slack_events_not_ready',
+          message:
+            'Slack signing secret is not configured yet. Save it before using the Events API URL.',
+        },
+      },
+    };
+  }
+
+  try {
+    verifySlackRequestSignature({
+      rawBody: input.rawBody,
+      timestampHeader: input.timestampHeader,
+      signatureHeader: input.signatureHeader,
+      signingSecret,
+    });
+  } catch (error) {
+    return {
+      statusCode: 401,
+      body: {
+        ok: false,
+        error: {
+          code: 'invalid_slack_signature',
+          message:
+            error instanceof Error
+              ? error.message
+              : 'Slack request verification failed.',
+        },
+      },
+    };
+  }
+
+  let payload: SlackEventEnvelope;
+  try {
+    payload = JSON.parse(input.rawBody) as SlackEventEnvelope;
+  } catch {
+    return {
+      statusCode: 400,
+      body: {
+        ok: false,
+        error: {
+          code: 'invalid_json',
+          message: 'Slack payload is not valid JSON.',
+        },
+      },
+    };
+  }
+
+  if (payload.type === 'url_verification') {
+    return {
+      statusCode: 200,
+      body: {
+        challenge:
+          typeof (payload as Record<string, unknown>).challenge === 'string'
+            ? (payload as Record<string, unknown>).challenge
+            : '',
+      },
+    };
+  }
+
+  const teamId = typeof payload.team_id === 'string' ? payload.team_id : '';
+  const eventId = typeof payload.event_id === 'string' ? payload.event_id : '';
+  if (!teamId || !eventId) {
+    return {
+      statusCode: 200,
+      body: {
+        ok: true,
+        data: { accepted: true },
+      },
+    };
+  }
+
+  const dedupeKey = `slack:${teamId}:${eventId}`;
+  const accepted = markRecentSlackEventReceipt(dedupeKey, Date.now());
+  if (!accepted) {
+    return {
+      statusCode: 200,
+      body: {
+        ok: true,
+        data: { accepted: true, duplicate: true },
+      },
+    };
+  }
+
+  const connection = getChannelConnectionByPlatformAccount({
+    platform: 'slack',
+    accountKey: `slack:${teamId}`,
+  });
+  if (connection) {
+    input.enqueueEvent?.(connection.id, payload);
+  }
+
+  return {
+    statusCode: 200,
+    body: {
+      ok: true,
+      data: { accepted: true },
+    },
+  };
+}
+
 export function listTalkChannelsRoute(input: {
   auth: AuthContext;
   talkId: string;
@@ -663,8 +1244,7 @@ export function createTalkChannelRoute(input: {
         ok: false,
         error: {
           code: 'target_not_approved',
-          message:
-            'Only approved Telegram destinations can be bound to a Talk.',
+          message: 'Only approved channel destinations can be bound to a Talk.',
         },
       },
     };

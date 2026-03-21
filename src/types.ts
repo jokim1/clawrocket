@@ -55,6 +55,7 @@ export interface NewMessage {
 
 export interface TalkChannelInboundEvent {
   platform: 'telegram' | 'slack';
+  connection_id: string;
   target_kind: string;
   target_id: string;
   platform_event_id: string;
@@ -70,10 +71,21 @@ export interface TalkChannelInboundEvent {
 
 export interface ChannelTargetObservation {
   platform: 'telegram' | 'slack';
+  connection_id: string;
   target_kind: string;
   target_id: string;
   display_name: string | null;
   observed_at: string;
+  metadata?: Record<string, unknown> | null;
+}
+
+export interface ChannelDeliveryPayload {
+  connectionId: string;
+  targetId: string;
+  content: string;
+  deliveryMode?: 'reply' | 'channel';
+  sourceThreadKey?: string | null;
+  sourceExternalMessageId?: string | null;
   metadata?: Record<string, unknown> | null;
 }
 
@@ -107,9 +119,12 @@ export interface Channel {
   name: string;
   connect(): Promise<void>;
   sendMessage(jid: string, text: string): Promise<void>;
+  sendDelivery?(payload: ChannelDeliveryPayload): Promise<void>;
   isConnected(): boolean;
   ownsJid(jid: string): boolean;
   disconnect(): Promise<void>;
+  probe?(): Promise<void>;
+  handlePlatformEvent?(event: unknown): Promise<void>;
   // Optional: typing indicator. Channels that support it implement it.
   setTyping?(jid: string, isTyping: boolean): Promise<void>;
   // Optional: sync group/chat names from the platform.

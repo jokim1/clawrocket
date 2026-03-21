@@ -49,22 +49,24 @@ import {
   getOwnerUser,
   getTalkChannelBindingById,
   initClawrocketSchema,
+  listChannelConnections,
   updateChannelConnectionConfig,
   upsertChannelTarget,
 } from './clawrocket/db/index.js';
 import { ChannelDeliveryWorker } from './clawrocket/channels/channel-delivery-worker.js';
 import { ChannelIngressWorker } from './clawrocket/channels/channel-ingress-worker.js';
 import { TalkChannelRouter } from './clawrocket/channels/channel-router.js';
-import { ConnectionHealthMonitor } from './clawrocket/channels/connection-health-monitor.js';
+import { ChannelRuntimeManager } from './clawrocket/channels/channel-runtime-manager.js';
+import { resolveSlackWorkspaceCredential } from './clawrocket/channels/slack-connector.js';
 import {
   probeTelegramBotToken,
   resolveTelegramCredential,
-  type TelegramBotIdentity,
 } from './clawrocket/channels/telegram-connector.js';
 import { TalkLifecycleWakeBus } from './clawrocket/channels/talk-lifecycle-wake-bus.js';
 import { registerClawrocketSchedulerMaintenanceHook } from './clawrocket/scheduler-maintenance.js';
 import { GroupQueue } from './group-queue.js';
 import { resolveGroupFolderPath } from './group-folder.js';
+import { SlackChannel } from './channels/slack.js';
 import { initBotPool, TelegramChannel } from './channels/telegram.js';
 import { startIpcWatcher } from './ipc.js';
 import { findChannel, formatMessages, formatOutbound } from './router.js';
@@ -544,7 +546,7 @@ async function main(): Promise<void> {
     | undefined;
   let channelIngressWorker: ChannelIngressWorker | undefined;
   let channelDeliveryWorker: ChannelDeliveryWorker | undefined;
-  let connectionHealthMonitor: ConnectionHealthMonitor | undefined;
+  const channelRuntimeManager = new ChannelRuntimeManager();
   let shutdownPromise: Promise<void> | null = null;
   let signalHandlersInstalled = false;
   const talkLifecycleBus = new TalkLifecycleWakeBus();
@@ -599,16 +601,14 @@ async function main(): Promise<void> {
         }
       }
 
-      if (connectionHealthMonitor) {
-        try {
-          await connectionHealthMonitor.stop();
-        } catch (error) {
-          releaseError = releaseError ?? error;
-          logger.error(
-            { err: error, reason },
-            'Failed to stop connection health monitor',
-          );
-        }
+      try {
+        await channelRuntimeManager.stop();
+      } catch (error) {
+        releaseError = releaseError ?? error;
+        logger.error(
+          { err: error, reason },
+          'Failed to stop channel runtime manager',
+        );
       }
 
       if (webServer) {
@@ -684,9 +684,9 @@ async function main(): Promise<void> {
     registerClawrocketSchedulerMaintenanceHook();
     logger.info('Database initialized');
     loadState();
-    let reloadTelegramConnector = async (_input?: {
-      validatedBot?: TelegramBotIdentity;
-    }): Promise<void> => {
+    let reloadChannelConnection = async (
+      _connectionId: string,
+    ): Promise<void> => {
       /* replaced after worker wiring */
     };
 
@@ -703,13 +703,19 @@ async function main(): Promise<void> {
           if (!binding) {
             throw new Error('Talk channel binding not found');
           }
-          const channel = findChannel(channels, binding.target_id);
-          if (!channel) {
-            throw new Error(`No channel owns target ${binding.target_id}`);
-          }
-          await channel.sendMessage(binding.target_id, text);
+          await channelRuntimeManager.sendDelivery({
+            connectionId: binding.connection_id,
+            targetId: binding.target_id,
+            content: text,
+            deliveryMode: binding.delivery_mode,
+          });
         },
-        reloadTelegramConnector: () => reloadTelegramConnector(),
+        reloadChannelConnection: (connectionId) =>
+          reloadChannelConnection(connectionId),
+        disconnectChannelConnection: (connectionId) =>
+          channelRuntimeManager.disconnectRuntime(connectionId),
+        handleSlackEvent: (connectionId, event) =>
+          channelRuntimeManager.routePlatformEvent(connectionId, event),
       });
     } else {
       logger.info('Web API server is disabled (WEB_ENABLED=false)');
@@ -721,22 +727,18 @@ async function main(): Promise<void> {
         talkLifecycleBus,
       });
       channelDeliveryWorker = new ChannelDeliveryWorker({
-        sendText: async (jid, text) => {
-          const channel = findChannel(channels, jid);
-          if (!channel) {
-            throw new Error(`No channel owns target ${jid}`);
-          }
-          await channel.sendMessage(jid, text);
+        sendDelivery: async (payload) => {
+          await channelRuntimeManager.sendDelivery(payload);
         },
       });
     }
 
     const talkChannelRouter = channelIngressWorker
-      ? new TalkChannelRouter(telegramConnection.id, channelIngressWorker)
+      ? new TalkChannelRouter(channelIngressWorker)
       : null;
 
-    // Channel callbacks (shared by all channels)
-    const channelOpts = {
+    const buildChannelOpts = (connectionId: string) => ({
+      connectionId,
       onMessage: (_chatJid: string, msg: NewMessage) => storeMessage(msg),
       onChatMetadata: (
         chatJid: string,
@@ -750,9 +752,8 @@ async function main(): Promise<void> {
       onTargetObserved: async (
         observation: import('./types.js').ChannelTargetObservation,
       ) => {
-        if (observation.platform !== 'telegram') return;
         upsertChannelTarget({
-          connectionId: telegramConnection.id,
+          connectionId: observation.connection_id,
           targetKind: observation.target_kind,
           targetId: observation.target_id,
           displayName: observation.display_name || observation.target_id,
@@ -765,9 +766,24 @@ async function main(): Promise<void> {
             talkChannelRouter.handleInboundEvent(event)
         : undefined,
       registeredGroups: () => registeredGroups,
+    });
+
+    const parseConfigJson = (
+      raw: string | null,
+    ): Record<string, unknown> | null => {
+      if (!raw) return null;
+      try {
+        const parsed = JSON.parse(raw) as unknown;
+        return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+          ? (parsed as Record<string, unknown>)
+          : null;
+      } catch {
+        return null;
+      }
     };
 
     const removeConnectedTelegramChannel = async () => {
+      await channelRuntimeManager.disconnectRuntime(telegramConnection.id);
       const remaining: Channel[] = [];
       for (const channel of channels) {
         if (channel.name !== 'telegram') {
@@ -779,15 +795,8 @@ async function main(): Promise<void> {
       channels.splice(0, channels.length, ...remaining);
     };
 
-    const stopTelegramHealthMonitor = async () => {
-      if (!connectionHealthMonitor) return;
-      await connectionHealthMonitor.stop();
-      connectionHealthMonitor = undefined;
-    };
-
-    reloadTelegramConnector = async (input) => {
+    const reloadTelegramConnection = async () => {
       const timestamp = new Date().toISOString();
-      await stopTelegramHealthMonitor();
       await removeConnectedTelegramChannel();
 
       const credential = resolveTelegramCredential();
@@ -816,11 +825,16 @@ async function main(): Promise<void> {
       }
 
       try {
-        const identity =
-          input?.validatedBot ??
-          (await probeTelegramBotToken(credential.token));
-        const channel = new TelegramChannel(credential.token, channelOpts);
-        await channel.connect();
+        const identity = await probeTelegramBotToken(credential.token);
+        const channel = new TelegramChannel(
+          credential.token,
+          buildChannelOpts(telegramConnection.id),
+        );
+        await channelRuntimeManager.connectRuntime({
+          connectionId: telegramConnection.id,
+          channel,
+          pollMs: 60_000,
+        });
         channels.push(channel);
         updateChannelConnectionConfig({
           connectionId: telegramConnection.id,
@@ -835,17 +849,6 @@ async function main(): Promise<void> {
           lastHealthCheckAt: timestamp,
           lastHealthError: null,
         });
-
-        if ('probe' in channel) {
-          connectionHealthMonitor = new ConnectionHealthMonitor({
-            connectionId: telegramConnection.id,
-            probe: async () => {
-              await (channel as { probe: () => Promise<void> }).probe();
-            },
-            pollMs: 60_000,
-          });
-          await connectionHealthMonitor.start();
-        }
       } catch (error) {
         const detail =
           error instanceof Error ? error.message : 'Failed to connect Telegram';
@@ -865,8 +868,99 @@ async function main(): Promise<void> {
       }
     };
 
-    await reloadTelegramConnector();
-    if (channels.length === 0) {
+    const reloadSlackWorkspaceConnection = async (
+      connectionId: string,
+    ): Promise<void> => {
+      const connection = listChannelConnections().find(
+        (candidate) => candidate.id === connectionId,
+      );
+      if (!connection || connection.platform !== 'slack') {
+        await channelRuntimeManager.disconnectRuntime(connectionId);
+        return;
+      }
+
+      const timestamp = new Date().toISOString();
+      const credential = resolveSlackWorkspaceCredential(connectionId);
+      const existingConfig = parseConfigJson(connection.config_json) || {};
+
+      if (!credential?.botToken) {
+        await channelRuntimeManager.disconnectRuntime(connectionId);
+        updateChannelConnectionConfig({
+          connectionId,
+          config: {
+            ...existingConfig,
+            managedBy: 'runtime',
+            platform: 'slack',
+            tokenSource: 'missing',
+          },
+          healthStatus: 'disconnected',
+          lastHealthCheckAt: timestamp,
+          lastHealthError: 'Slack workspace token not configured.',
+        });
+        return;
+      }
+
+      try {
+        const channel = new SlackChannel(
+          credential.botToken,
+          buildChannelOpts(connectionId),
+        );
+        await channelRuntimeManager.connectRuntime({
+          connectionId,
+          channel,
+          pollMs: 60_000,
+        });
+        updateChannelConnectionConfig({
+          connectionId,
+          config: {
+            ...existingConfig,
+            managedBy: 'runtime',
+            platform: 'slack',
+            tokenSource: 'db',
+          },
+          healthStatus: 'healthy',
+          lastHealthCheckAt: timestamp,
+          lastHealthError: null,
+        });
+      } catch (error) {
+        const detail =
+          error instanceof Error ? error.message : 'Failed to connect Slack';
+        await channelRuntimeManager.disconnectRuntime(connectionId);
+        updateChannelConnectionConfig({
+          connectionId,
+          config: {
+            ...existingConfig,
+            managedBy: 'runtime',
+            platform: 'slack',
+            tokenSource: credential ? 'db' : 'missing',
+          },
+          healthStatus: 'error',
+          lastHealthCheckAt: timestamp,
+          lastHealthError: detail,
+        });
+        logger.error(
+          { err: error, connectionId },
+          'Failed to connect Slack workspace',
+        );
+      }
+    };
+
+    reloadChannelConnection = async (connectionId: string) => {
+      if (connectionId === telegramConnection.id) {
+        await reloadTelegramConnection();
+        return;
+      }
+      await reloadSlackWorkspaceConnection(connectionId);
+    };
+
+    await reloadTelegramConnection();
+    const slackConnections = listChannelConnections().filter(
+      (connection) => connection.platform === 'slack',
+    );
+    for (const connection of slackConnections) {
+      await reloadSlackWorkspaceConnection(connection.id);
+    }
+    if (channelRuntimeManager.getConnectionCount() === 0) {
       if (shouldRequireConnectedChannels(WEB_ENABLED)) {
         throw new Error('No channels connected');
       }

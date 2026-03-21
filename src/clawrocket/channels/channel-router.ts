@@ -82,14 +82,10 @@ function passesResponseGate(
 }
 
 export class TalkChannelRouter {
-  constructor(
-    private readonly telegramConnectionId: string,
-    private readonly ingressWorker: TalkChannelRouterControl,
-  ) {}
+  constructor(private readonly ingressWorker: TalkChannelRouterControl) {}
 
   async handleInboundEvent(event: TalkChannelInboundEvent): Promise<boolean> {
-    const connectionId =
-      event.platform === 'telegram' ? this.telegramConnectionId : null;
+    const connectionId = event.connection_id;
     if (!connectionId) return false;
 
     upsertChannelTarget({
