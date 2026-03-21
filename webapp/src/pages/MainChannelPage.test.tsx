@@ -35,6 +35,7 @@ const {
   deleteMainMessagesMock,
   listMainThreadsMock,
   getMainThreadMock,
+  getMainRegisteredAgentMock,
   listMainRunsMock,
   postMainRunVisibleMock,
   postMainMessageMock,
@@ -50,6 +51,7 @@ const {
   deleteMainMessagesMock: vi.fn(),
   listMainThreadsMock: vi.fn(),
   getMainThreadMock: vi.fn(),
+  getMainRegisteredAgentMock: vi.fn(),
   listMainRunsMock: vi.fn(),
   postMainRunVisibleMock: vi.fn(),
   postMainMessageMock: vi.fn(),
@@ -71,6 +73,7 @@ vi.mock('../lib/api', async () => {
     deleteMainMessages: deleteMainMessagesMock,
     listMainThreads: listMainThreadsMock,
     getMainThread: getMainThreadMock,
+    getMainRegisteredAgent: getMainRegisteredAgentMock,
     listMainRuns: listMainRunsMock,
     postMainRunVisible: postMainRunVisibleMock,
     postMainMessage: postMainMessageMock,
@@ -95,6 +98,41 @@ vi.mock('../lib/mainStream', async () => {
   };
 });
 
+function buildMainAgentSnapshot(input?: {
+  browserEnabled?: boolean;
+  ready?: boolean;
+  message?: string;
+}) {
+  const browserEnabled = input?.browserEnabled ?? false;
+  const ready = input?.ready ?? true;
+  return {
+    id: 'agent.main',
+    name: 'Nanoclaw',
+    providerId: 'provider.anthropic',
+    modelId: 'claude-sonnet-4-6',
+    toolPermissions: browserEnabled
+      ? { shell: true, filesystem: true, web: true, browser: true }
+      : { shell: true, filesystem: true, web: true },
+    personaRole: 'assistant',
+    systemPrompt: null,
+    enabled: true,
+    createdAt: '2026-03-20T20:00:00.000Z',
+    updatedAt: '2026-03-20T20:00:00.000Z',
+    executionPreview: {
+      surface: 'main' as const,
+      backend: ready ? ('container' as const) : null,
+      authPath: ready ? ('subscription' as const) : null,
+      routeReason: ready ? ('normal' as const) : ('no_valid_path' as const),
+      ready,
+      message:
+        input?.message ||
+        (ready
+          ? 'Main agent is ready.'
+          : 'Browser access is not configured for this agent.'),
+    },
+  };
+}
+
 describe('MainChannelPage', () => {
   beforeEach(() => {
     deleteMainMessagesMock.mockResolvedValue({
@@ -104,6 +142,7 @@ describe('MainChannelPage', () => {
       threadDeleted: false,
     });
     listMainRunsMock.mockResolvedValue([]);
+    getMainRegisteredAgentMock.mockResolvedValue(buildMainAgentSnapshot());
     postMainRunVisibleMock.mockResolvedValue({ recorded: true });
     startBrowserSetupSessionMock.mockResolvedValue({
       status: 'ok',
@@ -213,6 +252,77 @@ describe('MainChannelPage', () => {
     );
     expect(getMainThreadMock).not.toHaveBeenCalled();
     expect(screen.getByText('Nanoclaw')).toBeTruthy();
+  });
+
+  it('shows an explicit browser-disabled badge when the Main agent lacks browser tools', async () => {
+    listMainThreadsMock.mockResolvedValue([]);
+    getMainThreadMock.mockResolvedValue([]);
+    getMainRegisteredAgentMock.mockResolvedValue(buildMainAgentSnapshot());
+
+    render(
+      <MemoryRouter initialEntries={['/app/main']}>
+        <Routes>
+          <Route
+            path="/app/main"
+            element={<MainChannelPage onUnauthorized={vi.fn()} />}
+          />
+          <Route
+            path="/app/main/:threadId"
+            element={<MainChannelPage onUnauthorized={vi.fn()} />}
+          />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    const capabilityStatus = await screen.findByRole('list', {
+      name: 'Main capability status',
+    });
+    expect(within(capabilityStatus).getByText('Browser disabled')).toBeTruthy();
+    expect(
+      screen.getByText(
+        'The selected Main agent can use web search and fetch, but browser automation is disabled.',
+      ),
+    ).toBeTruthy();
+  });
+
+  it('shows browser setup required when the Main agent is browser-capable but execution is not ready', async () => {
+    listMainThreadsMock.mockResolvedValue([]);
+    getMainThreadMock.mockResolvedValue([]);
+    getMainRegisteredAgentMock.mockResolvedValue(
+      buildMainAgentSnapshot({
+        browserEnabled: true,
+        ready: false,
+        message:
+          'Browser access is not configured for this agent. Configure the agent execution credentials before retrying.',
+      }),
+    );
+
+    render(
+      <MemoryRouter initialEntries={['/app/main']}>
+        <Routes>
+          <Route
+            path="/app/main"
+            element={<MainChannelPage onUnauthorized={vi.fn()} />}
+          />
+          <Route
+            path="/app/main/:threadId"
+            element={<MainChannelPage onUnauthorized={vi.fn()} />}
+          />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    const capabilityStatus = await screen.findByRole('list', {
+      name: 'Main capability status',
+    });
+    expect(
+      within(capabilityStatus).getByText('Browser setup required'),
+    ).toBeTruthy();
+    expect(
+      screen.getByText(
+        'Browser access is not configured for this agent. Configure the agent execution credentials before retrying.',
+      ),
+    ).toBeTruthy();
   });
 
   it('navigates away from a Main thread that now returns 404', async () => {
