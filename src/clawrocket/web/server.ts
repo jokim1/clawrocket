@@ -131,6 +131,7 @@ import {
   getEffectiveToolsRoute,
 } from './routes/user-settings.js';
 import {
+  deleteMainMessagesRoute,
   deleteMainThreadRoute,
   listMainThreadsRoute,
   getMainThreadRoute,
@@ -1449,6 +1450,56 @@ function buildApp(opts: WebServerOptions): Hono {
     if (!rateResult.allowed) return rateLimitedResponse(c, rateResult);
 
     const result = listMainRunsRoute(auth, c.req.param('threadId'));
+    return new Response(JSON.stringify(result.body), {
+      status: result.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
+  });
+
+  app.post('/api/v1/main/threads/:threadId/messages/delete', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+    const rateResult = checkRateLimit({
+      principalId: auth.userId,
+      bucket: 'write',
+    });
+    if (!rateResult.allowed) return rateLimitedResponse(c, rateResult);
+    const csrf = validateCsrfToken({
+      method: c.req.method,
+      authType: auth.authType,
+      cookieHeader: c.req.header('cookie'),
+      csrfHeader: c.req.header('x-csrf-token'),
+    });
+    if (!csrf.ok) {
+      return c.json(
+        { ok: false, error: { code: 'csrf_failed', message: csrf.reason } },
+        403,
+      );
+    }
+
+    const bodyText = await c.req.text();
+    const payload = parseJsonPayload<Record<string, unknown>>(bodyText);
+    if (!payload.ok) {
+      return c.json(
+        { ok: false, error: { code: 'invalid_json', message: payload.error } },
+        400,
+      );
+    }
+    if (!payload.data || typeof payload.data !== 'object') {
+      return c.json(
+        {
+          ok: false,
+          error: { code: 'invalid_json', message: 'JSON object expected.' },
+        },
+        400,
+      );
+    }
+
+    const result = deleteMainMessagesRoute(
+      auth,
+      c.req.param('threadId'),
+      payload.data,
+    );
     return new Response(JSON.stringify(result.body), {
       status: result.statusCode,
       headers: { 'content-type': 'application/json; charset=utf-8' },

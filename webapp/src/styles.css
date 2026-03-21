@@ -3394,6 +3394,12 @@ a {
   color: #1f2a44;
 }
 
+.thread-detail-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
 .inline-editable-title {
   display: flex;
   flex-direction: column;

@@ -1833,6 +1833,89 @@ describe('talk routes', () => {
     expect(body.error.code).toBe('thread_active_round');
   });
 
+  it('deletes selected Main thread messages', async () => {
+    getDb()
+      .prepare(
+        `
+        INSERT INTO talk_messages (
+          id, talk_id, thread_id, role, content, created_by, created_at
+        ) VALUES (?, NULL, ?, 'user', ?, ?, ?)
+      `,
+      )
+      .run(
+        'msg-main-edit-1',
+        'thread-main-owner',
+        'Remove this Main prompt',
+        'owner-1',
+        '2026-03-07T02:00:00.000Z',
+      );
+    getDb()
+      .prepare(
+        `
+        INSERT INTO talk_messages (
+          id, talk_id, thread_id, role, content, created_by, created_at
+        ) VALUES (?, NULL, ?, 'assistant', ?, NULL, ?)
+      `,
+      )
+      .run(
+        'msg-main-edit-2',
+        'thread-main-owner',
+        'Remove this Main reply',
+        '2026-03-07T02:00:01.000Z',
+      );
+    getDb()
+      .prepare(
+        `
+        INSERT INTO talk_messages (
+          id, talk_id, thread_id, role, content, created_by, created_at
+        ) VALUES (?, NULL, ?, 'user', ?, ?, ?)
+      `,
+      )
+      .run(
+        'msg-main-edit-3',
+        'thread-main-owner',
+        'Keep this Main note',
+        'owner-1',
+        '2026-03-07T02:00:02.000Z',
+      );
+
+    const res = await server.request(
+      '/api/v1/main/threads/thread-main-owner/messages/delete',
+      {
+        method: 'POST',
+        headers: {
+          Authorization: 'Bearer owner-token',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          messageIds: ['msg-main-edit-1', 'msg-main-edit-2'],
+        }),
+      },
+    );
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as any;
+    expect(body.ok).toBe(true);
+    expect(body.data).toMatchObject({
+      threadId: 'thread-main-owner',
+      deletedCount: 2,
+      deletedMessageIds: ['msg-main-edit-1', 'msg-main-edit-2'],
+      threadDeleted: false,
+    });
+
+    const remaining = getDb()
+      .prepare(
+        `
+        SELECT id
+        FROM talk_messages
+        WHERE talk_id IS NULL AND thread_id = ?
+        ORDER BY created_at ASC
+      `,
+      )
+      .all('thread-main-owner') as Array<{ id: string }>;
+    expect(remaining.map((row) => row.id)).toEqual(['msg-main-edit-3']);
+  });
+
   it('requires editor permission to enqueue chat', async () => {
     const viewerRes = await server.request('/api/v1/talks/talk-owner/chat', {
       method: 'POST',

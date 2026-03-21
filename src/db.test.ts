@@ -31,6 +31,7 @@ import {
   createTalk,
   createTalkMessage,
   createTalkRun,
+  deleteMainMessagesAtomic,
   deleteMainThread,
   deleteTalkMessagesAtomic,
   enqueueChannelTurnAtomic,
@@ -1036,6 +1037,51 @@ describe('phase 0 schema and reliability tables', () => {
       deletedMessageIds: ['tm-edit-1', 'tm-edit-2'],
       editedAt: '2024-01-01T00:00:03.000Z',
     });
+  });
+
+  it('rejects main history edits that would orphan the thread from every user message', () => {
+    const threadId = 'main-thread-edit-1';
+    const messageId = 'main-msg-user-1';
+    const runId = 'main-run-1';
+
+    enqueueMainTurnAtomic({
+      threadId,
+      userId: 'owner-1',
+      content: 'Original main prompt',
+      messageId,
+      runId,
+    });
+    getDb()
+      .prepare(
+        `
+        UPDATE talk_runs
+        SET status = 'completed', ended_at = '2024-01-01T00:00:01.000Z'
+        WHERE id = ?
+      `,
+      )
+      .run(runId);
+    getDb()
+      .prepare(
+        `
+        INSERT INTO talk_messages (
+          id, talk_id, thread_id, role, content, created_by, created_at
+        ) VALUES (?, NULL, ?, 'assistant', ?, NULL, ?)
+      `,
+      )
+      .run(
+        'main-msg-assistant-1',
+        threadId,
+        'Reply that should not become orphaned',
+        '2024-01-01T00:00:02.000Z',
+      );
+
+    expect(() =>
+      deleteMainMessagesAtomic({
+        threadId,
+        userId: 'owner-1',
+        messageIds: [messageId],
+      }),
+    ).toThrow(/retain at least one user message/i);
   });
 
   it('orders same-timestamp talk messages by sequence_in_run and includes runtime metadata in outbox events', () => {

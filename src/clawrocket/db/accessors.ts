@@ -1,6 +1,7 @@
 import { randomUUID } from 'crypto';
 
 import { getDb } from '../../db.js';
+import { refreshMainThreadSummary } from '../agents/main-context-loader.js';
 import { notifyOutboxEvent } from '../channels/outbox-notifier.js';
 import {
   inferThreadTitleFromContent,
@@ -2012,6 +2013,144 @@ export function deleteTalkMessagesAtomic(input: {
       });
 
       return { deletedCount: ids.length, deletedMessageIds: ids };
+    },
+  );
+
+  return tx(input, normalizedIds);
+}
+
+export function deleteMainMessagesAtomic(input: {
+  threadId: string;
+  userId: string;
+  messageIds: string[];
+  now?: string;
+}): {
+  deletedCount: number;
+  deletedMessageIds: string[];
+  threadDeleted: boolean;
+} {
+  const normalizedIds = Array.from(
+    new Set(
+      input.messageIds
+        .map((messageId) => messageId.trim())
+        .filter((messageId) => messageId.length > 0),
+    ),
+  );
+
+  const tx = getDb().transaction(
+    (
+      txInput: typeof input,
+      ids: string[],
+    ): {
+      deletedCount: number;
+      deletedMessageIds: string[];
+      threadDeleted: boolean;
+    } => {
+      if (ids.length === 0) {
+        throw new Error('main history edit requires at least one message');
+      }
+
+      const owner = getMainThreadOwner(txInput.threadId);
+      if (owner !== txInput.userId) {
+        throw new Error('main thread not found');
+      }
+
+      const placeholders = ids.map(() => '?').join(', ');
+      const rows = getDb()
+        .prepare(
+          `
+          SELECT id, role
+          FROM talk_messages
+          WHERE talk_id IS NULL
+            AND thread_id = ?
+            AND id IN (${placeholders})
+        `,
+        )
+        .all(txInput.threadId, ...ids) as Array<{
+        id: string;
+        role: TalkMessageRole;
+      }>;
+
+      if (rows.length !== ids.length) {
+        throw new Error('one or more main messages were not found');
+      }
+      if (rows.some((row) => row.role === 'system')) {
+        throw new Error('system messages cannot be deleted');
+      }
+
+      const remaining = getDb()
+        .prepare(
+          `
+          SELECT
+            COUNT(*) AS remaining_count,
+            COALESCE(
+              SUM(CASE WHEN role = 'user' THEN 1 ELSE 0 END),
+              0
+            ) AS remaining_user_count
+          FROM talk_messages
+          WHERE talk_id IS NULL
+            AND thread_id = ?
+            AND id NOT IN (${placeholders})
+        `,
+        )
+        .get(txInput.threadId, ...ids) as {
+        remaining_count: number;
+        remaining_user_count: number;
+      };
+
+      if (
+        remaining.remaining_count > 0 &&
+        remaining.remaining_user_count === 0
+      ) {
+        throw new Error('main thread must retain at least one user message');
+      }
+
+      const activeRun = getDb()
+        .prepare(
+          `
+          SELECT 1 AS active
+          FROM talk_runs
+          WHERE talk_id IS NULL
+            AND thread_id = ?
+            AND status IN ('queued', 'running', 'awaiting_confirmation')
+          LIMIT 1
+        `,
+        )
+        .get(txInput.threadId) as { active: number } | undefined;
+      if (activeRun) {
+        throw new TalkActiveRoundError('thread');
+      }
+
+      getDb()
+        .prepare(
+          `
+          DELETE FROM talk_messages
+          WHERE talk_id IS NULL
+            AND thread_id = ?
+            AND id IN (${placeholders})
+        `,
+        )
+        .run(txInput.threadId, ...ids);
+
+      if (remaining.remaining_count === 0) {
+        getDb()
+          .prepare(`DELETE FROM main_thread_summaries WHERE thread_id = ?`)
+          .run(txInput.threadId);
+        getDb()
+          .prepare(`DELETE FROM main_threads WHERE thread_id = ?`)
+          .run(txInput.threadId);
+        getDb()
+          .prepare(`DELETE FROM talk_threads WHERE id = ? AND talk_id IS NULL`)
+          .run(txInput.threadId);
+      } else {
+        refreshMainThreadSummary(txInput.threadId);
+      }
+
+      return {
+        deletedCount: ids.length,
+        deletedMessageIds: ids,
+        threadDeleted: remaining.remaining_count === 0,
+      };
     },
   );
 

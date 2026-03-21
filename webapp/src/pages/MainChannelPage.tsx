@@ -18,13 +18,15 @@ import {
 import { useNavigate, useParams } from 'react-router-dom';
 
 import {
-  deleteMainThread,
   ApiError,
+  deleteMainMessages,
+  deleteMainThread,
   getMainThread,
   listMainRuns,
   listMainThreads,
   postMainRunVisible,
   postMainMessage,
+  type TalkMessage,
   UnauthorizedError,
   updateMainThread,
   type MainRun,
@@ -33,6 +35,7 @@ import {
 } from '../lib/api';
 import { stripInternalAssistantText } from '../lib/assistantText';
 import { InlineEditableTitle } from '../components/InlineEditableTitle';
+import { TalkHistoryEditor } from '../components/TalkHistoryEditor';
 import { ThreadContextMenu } from '../components/ThreadContextMenu';
 import { ThreadRowTitleEditor } from '../components/ThreadRowTitleEditor';
 import { ThreadStartButton } from '../components/ThreadStartButton';
@@ -111,6 +114,11 @@ type MainAction =
     }
   | { type: 'MESSAGES_ERROR'; message: string }
   | { type: 'MESSAGE_APPENDED'; message: MainThreadMessage }
+  | {
+      type: 'HISTORY_DELETED';
+      threadId: string;
+      deletedMessageIds: string[];
+    }
   | { type: 'RESPONSE_STARTED'; event: MainResponseStartedEvent }
   | { type: 'RESPONSE_DELTA'; event: MainResponseDeltaEvent }
   | { type: 'RESPONSE_COMPLETED'; runId: string; threadId: string }
@@ -470,6 +478,41 @@ function mainReducer(state: MainState, action: MainAction): MainState {
       }
       return { ...state, threads, messages, liveResponses };
     }
+    case 'HISTORY_DELETED': {
+      if (action.threadId !== state.activeThreadId) return state;
+      const deletedIds = new Set(action.deletedMessageIds);
+      const messages = state.messages.filter(
+        (message) => !deletedIds.has(message.id),
+      );
+      if (messages.length === 0) {
+        return {
+          ...state,
+          threads: state.threads.filter(
+            (thread) => thread.threadId !== action.threadId,
+          ),
+          activeThreadId: null,
+          messages: [],
+          runsById: {},
+          messagesLoading: false,
+          messagesError: null,
+          liveResponses: {},
+        };
+      }
+      const lastMessageAt = messages[messages.length - 1]?.createdAt;
+      return {
+        ...state,
+        threads: state.threads.map((thread) =>
+          thread.threadId === action.threadId
+            ? {
+                ...thread,
+                messageCount: messages.length,
+                lastMessageAt: lastMessageAt || thread.lastMessageAt,
+              }
+            : thread,
+        ),
+        messages,
+      };
+    }
     case 'RESPONSE_STARTED': {
       const threads = updateThreadRunState(
         state.threads,
@@ -631,6 +674,11 @@ export function MainChannelPage({
     x: number;
     y: number;
   } | null>(null);
+  const [historyEditorOpen, setHistoryEditorOpen] = useState(false);
+  const [historyEditState, setHistoryEditState] = useState<{
+    status: 'idle' | 'saving' | 'error' | 'success';
+    message?: string;
+  }>({ status: 'idle' });
 
   // ── Auto-scroll ──
   const isNearBottom = useCallback(() => {
@@ -942,75 +990,6 @@ export function MainChannelPage({
     return () => handle.close();
   }, [onUnauthorized, isNearBottom, reportRunVisible, scrollToBottom]);
 
-  // ── Send message ──
-  const handleSend = useCallback(
-    async (event: FormEvent) => {
-      event.preventDefault();
-      const content = draft.trim();
-      if (!content || state.sendState === 'posting') return;
-
-      dispatch({ type: 'SEND_STARTED' });
-      setDraft('');
-
-      try {
-        const result = await postMainMessage({
-          content,
-          threadId: state.activeThreadId || undefined,
-        });
-
-        dispatch({ type: 'RUN_UPSERTED', run: result.run });
-        reportRunVisible(result.run.id);
-
-        if (!state.activeThreadId) {
-          // New thread — add to thread list and navigate
-          dispatch({
-            type: 'NEW_THREAD_CREATED',
-            threadId: result.threadId,
-            threadSummary: {
-              threadId: result.threadId,
-              title: result.title || inferThreadTitleFromContent(content),
-              isPinned: false,
-              lastMessageAt: new Date().toISOString(),
-              messageCount: 1,
-              hasActiveRun: true,
-            },
-          });
-          navigate(`/app/main/${result.threadId}`, { replace: true });
-        } else {
-          dispatch({
-            type: 'THREAD_RUN_STATE',
-            threadId: result.threadId,
-            hasActiveRun: true,
-          });
-        }
-
-        dispatch({ type: 'SEND_CLEARED' });
-        requestAnimationFrame(() => scrollToBottom());
-      } catch (err) {
-        if (err instanceof UnauthorizedError) {
-          onUnauthorized();
-          return;
-        }
-        const msg =
-          err instanceof ApiError && err.code === 'thread_busy'
-            ? 'Thread is busy — wait for the current response to finish.'
-            : err instanceof Error
-              ? err.message
-              : 'Failed to send message';
-        dispatch({ type: 'SEND_FAILED', message: msg });
-        setDraft(content); // Restore draft
-      }
-    },
-    [
-      draft,
-      state.sendState,
-      state.activeThreadId,
-      navigate,
-      onUnauthorized,
-      scrollToBottom,
-    ],
-  );
-
   // ── Thread selection ──
   const selectThread = useCallback(
     (threadId: string) => {
@@ -1040,6 +1019,8 @@ export function MainChannelPage({
     navigate('/app/main');
     dispatch({ type: 'CLEAR_THREAD' });
     setDraft('');
+    setHistoryEditorOpen(false);
+    setHistoryEditState({ status: 'idle' });
   }, [navigate]);
 
   // ── Build timeline entries ──
@@ -1104,19 +1085,6 @@ export function MainChannelPage({
     }
   }, []);
 
-  // ── Keyboard submit (Enter without Shift) ──
-  const handleKeyDown = useCallback(
-    (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
-      if (event.key === 'Enter' && !event.shiftKey) {
-        event.preventDefault();
-        if (draft.trim() && state.sendState !== 'posting') {
-          void handleSend(event as unknown as FormEvent);
-        }
-      }
-    },
-    [draft, state.sendState, handleSend],
-  );
-
   // ── Sorted threads (most recent first) ──
   const sortedThreads = useMemo(
     () => sortMainThreads(state.threads),
@@ -1128,6 +1096,29 @@ export function MainChannelPage({
         (thread) => thread.threadId === state.activeThreadId,
       ) || null,
     [sortedThreads, state.activeThreadId],
+  );
+  const activeRound = useMemo(
+    () =>
+      Boolean(activeThread?.hasActiveRun) ||
+      (state.activeThreadId
+        ? threadHasActiveRun(state.runsById, state.activeThreadId)
+        : false),
+    [activeThread?.hasActiveRun, state.activeThreadId, state.runsById],
+  );
+  const canEditHistory = useMemo(
+    () =>
+      Boolean(state.activeThreadId) &&
+      !activeRound &&
+      state.messages.some((message) => message.role !== 'system'),
+    [activeRound, state.activeThreadId, state.messages],
+  );
+  const historyEditorMessages = useMemo<TalkMessage[]>(
+    () =>
+      state.messages.map((message) => ({
+        ...message,
+        runId: null,
+      })),
+    [state.messages],
   );
   const menuThread = useMemo(
     () =>
@@ -1212,6 +1203,194 @@ export function MainChannelPage({
       }
     },
     [navigate, onUnauthorized, state.activeThreadId, state.threads],
+  );
+
+  const openHistoryEditor = useCallback(() => {
+    if (!state.activeThreadId) {
+      setHistoryEditState({
+        status: 'error',
+        message: 'Select a Main thread before editing history.',
+      });
+      return;
+    }
+    if (activeRound) {
+      setHistoryEditState({
+        status: 'error',
+        message:
+          'Wait for the current response to finish or cancel it before editing history.',
+      });
+      return;
+    }
+    if (!state.messages.some((message) => message.role !== 'system')) {
+      setHistoryEditState({
+        status: 'error',
+        message: 'There are no editable messages in this Main thread yet.',
+      });
+      return;
+    }
+    setHistoryEditState({ status: 'idle' });
+    setHistoryEditorOpen(true);
+  }, [activeRound, state.activeThreadId, state.messages]);
+
+  const handleCloseHistoryEditor = useCallback(() => {
+    if (historyEditState.status === 'saving') return;
+    setHistoryEditorOpen(false);
+    setHistoryEditState((current) =>
+      current.status === 'success' ? current : { status: 'idle' },
+    );
+  }, [historyEditState.status]);
+
+  const resolveHistoryActorLabel = useCallback((message: TalkMessage) => {
+    if (message.role === 'assistant') return 'Nanoclaw';
+    if (message.role === 'tool') return 'Nanoclaw';
+    return null;
+  }, []);
+
+  const handleDeleteHistoryMessages = useCallback(
+    async (messageIds: string[]) => {
+      const threadId = state.activeThreadId;
+      if (!threadId) return;
+      if (messageIds.length === 0) {
+        setHistoryEditState({
+          status: 'error',
+          message: 'Select at least one message to delete.',
+        });
+        return;
+      }
+      const confirmed = window.confirm(
+        `Delete ${messageIds.length} selected message${
+          messageIds.length === 1 ? '' : 's'
+        } from this Main thread history?`,
+      );
+      if (!confirmed) return;
+
+      setHistoryEditState({ status: 'saving' });
+      try {
+        const result = await deleteMainMessages({
+          threadId,
+          messageIds,
+        });
+        if (result.threadDeleted) {
+          dispatch({ type: 'THREAD_REMOVED', threadId });
+          navigate('/app/main', { replace: true });
+        } else {
+          dispatch({
+            type: 'HISTORY_DELETED',
+            threadId,
+            deletedMessageIds: result.deletedMessageIds,
+          });
+        }
+        setHistoryEditorOpen(false);
+        setHistoryEditState({
+          status: 'success',
+          message: `Deleted ${result.deletedCount} message${
+            result.deletedCount === 1 ? '' : 's'
+          } from this Main thread history.`,
+        });
+      } catch (err) {
+        if (err instanceof UnauthorizedError) {
+          onUnauthorized();
+          return;
+        }
+        setHistoryEditState({
+          status: 'error',
+          message:
+            err instanceof Error
+              ? err.message
+              : 'Unable to edit Main thread history.',
+        });
+      }
+    },
+    [navigate, onUnauthorized, state.activeThreadId],
+  );
+
+  // ── Send message ──
+  const handleSend = useCallback(
+    async (event: FormEvent) => {
+      event.preventDefault();
+      const content = draft.trim();
+      if (!content || state.sendState === 'posting') return;
+      if (content === '/edit') {
+        setDraft('');
+        dispatch({ type: 'SEND_CLEARED' });
+        openHistoryEditor();
+        return;
+      }
+
+      dispatch({ type: 'SEND_STARTED' });
+      setDraft('');
+
+      try {
+        const result = await postMainMessage({
+          content,
+          threadId: state.activeThreadId || undefined,
+        });
+
+        dispatch({ type: 'RUN_UPSERTED', run: result.run });
+        reportRunVisible(result.run.id);
+
+        if (!state.activeThreadId) {
+          dispatch({
+            type: 'NEW_THREAD_CREATED',
+            threadId: result.threadId,
+            threadSummary: {
+              threadId: result.threadId,
+              title: result.title || inferThreadTitleFromContent(content),
+              isPinned: false,
+              lastMessageAt: new Date().toISOString(),
+              messageCount: 1,
+              hasActiveRun: true,
+            },
+          });
+          navigate(`/app/main/${result.threadId}`, { replace: true });
+        } else {
+          dispatch({
+            type: 'THREAD_RUN_STATE',
+            threadId: result.threadId,
+            hasActiveRun: true,
+          });
+        }
+
+        dispatch({ type: 'SEND_CLEARED' });
+        requestAnimationFrame(() => scrollToBottom());
+      } catch (err) {
+        if (err instanceof UnauthorizedError) {
+          onUnauthorized();
+          return;
+        }
+        const msg =
+          err instanceof ApiError && err.code === 'thread_busy'
+            ? 'Thread is busy — wait for the current response to finish.'
+            : err instanceof Error
+              ? err.message
+              : 'Failed to send message';
+        dispatch({ type: 'SEND_FAILED', message: msg });
+        setDraft(content);
+      }
+    },
+    [
+      draft,
+      navigate,
+      onUnauthorized,
+      openHistoryEditor,
+      reportRunVisible,
+      scrollToBottom,
+      state.activeThreadId,
+      state.sendState,
+    ],
+  );
+
+  // ── Keyboard submit (Enter without Shift) ──
+  const handleKeyDown = useCallback(
+    (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
+      if (event.key === 'Enter' && !event.shiftKey) {
+        event.preventDefault();
+        if (draft.trim() && state.sendState !== 'posting') {
+          void handleSend(event as unknown as FormEvent);
+        }
+      }
+    },
+    [draft, state.sendState, handleSend],
   );
 
   const renderThreadMeta = useCallback((thread: MainThreadSummary) => {
@@ -1333,9 +1512,36 @@ export function MainChannelPage({
             ) : (
               <span>New thread</span>
             )}
+            {hasActiveThread ? (
+              <p className="policy-muted">
+                Use <code>/edit</code> or the button here to remove old messages
+                from this thread.
+              </p>
+            ) : null}
           </div>
-          <span className={streamBadgeClass}>{streamBadgeLabel}</span>
+          <div className="thread-detail-header-actions">
+            <button
+              type="button"
+              className="secondary-btn"
+              onClick={openHistoryEditor}
+              disabled={!canEditHistory}
+            >
+              Edit history
+            </button>
+            <span className={streamBadgeClass}>{streamBadgeLabel}</span>
+          </div>
         </header>
+
+        {historyEditState.status === 'success' && historyEditState.message ? (
+          <div className="inline-banner inline-banner-success" role="status">
+            {historyEditState.message}
+          </div>
+        ) : null}
+        {historyEditState.status === 'error' && historyEditState.message ? (
+          <div className="inline-banner inline-banner-error" role="alert">
+            {historyEditState.message}
+          </div>
+        ) : null}
 
         <div className="main-thread-timeline" ref={timelineRef}>
           {state.messagesLoading ? (
@@ -1455,6 +1661,14 @@ export function MainChannelPage({
         {state.sendState === 'error' && state.sendError ? (
           <p className="main-send-error">{state.sendError}</p>
         ) : null}
+        <TalkHistoryEditor
+          isOpen={historyEditorOpen}
+          messages={historyEditorMessages}
+          busy={historyEditState.status === 'saving'}
+          onClose={handleCloseHistoryEditor}
+          onConfirm={handleDeleteHistoryMessages}
+          resolveActorLabel={resolveHistoryActorLabel}
+        />
         {threadMenu && menuThread ? (
           <ThreadContextMenu
             x={threadMenu.x}

@@ -14,6 +14,7 @@ import { MainChannelPage } from './MainChannelPage';
 import { ApiError } from '../lib/api';
 
 const {
+  deleteMainMessagesMock,
   listMainThreadsMock,
   getMainThreadMock,
   listMainRunsMock,
@@ -23,6 +24,7 @@ const {
   deleteMainThreadMock,
   openMainStreamMock,
 } = vi.hoisted(() => ({
+  deleteMainMessagesMock: vi.fn(),
   listMainThreadsMock: vi.fn(),
   getMainThreadMock: vi.fn(),
   listMainRunsMock: vi.fn(),
@@ -38,6 +40,7 @@ vi.mock('../lib/api', async () => {
     await vi.importActual<typeof import('../lib/api')>('../lib/api');
   return {
     ...actual,
+    deleteMainMessages: deleteMainMessagesMock,
     listMainThreads: listMainThreadsMock,
     getMainThread: getMainThreadMock,
     listMainRuns: listMainRunsMock,
@@ -61,6 +64,12 @@ vi.mock('../lib/mainStream', async () => {
 
 describe('MainChannelPage', () => {
   beforeEach(() => {
+    deleteMainMessagesMock.mockResolvedValue({
+      threadId: 'thread-main-1',
+      deletedCount: 2,
+      deletedMessageIds: ['msg-1', 'msg-2'],
+      threadDeleted: false,
+    });
     listMainRunsMock.mockResolvedValue([]);
     postMainRunVisibleMock.mockResolvedValue({ recorded: true });
   });
@@ -268,6 +277,96 @@ describe('MainChannelPage', () => {
       ).toBeTruthy(),
     );
     expect(screen.queryByText('"Cal football recruiting notes"')).toBeNull();
+  });
+
+  it('opens edit history from /edit and deletes selected Main thread messages', async () => {
+    const user = userEvent.setup();
+    vi.stubGlobal('confirm', vi.fn(() => true));
+    listMainThreadsMock.mockResolvedValue([
+      {
+        threadId: 'thread-main-1',
+        title: 'Planning',
+        isPinned: false,
+        lastMessageAt: '2026-03-18T12:00:02.000Z',
+        messageCount: 3,
+        hasActiveRun: false,
+      },
+    ]);
+    getMainThreadMock.mockResolvedValue([
+      {
+        id: 'msg-1',
+        threadId: 'thread-main-1',
+        role: 'user',
+        content: 'Old main prompt',
+        agentId: null,
+        createdBy: 'user-1',
+        createdAt: '2026-03-18T12:00:00.000Z',
+      },
+      {
+        id: 'msg-2',
+        threadId: 'thread-main-1',
+        role: 'assistant',
+        content: 'Old main answer',
+        agentId: null,
+        createdBy: null,
+        createdAt: '2026-03-18T12:00:01.000Z',
+      },
+      {
+        id: 'msg-3',
+        threadId: 'thread-main-1',
+        role: 'user',
+        content: 'Keep this latest main note',
+        agentId: null,
+        createdBy: 'user-1',
+        createdAt: '2026-03-18T12:00:02.000Z',
+      },
+    ]);
+    deleteMainMessagesMock.mockResolvedValue({
+      threadId: 'thread-main-1',
+      deletedCount: 2,
+      deletedMessageIds: ['msg-1', 'msg-2'],
+      threadDeleted: false,
+    });
+
+    render(
+      <MemoryRouter initialEntries={['/app/main/thread-main-1']}>
+        <Routes>
+          <Route
+            path="/app/main"
+            element={<MainChannelPage onUnauthorized={vi.fn()} />}
+          />
+          <Route
+            path="/app/main/:threadId"
+            element={<MainChannelPage onUnauthorized={vi.fn()} />}
+          />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    const composer = await screen.findByPlaceholderText('Message Nanoclaw…');
+    await user.type(composer, '/edit');
+    await user.keyboard('{Enter}');
+
+    expect(
+      await screen.findByRole('dialog', { name: 'Edit history' }),
+    ).toBeTruthy();
+    await user.click(screen.getByLabelText(/You.*Old main prompt/i));
+    await user.click(screen.getByLabelText(/Nanoclaw.*Old main answer/i));
+    await user.click(screen.getByRole('button', { name: 'Delete selected' }));
+
+    await waitFor(() =>
+      expect(screen.queryByRole('dialog', { name: 'Edit history' })).toBeNull(),
+    );
+    expect(deleteMainMessagesMock).toHaveBeenCalledWith({
+      threadId: 'thread-main-1',
+      messageIds: ['msg-1', 'msg-2'],
+    });
+    expect(
+      await screen.findByText('Deleted 2 messages from this Main thread history.'),
+    ).toBeTruthy();
+    expect(screen.queryByText('Old main prompt')).toBeNull();
+    expect(screen.queryByText('Old main answer')).toBeNull();
+    expect(screen.getByText('Keep this latest main note')).toBeTruthy();
   });
 
   it('shows pending copy in the thread sidebar when a thread is still responding', async () => {
