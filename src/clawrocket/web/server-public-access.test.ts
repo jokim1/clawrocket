@@ -58,6 +58,34 @@ describe('web server public access helpers', () => {
     expect(loggerError).not.toHaveBeenCalled();
   });
 
+  it('resolves the external https origin from trusted proxy headers in caddy mode', async () => {
+    vi.stubEnv('TRUSTED_PROXY_MODE', 'caddy');
+
+    const server = await import('./server.js');
+
+    expect(
+      server._resolveRequestOriginForTests({
+        requestUrl: 'http://clawtalk.app/api/v1/channel-connectors/slack',
+        xForwardedProto: 'https',
+        xForwardedHost: 'clawtalk.app',
+      }),
+    ).toBe('https://clawtalk.app');
+  });
+
+  it('resolves the external https origin from CF-Visitor in cloudflare mode', async () => {
+    vi.stubEnv('TRUSTED_PROXY_MODE', 'cloudflare');
+
+    const server = await import('./server.js');
+
+    expect(
+      server._resolveRequestOriginForTests({
+        requestUrl: 'http://clawtalk.app/api/v1/channel-connectors/slack',
+        cfVisitor: '{"scheme":"https"}',
+        host: 'clawtalk.app',
+      }),
+    ).toBe('https://clawtalk.app');
+  });
+
   it('ignores forwarded headers in none mode', async () => {
     vi.stubEnv('TRUSTED_PROXY_MODE', 'none');
 
