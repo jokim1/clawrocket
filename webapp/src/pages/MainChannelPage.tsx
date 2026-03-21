@@ -210,9 +210,12 @@ function threadHasActiveRun(
   return Object.values(runsById).some(
     (run) =>
       run.threadId === threadId &&
-      (run.promotionState === 'pending' ||
-        ['queued', 'running', 'awaiting_confirmation'].includes(run.status)),
+      (run.promotionState === 'pending' || isMainRunActive(run)),
   );
+}
+
+function isMainRunActive(run: MainRun): boolean {
+  return ['queued', 'running', 'awaiting_confirmation'].includes(run.status);
 }
 
 function clearFailedLiveResponsesForThread(
@@ -1201,18 +1204,22 @@ export function MainChannelPage({
       | { kind: 'run'; run: MainRun }
       | { kind: 'live'; response: LiveResponse }
     > = [];
+    const liveRunIds = new Set(
+      Object.values(state.liveResponses)
+        .filter((response) => response.threadId === state.activeThreadId)
+        .map((response) => response.runId),
+    );
     for (const message of state.messages) {
       entries.push({ kind: 'message', message });
     }
     for (const run of Object.values(state.runsById)) {
       if (run.threadId !== state.activeThreadId) continue;
       const isPromotionPending = run.promotionState === 'pending';
-      const isActivePromotionRun =
-        run.kind === 'main_promotion' &&
-        ['queued', 'running', 'awaiting_confirmation'].includes(run.status);
       const isBlockedBrowserRun =
         run.status === 'awaiting_confirmation' && Boolean(run.browserBlock);
-      if (isPromotionPending || isActivePromotionRun || isBlockedBrowserRun) {
+      const isGenericActiveRun =
+        isMainRunActive(run) && !isBlockedBrowserRun && !liveRunIds.has(run.id);
+      if (isPromotionPending || isBlockedBrowserRun || isGenericActiveRun) {
         entries.push({ kind: 'run', run });
       }
     }
@@ -1285,6 +1292,15 @@ export function MainChannelPage({
       state.messages.some((message) => message.role !== 'system'),
     [activeRound, state.activeThreadId, state.messages],
   );
+  useEffect(() => {
+    if (!state.activeThreadId || !activeRound) return;
+    const interval = window.setInterval(() => {
+      void refreshActiveThread();
+    }, 10_000);
+    return () => {
+      window.clearInterval(interval);
+    };
+  }, [activeRound, refreshActiveThread, state.activeThreadId]);
   const historyEditorMessages = useMemo<TalkMessage[]>(
     () =>
       state.messages.map((message) => ({
@@ -1768,9 +1784,16 @@ export function MainChannelPage({
                     ? 'Starting background task…'
                     : run.status === 'awaiting_confirmation'
                       ? getBrowserBlockStatusLabel(run.browserBlock)
-                      : run.status === 'queued'
+                    : run.status === 'queued'
                         ? 'Queued'
                         : 'Working';
+                const runBodyCopy =
+                  run.userVisibleSummary ||
+                  (run.status === 'awaiting_confirmation'
+                    ? 'Waiting for your approval before continuing.'
+                    : run.status === 'queued'
+                      ? 'Preparing the run…'
+                      : 'Run in progress…');
                 return (
                   <article
                     key={`run-${run.id}`}
@@ -1790,11 +1813,7 @@ export function MainChannelPage({
                       />
                     ) : (
                       <p>
-                        <em>
-                          *{' '}
-                          {run.userVisibleSummary ||
-                            'Heavy execution in progress'}
-                        </em>
+                        <em>* {runBodyCopy}</em>
                       </p>
                     )}
                   </article>

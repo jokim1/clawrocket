@@ -1,4 +1,5 @@
 import {
+  act,
   cleanup,
   fireEvent,
   render,
@@ -164,6 +165,7 @@ describe('MainChannelPage', () => {
 
   afterEach(() => {
     cleanup();
+    vi.useRealTimers();
     vi.unstubAllGlobals();
     vi.clearAllMocks();
   });
@@ -717,6 +719,72 @@ describe('MainChannelPage', () => {
     expect(within(threadRail).getByText('* Thinking…')).toBeTruthy();
   });
 
+  it('renders a generic in-thread status card for active Main runs before streaming starts', async () => {
+    listMainThreadsMock.mockResolvedValue([
+      {
+        threadId: 'thread-main-1',
+        title: 'LinkedIn Messaging',
+        isPinned: false,
+        lastMessageAt: '2026-03-21T22:11:37.000Z',
+        messageCount: 1,
+        hasActiveRun: true,
+      },
+    ]);
+    getMainThreadMock.mockResolvedValue([
+      {
+        id: 'msg-1',
+        threadId: 'thread-main-1',
+        role: 'user',
+        content: 'Try to access my LinkedIn again.',
+        agentId: null,
+        createdBy: 'user-1',
+        createdAt: '2026-03-21T22:11:37.000Z',
+      },
+    ]);
+    listMainRunsMock.mockResolvedValue([
+      {
+        id: 'run-main-1',
+        threadId: 'thread-main-1',
+        status: 'running',
+        createdAt: '2026-03-21T22:11:38.000Z',
+        startedAt: '2026-03-21T22:11:38.000Z',
+        endedAt: null,
+        triggerMessageId: 'msg-1',
+        targetAgentId: null,
+        cancelReason: null,
+        kind: null,
+        parentRunId: null,
+        promotionState: null,
+        promotionChildRunId: null,
+        requestedToolFamilies: [],
+        userVisibleSummary: null,
+        browserBlock: null,
+        browserResume: null,
+        carriedBrowserSessions: [],
+        executionDecision: null,
+      },
+    ]);
+
+    render(
+      <MemoryRouter initialEntries={['/app/main/thread-main-1']}>
+        <Routes>
+          <Route
+            path="/app/main"
+            element={<MainChannelPage onUnauthorized={vi.fn()} />}
+          />
+          <Route
+            path="/app/main/:threadId"
+            element={<MainChannelPage onUnauthorized={vi.fn()} />}
+          />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    await screen.findByText('Try to access my LinkedIn again.');
+    expect(screen.getByText(/Run in progress/)).toBeTruthy();
+    expect(screen.getByText('Working')).toBeTruthy();
+  });
+
   it('renders blocked browser runs in the Main timeline and starts setup from the inline card', async () => {
     const user = userEvent.setup();
     listMainThreadsMock.mockResolvedValue([
@@ -960,6 +1028,140 @@ describe('MainChannelPage', () => {
       screen.getByText('Check your phone and approve sign in to continue.'),
     ).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Resume run' })).toBeTruthy();
+  });
+
+  it('reconciles active Main runs in the background when a browser-blocked event is missed', async () => {
+    vi.useFakeTimers();
+    listMainThreadsMock.mockResolvedValue([
+      {
+        threadId: 'thread-main-browser',
+        title: 'LinkedIn Messaging',
+        isPinned: false,
+        lastMessageAt: '2026-03-20T20:20:00.000Z',
+        messageCount: 1,
+        hasActiveRun: true,
+      },
+    ]);
+    getMainThreadMock.mockResolvedValue([
+      {
+        id: 'msg-main-1',
+        threadId: 'thread-main-browser',
+        role: 'user',
+        content: 'Check my LinkedIn inbox',
+        agentId: null,
+        createdBy: 'user-1',
+        createdAt: '2026-03-20T20:20:00.000Z',
+      },
+    ]);
+    listMainRunsMock
+      .mockResolvedValueOnce([
+        {
+          id: 'run-main-browser',
+          threadId: 'thread-main-browser',
+          status: 'running',
+          createdAt: '2026-03-20T20:20:01.000Z',
+          startedAt: '2026-03-20T20:20:03.000Z',
+          endedAt: null,
+          triggerMessageId: 'msg-main-1',
+          targetAgentId: null,
+          cancelReason: null,
+          kind: null,
+          parentRunId: null,
+          promotionState: null,
+          promotionChildRunId: null,
+          requestedToolFamilies: ['browser'],
+          userVisibleSummary: null,
+          browserBlock: null,
+          browserResume: null,
+          carriedBrowserSessions: [],
+          executionDecision: null,
+        },
+      ])
+      .mockResolvedValue([
+        {
+          id: 'run-main-browser',
+          threadId: 'thread-main-browser',
+          status: 'awaiting_confirmation',
+          createdAt: '2026-03-20T20:20:01.000Z',
+          startedAt: '2026-03-20T20:20:03.000Z',
+          endedAt: null,
+          triggerMessageId: 'msg-main-1',
+          targetAgentId: null,
+          cancelReason: null,
+          kind: null,
+          parentRunId: null,
+          promotionState: null,
+          promotionChildRunId: null,
+          requestedToolFamilies: ['browser'],
+          userVisibleSummary: 'LinkedIn needs you to sign in.',
+          browserBlock: {
+            kind: 'auth_required',
+            sessionId: 'session-1',
+            siteKey: 'linkedin',
+            accountLabel: null,
+            url: 'https://www.linkedin.com/checkpoint/challenge',
+            title: 'Approve sign in',
+            message: 'Check your phone and approve sign in to continue.',
+            riskReason: null,
+            setupCommand:
+              'npx tsx src/clawrocket/browser/setup.ts --site linkedin',
+            artifacts: [],
+            confirmationId: null,
+            pendingToolCall: {
+              toolName: 'browser_wait',
+              args: { conditionType: 'load' },
+            },
+            createdAt: '2026-03-20T20:20:04.000Z',
+            updatedAt: '2026-03-20T20:20:04.000Z',
+          },
+          browserResume: null,
+          carriedBrowserSessions: [],
+          executionDecision: {
+            backend: 'container',
+            authPath: 'subscription',
+            credentialSource: 'oauth_token',
+            plannerReason: 'Browser ran in the container-backed path.',
+            providerId: 'provider.anthropic',
+            modelId: 'claude-sonnet-4-6',
+          },
+        },
+      ]);
+
+    render(
+      <MemoryRouter initialEntries={['/app/main/thread-main-browser']}>
+        <Routes>
+          <Route
+            path="/app/main"
+            element={<MainChannelPage onUnauthorized={vi.fn()} />}
+          />
+          <Route
+            path="/app/main/:threadId"
+            element={<MainChannelPage onUnauthorized={vi.fn()} />}
+          />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(screen.getByText('Check my LinkedIn inbox')).toBeTruthy();
+    expect(screen.getByText(/Run in progress/)).toBeTruthy();
+
+    act(() => {
+      vi.advanceTimersByTime(10_000);
+    });
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(screen.getByText('Browser authentication required')).toBeTruthy();
+    expect(
+      screen.getByText('Check your phone and approve sign in to continue.'),
+    ).toBeTruthy();
   });
 
   it('opens a right-click menu and renames a thread inline', async () => {
