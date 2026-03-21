@@ -54,6 +54,11 @@ export interface ContainerInput {
   >;
   ephemeralContextDir?: string;
   projectMountHostPath?: string | null;
+  browserBridgeHostSocketPath?: string | null;
+  browserBridgeSocketPath?: string | null;
+  browserRunId?: string;
+  browserUserId?: string;
+  browserTalkId?: string | null;
 }
 
 export interface ContainerOutput {
@@ -117,6 +122,7 @@ interface VolumeMount {
 
 const TALK_MAIN_RUN_DIR = '/workspace/run';
 const PROJECT_MOUNT_PATH = '/workspace/project';
+const BROWSER_BRIDGE_CONTAINER_DIR = '/workspace/browser-bridge';
 const STATIC_SKILLS_CONTAINER_PATH = '/opt/nanoclaw/skills';
 const PROJECT_SENSITIVE_FILES = [
   '.env',
@@ -201,6 +207,7 @@ function buildTalkMainVolumeMounts(
   projectRoot: string,
   ephemeralContextDir?: string,
   projectMountHostPath?: string | null,
+  browserBridgeHostSocketPath?: string | null,
 ): VolumeMount[] {
   if (!ephemeralContextDir || !fs.existsSync(ephemeralContextDir)) {
     throw new Error(
@@ -218,6 +225,17 @@ function buildTalkMainVolumeMounts(
 
   if (projectMountHostPath && fs.existsSync(projectMountHostPath)) {
     addShadowedProjectMount(mounts, projectMountHostPath, PROJECT_MOUNT_PATH);
+  }
+
+  if (browserBridgeHostSocketPath) {
+    const bridgeDir = path.dirname(browserBridgeHostSocketPath);
+    if (fs.existsSync(bridgeDir)) {
+      mounts.push({
+        hostPath: bridgeDir,
+        containerPath: BROWSER_BRIDGE_CONTAINER_DIR,
+        readonly: false,
+      });
+    }
   }
 
   const claudeHomeDir = path.join(ephemeralContextDir, 'claude-home');
@@ -361,6 +379,7 @@ function buildVolumeMounts(
   toolProfile: ContainerInput['toolProfile'] = 'default',
   ephemeralContextDir?: string,
   projectMountHostPath?: string | null,
+  browserBridgeHostSocketPath?: string | null,
 ): VolumeMount[] {
   const projectRoot = process.cwd();
   if (toolProfile === 'talk_main') {
@@ -368,6 +387,7 @@ function buildVolumeMounts(
       projectRoot,
       ephemeralContextDir,
       projectMountHostPath,
+      browserBridgeHostSocketPath,
     );
   }
 
@@ -443,6 +463,7 @@ export async function runContainerAgent(
     input.toolProfile,
     input.ephemeralContextDir,
     input.projectMountHostPath,
+    input.browserBridgeHostSocketPath,
   );
   const safeName = targetFolder.replace(/[^a-zA-Z0-9-]/g, '-');
   const containerName = `nanoclaw-${safeName}-${Date.now()}`;
@@ -487,6 +508,12 @@ export async function runContainerAgent(
 
     // Pass secrets via stdin (never written to disk or mounted as files)
     input.secrets = input.secrets ?? readSecrets();
+    if (input.browserBridgeHostSocketPath) {
+      input.browserBridgeSocketPath = path.posix.join(
+        BROWSER_BRIDGE_CONTAINER_DIR,
+        path.basename(input.browserBridgeHostSocketPath),
+      );
+    }
     container.stdin.write(JSON.stringify(input));
     container.stdin.end();
     // Remove sensitive input so it does not appear in logs on failure.
@@ -494,6 +521,11 @@ export async function runContainerAgent(
     delete input.webTalkConnectorBundle;
     delete input.ephemeralContextDir;
     delete input.projectMountHostPath;
+    delete input.browserBridgeHostSocketPath;
+    delete input.browserBridgeSocketPath;
+    delete input.browserRunId;
+    delete input.browserUserId;
+    delete input.browserTalkId;
 
     // Streaming output: parse OUTPUT_START/END marker pairs as they arrive
     let parseBuffer = '';

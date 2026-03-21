@@ -29,6 +29,7 @@ import type { TalkJobExecutionPolicy } from '../talks/executor.js';
 import type { ContainerCredentialConfig } from './execution-planner.js';
 import type { ExecutionContext } from './agent-router.js';
 import type { LlmMessage } from './llm-client.js';
+import { ensureBrowserBridgeServer } from '../browser/bridge.js';
 
 interface ExecuteContainerTurnInput {
   runId: string;
@@ -47,6 +48,7 @@ interface ExecuteContainerTurnInput {
   historyMessageIds?: string[];
   projectMountHostPath?: string | null;
   jobPolicy?: TalkJobExecutionPolicy | null;
+  enableBrowserTools?: boolean;
 }
 
 interface ExecuteContainerTurnOutput {
@@ -557,6 +559,9 @@ export async function executeContainerAgentTurn(
 ): Promise<ExecuteContainerTurnOutput> {
   const target = createWebRuntimeExecutionTarget();
   const contextDir = createContextDirectory(input);
+  const browserBridgeHostSocketPath = input.enableBrowserTools
+    ? await ensureBrowserBridgeServer()
+    : null;
   const outputBridge =
     input.talkId && contextDir.outputBridgeDir
       ? startOutputBridge({
@@ -593,6 +598,10 @@ export async function executeContainerAgentTurn(
         webTalkConnectorBundle: contextDir.connectorBundle,
         ephemeralContextDir: contextDir.path,
         projectMountHostPath: input.projectMountHostPath ?? null,
+        browserBridgeHostSocketPath,
+        browserRunId: input.runId,
+        browserUserId: input.userId,
+        browserTalkId: input.talkId ?? null,
         secrets: input.containerCredential.secrets,
       },
       (proc) => {

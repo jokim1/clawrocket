@@ -107,7 +107,7 @@ export function buildMainExecutionPreview(
         routeReason: 'direct_with_promotion',
         ready: true,
         message:
-          'Main will answer over direct HTTP first and promote shell/filesystem/browser work into a background container run.',
+          'Main will keep web and browser tools in the direct parent run and promote shell/filesystem work into a background container run only when needed.',
       };
     }
     return {
