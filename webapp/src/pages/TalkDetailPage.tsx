@@ -2504,13 +2504,11 @@ export function TalkDetailPage({
     deletedMessageIdsRef.current = next;
   }, []);
 
-  const reconcileDeletedMessageIds = useCallback((messages: TalkMessage[]) => {
-    if (deletedMessageIdsRef.current.size === 0) return;
-    const next = new Set(deletedMessageIdsRef.current);
-    for (const message of messages) {
-      next.delete(message.id);
-    }
-    deletedMessageIdsRef.current = next;
+  const filterDeletedMessages = useCallback((messages: TalkMessage[]) => {
+    if (deletedMessageIdsRef.current.size === 0) return messages;
+    return messages.filter(
+      (message) => !deletedMessageIdsRef.current.has(message.id),
+    );
   }, []);
 
   const scheduleThreadListRefresh = useCallback(() => {
@@ -2550,8 +2548,12 @@ export function TalkDetailPage({
             error: null,
           });
         }
-        reconcileDeletedMessageIds(messages);
-        dispatch({ type: 'RESET_FROM_RESYNC', threadId, messages, runs });
+        dispatch({
+          type: 'RESET_FROM_RESYNC',
+          threadId,
+          messages: filterDeletedMessages(messages),
+          runs,
+        });
         autoStickToBottomRef.current = true;
       } catch (err) {
         if (err instanceof UnauthorizedError) {
@@ -2559,7 +2561,7 @@ export function TalkDetailPage({
         }
       }
     },
-    [handleUnauthorized, reconcileDeletedMessageIds, talkId],
+    [filterDeletedMessages, handleUnauthorized, talkId],
   );
 
   const refreshBrowserRuns = useCallback(
@@ -2944,11 +2946,10 @@ export function TalkDetailPage({
         ) {
           return;
         }
-        reconcileDeletedMessageIds(messages);
         dispatch({
           type: 'THREAD_MESSAGES_LOADED',
           threadId: activeThreadId,
-          messages,
+          messages: filterDeletedMessages(messages),
         });
         requestAnimationFrame(() => {
           if (pendingComposerFocusRef.current) {
@@ -2985,7 +2986,7 @@ export function TalkDetailPage({
   }, [
     activeThreadId,
     handleUnauthorized,
-    reconcileDeletedMessageIds,
+    filterDeletedMessages,
     scrollToBottom,
     state.kind,
     talkId,
