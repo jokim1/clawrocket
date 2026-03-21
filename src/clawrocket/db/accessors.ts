@@ -1990,6 +1990,17 @@ export function deleteTalkMessagesAtomic(input: {
       getDb()
         .prepare(
           `
+          UPDATE talk_runs
+          SET trigger_message_id = NULL
+          WHERE talk_id = ?
+            AND thread_id = ?
+            AND trigger_message_id IN (${placeholders})
+        `,
+        )
+        .run(txInput.talkId, txInput.threadId, ...ids);
+      getDb()
+        .prepare(
+          `
           DELETE FROM talk_messages
           WHERE talk_id = ?
             AND id IN (${placeholders})
@@ -2120,6 +2131,18 @@ export function deleteMainMessagesAtomic(input: {
       if (activeRun) {
         throw new TalkActiveRoundError('thread');
       }
+
+      getDb()
+        .prepare(
+          `
+          UPDATE talk_runs
+          SET trigger_message_id = NULL
+          WHERE talk_id IS NULL
+            AND thread_id = ?
+            AND trigger_message_id IN (${placeholders})
+        `,
+        )
+        .run(txInput.threadId, ...ids);
 
       getDb()
         .prepare(

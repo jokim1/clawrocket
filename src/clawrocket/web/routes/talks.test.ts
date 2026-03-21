@@ -1916,6 +1916,97 @@ describe('talk routes', () => {
     expect(remaining.map((row) => row.id)).toEqual(['msg-main-edit-3']);
   });
 
+  it('deletes selected Main thread messages even when a historical run points at the deleted prompt', async () => {
+    getDb()
+      .prepare(
+        `
+        INSERT INTO talk_messages (
+          id, talk_id, thread_id, role, content, created_by, created_at
+        ) VALUES (?, NULL, ?, 'user', ?, ?, ?)
+      `,
+      )
+      .run(
+        'msg-main-run-edit-1',
+        'thread-main-owner',
+        'Remove this historical Main prompt',
+        'owner-1',
+        '2026-03-07T02:10:00.000Z',
+      );
+    getDb()
+      .prepare(
+        `
+        INSERT INTO talk_messages (
+          id, talk_id, thread_id, role, content, created_by, created_at
+        ) VALUES (?, NULL, ?, 'assistant', ?, NULL, ?)
+      `,
+      )
+      .run(
+        'msg-main-run-edit-2',
+        'thread-main-owner',
+        'Remove this historical Main reply',
+        '2026-03-07T02:10:01.000Z',
+      );
+    getDb()
+      .prepare(
+        `
+        INSERT INTO talk_messages (
+          id, talk_id, thread_id, role, content, created_by, created_at
+        ) VALUES (?, NULL, ?, 'user', ?, ?, ?)
+      `,
+      )
+      .run(
+        'msg-main-run-edit-3',
+        'thread-main-owner',
+        'Keep this newer Main note',
+        'owner-1',
+        '2026-03-07T02:10:02.000Z',
+      );
+    createTalkRun({
+      id: 'run-main-edit-history',
+      talk_id: null,
+      thread_id: 'thread-main-owner',
+      requested_by: 'owner-1',
+      status: 'completed',
+      trigger_message_id: 'msg-main-run-edit-1',
+      target_agent_id: null,
+      idempotency_key: null,
+      executor_alias: 'Claude',
+      executor_model: 'claude-sonnet-4-6',
+      created_at: '2026-03-07T02:10:00.500Z',
+      started_at: '2026-03-07T02:10:00.500Z',
+      ended_at: '2026-03-07T02:10:01.500Z',
+      cancel_reason: null,
+    });
+
+    const res = await server.request(
+      '/api/v1/main/threads/thread-main-owner/messages/delete',
+      {
+        method: 'POST',
+        headers: {
+          Authorization: 'Bearer owner-token',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          messageIds: ['msg-main-run-edit-1', 'msg-main-run-edit-2'],
+        }),
+      },
+    );
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as any;
+    expect(body.ok).toBe(true);
+    expect(body.data).toMatchObject({
+      threadId: 'thread-main-owner',
+      deletedCount: 2,
+      deletedMessageIds: ['msg-main-run-edit-1', 'msg-main-run-edit-2'],
+      threadDeleted: false,
+    });
+    const run = getDb()
+      .prepare(`SELECT trigger_message_id FROM talk_runs WHERE id = ?`)
+      .get('run-main-edit-history') as { trigger_message_id: string | null };
+    expect(run.trigger_message_id).toBeNull();
+  });
+
   it('requires editor permission to enqueue chat', async () => {
     const viewerRes = await server.request('/api/v1/talks/talk-owner/chat', {
       method: 'POST',
