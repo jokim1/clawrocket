@@ -981,9 +981,13 @@ export type ExecutorSettings = {
   effectiveAliasMap: Record<string, string>;
   defaultAlias: string;
   executorAuthMode: 'subscription' | 'api_key' | 'advanced_bearer' | 'none';
+  authModeSource: 'settings' | 'inferred';
   hasApiKey: boolean;
   hasOauthToken: boolean;
   hasAuthToken: boolean;
+  apiKeySource: 'stored' | 'env' | null;
+  oauthTokenSource: 'stored' | 'env' | null;
+  authTokenSource: 'stored' | 'env' | null;
   apiKeyHint: string | null;
   oauthTokenHint: string | null;
   authTokenHint: string | null;

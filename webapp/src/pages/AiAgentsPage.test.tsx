@@ -283,12 +283,59 @@ describe('AiAgentsPage', () => {
     expect(registeredAgentsTab).toHaveAttribute('aria-selected', 'true');
     expect(registeredAgentsTab.className).toContain('talk-tab-active');
   });
+  it('surfaces environment-backed Claude API credentials clearly', async () => {
+    installAiAgentsFetch({
+      settings: {
+        executorAuthMode: 'api_key',
+        authModeSource: 'inferred',
+        hasApiKey: true,
+        apiKeySource: 'env',
+        apiKeyHint: 'Environment variable (ANTHROPIC_API_KEY)',
+        activeCredentialConfigured: true,
+        verificationStatus: 'invalid',
+        lastVerificationError: 'Anthropic API error: Unauthorized',
+      },
+      status: {
+        executorAuthMode: 'api_key',
+        activeCredentialConfigured: true,
+        verificationStatus: 'invalid',
+        lastVerificationError: 'Anthropic API error: Unauthorized',
+      },
+    });
+
+    render(
+      <MemoryRouter initialEntries={['/app/agents']}>
+        <AiAgentsPage onUnauthorized={vi.fn()} userRole="owner" />
+      </MemoryRouter>,
+    );
+
+    await screen.findByRole('heading', { name: 'AI Agents' });
+    expect(screen.getByLabelText('API')).toBeChecked();
+    expect(
+      screen.getByText('Environment variable (ANTHROPIC_API_KEY)'),
+    ).toBeTruthy();
+    expect(
+      screen.getByText(/Active Claude auth mode is inferred/i),
+    ).toBeTruthy();
+    expect(
+      screen.getByText(/This API key comes from the service environment/i),
+    ).toBeTruthy();
+  });
 });
 
-function installAiAgentsFetch() {
+function installAiAgentsFetch(input?: {
+  settings?: Partial<ExecutorSettings>;
+  status?: Partial<ExecutorStatus>;
+}) {
   let snapshot = buildAiAgentsData();
-  let settings = buildExecutorSettings();
-  let status = buildExecutorStatus();
+  let settings = {
+    ...buildExecutorSettings(),
+    ...input?.settings,
+  };
+  let status = {
+    ...buildExecutorStatus(),
+    ...input?.status,
+  };
   let registeredAgents = buildRegisteredAgents();
   let mainAgent: RegisteredAgent | null = registeredAgents[0] ?? null;
   let nvidiaVerificationStage: 'idle' | 'verifying' | 'complete' = 'idle';
@@ -392,15 +439,22 @@ function installAiAgentsFetch() {
           ...settings,
           executorAuthMode:
             body.executorAuthMode === 'api_key' ? 'api_key' : 'subscription',
+          authModeSource: 'settings',
           hasApiKey: body.anthropicApiKey ? true : settings.hasApiKey,
           hasOauthToken: body.claudeOauthToken ? true : settings.hasOauthToken,
+          apiKeySource: body.anthropicApiKey ? 'stored' : settings.apiKeySource,
+          oauthTokenSource: body.claudeOauthToken
+            ? 'stored'
+            : settings.oauthTokenSource,
           activeCredentialConfigured:
             !!body.anthropicApiKey || !!body.claudeOauthToken
               ? true
               : settings.activeCredentialConfigured,
-          apiKeyHint: body.anthropicApiKey ? '••••test' : settings.apiKeyHint,
+          apiKeyHint: body.anthropicApiKey
+            ? 'Stored in settings'
+            : settings.apiKeyHint,
           oauthTokenHint: body.claudeOauthToken
-            ? '••••uAAA'
+            ? 'Stored in settings'
             : settings.oauthTokenHint,
         };
         status = {
@@ -616,9 +670,13 @@ function buildExecutorSettings(): ExecutorSettings {
     effectiveAliasMap: { Mock: 'mock' },
     defaultAlias: 'Mock',
     executorAuthMode: 'subscription',
+    authModeSource: 'settings',
     hasApiKey: false,
     hasOauthToken: false,
     hasAuthToken: false,
+    apiKeySource: null,
+    oauthTokenSource: null,
+    authTokenSource: null,
     apiKeyHint: null,
     oauthTokenHint: null,
     authTokenHint: null,
