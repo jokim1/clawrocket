@@ -3612,6 +3612,18 @@ a {
   gap: 0.75rem;
 }
 
+.main-thread-capability-list {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.main-thread-capability-note {
+  margin-top: 0.25rem;
+}
+
 .inline-editable-title {
   display: flex;
   flex-direction: column;

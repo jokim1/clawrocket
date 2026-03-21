@@ -22,6 +22,7 @@ import {
   deleteMainMessages,
   deleteMainThread,
   getMainThread,
+  getMainRegisteredAgent,
   listMainRuns,
   listMainThreads,
   postMainRunVisible,
@@ -32,6 +33,7 @@ import {
   type MainRun,
   type MainThreadMessage,
   type MainThreadSummary,
+  type RegisteredAgent,
 } from '../lib/api';
 import { stripInternalAssistantText } from '../lib/assistantText';
 import { BrowserBlockedRunCard } from '../components/BrowserBlockedRunCard';
@@ -178,6 +180,43 @@ function getBrowserBlockStatusLabel(
     case 'human_step_required':
       return 'Manual step required';
   }
+}
+
+function describeMainBrowserCapability(agent: RegisteredAgent | null): {
+  badgeLabel: string;
+  badgeTone: 'ready' | 'invalid' | 'unknown';
+  note: string | null;
+} {
+  if (!agent) {
+    return {
+      badgeLabel: 'Browser unknown',
+      badgeTone: 'unknown',
+      note: null,
+    };
+  }
+
+  if (agent.toolPermissions.browser !== true) {
+    return {
+      badgeLabel: 'Browser disabled',
+      badgeTone: 'unknown',
+      note:
+        'The selected Main agent can use web search and fetch, but browser automation is disabled.',
+    };
+  }
+
+  if (!agent.executionPreview.ready) {
+    return {
+      badgeLabel: 'Browser setup required',
+      badgeTone: 'invalid',
+      note: agent.executionPreview.message,
+    };
+  }
+
+  return {
+    badgeLabel: 'Browser enabled',
+    badgeTone: 'ready',
+    note: null,
+  };
 }
 
 function sortMainThreads(threads: MainThreadSummary[]): MainThreadSummary[] {
@@ -701,6 +740,7 @@ export function MainChannelPage({
   const { threadId: routeThreadId } = useParams<{ threadId?: string }>();
   const [state, dispatch] = useReducer(mainReducer, createInitialState());
   const [draft, setDraft] = useState('');
+  const [mainAgent, setMainAgent] = useState<RegisteredAgent | null>(null);
   const timelineRef = useRef<HTMLDivElement | null>(null);
   const endRef = useRef<HTMLDivElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
@@ -782,6 +822,26 @@ export function MainChannelPage({
           return;
         }
         dispatch({ type: 'THREADS_ERROR', message: String(err) });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [onUnauthorized]);
+
+  useEffect(() => {
+    let cancelled = false;
+    getMainRegisteredAgent()
+      .then((agent) => {
+        if (cancelled) return;
+        setMainAgent(agent);
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        if (err instanceof UnauthorizedError) {
+          onUnauthorized();
+          return;
+        }
+        setMainAgent(null);
       });
     return () => {
       cancelled = true;
@@ -1171,6 +1231,10 @@ export function MainChannelPage({
         ? threadHasActiveRun(state.runsById, state.activeThreadId)
         : false),
     [activeThread?.hasActiveRun, state.activeThreadId, state.runsById],
+  );
+  const mainBrowserCapability = useMemo(
+    () => describeMainBrowserCapability(mainAgent),
+    [mainAgent],
   );
   const canEditHistory = useMemo(
     () =>
@@ -1585,8 +1649,25 @@ export function MainChannelPage({
                 from this thread.
               </p>
             ) : null}
+            {mainBrowserCapability.note ? (
+              <p className="policy-muted main-thread-capability-note">
+                {mainBrowserCapability.note}
+              </p>
+            ) : null}
           </div>
           <div className="thread-detail-header-actions">
+            <div
+              className="main-thread-capability-list"
+              role="list"
+              aria-label="Main capability status"
+            >
+              <span
+                className={`talk-status-pill talk-status-pill-${mainBrowserCapability.badgeTone}`}
+                role="listitem"
+              >
+                {mainBrowserCapability.badgeLabel}
+              </span>
+            </div>
             <button
               type="button"
               className="secondary-btn"
