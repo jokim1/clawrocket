@@ -3053,6 +3053,21 @@ export function getOutboxMinEventIdForTopics(topics: string[]): number | null {
   return row?.min_event_id ?? null;
 }
 
+export function getOutboxMaxEventIdForTopics(topics: string[]): number | null {
+  if (topics.length === 0) return null;
+  const placeholders = topics.map(() => '?').join(',');
+  const row = getDb()
+    .prepare(
+      `
+      SELECT MAX(event_id) AS max_event_id
+      FROM event_outbox
+      WHERE topic IN (${placeholders})
+    `,
+    )
+    .get(...topics) as { max_event_id: number | null };
+  return row?.max_event_id ?? null;
+}
+
 export function pruneEventOutbox(input?: {
   nowMs?: number;
   retentionHours?: number;
