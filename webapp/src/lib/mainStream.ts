@@ -85,6 +85,28 @@ export type MainPromotionPendingEvent = {
   userVisibleSummary: string;
 };
 
+export type MainBrowserBlockedEvent = {
+  runId: string;
+  talkId?: string | null;
+  threadId: string;
+  browserBlock: {
+    kind: 'auth_required' | 'confirmation_required' | 'human_step_required';
+  };
+};
+
+export type MainBrowserUnblockedEvent = {
+  runId: string;
+  talkId?: string | null;
+  threadId: string;
+  browserResume?: {
+    kind?:
+      | 'auth_completed'
+      | 'confirmation_approved'
+      | 'confirmation_rejected'
+      | 'human_step_completed';
+  } | null;
+};
+
 interface EventSourceLike {
   onopen: ((event: Event) => void) | null;
   onerror: ((event: Event) => void) | null;
@@ -104,6 +126,8 @@ interface MainStreamCallbacks {
   onRunFailed?: (event: MainRunEvent) => void;
   onRunCancelled?: (event: MainRunEvent) => void;
   onPromotionPending?: (event: MainPromotionPendingEvent) => void;
+  onBrowserBlocked?: (event: MainBrowserBlockedEvent) => void;
+  onBrowserUnblocked?: (event: MainBrowserUnblockedEvent) => void;
   onResponseStarted?: (event: MainResponseStartedEvent) => void;
   onProgressUpdate?: (event: MainProgressUpdateEvent) => void;
   onResponseDelta?: (event: MainResponseDeltaEvent) => void;
@@ -348,6 +372,20 @@ export function openMainStream(input: OpenMainStreamInput): MainStreamHandle {
       const payload = parse<MainPromotionPendingEvent>(event);
       if (!payload) return;
       input.onPromotionPending?.(payload);
+    });
+
+    next.addEventListener('browser_blocked', (event) => {
+      if (next !== source || stopped) return;
+      const payload = parse<MainBrowserBlockedEvent>(event);
+      if (!payload) return;
+      input.onBrowserBlocked?.(payload);
+    });
+
+    next.addEventListener('browser_unblocked', (event) => {
+      if (next !== source || stopped) return;
+      const payload = parse<MainBrowserUnblockedEvent>(event);
+      if (!payload) return;
+      input.onBrowserUnblocked?.(payload);
     });
 
     next.addEventListener('replay_gap', () => {

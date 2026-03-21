@@ -208,6 +208,67 @@ describe('events routes', () => {
     expect(invalidBody.error.code).toBe('thread_not_found');
   });
 
+  it('includes browser block lifecycle events in thread-scoped talk streams', async () => {
+    const threadA = createTalkThread({ talkId: 'talk-1', title: 'Thread A' });
+    const threadB = createTalkThread({ talkId: 'talk-1', title: 'Thread B' });
+
+    appendOutboxEvent({
+      topic: 'talk:talk-1',
+      eventType: 'browser_blocked',
+      payload: JSON.stringify({
+        talkId: 'talk-1',
+        threadId: threadA.id,
+        runId: 'run-browser-a',
+        browserBlock: {
+          kind: 'auth_required',
+        },
+      }),
+    });
+    appendOutboxEvent({
+      topic: 'talk:talk-1',
+      eventType: 'browser_unblocked',
+      payload: JSON.stringify({
+        talkId: 'talk-1',
+        threadId: threadA.id,
+        runId: 'run-browser-a',
+        browserResume: {
+          kind: 'auth_completed',
+        },
+      }),
+    });
+    appendOutboxEvent({
+      topic: 'talk:talk-1',
+      eventType: 'browser_blocked',
+      payload: JSON.stringify({
+        talkId: 'talk-1',
+        threadId: threadB.id,
+        runId: 'run-browser-b',
+        browserBlock: {
+          kind: 'auth_required',
+        },
+      }),
+    });
+
+    const res = await server.request(
+      `/api/v1/talks/talk-1/events?stream=1&threadId=${encodeURIComponent(threadA.id)}`,
+      {
+        headers: {
+          Authorization: 'Bearer owner-token',
+          'Last-Event-ID': '0',
+        },
+      },
+    );
+
+    expect(res.status).toBe(200);
+    const streamText = await readSseUntil(res, (text) =>
+      text.includes('event: browser_unblocked'),
+    );
+    expect(streamText).toContain('event: browser_blocked');
+    expect(streamText).toContain('event: browser_unblocked');
+    expect(streamText).toContain('run-browser-a');
+    expect(streamText).not.toContain('run-browser-b');
+  });
+
   it('supports Last-Event-ID replay semantics on user stream', async () => {
     const res = await server.request('/api/v1/events', {
       headers: {

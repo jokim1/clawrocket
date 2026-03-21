@@ -214,6 +214,12 @@ export function BrowserBlockedRunCard({
       </div>
 
       <p className="browser-block-message">{browserBlock.message}</p>
+      {browserBlock.kind !== 'confirmation_required' ? (
+        <p className="browser-block-message">
+          If you already completed the step on your phone or in another window,
+          click <strong>Resume run</strong>.
+        </p>
+      ) : null}
 
       <dl className="browser-block-details">
         <div>

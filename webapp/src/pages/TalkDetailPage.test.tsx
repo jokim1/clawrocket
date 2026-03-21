@@ -249,6 +249,91 @@ describe('TalkDetailPage', () => {
     );
   });
 
+  it('resyncs the Talk timeline when a running browser task becomes blocked mid-stream', async () => {
+    const runs = [
+      buildRun({
+        id: 'run-browser-live',
+        status: 'running',
+        createdAt: '2026-03-20T20:30:01.000Z',
+        startedAt: '2026-03-20T20:30:02.000Z',
+        triggerMessageId: 'msg-browser-1',
+        targetAgentNickname: 'Claude Sonnet 4.6',
+      }),
+    ];
+
+    installTalkDetailFetch({
+      messages: [
+        buildMessage({
+          id: 'msg-browser-1',
+          role: 'user',
+          content: 'Check my LinkedIn messages.',
+          createdAt: '2026-03-20T20:30:00.000Z',
+        }),
+      ],
+      runs,
+    });
+
+    renderDetailPage('/app/talks/talk-1');
+
+    await screen.findByText('Check my LinkedIn messages.');
+    streamInput?.onResponseStarted?.({
+      talkId: 'talk-1',
+      threadId: DEFAULT_THREAD_ID,
+      runId: 'run-browser-live',
+      agentId: 'agent-claude',
+      agentNickname: 'Claude Sonnet 4.6',
+    });
+
+    runs.splice(
+      0,
+      runs.length,
+      buildRun({
+        id: 'run-browser-live',
+        status: 'awaiting_confirmation',
+        createdAt: '2026-03-20T20:30:01.000Z',
+        startedAt: '2026-03-20T20:30:02.000Z',
+        triggerMessageId: 'msg-browser-1',
+        targetAgentNickname: 'Claude Sonnet 4.6',
+        browserBlock: {
+          kind: 'auth_required',
+          sessionId: 'session-browser-live',
+          siteKey: 'linkedin',
+          accountLabel: null,
+          url: 'https://www.linkedin.com/checkpoint/challenge',
+          title: 'Approve sign in',
+          message: 'Check your phone and approve sign in to continue.',
+          riskReason: null,
+          setupCommand: null,
+          artifacts: [],
+          confirmationId: null,
+          pendingToolCall: {
+            toolName: 'browser_wait',
+            args: { conditionType: 'load' },
+          },
+          createdAt: '2026-03-20T20:30:03.000Z',
+          updatedAt: '2026-03-20T20:30:03.000Z',
+        },
+      }),
+    );
+
+    streamInput?.onBrowserBlocked?.({
+      talkId: 'talk-1',
+      threadId: DEFAULT_THREAD_ID,
+      runId: 'run-browser-live',
+      browserBlock: {
+        kind: 'auth_required',
+      },
+    });
+
+    expect(
+      await screen.findByText('Browser authentication required'),
+    ).toBeTruthy();
+    expect(
+      screen.getByText('Check your phone and approve sign in to continue.'),
+    ).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Resume run' })).toBeTruthy();
+  });
+
   it('hides the response-mode selector until the talk has at least two assigned agents', async () => {
     installTalkDetailFetch({
       messages: [],

@@ -144,6 +144,28 @@ export type TalkHistoryEditedEvent = {
   editedAt: string;
 };
 
+export type TalkBrowserBlockedEvent = {
+  talkId: string;
+  threadId?: string | null;
+  runId: string;
+  browserBlock: {
+    kind: 'auth_required' | 'confirmation_required' | 'human_step_required';
+  };
+};
+
+export type TalkBrowserUnblockedEvent = {
+  talkId: string;
+  threadId?: string | null;
+  runId: string;
+  browserResume?: {
+    kind?:
+      | 'auth_completed'
+      | 'confirmation_approved'
+      | 'confirmation_rejected'
+      | 'human_step_completed';
+  } | null;
+};
+
 interface EventSourceLike {
   onopen: ((event: Event) => void) | null;
   onerror: ((event: Event) => void) | null;
@@ -169,6 +191,8 @@ interface TalkStreamCallbacks {
   onRunFailed: (event: TalkRunFailedEvent) => void;
   onRunCancelled: (event: TalkRunCancelledEvent) => void;
   onHistoryEdited?: (event: TalkHistoryEditedEvent) => void;
+  onBrowserBlocked?: (event: TalkBrowserBlockedEvent) => void;
+  onBrowserUnblocked?: (event: TalkBrowserUnblockedEvent) => void;
   onReplayGap: () => void | Promise<void>;
   onStateChange?: (state: TalkStreamState) => void;
   onUnauthorized: () => void;
@@ -412,6 +436,20 @@ export function openTalkStream(input: OpenTalkStreamInput): TalkStreamHandle {
       const payload = parse<TalkHistoryEditedEvent>(event);
       if (!payload) return;
       input.onHistoryEdited?.(payload);
+    });
+
+    next.addEventListener('browser_blocked', (event) => {
+      if (next !== source || stopped) return;
+      const payload = parse<TalkBrowserBlockedEvent>(event);
+      if (!payload) return;
+      input.onBrowserBlocked?.(payload);
+    });
+
+    next.addEventListener('browser_unblocked', (event) => {
+      if (next !== source || stopped) return;
+      const payload = parse<TalkBrowserUnblockedEvent>(event);
+      if (!payload) return;
+      input.onBrowserUnblocked?.(payload);
     });
 
     next.addEventListener('replay_gap', () => {

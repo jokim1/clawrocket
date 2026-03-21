@@ -106,6 +106,8 @@ export function buildTalkThreadEventFilter(
       case 'talk_run_started':
       case 'talk_run_completed':
       case 'talk_run_failed':
+      case 'browser_blocked':
+      case 'browser_unblocked':
       case 'talk_response_started':
       case 'talk_progress_update':
       case 'talk_response_delta':
