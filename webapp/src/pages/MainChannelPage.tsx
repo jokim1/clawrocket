@@ -48,6 +48,7 @@ import {
   inferThreadTitleFromContent,
 } from '../lib/threadTitles';
 import {
+  type MainHeartbeatEvent,
   openMainStream,
   type MainMessageAppendedEvent,
   type MainProgressUpdateEvent,
@@ -114,6 +115,7 @@ type MainAction =
     }
   | { type: 'RESPONSE_STARTED'; event: MainResponseStartedEvent }
   | { type: 'RESPONSE_PROGRESS'; event: MainProgressUpdateEvent }
+  | { type: 'RESPONSE_HEARTBEAT'; event: MainHeartbeatEvent }
   | { type: 'RESPONSE_DELTA'; event: { runId: string; threadId: string; text: string } }
   | { type: 'RESPONSE_COMPLETED'; runId: string; threadId: string }
   | {
@@ -741,6 +743,19 @@ function mainReducer(state: MainState, action: MainAction): MainState {
         threads: withThreadActivity(state.threads, runsById, action.event.threadId),
       };
     }
+    case 'RESPONSE_HEARTBEAT': {
+      const existing = state.runsById[action.event.runId];
+      if (!existing) return state;
+      const runsById = patchRun(state.runsById, action.event.runId, (run) => ({
+        ...run,
+        lastHeartbeatAt: action.event.at,
+      }));
+      return {
+        ...state,
+        runsById,
+        threads: withThreadActivity(state.threads, runsById, action.event.threadId),
+      };
+    }
     case 'RESPONSE_DELTA': {
       const existing = state.runsById[action.event.runId];
       if (!existing) return state;
@@ -1259,6 +1274,10 @@ export function MainChannelPage({
       onProgressUpdate: (event) => {
         reportRunVisible(event.runId);
         dispatch({ type: 'RESPONSE_PROGRESS', event });
+      },
+      onHeartbeat: (event) => {
+        reportRunVisible(event.runId);
+        dispatch({ type: 'RESPONSE_HEARTBEAT', event });
       },
       onResponseDelta: (event) => {
         reportRunVisible(event.runId);

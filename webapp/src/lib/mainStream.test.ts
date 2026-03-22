@@ -132,4 +132,32 @@ describe('openMainStream', () => {
     expect(onUnauthorized).toHaveBeenCalledTimes(1);
     expect(FakeEventSource.instances).toHaveLength(1);
   });
+
+  it('forwards main_heartbeat events', () => {
+    const onHeartbeat = vi.fn();
+
+    openMainStream({
+      onMessageAppended: vi.fn(),
+      onHeartbeat,
+      onReplayGap: vi.fn(),
+      onUnauthorized: vi.fn(),
+      createEventSource: (url) => new FakeEventSource(url),
+      probeSession: vi.fn(async () => true),
+      jitterMs: () => 0,
+    });
+
+    expect(FakeEventSource.instances).toHaveLength(1);
+    FakeEventSource.instances[0].emitEvent('main_heartbeat', {
+      runId: 'run_1',
+      threadId: 'thread_1',
+      at: '2026-03-21T22:40:00.000Z',
+    });
+
+    expect(onHeartbeat).toHaveBeenCalledTimes(1);
+    expect(onHeartbeat).toHaveBeenCalledWith({
+      runId: 'run_1',
+      threadId: 'thread_1',
+      at: '2026-03-21T22:40:00.000Z',
+    });
+  });
 });
