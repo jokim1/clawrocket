@@ -41,6 +41,24 @@ function seedProviderVerification(providerId: string): void {
     .run(providerId, now, now);
 }
 
+function upsertProviderVerification(
+  providerId: string,
+  status: 'verified' | 'missing' | 'not_verified' | 'invalid' | 'unavailable',
+): void {
+  const now = new Date().toISOString();
+  getDb()
+    .prepare(
+      `INSERT INTO llm_provider_verifications (
+         provider_id, status, last_verified_at, last_error, updated_at
+       ) VALUES (?, ?, ?, NULL, ?)
+       ON CONFLICT(provider_id) DO UPDATE SET
+         status = excluded.status,
+         last_verified_at = excluded.last_verified_at,
+         updated_at = excluded.updated_at`,
+    )
+    .run(providerId, status, status === 'verified' ? now : null, now);
+}
+
 describe('execution-preview', () => {
   beforeEach(() => {
     _initTestDatabase();
@@ -127,8 +145,9 @@ describe('execution-preview', () => {
     );
   });
 
-  it('shows browser-enabled Claude Main routes as direct fast-lane when an API key exists', () => {
+  it('shows browser-enabled Claude Main routes as direct fast-lane when a verified API key exists', () => {
     seedAnthropicSecret('sk-ant-stale');
+    seedProviderVerification('provider.anthropic');
     upsertSettingValue({
       key: 'executor.authMode',
       value: 'subscription',
@@ -159,6 +178,38 @@ describe('execution-preview', () => {
     });
     expect(buildMainExecutionPreview(agent, 'owner-1').message).toMatch(
       /promote shell\/filesystem work into a background container run/i,
+    );
+  });
+
+  it('shows subscription fallback when an Anthropic API key exists but is not verified', () => {
+    seedAnthropicSecret('sk-ant-stale');
+    upsertProviderVerification('provider.anthropic', 'invalid');
+    upsertSettingValue({
+      key: 'executor.authMode',
+      value: 'subscription',
+      updatedBy: 'owner-1',
+    });
+    upsertSettingValue({
+      key: 'executor.claudeOauthToken',
+      value: 'oauth-token-123',
+      updatedBy: 'owner-1',
+    });
+
+    const agent = createRegisteredAgent({
+      name: 'Claude Browser Main',
+      providerId: 'provider.anthropic',
+      modelId: 'claude-sonnet-4-6',
+      toolPermissionsJson: JSON.stringify({ browser: true }),
+    });
+
+    expect(buildMainExecutionPreview(agent, 'owner-1')).toMatchObject({
+      ready: true,
+      backend: 'container',
+      authPath: 'subscription',
+      routeReason: 'subscription_fallback',
+    });
+    expect(buildMainExecutionPreview(agent, 'owner-1').message).toMatch(
+      /no verified anthropic api key is configured/i,
     );
   });
 

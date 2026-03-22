@@ -424,6 +424,19 @@ function tryResolveDirectExecutionPlan(input: {
     return null;
   }
 
+  if (
+    input.agent.provider_id === 'provider.anthropic' &&
+    input.configuredAuthMode === 'subscription' &&
+    input.allowAnthropicDirectWhenSubscriptionMode === true
+  ) {
+    const verificationStatus = getProviderVerificationStatus(
+      input.agent.provider_id,
+    );
+    if (verificationStatus !== 'verified') {
+      return null;
+    }
+  }
+
   try {
     const binding = resolveExecution(input.agent);
     return {

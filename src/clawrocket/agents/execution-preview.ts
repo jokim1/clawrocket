@@ -46,7 +46,7 @@ function buildReadyMessage(
     plan.routeReason === 'subscription_fallback' &&
     plan.containerCredential.authMode === 'subscription'
   ) {
-    return 'Main will use Claude subscription via container fallback because no Anthropic API key is configured.';
+    return 'Main will use Claude subscription via container fallback because no verified Anthropic API key is configured.';
   }
 
   if (plan.containerCredential.authMode === 'subscription') {
@@ -64,7 +64,7 @@ function buildContainerRuntimeUnavailableMessage(
     agent.provider_id === 'provider.anthropic' &&
     plan.routeReason === 'subscription_fallback'
   ) {
-    return 'Claude container runtime is unavailable on this host. Start Docker or configure an Anthropic API key for this agent.';
+    return 'Claude container runtime is unavailable on this host. Start Docker or configure a verified Anthropic API key for this agent.';
   }
 
   return 'Claude container runtime is unavailable on this host. Start Docker before using this agent in Main.';
