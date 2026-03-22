@@ -226,6 +226,7 @@ describe('TalkDetailPage', () => {
             backend: 'container',
             authPath: 'subscription',
             credentialSource: 'oauth_token',
+            routeReason: 'normal',
             plannerReason: 'Browser ran in the container-backed path.',
             providerId: 'provider.anthropic',
             modelId: 'claude-sonnet-4-6',
@@ -237,15 +238,17 @@ describe('TalkDetailPage', () => {
     renderDetailPage('/app/talks/talk-1');
 
     await screen.findByText('Browser approval required');
-    expect(screen.getByText('This browser action will send a real message.')).toBeTruthy();
-    expect(screen.getByText('Browser ran in the container-backed path.')).toBeTruthy();
+    expect(
+      screen.getByText('This browser action will send a real message.'),
+    ).toBeTruthy();
+    expect(
+      screen.getByText('Browser ran in the container-backed path.'),
+    ).toBeTruthy();
 
     await user.click(screen.getByRole('button', { name: 'Approve action' }));
 
     await waitFor(() =>
-      expect(
-        screen.queryByText('Browser approval required'),
-      ).toBeNull(),
+      expect(screen.queryByText('Browser approval required')).toBeNull(),
     );
   });
 
@@ -357,9 +360,7 @@ describe('TalkDetailPage', () => {
     renderDetailPage('/app/talks/talk-1');
 
     await screen.findByPlaceholderText('Send a message to this thread');
-    expect(
-      screen.queryByRole('button', { name: /Response mode/i }),
-    ).toBeNull();
+    expect(screen.queryByRole('button', { name: /Response mode/i })).toBeNull();
   });
 
   it('uses the shared new-thread button and supports inline thread renaming', async () => {
@@ -441,7 +442,10 @@ describe('TalkDetailPage', () => {
 
   it('deletes the active thread and falls back to the remaining thread', async () => {
     const user = userEvent.setup();
-    vi.stubGlobal('confirm', vi.fn(() => true));
+    vi.stubGlobal(
+      'confirm',
+      vi.fn(() => true),
+    );
     installTalkDetailFetch({
       threads: [
         buildThread({
@@ -488,7 +492,10 @@ describe('TalkDetailPage', () => {
 
   it('keeps a thread when delete confirmation is cancelled', async () => {
     const user = userEvent.setup();
-    vi.stubGlobal('confirm', vi.fn(() => false));
+    vi.stubGlobal(
+      'confirm',
+      vi.fn(() => false),
+    );
     installTalkDetailFetch({
       threads: [
         buildThread({
@@ -721,9 +728,7 @@ describe('TalkDetailPage', () => {
     renderDetailPage('/app/talks/talk-1');
 
     await screen.findByText('Cal should be bowl eligible again.');
-    expect(
-      screen.queryByRole('button', { name: 'Context used' }),
-    ).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Context used' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'View context' })).toBeNull();
   });
 
@@ -1047,7 +1052,10 @@ describe('TalkDetailPage', () => {
 
   it('does not delete a state entry when confirmation is cancelled', async () => {
     const user = userEvent.setup();
-    vi.stubGlobal('confirm', vi.fn(() => false));
+    vi.stubGlobal(
+      'confirm',
+      vi.fn(() => false),
+    );
 
     installTalkDetailFetch({
       stateEntries: [
@@ -1638,7 +1646,8 @@ describe('TalkDetailPage', () => {
           lastDeliveryReasonCode: 'delivery_retries_exhausted',
           diagnosis: {
             status: 'warning',
-            headline: 'Dropped after waiting too long for the talk to become idle',
+            headline:
+              'Dropped after waiting too long for the talk to become idle',
             detail: 'Delivery retries exhausted',
             action: null,
           },
@@ -1666,7 +1675,9 @@ describe('TalkDetailPage', () => {
     await screen.findByRole('heading', { name: 'Connected Channels' });
 
     expect(
-      screen.getByRole('heading', { name: /\[Telegram\]\s+Cal Football Chat/i }),
+      screen.getByRole('heading', {
+        name: /\[Telegram\]\s+Cal Football Chat/i,
+      }),
     ).toBeTruthy();
     expect(
       screen.getByText(
@@ -1766,7 +1777,9 @@ describe('TalkDetailPage', () => {
     expect(screen.getByDisplayValue('#family-ops')).toBeTruthy();
 
     await user.click(screen.getByRole('button', { name: 'Create Binding' }));
-    expect(await screen.findByText('Talk channel binding created.')).toBeTruthy();
+    expect(
+      await screen.findByText('Talk channel binding created.'),
+    ).toBeTruthy();
     expect(
       await screen.findByRole('heading', { name: /#family-ops/i }),
     ).toBeTruthy();
@@ -1820,9 +1833,14 @@ describe('TalkDetailPage', () => {
     expect(screen.getByRole('button', { name: /#family-ops/i })).toBeTruthy();
     expect(screen.queryByRole('button', { name: /#launch-room/i })).toBeNull();
 
-    await user.selectOptions(screen.getByLabelText('Workspace'), 'channel-conn:slack:gamemakers');
+    await user.selectOptions(
+      screen.getByLabelText('Workspace'),
+      'channel-conn:slack:gamemakers',
+    );
 
-    expect(await screen.findByRole('button', { name: /#launch-room/i })).toBeTruthy();
+    expect(
+      await screen.findByRole('button', { name: /#launch-room/i }),
+    ).toBeTruthy();
     expect(screen.queryByRole('button', { name: /#family-ops/i })).toBeNull();
   });
 
@@ -1859,11 +1877,10 @@ describe('TalkDetailPage', () => {
 
     expect(screen.getByText('Bound to Family Announcements')).toBeTruthy();
     const openTalkLink = screen.getByRole('link', { name: 'Open Talk' });
-    expect(openTalkLink).toHaveAttribute(
-      'href',
-      '/app/talks/talk-2/channels',
-    );
-    expect(screen.getByRole('button', { name: 'Create Binding' })).toBeDisabled();
+    expect(openTalkLink).toHaveAttribute('href', '/app/talks/talk-2/channels');
+    expect(
+      screen.getByRole('button', { name: 'Create Binding' }),
+    ).toBeDisabled();
   });
 
   it('disables Slack channels the app has not joined yet', async () => {
@@ -1893,12 +1910,99 @@ describe('TalkDetailPage', () => {
     renderDetailPage('/app/talks/talk-1/channels');
     await screen.findByRole('heading', { name: 'Connected Channels' });
 
-    expect(screen.getByText('Invite Slack app to channel first')).toBeTruthy();
+    expect(
+      screen.getByText('Invite app in Slack, then sync channels'),
+    ).toBeTruthy();
     expect(screen.getByRole('button', { name: /#general/i })).toHaveAttribute(
       'aria-disabled',
       'true',
     );
-    expect(screen.getByRole('button', { name: 'Create Binding' })).toBeDisabled();
+    expect(
+      screen.getByRole('button', { name: 'Create Binding' }),
+    ).toBeDisabled();
+  });
+
+  it('lets users sync the selected Slack workspace from the Talk page after inviting the app', async () => {
+    const user = userEvent.setup();
+
+    installTalkDetailFetch({
+      channelConnections: [
+        buildChannelConnection({
+          id: 'channel-conn:slack:kimfamily',
+          platform: 'slack',
+          accountKey: 'slack:T123',
+          displayName: 'KimFamily',
+          healthStatus: 'healthy',
+          config: {
+            teamId: 'T123',
+            teamName: 'KimFamily',
+            lastSyncedAt: '2026-03-21T22:00:00.000Z',
+            lastSyncTotalCount: 1,
+            lastSyncPublicCount: 1,
+            lastSyncPrivateCount: 0,
+          },
+        }),
+      ],
+      channelTargets: [
+        buildChannelTarget({
+          connectionId: 'channel-conn:slack:kimfamily',
+          targetKind: 'channel',
+          targetId: 'slack:C123',
+          displayName: '#general',
+          metadata: { isMember: false },
+          approved: false,
+        }),
+      ],
+      talkChannels: [],
+      onSyncSlackWorkspace: ({ channelConnections, channelTargets }) => ({
+        channelConnections,
+        channelTargets: channelTargets.map((target) =>
+          target.targetId === 'slack:C123'
+            ? {
+                ...target,
+                metadata: { ...(target.metadata ?? {}), isMember: true },
+              }
+            : target,
+        ),
+        syncedCount: 1,
+        publicCount: 1,
+        privateCount: 0,
+      }),
+    });
+
+    renderDetailPage('/app/talks/talk-1/channels');
+    await screen.findByRole('heading', { name: 'Connected Channels' });
+
+    expect(screen.getByText('Slack Workspace')).toBeTruthy();
+    expect(screen.getByText('healthy')).toBeTruthy();
+    expect(
+      screen.getByText('Invite app in Slack, then sync channels'),
+    ).toBeTruthy();
+
+    await user.click(
+      screen.getByRole('button', { name: 'Sync Slack Channels' }),
+    );
+
+    expect(
+      await screen.findByText(
+        'Synced 1 Slack channel for KimFamily (1 public, 0 private).',
+      ),
+    ).toBeTruthy();
+
+    const generalButton = await screen.findByRole('button', {
+      name: /#general/i,
+    });
+    expect(generalButton).toHaveAttribute('aria-disabled', 'false');
+
+    await user.click(generalButton);
+    await user.click(screen.getByRole('button', { name: 'Create Binding' }));
+
+    expect(
+      await screen.findByText('Talk channel binding created.'),
+    ).toBeTruthy();
+    expect(
+      await screen.findByRole('heading', { name: /\[Slack\]\s+#general/i }),
+    ).toBeTruthy();
   });
 
   it('shows inline Slack test-send errors on the binding card', async () => {
@@ -3127,9 +3231,7 @@ describe('TalkDetailPage', () => {
       });
     });
 
-    expect(
-      screen.queryByText('Anthropic API error: Unauthorized'),
-    ).toBeNull();
+    expect(screen.queryByText('Anthropic API error: Unauthorized')).toBeNull();
     expect(
       screen.queryByRole('button', { name: 'Open Run History' }),
     ).toBeNull();
@@ -3328,7 +3430,9 @@ describe('TalkDetailPage', () => {
     await screen.findByRole('heading', { name: 'Run History' });
 
     expect(screen.getByText('run-side')).toBeTruthy();
-    expect(screen.getByText('execution_failed: Side thread failed')).toBeTruthy();
+    expect(
+      screen.getByText('execution_failed: Side thread failed'),
+    ).toBeTruthy();
   });
 
   it('opens Run History from a failed inline card and scrolls to the run row', async () => {
@@ -3560,9 +3664,7 @@ describe('TalkDetailPage', () => {
     ).toBeTruthy();
 
     await user.click(screen.getByLabelText(/You.*Old user prompt/i));
-    await user.click(
-      screen.getByLabelText(/Assistant.*Old assistant answer/i),
-    );
+    await user.click(screen.getByLabelText(/Assistant.*Old assistant answer/i));
     await user.click(screen.getByRole('button', { name: 'Delete selected' }));
 
     await waitFor(() =>
@@ -4513,9 +4615,20 @@ function installTalkDetailFetch(input?: {
     attachmentIds?: string[];
     threadId?: string | null;
   }) => { talkId: string; message: TalkMessage; runs: TalkRun[] };
-  onTestChannel?: (bindingId: string) =>
-    | { status: number; code?: string; message: string }
-    | void;
+  onTestChannel?: (
+    bindingId: string,
+  ) => { status: number; code?: string; message: string } | void;
+  onSyncSlackWorkspace?: (input: {
+    connectionId: string;
+    channelConnections: ChannelConnection[];
+    channelTargets: ChannelTarget[];
+  }) => {
+    channelConnections?: ChannelConnection[];
+    channelTargets?: ChannelTarget[];
+    syncedCount?: number;
+    publicCount?: number;
+    privateCount?: number;
+  } | void;
   onListMessages?: (input: {
     threadId: string | null;
     visibleMessages: TalkMessage[];
@@ -4634,10 +4747,10 @@ function installTalkDetailFetch(input?: {
   let jobRunsByJobId = input?.jobRunsByJobId ?? {
     'job-1': [buildTalkJobRunSummary()],
   };
-  const channelConnections = input?.channelConnections ?? [
+  let channelConnections = input?.channelConnections ?? [
     buildChannelConnection(),
   ];
-  const channelTargets = input?.channelTargets ?? [buildChannelTarget()];
+  let channelTargets = input?.channelTargets ?? [buildChannelTarget()];
   let talkChannels = input?.talkChannels ?? [buildTalkChannelBinding()];
   let ingressFailures = input?.ingressFailures ?? [buildChannelQueueFailure()];
   let deliveryFailures = input?.deliveryFailures ?? [
@@ -5679,7 +5792,64 @@ function installTalkDetailFetch(input?: {
         return jsonResponse(200, {
           ok: true,
           data: {
-            connections: channelConnections.map(buildChannelConnectionApiRecord),
+            connections: channelConnections.map(
+              buildChannelConnectionApiRecord,
+            ),
+          },
+        });
+      }
+
+      if (
+        /\/api\/v1\/channel-connectors\/slack\/workspaces\/[^/]+\/sync$/.test(
+          path,
+        ) &&
+        method === 'POST'
+      ) {
+        const connectionId = decodeURIComponent(
+          path
+            .split('/api/v1/channel-connectors/slack/workspaces/')[1]
+            .split('/sync')[0],
+        );
+        const syncResult = input?.onSyncSlackWorkspace?.({
+          connectionId,
+          channelConnections,
+          channelTargets,
+        });
+        if (syncResult?.channelConnections) {
+          channelConnections = syncResult.channelConnections;
+        }
+        if (syncResult?.channelTargets) {
+          channelTargets = syncResult.channelTargets;
+        }
+        const syncedTargets = channelTargets.filter(
+          (target) => target.connectionId === connectionId,
+        );
+        const publicCount = syncedTargets.filter(
+          (target) => target.metadata?.isPrivate !== true,
+        ).length;
+        const privateCount = syncedTargets.length - publicCount;
+        const syncedCount = syncedTargets.length;
+        channelConnections = channelConnections.map((connection) =>
+          connection.id === connectionId
+            ? {
+                ...connection,
+                config: {
+                  ...(connection.config ?? {}),
+                  lastSyncedAt: '2026-03-21T23:45:00.000Z',
+                  lastSyncTotalCount: syncResult?.syncedCount ?? syncedCount,
+                  lastSyncPublicCount: syncResult?.publicCount ?? publicCount,
+                  lastSyncPrivateCount:
+                    syncResult?.privateCount ?? privateCount,
+                },
+              }
+            : connection,
+        );
+        return jsonResponse(200, {
+          ok: true,
+          data: {
+            syncedCount: syncResult?.syncedCount ?? syncedCount,
+            publicCount: syncResult?.publicCount ?? publicCount,
+            privateCount: syncResult?.privateCount ?? privateCount,
           },
         });
       }
@@ -5694,7 +5864,9 @@ function installTalkDetailFetch(input?: {
           url.split('/api/v1/channel-connections/')[1].split('/targets')[0],
         );
         const approval = parsed.searchParams.get('approval');
-        const query = (parsed.searchParams.get('query') || '').trim().toLowerCase();
+        const query = (parsed.searchParams.get('query') || '')
+          .trim()
+          .toLowerCase();
         const limit = Number(parsed.searchParams.get('limit') || '100');
         const offset = Number(parsed.searchParams.get('offset') || '0');
         let filtered = channelTargets.filter(
@@ -5737,7 +5909,9 @@ function installTalkDetailFetch(input?: {
           ok: true,
           data: {
             talkId: 'talk-1',
-            bindings: talkChannels.filter((binding) => binding.talkId === 'talk-1'),
+            bindings: talkChannels.filter(
+              (binding) => binding.talkId === 'talk-1',
+            ),
           },
         });
       }
