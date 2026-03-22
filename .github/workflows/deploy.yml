@@ -29,6 +29,7 @@ jobs:
           DEPLOY_HEALTH_INTERVAL: ${{ vars.DEPLOY_HEALTH_INTERVAL }}
           DEPLOY_HEALTH_CONNECT_TIMEOUT: ${{ vars.DEPLOY_HEALTH_CONNECT_TIMEOUT }}
           DEPLOY_HEALTH_MAX_TIME: ${{ vars.DEPLOY_HEALTH_MAX_TIME }}
+          MAIN_SUBSCRIPTION_WARM_WORKER_ENABLED: ${{ vars.MAIN_SUBSCRIPTION_WARM_WORKER_ENABLED }}
         run: |
           set -euo pipefail
           deploy_path="${DEPLOY_PATH:-/home/k1min8r/projects/clawrocket}"
