@@ -81,6 +81,7 @@ import {
   listTalkChannelDeliveryFailures,
   listTalkChannelIngressFailures,
   listTalkChannels,
+  syncSlackWorkspace,
   listTalkMessages,
   searchTalkMessages,
   patchTalkChannel,
@@ -1507,6 +1508,94 @@ function formatChannelPlatform(
   return platform === 'telegram' ? 'Telegram' : 'Slack';
 }
 
+function formatChannelConnectionHealthStatus(
+  status: ChannelConnection['healthStatus'],
+): string {
+  switch (status) {
+    case 'healthy':
+      return 'healthy';
+    case 'degraded':
+      return 'degraded';
+    case 'disconnected':
+      return 'disconnected';
+    case 'error':
+      return 'error';
+    default:
+      return status;
+  }
+}
+
+function channelConnectionStatusClass(
+  status: ChannelConnection['healthStatus'],
+): string {
+  switch (status) {
+    case 'healthy':
+      return 'talk-agent-chip talk-agent-chip-success';
+    case 'degraded':
+    case 'disconnected':
+      return 'talk-agent-chip talk-agent-chip-warning';
+    case 'error':
+      return 'talk-agent-chip talk-agent-chip-error';
+    default:
+      return 'talk-agent-chip';
+  }
+}
+
+function readChannelConnectionStringConfig(
+  connection: ChannelConnection,
+  key: string,
+): string | null {
+  const value = connection.config?.[key];
+  return typeof value === 'string' && value.trim() ? value : null;
+}
+
+function readChannelConnectionNumberConfig(
+  connection: ChannelConnection,
+  key: string,
+): number | null {
+  const value = connection.config?.[key];
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+function buildSlackWorkspaceSyncSummary(connection: ChannelConnection): string {
+  const totalCount = readChannelConnectionNumberConfig(
+    connection,
+    'lastSyncTotalCount',
+  );
+  const publicCount = readChannelConnectionNumberConfig(
+    connection,
+    'lastSyncPublicCount',
+  );
+  const privateCount = readChannelConnectionNumberConfig(
+    connection,
+    'lastSyncPrivateCount',
+  );
+  const lastSyncedAt = readChannelConnectionStringConfig(
+    connection,
+    'lastSyncedAt',
+  );
+  const countLabel =
+    totalCount == null
+      ? 'Sync Slack channels to refresh recent invites.'
+      : `${totalCount} synced channel${totalCount === 1 ? '' : 's'}`;
+  const splitLabel =
+    publicCount != null && privateCount != null
+      ? ` (${publicCount} public, ${privateCount} private)`
+      : '';
+  const freshnessLabel = lastSyncedAt
+    ? ` · Last synced ${formatDateTime(lastSyncedAt)}`
+    : ' · Never synced';
+  return `${countLabel}${splitLabel}${freshnessLabel}`;
+}
+
+function buildSlackWorkspaceSyncMessage(
+  workspaceLabel: string,
+  result: { syncedCount: number; publicCount: number; privateCount: number },
+): string {
+  const countLabel = `${result.syncedCount} Slack channel${result.syncedCount === 1 ? '' : 's'}`;
+  return `Synced ${countLabel} for ${workspaceLabel} (${result.publicCount} public, ${result.privateCount} private).`;
+}
+
 function buildChannelTargetOptionLabel(
   target: ChannelTarget,
   connections: ChannelConnection[],
@@ -2437,6 +2526,9 @@ export function TalkDetailPage({
     useState<ChannelCreateDraft>(buildDefaultChannelCreateDraft());
   const [channelTargetQuery, setChannelTargetQuery] = useState('');
   const [channelTargetsLoading, setChannelTargetsLoading] = useState(false);
+  const [channelSyncingConnectionId, setChannelSyncingConnectionId] = useState<
+    string | null
+  >(null);
   const [channelStatus, setChannelStatus] = useState<{
     status: 'idle' | 'loading' | 'saving' | 'error' | 'success';
     message?: string;
@@ -3270,10 +3362,7 @@ export function TalkDetailPage({
         if (event.threadId) {
           ensureKnownThread(event.threadId);
         }
-        if (
-          event.threadId &&
-          event.threadId === activeThreadIdRef.current
-        ) {
+        if (event.threadId && event.threadId === activeThreadIdRef.current) {
           void resyncTalkState({ refreshThreads: true });
           return;
         }
@@ -3284,10 +3373,7 @@ export function TalkDetailPage({
         if (event.threadId) {
           ensureKnownThread(event.threadId);
         }
-        if (
-          event.threadId &&
-          event.threadId === activeThreadIdRef.current
-        ) {
+        if (event.threadId && event.threadId === activeThreadIdRef.current) {
           void resyncTalkState({ refreshThreads: true });
           return;
         }
@@ -3570,8 +3656,9 @@ export function TalkDetailPage({
   const menuThread = useMemo(
     () =>
       threadMenu
-        ? threadState.threads.find((thread) => thread.id === threadMenu.threadId) ||
-          null
+        ? threadState.threads.find(
+            (thread) => thread.id === threadMenu.threadId,
+          ) || null
         : null,
     [threadMenu, threadState.threads],
   );
@@ -3645,7 +3732,9 @@ export function TalkDetailPage({
             (candidate) => candidate.id !== thread.id,
           ),
         }));
-        setEditingThreadId((current) => (current === thread.id ? null : current));
+        setEditingThreadId((current) =>
+          current === thread.id ? null : current,
+        );
         if (activeThreadId === thread.id) {
           const fallbackThreadId = remaining[0]?.id || null;
           if (fallbackThreadId) {
@@ -3659,7 +3748,8 @@ export function TalkDetailPage({
         }
         setThreadState((current) => ({
           ...current,
-          error: err instanceof Error ? err.message : 'Failed to delete thread.',
+          error:
+            err instanceof Error ? err.message : 'Failed to delete thread.',
         }));
       }
     },
@@ -3815,8 +3905,7 @@ export function TalkDetailPage({
                 Number.isFinite(updatedAt) && updatedAt > 0
                   ? updatedAt
                   : Date.parse(run.createdAt) || 0,
-              sortOrder:
-                state.messages.length + liveResponses.length + index,
+              sortOrder: state.messages.length + liveResponses.length + index,
               run,
             };
           }),
@@ -3907,42 +3996,47 @@ export function TalkDetailPage({
   );
   const channelTargetOptions = useMemo(
     () =>
-      channelTargetInventory.targets.map((target) => {
-        const key = buildChannelTargetKey(target);
-        const label = buildChannelTargetOptionLabel(target, channelConnections);
-        const metaLabel = buildChannelTargetOptionMetaLabel(
-          target,
-          channelConnections,
-        );
-        const connection =
-          channelConnections.find(
-            (candidate) => candidate.id === target.connectionId,
-          ) || null;
-        const occupiedByThisTalk = target.activeBindingTalkId === talkId;
-        const occupiedByOtherTalk =
-          Boolean(target.activeBindingTalkId) && !occupiedByThisTalk;
-        const requiresInvite =
-          connection?.platform === 'slack' &&
-          readChannelTargetBooleanMetadata(target, 'isMember') === false;
-        return {
-          key,
-          label,
-          metaLabel,
-          occupancyLabel: requiresInvite
-            ? 'Invite Slack app to channel first'
-            : buildChannelTargetOccupancyLabel(target, talkId),
-          occupiedByThisTalk,
-          occupiedByOtherTalk,
-          requiresInvite,
-          openTalkHref:
-            occupiedByOtherTalk &&
-            target.activeBindingTalkAccessible &&
-            target.activeBindingTalkId
-              ? `/app/talks/${encodeURIComponent(target.activeBindingTalkId)}/channels`
-              : null,
-          target,
-        };
-      }).sort((left, right) => left.label.localeCompare(right.label)),
+      channelTargetInventory.targets
+        .map((target) => {
+          const key = buildChannelTargetKey(target);
+          const label = buildChannelTargetOptionLabel(
+            target,
+            channelConnections,
+          );
+          const metaLabel = buildChannelTargetOptionMetaLabel(
+            target,
+            channelConnections,
+          );
+          const connection =
+            channelConnections.find(
+              (candidate) => candidate.id === target.connectionId,
+            ) || null;
+          const occupiedByThisTalk = target.activeBindingTalkId === talkId;
+          const occupiedByOtherTalk =
+            Boolean(target.activeBindingTalkId) && !occupiedByThisTalk;
+          const requiresInvite =
+            connection?.platform === 'slack' &&
+            readChannelTargetBooleanMetadata(target, 'isMember') === false;
+          return {
+            key,
+            label,
+            metaLabel,
+            occupancyLabel: requiresInvite
+              ? 'Invite app in Slack, then sync channels'
+              : buildChannelTargetOccupancyLabel(target, talkId),
+            occupiedByThisTalk,
+            occupiedByOtherTalk,
+            requiresInvite,
+            openTalkHref:
+              occupiedByOtherTalk &&
+              target.activeBindingTalkAccessible &&
+              target.activeBindingTalkId
+                ? `/app/talks/${encodeURIComponent(target.activeBindingTalkId)}/channels`
+                : null,
+            target,
+          };
+        })
+        .sort((left, right) => left.label.localeCompare(right.label)),
     [channelConnections, channelTargetInventory.targets, talkId],
   );
   const missingGoogleScopes = useMemo(() => {
@@ -4168,8 +4262,7 @@ export function TalkDetailPage({
             new Set(connections.map((connection) => connection.platform)),
           );
           const nextPlatform =
-            current.platform &&
-            availablePlatforms.includes(current.platform)
+            current.platform && availablePlatforms.includes(current.platform)
               ? current.platform
               : availablePlatforms[0] || '';
           const platformConnections = nextPlatform
@@ -5211,7 +5304,10 @@ export function TalkDetailPage({
   );
 
   const handleLoadMoreChannelTargets = useCallback(async () => {
-    if (!selectedChannelConnection || channelTargetInventory.nextOffset == null) {
+    if (
+      !selectedChannelConnection ||
+      channelTargetInventory.nextOffset == null
+    ) {
       return;
     }
     setChannelTargetsLoading(true);
@@ -5253,13 +5349,57 @@ export function TalkDetailPage({
     selectedChannelPlatform,
   ]);
 
+  const handleSyncSelectedSlackWorkspace = useCallback(async () => {
+    if (
+      !canBrowseChannelConnections ||
+      !selectedChannelConnection ||
+      selectedChannelConnection.platform !== 'slack'
+    ) {
+      return;
+    }
+
+    const connectionId = selectedChannelConnection.id;
+    const workspaceLabel = selectedChannelConnection.displayName;
+    setChannelSyncingConnectionId(connectionId);
+    setChannelStatus({ status: 'idle' });
+
+    try {
+      const result = await syncSlackWorkspace(connectionId);
+      await reloadTalkChannels({ quiet: true });
+      setChannelStatus({
+        status: 'success',
+        message: buildSlackWorkspaceSyncMessage(workspaceLabel, result),
+      });
+    } catch (err) {
+      if (err instanceof UnauthorizedError) {
+        handleUnauthorized();
+        return;
+      }
+      setChannelStatus({
+        status: 'error',
+        message:
+          err instanceof Error ? err.message : 'Failed to sync Slack channels.',
+      });
+    } finally {
+      setChannelSyncingConnectionId((current) =>
+        current === connectionId ? null : current,
+      );
+    }
+  }, [
+    canBrowseChannelConnections,
+    handleUnauthorized,
+    reloadTalkChannels,
+    selectedChannelConnection,
+  ]);
+
   const handleCreateChannel = useCallback(async () => {
     if (!canEditChannels) return;
     const parsedTarget = parseChannelTargetKey(channelCreateDraft.targetKey);
     if (!parsedTarget) {
       setChannelStatus({
         status: 'error',
-        message: 'Select a channel destination before creating a channel binding.',
+        message:
+          'Select a channel destination before creating a channel binding.',
       });
       return;
     }
@@ -5698,10 +5838,7 @@ export function TalkDetailPage({
       textarea.scrollHeight,
       COMPOSER_TEXTAREA_MIN_HEIGHT_PX,
     );
-    const nextHeight = Math.min(
-      scrollHeight,
-      COMPOSER_TEXTAREA_MAX_HEIGHT_PX,
-    );
+    const nextHeight = Math.min(scrollHeight, COMPOSER_TEXTAREA_MAX_HEIGHT_PX);
     textarea.style.height = `${nextHeight}px`;
     textarea.style.overflowY =
       scrollHeight > COMPOSER_TEXTAREA_MAX_HEIGHT_PX ? 'auto' : 'hidden';
@@ -9559,11 +9696,12 @@ export function TalkDetailPage({
                 <h2>Connected Channels</h2>
               </div>
               <p className="policy-muted">
-                Bind this talk to external channels so inbound platform
-                messages can create Talk turns and completed replies can be
-                delivered back out. Slack workspaces and sync live in
-                Connectors, but Slack channel selection happens here. Telegram
-                still uses approved destinations from Connectors.
+                Bind this talk to external channels so inbound platform messages
+                can create Talk turns and completed replies can be delivered
+                back out. Slack workspaces still install in Connectors, but you
+                can sync the selected Slack workspace here after inviting the
+                app to a channel. Telegram still uses approved destinations from
+                Connectors.
               </p>
 
               {channelStatus.status === 'error' ? (
@@ -9586,9 +9724,10 @@ export function TalkDetailPage({
                     <div>
                       <h3>Add Channel Binding</h3>
                       <p className="talk-llm-meta">
-                        Slack channels are chosen here after sync. Telegram
-                        destinations still use the approved list from
-                        Connectors.
+                        Slack channels are chosen here after sync. If you just
+                        invited the app in Slack, use Sync Slack Channels below
+                        to refresh this list. Telegram destinations still use
+                        the approved list from Connectors.
                       </p>
                     </div>
                   </div>
@@ -9649,12 +9788,70 @@ export function TalkDetailPage({
                               }
                             >
                               {selectedPlatformConnections.map((connection) => (
-                                <option key={connection.id} value={connection.id}>
+                                <option
+                                  key={connection.id}
+                                  value={connection.id}
+                                >
                                   {connection.displayName}
                                 </option>
                               ))}
                             </select>
                           </label>
+                        </div>
+                      ) : null}
+                      {selectedChannelPlatform === 'slack' &&
+                      selectedChannelConnection ? (
+                        <div className="talk-channel-workspace-summary">
+                          <div>
+                            <span className="settings-label">
+                              Slack Workspace
+                            </span>
+                            <div className="talk-channel-workspace-summary-title">
+                              <strong>
+                                {selectedChannelConnection.displayName}
+                              </strong>
+                              <span
+                                className={channelConnectionStatusClass(
+                                  selectedChannelConnection.healthStatus,
+                                )}
+                              >
+                                {formatChannelConnectionHealthStatus(
+                                  selectedChannelConnection.healthStatus,
+                                )}
+                              </span>
+                            </div>
+                            <p className="talk-llm-meta">
+                              {buildSlackWorkspaceSyncSummary(
+                                selectedChannelConnection,
+                              )}
+                            </p>
+                            {selectedChannelConnection.lastHealthError ? (
+                              <p className="talk-llm-meta">
+                                Last health error:{' '}
+                                {selectedChannelConnection.lastHealthError}
+                              </p>
+                            ) : null}
+                          </div>
+                          <div className="talk-channel-workspace-summary-actions">
+                            <button
+                              type="button"
+                              className="secondary-btn"
+                              onClick={() =>
+                                void handleSyncSelectedSlackWorkspace()
+                              }
+                              disabled={
+                                channelTargetsLoading ||
+                                channelStatus.status === 'saving' ||
+                                channelSyncingConnectionId ===
+                                  selectedChannelConnection.id
+                              }
+                            >
+                              {channelSyncingConnectionId ===
+                              selectedChannelConnection.id
+                                ? 'Syncing…'
+                                : 'Sync Slack Channels'}
+                            </button>
+                          </div>
                         </div>
                       ) : null}
                       <div className="connector-attach-row">
@@ -9694,7 +9891,7 @@ export function TalkDetailPage({
                               : 'Loading approved Telegram destinations…'
                             : channelTargetInventory.totalCount === 0
                               ? selectedChannelPlatform === 'slack'
-                                ? 'No synced Slack channels yet.'
+                                ? 'No synced Slack channels yet. Sync the selected Slack workspace to refresh recent invites.'
                                 : 'No approved Telegram destinations yet.'
                               : channelTargetInventory.hasMore
                                 ? `Showing ${channelTargetOptions.length} of ${channelTargetInventory.totalCount} ${selectedChannelPlatform === 'slack' ? 'Slack channels' : 'Telegram destinations'}`
@@ -9710,7 +9907,9 @@ export function TalkDetailPage({
                           ) : channelTargetOptions.length === 0 ? (
                             selectedChannelPlatform === 'slack' ? (
                               <div className="channel-target-picker-empty">
-                                No synced Slack channels match this filter.{' '}
+                                No synced Slack channels match this filter. Use{' '}
+                                <strong>Sync Slack Channels</strong> to refresh
+                                recent invites, or{' '}
                                 <Link to="/app/connectors?tab=channel-connectors">
                                   Manage Connectors
                                 </Link>{' '}
@@ -9744,7 +9943,10 @@ export function TalkDetailPage({
                                   aria-pressed={selected}
                                   aria-disabled={disabled}
                                   onClick={() => {
-                                    if (disabled || channelStatus.status === 'saving') {
+                                    if (
+                                      disabled ||
+                                      channelStatus.status === 'saving'
+                                    ) {
                                       return;
                                     }
                                     setChannelCreateDraft((current) => ({
@@ -9797,7 +9999,9 @@ export function TalkDetailPage({
                             <button
                               type="button"
                               className="secondary-btn"
-                              onClick={() => void handleLoadMoreChannelTargets()}
+                              onClick={() =>
+                                void handleLoadMoreChannelTargets()
+                              }
                               disabled={
                                 channelStatus.status === 'saving' ||
                                 channelTargetsLoading
@@ -10087,7 +10291,10 @@ export function TalkDetailPage({
                           </span>
                         </div>
                         {binding.diagnosis.detail ? (
-                          <p className="policy-muted" style={{ margin: '0 0 8px' }}>
+                          <p
+                            className="policy-muted"
+                            style={{ margin: '0 0 8px' }}
+                          >
                             {binding.diagnosis.detail}
                           </p>
                         ) : null}
@@ -10101,9 +10308,7 @@ export function TalkDetailPage({
                                   channelTestStatus.status === 'sending')
                               }
                               onClick={async () => {
-                                if (
-                                  binding.diagnosis.action?.type === 'test'
-                                ) {
+                                if (binding.diagnosis.action?.type === 'test') {
                                   await handleTestChannel(binding, 'diagnosis');
                                   return;
                                 }
@@ -11234,8 +11439,7 @@ export function TalkDetailPage({
                                 </strong>
                                 <time>
                                   {new Date(
-                                    run.browserBlock.updatedAt ||
-                                      run.createdAt,
+                                    run.browserBlock.updatedAt || run.createdAt,
                                   ).toLocaleString()}
                                 </time>
                               </header>
@@ -11459,7 +11663,9 @@ export function TalkDetailPage({
                             <button
                               type="button"
                               className="composer-attachment-remove"
-                              onClick={() => handleRemoveAttachment(att.localId)}
+                              onClick={() =>
+                                handleRemoveAttachment(att.localId)
+                              }
                               aria-label={`Remove ${att.fileName}`}
                             >
                               ×
