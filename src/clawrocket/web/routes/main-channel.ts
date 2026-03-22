@@ -229,6 +229,11 @@ interface PostMainMessageResponse {
   run: MainRunApiRecord;
 }
 
+interface MainRunTerminalSummaryApiRecord {
+  statusLabel: 'Failed' | 'Cancelled';
+  body: string;
+}
+
 export interface MainRunApiRecord {
   id: string;
   threadId: string;
@@ -255,6 +260,10 @@ export interface MainRunApiRecord {
   browserResume: BrowserResumeMetadata | null;
   carriedBrowserSessions: CarriedBrowserSessionMetadata[];
   executionDecision: ExecutionDecisionMetadata | null;
+  streamedTextPreview: string | null;
+  lastProgressMessage: string | null;
+  lastHeartbeatAt: string | null;
+  terminalSummary: MainRunTerminalSummaryApiRecord | null;
 }
 
 function parseRunMetadata(
@@ -277,6 +286,28 @@ function parseMetadataObject<T>(value: unknown): T | null {
     return null;
   }
   return value as T;
+}
+
+function parseTerminalSummary(
+  value: unknown,
+): MainRunTerminalSummaryApiRecord | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return null;
+  }
+  const summary = value as {
+    statusLabel?: unknown;
+    body?: unknown;
+  };
+  if (
+    (summary.statusLabel === 'Failed' || summary.statusLabel === 'Cancelled') &&
+    typeof summary.body === 'string'
+  ) {
+    return {
+      statusLabel: summary.statusLabel,
+      body: summary.body,
+    };
+  }
+  return null;
 }
 
 function toMainRunApiRecord(run: {
@@ -348,6 +379,19 @@ function toMainRunApiRecord(run: {
     executionDecision: parseMetadataObject<ExecutionDecisionMetadata>(
       metadata.executionDecision,
     ),
+    streamedTextPreview:
+      typeof metadata.streamedTextPreview === 'string'
+        ? metadata.streamedTextPreview
+        : null,
+    lastProgressMessage:
+      typeof metadata.lastProgressMessage === 'string'
+        ? metadata.lastProgressMessage
+        : null,
+    lastHeartbeatAt:
+      typeof metadata.lastHeartbeatAt === 'string'
+        ? metadata.lastHeartbeatAt
+        : null,
+    terminalSummary: parseTerminalSummary(metadata.terminalSummary),
   };
 }
 

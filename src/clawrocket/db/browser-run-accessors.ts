@@ -134,6 +134,7 @@ export function pauseRunForBrowserBlock(input: {
       const metadataJson = serializeMetadata(run, (current) => ({
         ...current,
         browserBlock: txInput.browserBlock,
+        lastHeartbeatAt: txInput.browserBlock.updatedAt,
       }));
 
       getDb()
@@ -193,6 +194,7 @@ export function resumeBrowserBlockedRun(input: {
         return {
           ...next,
           browserResume: txInput.browserResume,
+          lastHeartbeatAt: txInput.browserResume.resumedAt,
         };
       });
 

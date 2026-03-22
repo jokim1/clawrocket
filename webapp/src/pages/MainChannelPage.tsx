@@ -51,8 +51,6 @@ import {
   openMainStream,
   type MainMessageAppendedEvent,
   type MainProgressUpdateEvent,
-  type MainResponseDeltaEvent,
-  type MainResponseFailedEvent,
   type MainResponseStartedEvent,
   type MainRunEvent,
   type MainPromotionPendingEvent,
@@ -60,21 +58,6 @@ import {
 } from '../lib/mainStream';
 
 // ============================================================================
-// Types
-// ============================================================================
-
-type LiveResponse = {
-  runId: string;
-  threadId: string;
-  rawText: string;
-  text: string;
-  progressMessage?: string;
-  agentName?: string;
-  errorMessage?: string;
-  terminalStatus?: 'failed';
-  startedAt: number;
-};
-
 type MainState = {
   threads: MainThreadSummary[];
   threadsLoading: boolean;
@@ -84,7 +67,6 @@ type MainState = {
   runsById: Record<string, MainRun>;
   messagesLoading: boolean;
   messagesError: string | null;
-  liveResponses: Record<string, LiveResponse>;
   streamState: MainStreamState;
   sendState: 'idle' | 'posting' | 'error';
   sendError: string | null;
@@ -93,8 +75,7 @@ type MainState = {
 type MainTimelineEntry =
   | { kind: 'message'; message: MainThreadMessage }
   | { kind: 'run'; run: MainRun }
-  | { kind: 'terminal-run'; run: MainRun }
-  | { kind: 'live'; response: LiveResponse };
+  | { kind: 'terminal-run'; run: MainRun };
 
 type MainAction =
   | { type: 'THREADS_LOADING' }
@@ -133,9 +114,12 @@ type MainAction =
     }
   | { type: 'RESPONSE_STARTED'; event: MainResponseStartedEvent }
   | { type: 'RESPONSE_PROGRESS'; event: MainProgressUpdateEvent }
-  | { type: 'RESPONSE_DELTA'; event: MainResponseDeltaEvent }
+  | { type: 'RESPONSE_DELTA'; event: { runId: string; threadId: string; text: string } }
   | { type: 'RESPONSE_COMPLETED'; runId: string; threadId: string }
-  | { type: 'RESPONSE_FAILED'; event: MainResponseFailedEvent }
+  | {
+      type: 'RESPONSE_FAILED';
+      event: { runId: string; threadId: string; errorCode: string; errorMessage: string };
+    }
   | { type: 'STREAM_STATE'; state: MainStreamState }
   | { type: 'SEND_STARTED' }
   | { type: 'SEND_FAILED'; message: string }
@@ -162,7 +146,6 @@ function createInitialState(): MainState {
     runsById: {},
     messagesLoading: false,
     messagesError: null,
-    liveResponses: {},
     streamState: 'connecting',
     sendState: 'idle',
     sendError: null,
@@ -171,6 +154,8 @@ function createInitialState(): MainState {
 
 const SCROLL_STICK_THRESHOLD_PX = 120;
 const MAIN_MESSAGE_MAX_CHARS = 20_000;
+const MAIN_RUN_STALLED_AFTER_MS = 30_000;
+const STREAMED_TEXT_PREVIEW_MAX_CHARS = 4_000;
 
 function getBrowserBlockStatusLabel(
   browserBlock: MainRun['browserBlock'],
@@ -229,6 +214,9 @@ function summarizeTerminalMainRun(run: MainRun): {
   statusLabel: 'Failed' | 'Cancelled';
   body: string;
 } | null {
+  if (run.terminalSummary) {
+    return run.terminalSummary;
+  }
   if (run.status === 'cancelled') {
     if (run.cancelReason === 'superseded_by_new_user_message') {
       return null;
@@ -323,43 +311,44 @@ function isMainRunActive(run: MainRun): boolean {
   return ['queued', 'running', 'awaiting_confirmation'].includes(run.status);
 }
 
-function clearFailedLiveResponsesForThread(
-  liveResponses: Record<string, LiveResponse>,
-  threadId: string,
-): Record<string, LiveResponse> {
-  const next = { ...liveResponses };
-  for (const [runId, response] of Object.entries(next)) {
-    if (response.threadId !== threadId) continue;
-    if (response.terminalStatus !== 'failed') continue;
-    delete next[runId];
-  }
-  return next;
-}
-
-function clearLiveResponse(
-  liveResponses: Record<string, LiveResponse>,
-  runId: string,
-): Record<string, LiveResponse> {
-  if (!(runId in liveResponses)) return liveResponses;
-  const next = { ...liveResponses };
-  delete next[runId];
-  return next;
-}
-
-function syncLiveResponsesWithRuns(
-  liveResponses: Record<string, LiveResponse>,
-  runsById: Record<string, MainRun>,
-  threadId: string,
-): Record<string, LiveResponse> {
-  let next = liveResponses;
-  for (const [runId, response] of Object.entries(liveResponses)) {
-    if (response.threadId !== threadId) continue;
-    const run = runsById[runId];
-    if (!run || run.status !== 'running') {
-      next = clearLiveResponse(next, runId);
+function getRunHeartbeatAt(run: MainRun): number {
+  for (const candidate of [run.lastHeartbeatAt, run.startedAt, run.createdAt]) {
+    if (!candidate) continue;
+    const timestamp = Date.parse(candidate);
+    if (Number.isFinite(timestamp) && timestamp > 0) {
+      return timestamp;
     }
   }
-  return next;
+  return 0;
+}
+
+function isMainRunStalled(run: MainRun, nowMs: number): boolean {
+  if (run.status !== 'queued' && run.status !== 'running') {
+    return false;
+  }
+  const heartbeatAt = getRunHeartbeatAt(run);
+  return heartbeatAt > 0 && nowMs - heartbeatAt >= MAIN_RUN_STALLED_AFTER_MS;
+}
+
+function appendRunPreview(currentPreview: string | null | undefined, delta: string): string {
+  const nextPreview = `${currentPreview || ''}${delta}`;
+  if (nextPreview.length <= STREAMED_TEXT_PREVIEW_MAX_CHARS) {
+    return nextPreview;
+  }
+  return nextPreview.slice(nextPreview.length - STREAMED_TEXT_PREVIEW_MAX_CHARS);
+}
+
+function patchRun(
+  runsById: Record<string, MainRun>,
+  runId: string,
+  updater: (run: MainRun) => MainRun,
+): Record<string, MainRun> {
+  const existing = runsById[runId];
+  if (!existing) return runsById;
+  return {
+    ...runsById,
+    [runId]: updater(existing),
+  };
 }
 
 function withThreadActivity(
@@ -443,8 +432,6 @@ function mainReducer(state: MainState, action: MainAction): MainState {
                   ([, run]) => run.threadId !== action.threadId,
                 ),
               ),
-        liveResponses:
-          state.activeThreadId === action.threadId ? {} : state.liveResponses,
       };
     case 'THREAD_RUN_STATE':
       return {
@@ -463,7 +450,6 @@ function mainReducer(state: MainState, action: MainAction): MainState {
         runsById: {},
         messagesLoading: true,
         messagesError: null,
-        liveResponses: {},
       };
     case 'THREAD_UPDATED':
       return {
@@ -499,11 +485,6 @@ function mainReducer(state: MainState, action: MainAction): MainState {
       return {
         ...state,
         runsById,
-        liveResponses: syncLiveResponsesWithRuns(
-          state.liveResponses,
-          runsById,
-          action.threadId,
-        ),
         threads: withThreadActivity(state.threads, runsById, action.threadId),
       };
     }
@@ -529,10 +510,6 @@ function mainReducer(state: MainState, action: MainAction): MainState {
         ...state,
         runsById,
         threads,
-        liveResponses:
-          action.run.status === 'running'
-            ? state.liveResponses
-            : clearLiveResponse(state.liveResponses, action.run.id),
       };
     }
     case 'PROMOTION_PENDING': {
@@ -567,6 +544,26 @@ function mainReducer(state: MainState, action: MainAction): MainState {
     case 'RUN_TERMINAL': {
       const existingRun = state.runsById[action.runId];
       if (!existingRun) return state;
+      const terminalSummary: MainRun['terminalSummary'] =
+        action.status === 'failed'
+          ? {
+              statusLabel: 'Failed',
+              body:
+                (action.cancelReason !== undefined
+                  ? action.cancelReason
+                  : existingRun.cancelReason) ||
+                'The run failed before a response could be recorded.',
+            }
+          : action.status === 'cancelled'
+            ? summarizeTerminalMainRun({
+                ...existingRun,
+                status: 'cancelled',
+                cancelReason:
+                  action.cancelReason !== undefined
+                    ? action.cancelReason
+                    : existingRun.cancelReason,
+              })
+            : null;
       const runsById = {
         ...state.runsById,
         [action.runId]: {
@@ -577,13 +574,14 @@ function mainReducer(state: MainState, action: MainAction): MainState {
             action.cancelReason !== undefined
               ? action.cancelReason
               : existingRun.cancelReason,
+          lastHeartbeatAt: new Date().toISOString(),
+          terminalSummary,
         },
       };
       return {
         ...state,
         runsById,
         threads: withThreadActivity(state.threads, runsById, action.threadId),
-        liveResponses: clearLiveResponse(state.liveResponses, action.runId),
       };
     }
     case 'MESSAGES_ERROR':
@@ -648,16 +646,16 @@ function mainReducer(state: MainState, action: MainAction): MainState {
 
       // Active thread — also append message and clear matching live response
       const messages = [...state.messages, action.message];
-      let liveResponses = { ...state.liveResponses };
-      for (const [runId, lr] of Object.entries(liveResponses)) {
-        if (lr.threadId === tid && action.message.role === 'assistant') {
-          delete liveResponses[runId];
-        }
+      let runsById = state.runsById;
+      if (action.message.role === 'assistant' && action.message.runId) {
+        runsById = patchRun(state.runsById, action.message.runId, (run) => ({
+          ...run,
+          streamedTextPreview: null,
+          lastProgressMessage: null,
+          terminalSummary: null,
+        }));
       }
-      if (action.message.role === 'user') {
-        liveResponses = clearFailedLiveResponsesForThread(liveResponses, tid);
-      }
-      return { ...state, threads, messages, liveResponses };
+      return { ...state, threads, messages, runsById };
     }
     case 'HISTORY_DELETED': {
       if (action.threadId !== state.activeThreadId) return state;
@@ -676,7 +674,6 @@ function mainReducer(state: MainState, action: MainAction): MainState {
           runsById: {},
           messagesLoading: false,
           messagesError: null,
-          liveResponses: {},
         };
       }
       const lastMessageAt = messages[messages.length - 1]?.createdAt;
@@ -692,113 +689,109 @@ function mainReducer(state: MainState, action: MainAction): MainState {
             : thread,
         ),
         messages,
-        liveResponses: clearFailedLiveResponsesForThread(
-          state.liveResponses,
-          action.threadId,
-        ),
       };
     }
     case 'RESPONSE_STARTED': {
-      const threads = updateThreadRunState(
-        state.threads,
-        action.event.threadId,
-        true,
-      );
-      if (action.event.threadId !== state.activeThreadId) {
-        return { ...state, threads };
+      const existing = state.runsById[action.event.runId];
+      if (!existing) {
+        return {
+          ...state,
+          threads: updateThreadRunState(
+            state.threads,
+            action.event.threadId,
+            true,
+          ),
+        };
       }
+      const nowIso = new Date().toISOString();
+      const runsById = patchRun(state.runsById, action.event.runId, (run) => ({
+        ...run,
+        status: 'running',
+        startedAt: run.startedAt || nowIso,
+        endedAt: null,
+        cancelReason: null,
+        lastHeartbeatAt: nowIso,
+        lastProgressMessage: null,
+        terminalSummary: null,
+      }));
       return {
         ...state,
-        threads,
-        liveResponses: {
-          ...state.liveResponses,
-          [action.event.runId]: {
-            runId: action.event.runId,
-            threadId: action.event.threadId,
-            rawText: '',
-            text: '',
-            progressMessage: undefined,
-            agentName: action.event.agentName,
-            startedAt: Date.now(),
-          },
-        },
+        runsById,
+        threads: withThreadActivity(state.threads, runsById, action.event.threadId),
       };
     }
     case 'RESPONSE_PROGRESS': {
-      if (action.event.threadId !== state.activeThreadId) return state;
-      const existing = state.liveResponses[action.event.runId];
+      const existing = state.runsById[action.event.runId];
+      if (!existing) return state;
+      const nowIso = new Date().toISOString();
+      const runsById = patchRun(state.runsById, action.event.runId, (run) => ({
+        ...run,
+        lastProgressMessage: action.event.message,
+        lastHeartbeatAt: nowIso,
+      }));
       return {
         ...state,
-        liveResponses: {
-          ...state.liveResponses,
-          [action.event.runId]: {
-            runId: action.event.runId,
-            threadId: action.event.threadId,
-            rawText: existing?.rawText || '',
-            text: existing?.text || '',
-            progressMessage: action.event.message,
-            agentName: existing?.agentName,
-            startedAt: existing?.startedAt || Date.now(),
-          },
-        },
+        runsById,
+        threads: withThreadActivity(state.threads, runsById, action.event.threadId),
       };
     }
     case 'RESPONSE_DELTA': {
-      if (action.event.threadId !== state.activeThreadId) return state;
-      const existing = state.liveResponses[action.event.runId];
-      const rawText = `${existing?.rawText || ''}${action.event.text}`;
+      const existing = state.runsById[action.event.runId];
+      if (!existing) return state;
+      const nowIso = new Date().toISOString();
+      const runsById = patchRun(state.runsById, action.event.runId, (run) => ({
+        ...run,
+        streamedTextPreview: appendRunPreview(
+          run.streamedTextPreview,
+          action.event.text,
+        ),
+        lastHeartbeatAt: nowIso,
+      }));
       return {
         ...state,
-        liveResponses: {
-          ...state.liveResponses,
-          [action.event.runId]: {
-            runId: action.event.runId,
-            threadId: action.event.threadId,
-            rawText,
-            text: stripInternalAssistantText(rawText),
-            progressMessage: existing?.progressMessage,
-            agentName: existing?.agentName,
-            startedAt: existing?.startedAt || Date.now(),
-          },
-        },
+        runsById,
+        threads: withThreadActivity(state.threads, runsById, action.event.threadId),
       };
     }
     case 'RESPONSE_COMPLETED': {
-      const liveResponses = { ...state.liveResponses };
-      delete liveResponses[action.runId];
+      const runsById = patchRun(state.runsById, action.runId, (run) => ({
+        ...run,
+        lastHeartbeatAt: new Date().toISOString(),
+      }));
       return {
         ...state,
-        threads: updateThreadRunState(state.threads, action.threadId, false),
-        liveResponses,
+        runsById,
+        threads: withThreadActivity(state.threads, runsById, action.threadId),
       };
     }
     case 'RESPONSE_FAILED': {
-      const threads = updateThreadRunState(
-        state.threads,
-        action.event.threadId,
-        false,
-      );
-      if (action.event.threadId !== state.activeThreadId) {
-        return { ...state, threads };
+      const existing = state.runsById[action.event.runId];
+      if (!existing) {
+        return {
+          ...state,
+          threads: updateThreadRunState(
+            state.threads,
+            action.event.threadId,
+            false,
+          ),
+        };
       }
-      const existing = state.liveResponses[action.event.runId];
+      const nowIso = new Date().toISOString();
+      const runsById = patchRun(state.runsById, action.event.runId, (run) => ({
+        ...run,
+        status: 'failed',
+        endedAt: nowIso,
+        cancelReason: action.event.errorMessage,
+        lastHeartbeatAt: nowIso,
+        terminalSummary: {
+          statusLabel: 'Failed',
+          body: action.event.errorMessage,
+        },
+      }));
       return {
         ...state,
-        threads,
-        liveResponses: {
-          ...state.liveResponses,
-          [action.event.runId]: {
-            runId: action.event.runId,
-            threadId: action.event.threadId,
-            rawText: existing?.rawText || '',
-            text: existing?.text || '',
-            progressMessage: existing?.progressMessage,
-            agentName: existing?.agentName,
-            errorMessage: action.event.errorMessage,
-            terminalStatus: 'failed',
-            startedAt: existing?.startedAt || Date.now(),
-          },
-        },
+        runsById,
+        threads: withThreadActivity(state.threads, runsById, action.event.threadId),
       };
     }
     case 'STREAM_STATE':
@@ -838,7 +831,6 @@ function mainReducer(state: MainState, action: MainAction): MainState {
         runsById: {},
         messagesLoading: false,
         messagesError: null,
-        liveResponses: {},
       };
     }
     case 'CLEAR_THREAD':
@@ -849,7 +841,6 @@ function mainReducer(state: MainState, action: MainAction): MainState {
         runsById: {},
         messagesLoading: false,
         messagesError: null,
-        liveResponses: {},
       };
     default:
       return state;
@@ -888,6 +879,7 @@ export function MainChannelPage({
     status: 'idle' | 'saving' | 'error' | 'success';
     message?: string;
   }>({ status: 'idle' });
+  const [runClockMs, setRunClockMs] = useState(() => Date.now());
 
   // ── Auto-scroll ──
   const isNearBottom = useCallback(() => {
@@ -1159,6 +1151,8 @@ export function MainChannelPage({
             promotionChildRunId: null,
             requestedToolFamilies: event.requestedToolFamilies || [],
             userVisibleSummary: event.userVisibleSummary || null,
+            lastHeartbeatAt: event.createdAt || new Date().toISOString(),
+            terminalSummary: null,
           },
         });
       },
@@ -1183,6 +1177,8 @@ export function MainChannelPage({
             promotionChildRunId: existing?.promotionChildRunId || null,
             requestedToolFamilies: existing?.requestedToolFamilies || [],
             userVisibleSummary: existing?.userVisibleSummary || null,
+            lastHeartbeatAt: event.startedAt || new Date().toISOString(),
+            terminalSummary: null,
           },
         });
       },
@@ -1207,6 +1203,8 @@ export function MainChannelPage({
             promotionChildRunId: null,
             requestedToolFamilies: event.requestedToolFamilies || existing?.requestedToolFamilies || [],
             userVisibleSummary: event.userVisibleSummary || existing?.userVisibleSummary || null,
+            lastHeartbeatAt: new Date().toISOString(),
+            terminalSummary: null,
           },
         });
       },
@@ -1337,11 +1335,6 @@ export function MainChannelPage({
         )
         .map((message) => message.runId as string),
     );
-    const liveRunIds = new Set(
-      Object.values(state.liveResponses)
-        .filter((response) => response.threadId === state.activeThreadId)
-        .map((response) => response.runId),
-    );
     for (const message of state.messages) {
       entries.push({ kind: 'message', message });
     }
@@ -1351,40 +1344,29 @@ export function MainChannelPage({
       const isBlockedBrowserRun =
         run.status === 'awaiting_confirmation' && Boolean(run.browserBlock);
       const isGenericActiveRun =
-        isMainRunActive(run) && !isBlockedBrowserRun && !liveRunIds.has(run.id);
+        isMainRunActive(run) && !isBlockedBrowserRun;
       if (isPromotionPending || isBlockedBrowserRun || isGenericActiveRun) {
         entries.push({ kind: 'run', run });
         continue;
       }
 
       const terminalSummary = summarizeTerminalMainRun(run);
-      if (
-        terminalSummary &&
-        !assistantRunIds.has(run.id) &&
-        !liveRunIds.has(run.id)
-      ) {
+      if (terminalSummary && !assistantRunIds.has(run.id)) {
         entries.push({ kind: 'terminal-run', run });
       }
-    }
-    for (const response of Object.values(state.liveResponses)) {
-      entries.push({ kind: 'live', response });
     }
     return entries.sort((left, right) => {
       const leftAt =
         left.kind === 'message'
           ? Date.parse(left.message.createdAt)
-          : left.kind === 'live'
-            ? left.response.startedAt
-            : getMainRunTimelineTimestamp(left.run);
+          : getMainRunTimelineTimestamp(left.run);
       const rightAt =
         right.kind === 'message'
           ? Date.parse(right.message.createdAt)
-          : right.kind === 'live'
-            ? right.response.startedAt
-            : getMainRunTimelineTimestamp(right.run);
+          : getMainRunTimelineTimestamp(right.run);
       return leftAt - rightAt;
     });
-  }, [state.activeThreadId, state.messages, state.liveResponses, state.runsById]);
+  }, [state.activeThreadId, state.messages, state.runsById]);
 
   // ── Stream badge ──
   const streamBadgeClass = `stream-badge stream-${state.streamState}`;
@@ -1440,14 +1422,21 @@ export function MainChannelPage({
     [activeRound, state.activeThreadId, state.messages],
   );
   useEffect(() => {
-    if (!state.activeThreadId || !activeRound) return;
+    if (
+      !state.activeThreadId ||
+      !Object.values(state.runsById).some(
+        (run) => run.threadId === state.activeThreadId && isMainRunActive(run),
+      )
+    ) {
+      return;
+    }
     const interval = window.setInterval(() => {
-      void refreshActiveThread();
-    }, 10_000);
+      setRunClockMs(Date.now());
+    }, 5_000);
     return () => {
       window.clearInterval(interval);
     };
-  }, [activeRound, refreshActiveThread, state.activeThreadId]);
+  }, [state.activeThreadId, state.runsById]);
   const historyEditorMessages = useMemo<TalkMessage[]>(
     () =>
       state.messages.map((message) => ({
@@ -1736,10 +1725,43 @@ export function MainChannelPage({
   );
 
   const renderThreadMeta = useCallback((thread: MainThreadSummary) => {
+    if (thread.threadId === state.activeThreadId) {
+      const threadRuns = Object.values(state.runsById).filter(
+        (run) => run.threadId === thread.threadId,
+      );
+      const blockedRun = threadRuns.find(
+        (run) => run.status === 'awaiting_confirmation' && run.browserBlock,
+      );
+      if (blockedRun) {
+        return (
+          <span className="main-thread-item-meta main-thread-item-meta-responding">
+            * {getBrowserBlockStatusLabel(blockedRun.browserBlock)}
+          </span>
+        );
+      }
+      const stalledRun = threadRuns.find((run) =>
+        isMainRunStalled(run, runClockMs),
+      );
+      if (stalledRun) {
+        return (
+          <span className="main-thread-item-meta main-thread-item-meta-responding">
+            * Stalled
+          </span>
+        );
+      }
+      const activeRun = threadRuns.find((run) => isMainRunActive(run));
+      if (activeRun) {
+        return (
+          <span className="main-thread-item-meta main-thread-item-meta-responding">
+            * Working…
+          </span>
+        );
+      }
+    }
     if (thread.hasActiveRun) {
       return (
         <span className="main-thread-item-meta main-thread-item-meta-responding">
-          * Thinking…
+          * Working…
         </span>
       );
     }
@@ -1749,7 +1771,7 @@ export function MainChannelPage({
         {thread.messageCount} msg · {formatRelativeTime(thread.lastMessageAt)}
       </span>
     );
-  }, []);
+  }, [runClockMs, state.activeThreadId, state.runsById]);
 
   const hasActiveThread = !!routeThreadId;
 
@@ -1943,16 +1965,24 @@ export function MainChannelPage({
 
               if (entry.kind === 'run') {
                 const { run } = entry;
+                const isStalled = isMainRunStalled(run, runClockMs);
                 const statusLabel =
                   run.promotionState === 'pending'
                     ? 'Starting background task…'
+                    : isStalled
+                      ? 'Stalled'
                     : run.status === 'awaiting_confirmation'
                       ? getBrowserBlockStatusLabel(run.browserBlock)
                     : run.status === 'queued'
                         ? 'Queued'
                         : 'Working';
                 const runBodyCopy =
+                  run.streamedTextPreview ||
+                  run.lastProgressMessage ||
                   run.userVisibleSummary ||
+                  (isStalled
+                    ? 'This run has stopped sending progress updates. Refreshing run state or retrying may be required.'
+                    : null) ||
                   (run.status === 'awaiting_confirmation'
                     ? 'Waiting for your approval before continuing.'
                     : run.status === 'queued'
@@ -2002,49 +2032,15 @@ export function MainChannelPage({
                       <time>{terminalSummary.statusLabel}</time>
                     </header>
                     <p>{terminalSummary.body}</p>
+                    {run.streamedTextPreview ? (
+                      <p>{run.streamedTextPreview}</p>
+                    ) : null}
                     <ExecutionDecisionSummary
                       executionDecision={run.executionDecision}
                     />
                   </article>
                 );
               }
-
-              const { response } = entry;
-              const run = state.runsById[response.runId];
-              return (
-                <article
-                  key={`live-${response.runId}`}
-                  className={`message message-assistant message-live${
-                    response.terminalStatus === 'failed' ? ' message-error' : ''
-                  }`}
-                >
-                  <header>
-                    <strong>{response.agentName || 'Nanoclaw'}</strong>
-                    <time>
-                      {response.terminalStatus === 'failed'
-                        ? 'Failed'
-                        : 'Streaming…'}
-                    </time>
-                  </header>
-                  <p
-                    className={
-                      response.text || response.progressMessage
-                        ? undefined
-                        : 'message-pending-copy'
-                    }
-                  >
-                    {response.text || response.progressMessage || '* Thinking…'}
-                  </p>
-                  {response.errorMessage ? (
-                    <p className="run-history-error">{response.errorMessage}</p>
-                  ) : null}
-                  {response.terminalStatus === 'failed' ? (
-                    <ExecutionDecisionSummary
-                      executionDecision={run?.executionDecision}
-                    />
-                  ) : null}
-                </article>
-              );
             })
           )}
           <div ref={endRef} />

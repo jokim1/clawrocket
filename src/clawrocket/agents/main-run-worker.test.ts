@@ -256,6 +256,106 @@ describe('MainRunWorker integration', () => {
     }
   });
 
+  it('persists streamed preview and heartbeat metadata while completing a run', async () => {
+    const { runId } = enqueueTurn();
+
+    const worker = new MainRunWorker({
+      pollMs: 10,
+      maxConcurrency: 1,
+      executor: async (
+        input: MainExecutorInput,
+        _signal: AbortSignal,
+        emit?: (event: MainExecutionEvent) => void,
+      ): Promise<MainExecutorOutput> => {
+        emit?.({
+          type: 'main_response_started',
+          runId: input.runId,
+          threadId: input.threadId,
+          agentId: AGENT_ID,
+          agentName: 'Test Agent',
+        });
+        emit?.({
+          type: 'main_progress_update',
+          runId: input.runId,
+          threadId: input.threadId,
+          message: 'Opening LinkedIn…',
+        });
+        emit?.({
+          type: 'main_response_delta',
+          runId: input.runId,
+          threadId: input.threadId,
+          text: 'Visible answer',
+        });
+        return {
+          content: 'Visible answer',
+          agentId: AGENT_ID,
+          agentName: 'Test Agent',
+          providerId: PROVIDER_ID,
+          modelId: MODEL_ID,
+          threadId: input.threadId,
+          latencyMs: 42,
+          usage: { inputTokens: 10, outputTokens: 20, estimatedCostUsd: 0.001 },
+        };
+      },
+    });
+    await worker.start();
+
+    await waitForRunTerminal(runId);
+    await worker.stop();
+
+    const run = getTalkRunById(runId)!;
+    const metadata = JSON.parse(run.metadata_json || '{}') as Record<
+      string,
+      unknown
+    >;
+    expect(metadata.streamedTextPreview).toBe('Visible answer');
+    expect(typeof metadata.lastHeartbeatAt).toBe('string');
+    expect(metadata.lastProgressMessage).toBeNull();
+  });
+
+  it('persists terminal summary metadata for failed runs', async () => {
+    const { runId } = enqueueTurn();
+
+    const worker = new MainRunWorker({
+      pollMs: 10,
+      maxConcurrency: 1,
+      executor: async (
+        input: MainExecutorInput,
+        _signal: AbortSignal,
+        emit?: (event: MainExecutionEvent) => void,
+      ): Promise<MainExecutorOutput> => {
+        emit?.({
+          type: 'main_response_started',
+          runId: input.runId,
+          threadId: input.threadId,
+          agentId: AGENT_ID,
+          agentName: 'Test Agent',
+        });
+        emit?.({
+          type: 'main_response_delta',
+          runId: input.runId,
+          threadId: input.threadId,
+          text: 'Partial preview',
+        });
+        throw new Error('boom failure');
+      },
+    });
+    await worker.start();
+
+    await waitForRunTerminal(runId);
+    await worker.stop();
+
+    const run = getTalkRunById(runId)!;
+    expect(run.status).toBe('failed');
+    const metadata = JSON.parse(run.metadata_json || '{}') as {
+      streamedTextPreview?: string | null;
+      terminalSummary?: { statusLabel?: string; body?: string } | null;
+    };
+    expect(metadata.streamedTextPreview).toBe('Partial preview');
+    expect(metadata.terminalSummary?.statusLabel).toBe('Failed');
+    expect(metadata.terminalSummary?.body).toBe('boom failure');
+  });
+
   it('fails the run and emits terminal event on executor error', async () => {
     const { runId } = enqueueTurn();
 

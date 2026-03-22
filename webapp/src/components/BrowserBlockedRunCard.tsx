@@ -1,9 +1,10 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 
 import {
   ApiError,
   UnauthorizedError,
   approveBrowserConfirmation,
+  getBrowserSessionStatus,
   rejectBrowserConfirmation,
   resumeBrowserBlockedRun,
   startBrowserSetupSession,
@@ -112,6 +113,7 @@ export function BrowserBlockedRunCard({
 }: BrowserBlockedRunCardProps) {
   const [actionState, setActionState] = useState<ActionState>('idle');
   const [notice, setNotice] = useState<NoticeState>(null);
+  const autoResumeAttemptedRef = useRef(false);
   const decisionSummary = useMemo(
     () => getDecisionSummary(executionDecision),
     [executionDecision],
@@ -198,6 +200,73 @@ export function BrowserBlockedRunCard({
     });
   };
 
+  useEffect(() => {
+    autoResumeAttemptedRef.current = false;
+  }, [browserBlock.updatedAt, browserBlock.sessionId, browserBlock.kind, runId]);
+
+  useEffect(() => {
+    if (
+      browserBlock.kind === 'confirmation_required' ||
+      !browserBlock.sessionId ||
+      actionState !== 'idle'
+    ) {
+      return;
+    }
+    let cancelled = false;
+    let intervalId: ReturnType<typeof setInterval> | null = null;
+
+    const poll = async () => {
+      if (cancelled || autoResumeAttemptedRef.current) return;
+      try {
+        const snapshot = await getBrowserSessionStatus(browserBlock.sessionId!);
+        if (cancelled) return;
+        if (snapshot.state === 'active' && snapshot.blockedKind === null) {
+          autoResumeAttemptedRef.current = true;
+          setActionState('resume');
+          setNotice({
+            tone: 'success',
+            message: 'Authentication detected. Resuming run automatically…',
+          });
+          await resumeBrowserBlockedRun({
+            runId,
+            note: 'auto_resumed_after_browser_status_check',
+          });
+          if (cancelled) return;
+          await onStateChanged?.();
+        }
+      } catch (error) {
+        if (error instanceof UnauthorizedError) {
+          onUnauthorized();
+          return;
+        }
+        autoResumeAttemptedRef.current = false;
+      } finally {
+        if (!cancelled) {
+          setActionState('idle');
+        }
+      }
+    };
+
+    void poll();
+    intervalId = setInterval(() => {
+      void poll();
+    }, 4_000);
+
+    return () => {
+      cancelled = true;
+      if (intervalId) {
+        clearInterval(intervalId);
+      }
+    };
+  }, [
+    actionState,
+    browserBlock.kind,
+    browserBlock.sessionId,
+    onStateChanged,
+    onUnauthorized,
+    runId,
+  ]);
+
   return (
     <section className="browser-block-card" aria-label={getBrowserBlockHeading(browserBlock.kind)}>
       <div className="browser-block-card-header">
@@ -218,6 +287,12 @@ export function BrowserBlockedRunCard({
         <p className="browser-block-message">
           If you already completed the step on your phone or in another window,
           click <strong>Resume run</strong>.
+        </p>
+      ) : null}
+      {browserBlock.kind !== 'confirmation_required' && browserBlock.sessionId ? (
+        <p className="browser-block-message">
+          This card monitors the browser session and will try to resume the run
+          automatically once the authentication step clears.
         </p>
       ) : null}
 

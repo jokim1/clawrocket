@@ -143,6 +143,7 @@ import {
 } from './routes/main-channel.js';
 import {
   approveBrowserConfirmationRoute,
+  getBrowserSessionStatusRoute,
   rejectBrowserConfirmationRoute,
   resumeBrowserBlockedRunRoute,
   resumeBrowserSessionRoute,
@@ -1765,6 +1766,20 @@ function buildApp(opts: WebServerOptions): Hono {
     }
 
     const result = await startBrowserTakeoverRoute({
+      auth,
+      sessionId: c.req.param('sessionId'),
+    });
+    return new Response(JSON.stringify(result.body), {
+      status: result.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
+  });
+
+  app.get('/api/v1/browser/sessions/:sessionId', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+
+    const result = await getBrowserSessionStatusRoute({
       auth,
       sessionId: c.req.param('sessionId'),
     });
