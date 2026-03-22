@@ -521,9 +521,7 @@ export class MainRunWorker implements MainRunWorkerControl {
     }, this.heartbeatMs);
   }
 
-  private stopRunHeartbeat(
-    timer: ReturnType<typeof setInterval> | null,
-  ): void {
+  private stopRunHeartbeat(timer: ReturnType<typeof setInterval> | null): void {
     if (!timer) return;
     clearInterval(timer);
   }

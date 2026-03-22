@@ -389,11 +389,15 @@ describe('MainRunWorker integration', () => {
 
       await vi.advanceTimersByTimeAsync(2_100);
 
-      const heartbeatEvents = getOutboxEventsForTopics([`user:${USER_A}`], 0)
-        .filter((event) => event.event_type === 'main_heartbeat');
+      const heartbeatEvents = getOutboxEventsForTopics(
+        [`user:${USER_A}`],
+        0,
+      ).filter((event) => event.event_type === 'main_heartbeat');
       expect(heartbeatEvents.length).toBeGreaterThanOrEqual(2);
 
-      const metadata = JSON.parse(getTalkRunById(runId)?.metadata_json || '{}') as {
+      const metadata = JSON.parse(
+        getTalkRunById(runId)?.metadata_json || '{}',
+      ) as {
         lastHeartbeatAt?: string | null;
       };
       expect(typeof metadata.lastHeartbeatAt).toBe('string');
