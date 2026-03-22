@@ -803,6 +803,44 @@ describe('Main channel routes', () => {
         });
       }
     });
+
+    it('excludes orphaned terminal runs whose trigger message was deleted', () => {
+      const threadId = randomUUID();
+      const messageId = `msg_${randomUUID()}`;
+      const runId = `run_${randomUUID()}`;
+      enqueueMainTurnAtomic({
+        threadId,
+        userId: USER_A,
+        content: 'hello',
+        messageId,
+        runId,
+      });
+      getDb()
+        .prepare(
+          `
+          UPDATE talk_runs
+          SET status = 'failed',
+              trigger_message_id = NULL,
+              cancel_reason = 'execution_failed'
+          WHERE id = ?
+        `,
+        )
+        .run(runId);
+      updateTalkRunMetadata(runId, (current) => ({
+        ...current,
+        terminalSummary: {
+          statusLabel: 'Failed',
+          body: 'This run should be hidden once its trigger message is gone.',
+        },
+      }));
+
+      const result = listMainRunsRoute(makeAuth(USER_A), threadId);
+      expect(result.statusCode).toBe(200);
+      expect(result.body.ok).toBe(true);
+      if (result.body.ok) {
+        expect(result.body.data).toHaveLength(0);
+      }
+    });
   });
 
   describe('postMainMessageRoute', () => {
