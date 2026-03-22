@@ -32,7 +32,7 @@ function seedAnthropicSecret(apiKey = 'sk-ant-test'): void {
 
 function upsertProviderVerification(
   providerId: string,
-  status: 'verified' | 'missing' | 'not_verified' | 'unavailable',
+  status: 'verified' | 'missing' | 'not_verified' | 'invalid' | 'unavailable',
 ): void {
   const now = new Date().toISOString();
   getDb()
@@ -247,8 +247,9 @@ describe('execution-planner', () => {
     expect(plan.containerPlan).toBeNull();
   });
 
-  it('prefers direct Main execution for browser-enabled Anthropic agents when an API key exists even if subscription mode is configured globally', () => {
+  it('prefers direct Main execution for browser-enabled Anthropic agents when a verified API key exists even if subscription mode is configured globally', () => {
     seedAnthropicSecret();
+    upsertProviderVerification('provider.anthropic', 'verified');
     upsertSettingValue({
       key: 'executor.authMode',
       value: 'subscription',
@@ -294,8 +295,9 @@ describe('execution-planner', () => {
     expect(plan.containerPlan?.backend).toBe('container');
   });
 
-  it('keeps subscription as the fallback path for heavy-tool Main runs while preferring a direct parent when an API key exists', () => {
+  it('keeps subscription as the fallback path for heavy-tool Main runs while preferring a direct parent when a verified API key exists', () => {
     seedAnthropicSecret('sk-ant-stale');
+    upsertProviderVerification('provider.anthropic', 'verified');
     upsertSettingValue({
       key: 'executor.authMode',
       value: 'subscription',
@@ -321,6 +323,36 @@ describe('execution-planner', () => {
     expect(plan.policy).toBe('direct_with_promotion');
     expect(plan.directPlan?.backend).toBe('direct_http');
     expect(plan.containerPlan?.backend).toBe('container');
+    expect(plan.containerPlan?.containerCredential.authMode).toBe(
+      'subscription',
+    );
+  });
+
+  it('falls back to subscription-only Main browser execution when the Anthropic API key is not verified', () => {
+    seedAnthropicSecret('sk-ant-stale');
+    upsertProviderVerification('provider.anthropic', 'invalid');
+    upsertSettingValue({
+      key: 'executor.authMode',
+      value: 'subscription',
+      updatedBy: 'owner-1',
+    });
+    upsertSettingValue({
+      key: 'executor.claudeOauthToken',
+      value: 'oauth-token-123',
+      updatedBy: 'owner-1',
+    });
+    const agent = createRegisteredAgent({
+      name: 'Claude Browser',
+      providerId: 'provider.anthropic',
+      modelId: 'claude-sonnet-4-6',
+      toolPermissionsJson: JSON.stringify({ browser: true }),
+    });
+
+    const plan = planMainExecution(agent, 'owner-1');
+    expect(plan.policy).toBe('container_only');
+    expect(plan.directPlan).toBeNull();
+    expect(plan.containerPlan?.backend).toBe('container');
+    expect(plan.containerPlan?.routeReason).toBe('subscription_fallback');
     expect(plan.containerPlan?.containerCredential.authMode).toBe(
       'subscription',
     );
