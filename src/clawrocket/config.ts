@@ -40,6 +40,10 @@ const envConfig = readEnvFile([
   'CLAUDE_CODE_OAUTH_TOKEN',
   'ANTHROPIC_AUTH_TOKEN',
   'ANTHROPIC_BASE_URL',
+  'MAIN_SUBSCRIPTION_WARM_WORKER_ENABLED',
+  'MAIN_SUBSCRIPTION_WARM_WORKER_IDLE_TTL_MS',
+  'MAIN_SUBSCRIPTION_WARM_WORKER_MAX_COUNT',
+  'MAIN_SUBSCRIPTION_WARM_WORKER_BOOT_TIMEOUT_MS',
 ]);
 
 export type TrustedProxyMode = 'none' | 'cloudflare' | 'caddy';
@@ -317,3 +321,46 @@ export const TALK_EXECUTOR_HAS_PROVIDER_AUTH =
   TALK_EXECUTOR_ANTHROPIC_API_KEY.length > 0 ||
   TALK_EXECUTOR_CLAUDE_OAUTH_TOKEN.length > 0 ||
   TALK_EXECUTOR_ANTHROPIC_AUTH_TOKEN.length > 0;
+
+const mainSubscriptionWarmWorkerEnabledRaw =
+  process.env.MAIN_SUBSCRIPTION_WARM_WORKER_ENABLED ||
+  envConfig.MAIN_SUBSCRIPTION_WARM_WORKER_ENABLED ||
+  (process.env.NODE_ENV === 'production' ? 'false' : 'true');
+export const MAIN_SUBSCRIPTION_WARM_WORKER_ENABLED =
+  mainSubscriptionWarmWorkerEnabledRaw === 'true';
+
+const mainSubscriptionWarmWorkerIdleTtlMs = parseInt(
+  process.env.MAIN_SUBSCRIPTION_WARM_WORKER_IDLE_TTL_MS ||
+    envConfig.MAIN_SUBSCRIPTION_WARM_WORKER_IDLE_TTL_MS ||
+    `${5 * 60 * 1000}`,
+  10,
+);
+export const MAIN_SUBSCRIPTION_WARM_WORKER_IDLE_TTL_MS = Number.isFinite(
+  mainSubscriptionWarmWorkerIdleTtlMs,
+)
+  ? Math.max(5_000, mainSubscriptionWarmWorkerIdleTtlMs)
+  : 5 * 60 * 1000;
+
+const mainSubscriptionWarmWorkerMaxCount = parseInt(
+  process.env.MAIN_SUBSCRIPTION_WARM_WORKER_MAX_COUNT ||
+    envConfig.MAIN_SUBSCRIPTION_WARM_WORKER_MAX_COUNT ||
+    '3',
+  10,
+);
+export const MAIN_SUBSCRIPTION_WARM_WORKER_MAX_COUNT = Number.isFinite(
+  mainSubscriptionWarmWorkerMaxCount,
+)
+  ? Math.max(1, mainSubscriptionWarmWorkerMaxCount)
+  : 3;
+
+const mainSubscriptionWarmWorkerBootTimeoutMs = parseInt(
+  process.env.MAIN_SUBSCRIPTION_WARM_WORKER_BOOT_TIMEOUT_MS ||
+    envConfig.MAIN_SUBSCRIPTION_WARM_WORKER_BOOT_TIMEOUT_MS ||
+    '15000',
+  10,
+);
+export const MAIN_SUBSCRIPTION_WARM_WORKER_BOOT_TIMEOUT_MS = Number.isFinite(
+  mainSubscriptionWarmWorkerBootTimeoutMs,
+)
+  ? Math.max(1_000, mainSubscriptionWarmWorkerBootTimeoutMs)
+  : 15_000;

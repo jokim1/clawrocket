@@ -62,9 +62,18 @@ export interface ExecutionDecisionMetadata {
   modelId: string;
 }
 
+export type MainRunLeaseState =
+  | 'cold_boot'
+  | 'warm_reuse'
+  | 'recovered_cold_boot'
+  | 'one_shot_fallback';
+
 export interface MainRunTimingMetadata {
   queueStartedAt?: string | null;
   executorStartedAt?: string | null;
+  leaseRequestedAt?: string | null;
+  leaseReadyAt?: string | null;
+  taskDispatchedAt?: string | null;
   firstProviderEventAt?: string | null;
   firstTokenAt?: string | null;
   firstBrowserEventAt?: string | null;

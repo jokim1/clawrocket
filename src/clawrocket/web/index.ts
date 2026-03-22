@@ -6,6 +6,7 @@ import {
   WEB_PORT,
 } from '../config.js';
 import { MainRunWorker } from '../agents/main-run-worker.js';
+import { stopMainSubscriptionWorkerManager } from '../agents/main-subscription-worker-manager.js';
 import type { TalkExecutor } from '../talks/executor.js';
 import { TalkJobWorker } from '../talks/job-worker.js';
 import { CleanTalkExecutor } from '../talks/new-executor.js';
@@ -81,6 +82,7 @@ export async function startWebServer(
     await jobWorker.stop();
     await mainRunWorker.stop();
     await runWorker.stop();
+    await stopMainSubscriptionWorkerManager();
     throw error;
   }
   logger.info({ host: bound.host, port: bound.port }, 'Web API server started');
@@ -90,6 +92,7 @@ export async function startWebServer(
     await jobWorker.stop();
     await mainRunWorker.stop();
     await runWorker.stop();
+    await stopMainSubscriptionWorkerManager();
     await originalStop();
   };
   server.runWorker = runWorker;

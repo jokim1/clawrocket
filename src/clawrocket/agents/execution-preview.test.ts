@@ -127,7 +127,7 @@ describe('execution-preview', () => {
     );
   });
 
-  it('shows explicit Claude subscription Main routes as container-backed even when an API key exists', () => {
+  it('shows browser-enabled Claude Main routes as direct fast-lane when an API key exists', () => {
     seedAnthropicSecret('sk-ant-stale');
     upsertSettingValue({
       key: 'executor.authMode',
@@ -153,12 +153,12 @@ describe('execution-preview', () => {
 
     expect(buildMainExecutionPreview(agent, 'owner-1')).toMatchObject({
       ready: true,
-      backend: 'container',
-      authPath: 'subscription',
-      routeReason: 'normal',
+      backend: 'direct_http',
+      authPath: 'api_key',
+      routeReason: 'direct_with_promotion',
     });
     expect(buildMainExecutionPreview(agent, 'owner-1').message).toMatch(
-      /Claude subscription via the container runtime/i,
+      /promote shell\/filesystem work into a background container run/i,
     );
   });
 

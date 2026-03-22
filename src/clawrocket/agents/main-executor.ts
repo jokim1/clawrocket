@@ -36,6 +36,7 @@ import {
   type ExecutionRouteReason,
   type MainExecutionPlan,
 } from './execution-planner.js';
+import { MAIN_SUBSCRIPTION_WARM_WORKER_ENABLED } from '../config.js';
 import { getMainAgent } from './agent-registry.js';
 import {
   buildMainSystemPrompt,
@@ -43,7 +44,11 @@ import {
   renderMainPromptPayload,
 } from './main-context-loader.js';
 import { resolveValidatedProjectMountPath } from './project-mounts.js';
-import { executeContainerAgentTurn } from './container-turn-executor.js';
+import {
+  executeContainerAgentTurn,
+  type ExecuteContainerTurnInput,
+  type ExecuteContainerTurnOutput,
+} from './container-turn-executor.js';
 import { executeCodexAgentTurn } from './codex-turn-executor.js';
 import {
   BROWSER_TOOL_DEFINITIONS,
@@ -56,6 +61,12 @@ import {
   executeWebSearch,
   WEB_TOOL_DEFINITIONS,
 } from '../tools/web-tools.js';
+import { subscribeBrowserBridgeRunEvents } from '../browser/bridge.js';
+import {
+  executeWarmMainSubscriptionTurn,
+  MainSubscriptionWorkerManagerError,
+} from './main-subscription-worker-manager.js';
+import type { MainRunLeaseState } from '../browser/metadata.js';
 
 // ============================================================================
 // Types
@@ -101,9 +112,12 @@ type BrowserTimeoutProfile = 'default' | 'fast_lane';
 export class MainRunPhaseTimeoutError extends Error {
   constructor(
     public readonly timeoutPhase:
+      | 'lease_queue'
+      | 'lease_boot'
       | 'queue_to_executor_start'
       | 'first_progress'
       | 'first_page_ready'
+      | 'worker_unresponsive'
       | 'total_run',
     message: string,
   ) {
@@ -195,10 +209,14 @@ const REQUEST_HEAVY_EXECUTION_TOOL = {
 } satisfies ExecutionContext['contextTools'][number];
 
 const BROWSER_FAST_LANE_MAX_TOOL_ITERATIONS = 3;
+const MAIN_RUN_LEASE_QUEUE_BUDGET_MS = 5_000;
+const MAIN_RUN_LEASE_BOOT_BUDGET_MS = 15_000;
 const MAIN_RUN_QUEUE_START_BUDGET_MS = 2_000;
 const MAIN_RUN_FIRST_PROGRESS_BUDGET_MS = 10_000;
 const MAIN_RUN_FIRST_PAGE_READY_BUDGET_MS = 20_000;
 const MAIN_RUN_FAST_LANE_TOTAL_BUDGET_MS = 90_000;
+const MAIN_RUN_WARM_SUBSCRIPTION_TOTAL_BUDGET_MS = 60_000;
+const MAIN_RUN_COLD_SUBSCRIPTION_TOTAL_BUDGET_MS = 90_000;
 const MAIN_RUN_SUBSCRIPTION_FALLBACK_TOTAL_BUDGET_MS = 120_000;
 
 function looksLikeBrowserFastLaneIntent(content: string): boolean {
@@ -227,7 +245,6 @@ function shouldUseBrowserFastLane(input: {
   return (
     !input.promotedRun &&
     !input.useHostCodex &&
-    Boolean(input.mainPlan.directPlan) &&
     toolFamilyEnabled(input.mainPlan.effectiveTools, 'browser') &&
     looksLikeBrowserFastLaneIntent(input.triggerContent)
   );
@@ -250,7 +267,7 @@ function deriveRouteReason(input: {
   useHostCodex: boolean;
   mainPlan: MainExecutionPlan;
 }): ExecutionRouteReason {
-  if (input.strategy === 'browser_fast_lane') {
+  if (input.strategy === 'browser_fast_lane' && !input.shouldUseContainer) {
     return 'browser_fast_lane';
   }
   if (input.shouldUseContainer) {
@@ -600,6 +617,10 @@ export async function executeMainChannel(
     : shouldUseContainer
       ? 'container'
       : 'direct_http';
+  const useWarmSubscriptionWorker =
+    shouldUseContainer &&
+    routeReason === 'subscription_fallback' &&
+    MAIN_SUBSCRIPTION_WARM_WORKER_ENABLED;
   const executorStartedAt = new Date().toISOString();
   const queueStartedAtMs = parseIsoMs(
     timingMetadata.queueStartedAt || timingMetadata.enqueuedAt,
@@ -617,14 +638,21 @@ export async function executeMainChannel(
   updateRunStateMetadata(input.runId, {
     executionStrategy,
     routeReason,
+    leaseState: null,
     timeoutPhase: null,
     currentStep:
       executionStrategy === 'browser_fast_lane'
-        ? 'Starting browser-first model…'
+        ? shouldUseContainer
+          ? useWarmSubscriptionWorker
+            ? 'Preparing warm subscription browser run…'
+            : 'Starting Claude subscription runtime…'
+          : 'Starting browser-first model…'
         : shouldUseContainer
-          ? routeReason === 'subscription_fallback'
-            ? 'Starting Claude subscription runtime…'
-            : 'Starting container runtime…'
+          ? useWarmSubscriptionWorker
+            ? 'Preparing warm subscription worker…'
+            : routeReason === 'subscription_fallback'
+              ? 'Starting Claude subscription runtime…'
+              : 'Starting container runtime…'
           : useHostCodex
             ? 'Starting host runtime…'
             : 'Starting model…',
@@ -727,7 +755,13 @@ export async function executeMainChannel(
     budgetTimers.clear();
   };
   const triggerTimeout = (
-    timeoutPhase: 'first_progress' | 'first_page_ready' | 'total_run',
+    timeoutPhase:
+      | 'lease_queue'
+      | 'lease_boot'
+      | 'first_progress'
+      | 'first_page_ready'
+      | 'worker_unresponsive'
+      | 'total_run',
     message: string,
   ) => {
     if (phaseTimeoutError) return;
@@ -736,7 +770,13 @@ export async function executeMainChannel(
   };
   const scheduleBudgetTimer = (
     timeoutMs: number,
-    timeoutPhase: 'first_progress' | 'first_page_ready' | 'total_run',
+    timeoutPhase:
+      | 'lease_queue'
+      | 'lease_boot'
+      | 'first_progress'
+      | 'first_page_ready'
+      | 'worker_unresponsive'
+      | 'total_run',
     message: string,
   ) => {
     const timer = setTimeout(
@@ -746,6 +786,23 @@ export async function executeMainChannel(
     budgetTimers.add(timer);
     return timer;
   };
+  const resetBudgetTimer = (
+    current: ReturnType<typeof setTimeout> | null,
+    timeoutMs: number,
+    timeoutPhase:
+      | 'lease_queue'
+      | 'lease_boot'
+      | 'first_progress'
+      | 'first_page_ready'
+      | 'worker_unresponsive'
+      | 'total_run',
+    message: string,
+  ) => {
+    clearBudgetTimer(current);
+    return scheduleBudgetTimer(timeoutMs, timeoutPhase, message);
+  };
+  let leaseQueueTimer: ReturnType<typeof setTimeout> | null = null;
+  let leaseBootTimer: ReturnType<typeof setTimeout> | null = null;
   let firstProgressTimer: ReturnType<typeof setTimeout> | null = null;
   let firstPageReadyTimer: ReturnType<typeof setTimeout> | null = null;
   let totalBudgetTimer: ReturnType<typeof setTimeout> | null = null;
@@ -786,26 +843,82 @@ export async function executeMainChannel(
       });
     }
   };
-
-  if (!shouldUseContainer) {
+  const startFirstProgressBudget = () => {
+    if (firstProgressTimer || firstMeaningfulProgressRecorded) {
+      return;
+    }
     firstProgressTimer = scheduleBudgetTimer(
       MAIN_RUN_FIRST_PROGRESS_BUDGET_MS,
       'first_progress',
       'The run did not produce provider or browser progress quickly enough.',
     );
-  }
-  if (executionStrategy === 'browser_fast_lane') {
+  };
+  const startFirstPageReadyBudget = () => {
+    if (
+      executionStrategy !== 'browser_fast_lane' ||
+      firstPageReadyTimer ||
+      firstPageReadyRecorded
+    ) {
+      return;
+    }
     firstPageReadyTimer = scheduleBudgetTimer(
       MAIN_RUN_FIRST_PAGE_READY_BUDGET_MS,
       'first_page_ready',
       'The browser did not reach a usable page state quickly enough.',
     );
+  };
+  const setCurrentStep = (message: string) => {
+    emitEvent({
+      type: 'main_progress_update',
+      runId: input.runId,
+      threadId: input.threadId,
+      message,
+    });
+  };
+  const unsubscribeBrowserBridgeEvents =
+    shouldUseContainer &&
+    toolFamilyEnabled(mainPlan.effectiveTools, 'browser') &&
+    input.requestedBy
+      ? subscribeBrowserBridgeRunEvents(input.runId, (event) => {
+          if (event.type === 'activity') {
+            markFirstBrowserEvent();
+            switch (event.toolName) {
+              case 'browser_open':
+                setCurrentStep('Opening LinkedIn…');
+                break;
+              case 'browser_snapshot':
+                setCurrentStep('Inspecting page…');
+                break;
+              case 'browser_wait':
+                setCurrentStep('Waiting for page state…');
+                break;
+              default:
+                setCurrentStep('Interacting with page…');
+                break;
+            }
+          } else if (event.type === 'page_ready') {
+            markFirstPageReady(event.currentStep);
+          }
+        })
+      : null;
+
+  if (!shouldUseContainer) {
+    startFirstProgressBudget();
+  }
+  if (executionStrategy === 'browser_fast_lane' && !useWarmSubscriptionWorker) {
+    startFirstPageReadyBudget();
+  }
+  if (executionStrategy === 'browser_fast_lane' && !useWarmSubscriptionWorker) {
     totalBudgetTimer = scheduleBudgetTimer(
       MAIN_RUN_FAST_LANE_TOTAL_BUDGET_MS,
       'total_run',
       'The browser fast-lane run exceeded its maximum time budget.',
     );
-  } else if (shouldUseContainer && routeReason === 'subscription_fallback') {
+  } else if (
+    shouldUseContainer &&
+    routeReason === 'subscription_fallback' &&
+    !useWarmSubscriptionWorker
+  ) {
     totalBudgetTimer = scheduleBudgetTimer(
       MAIN_RUN_SUBSCRIPTION_FALLBACK_TOTAL_BUDGET_MS,
       'total_run',
@@ -830,11 +943,11 @@ export async function executeMainChannel(
               ),
           )
         : containerPlan.effectiveTools;
-      const result = await executeContainerAgentTurn({
+      const containerTurnInput: ExecuteContainerTurnInput = {
         runId: input.runId,
         userId: input.requestedBy,
         agent,
-        promptLabel: 'main',
+        promptLabel: 'main' as const,
         userMessage: renderMainPromptPayload(mainContext, input.triggerContent),
         signal: executionSignal,
         allowedTools: getContainerAllowedTools({
@@ -851,17 +964,182 @@ export async function executeMainChannel(
         enableBrowserTools: containerEffectiveTools.some(
           (tool) => tool.toolFamily === 'browser' && tool.enabled,
         ),
-      }).catch((error) => {
-        if (phaseTimeoutError) {
-          throw phaseTimeoutError;
+        timeoutProfile:
+          executionStrategy === 'browser_fast_lane' ? 'fast_lane' : 'default',
+      };
+
+      let result:
+        | ExecuteContainerTurnOutput
+        | (ExecuteContainerTurnOutput & {
+            leaseState?: MainRunLeaseState | null;
+            timing?: Record<string, unknown>;
+          });
+
+      if (useWarmSubscriptionWorker) {
+        updateRunTiming(input.runId, {
+          leaseRequestedAt: new Date().toISOString(),
+        });
+        setCurrentStep('Starting warm subscription worker…');
+        let leaseRequestedAtMs = Date.now();
+        const runWarmAttempt = async (
+          recoveryMode: 'normal' | 'recovered_cold_boot',
+        ) =>
+          executeWarmMainSubscriptionTurn({
+            turn: containerTurnInput,
+            timeoutProfile: containerTurnInput.timeoutProfile ?? 'default',
+            recoveryMode,
+            callbacks: {
+              onQueueWaitStart: (at) => {
+                leaseRequestedAtMs = Date.parse(at);
+                setCurrentStep('Waiting for warm subscription worker…');
+                leaseQueueTimer = resetBudgetTimer(
+                  leaseQueueTimer,
+                  MAIN_RUN_LEASE_QUEUE_BUDGET_MS,
+                  'lease_queue',
+                  'The run waited too long for an available warm subscription worker.',
+                );
+              },
+              onLeaseBootStart: ({ at, leaseState }) => {
+                updateRunTiming(input.runId, {
+                  leaseRequestedAt:
+                    typeof at === 'string' ? at : new Date().toISOString(),
+                });
+                clearBudgetTimer(leaseQueueTimer);
+                leaseQueueTimer = null;
+                leaseBootTimer = resetBudgetTimer(
+                  leaseBootTimer,
+                  MAIN_RUN_LEASE_BOOT_BUDGET_MS,
+                  'lease_boot',
+                  'The warm subscription worker took too long to start.',
+                );
+                setCurrentStep(
+                  leaseState === 'recovered_cold_boot'
+                    ? 'Recovering warm subscription worker…'
+                    : 'Starting warm subscription worker…',
+                );
+                updateRunStateMetadata(input.runId, {
+                  leaseState,
+                });
+              },
+              onLeaseReady: ({ at, leaseState }) => {
+                clearBudgetTimer(leaseQueueTimer);
+                clearBudgetTimer(leaseBootTimer);
+                leaseQueueTimer = null;
+                leaseBootTimer = null;
+                updateRunStateMetadata(input.runId, {
+                  leaseState,
+                });
+                updateRunTiming(input.runId, {
+                  leaseReadyAt: at,
+                });
+                setCurrentStep(
+                  leaseState === 'warm_reuse'
+                    ? 'Reusing warm subscription worker…'
+                    : leaseState === 'recovered_cold_boot'
+                      ? 'Recovered warm subscription worker.'
+                      : 'Warm subscription worker ready.',
+                );
+                const elapsedMs = Math.max(
+                  0,
+                  Date.parse(at) - leaseRequestedAtMs,
+                );
+                const totalBudgetMs =
+                  leaseState === 'warm_reuse'
+                    ? MAIN_RUN_WARM_SUBSCRIPTION_TOTAL_BUDGET_MS
+                    : MAIN_RUN_COLD_SUBSCRIPTION_TOTAL_BUDGET_MS;
+                totalBudgetTimer = resetBudgetTimer(
+                  totalBudgetTimer,
+                  Math.max(1, totalBudgetMs - elapsedMs),
+                  'total_run',
+                  leaseState === 'warm_reuse'
+                    ? 'The warm subscription run exceeded its maximum time budget.'
+                    : 'The cold-start subscription run exceeded its maximum time budget.',
+                );
+              },
+              onTaskDispatched: (at) => {
+                updateRunTiming(input.runId, {
+                  taskDispatchedAt: at,
+                });
+                startFirstProgressBudget();
+                startFirstPageReadyBudget();
+                setCurrentStep('Opening LinkedIn…');
+              },
+              onWorkerProgress: (at) => {
+                markMeaningfulProgress();
+                updateRunTiming(input.runId, {
+                  firstProviderEventAt: at,
+                });
+              },
+            },
+          });
+
+        try {
+          result = await runWarmAttempt('normal');
+        } catch (error) {
+          if (!(error instanceof MainSubscriptionWorkerManagerError)) {
+            throw error;
+          }
+          if (phaseTimeoutError) {
+            throw phaseTimeoutError;
+          }
+          try {
+            result = await runWarmAttempt('recovered_cold_boot');
+          } catch (retryError) {
+            if (phaseTimeoutError) {
+              throw phaseTimeoutError;
+            }
+            updateRunStateMetadata(input.runId, {
+              leaseState: 'one_shot_fallback',
+            });
+            setCurrentStep('Falling back to one-shot subscription runtime…');
+            totalBudgetTimer = resetBudgetTimer(
+              totalBudgetTimer,
+              MAIN_RUN_SUBSCRIPTION_FALLBACK_TOTAL_BUDGET_MS,
+              'total_run',
+              'The subscription fallback run exceeded its maximum time budget.',
+            );
+            result = await executeContainerAgentTurn(containerTurnInput).catch(
+              (fallbackError) => {
+                if (phaseTimeoutError) {
+                  throw phaseTimeoutError;
+                }
+                if (
+                  retryError instanceof MainSubscriptionWorkerManagerError &&
+                  retryError.code === 'worker_unresponsive'
+                ) {
+                  throw new MainRunPhaseTimeoutError(
+                    'worker_unresponsive',
+                    retryError.message,
+                  );
+                }
+                throw fallbackError;
+              },
+            );
+          }
         }
-        throw error;
-      });
+      } else {
+        result = await executeContainerAgentTurn(containerTurnInput).catch(
+          (error) => {
+            if (phaseTimeoutError) {
+              throw phaseTimeoutError;
+            }
+            throw error;
+          },
+        );
+      }
 
       clearBudgetTimer(totalBudgetTimer);
+      clearBudgetTimer(leaseQueueTimer);
+      clearBudgetTimer(leaseBootTimer);
       updateRunTiming(input.runId, {
         completedAt: new Date().toISOString(),
+        ...(('timing' in result && result.timing) || {}),
       });
+      if ('leaseState' in result && result.leaseState) {
+        updateRunStateMetadata(input.runId, {
+          leaseState: result.leaseState,
+        });
+      }
       return {
         content: result.content,
         agentId: agent.id,
@@ -1134,6 +1412,7 @@ export async function executeMainChannel(
   } finally {
     clearAllBudgetTimers();
     executionSignalControl.cleanup();
+    unsubscribeBrowserBridgeEvents?.();
   }
 }
 

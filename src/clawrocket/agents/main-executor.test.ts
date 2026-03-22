@@ -1,5 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+vi.mock('../config.js', async () => {
+  const actual =
+    await vi.importActual<typeof import('../config.js')>('../config.js');
+  return {
+    ...actual,
+    MAIN_SUBSCRIPTION_WARM_WORKER_ENABLED: true,
+  };
+});
 vi.mock('./agent-router.js', () => ({
   ALWAYS_ALLOWED_CONTEXT_TOOLS: new Set<string>(),
   executeWithAgent: vi.fn(),
@@ -11,6 +19,21 @@ vi.mock('./execution-planner.js', () => ({
 }));
 vi.mock('./container-turn-executor.js', () => ({
   executeContainerAgentTurn: vi.fn(),
+}));
+vi.mock('./main-subscription-worker-manager.js', () => ({
+  executeWarmMainSubscriptionTurn: vi.fn(),
+  MainSubscriptionWorkerManagerError: class MainSubscriptionWorkerManagerError extends Error {
+    constructor(
+      message: string,
+      public readonly code:
+        | 'capacity_exhausted'
+        | 'worker_boot_failed'
+        | 'worker_unresponsive',
+    ) {
+      super(message);
+      this.name = 'MainSubscriptionWorkerManagerError';
+    }
+  },
 }));
 vi.mock('./project-mounts.js', () => ({
   resolveValidatedProjectMountPath: vi.fn(),
@@ -47,6 +70,10 @@ import {
 import { executeWithAgent } from './agent-router.js';
 import { planMainExecution } from './execution-planner.js';
 import { executeContainerAgentTurn } from './container-turn-executor.js';
+import {
+  executeWarmMainSubscriptionTurn,
+  MainSubscriptionWorkerManagerError,
+} from './main-subscription-worker-manager.js';
 import { resolveValidatedProjectMountPath } from './project-mounts.js';
 import { executeBrowserTool } from '../tools/browser-tools.js';
 
@@ -62,6 +89,7 @@ describe('main-executor (pure)', () => {
     vi.mocked(executeWithAgent).mockReset();
     vi.mocked(planMainExecution).mockReset();
     vi.mocked(executeContainerAgentTurn).mockReset();
+    vi.mocked(executeWarmMainSubscriptionTurn).mockReset();
     vi.mocked(resolveValidatedProjectMountPath).mockReset();
     vi.mocked(executeBrowserTool).mockReset();
     vi.mocked(resolveValidatedProjectMountPath).mockImplementation((path) =>
@@ -380,6 +408,190 @@ describe('main-executor (pure)', () => {
     expect(events.map((event) => event.type)).toEqual([
       'main_response_started',
     ]);
+  });
+
+  it('uses the warm subscription worker for browser-fast-lane subscription fallback runs', async () => {
+    const queuedRun = enqueueMainTurnAtomic({
+      threadId: 'thread-subscription-fast-lane',
+      userId: 'owner-1',
+      content: 'Open LinkedIn and tell me what you can access.',
+      messageId: 'msg-subscription-fast-lane',
+      runId: 'run-subscription-fast-lane',
+    });
+
+    vi.mocked(planMainExecution).mockReturnValue({
+      policy: 'container_only',
+      effectiveTools: [
+        {
+          toolFamily: 'browser',
+          runtimeTools: ['browser_open'],
+          enabled: true,
+          requiresApproval: false,
+        },
+      ],
+      heavyToolFamilies: [],
+      directPlan: null,
+      containerPlan: {
+        backend: 'container',
+        routeReason: 'subscription_fallback',
+        providerId: 'provider.anthropic',
+        modelId: 'claude-sonnet-4-6',
+        effectiveTools: [
+          {
+            toolFamily: 'browser',
+            runtimeTools: ['browser_open'],
+            enabled: true,
+            requiresApproval: false,
+          },
+        ],
+        heavyToolFamilies: [],
+        containerCredential: {
+          authMode: 'subscription',
+          credentialSource: 'oauth_token',
+          secrets: {
+            CLAUDE_CODE_OAUTH_TOKEN: 'oauth-test',
+          },
+        },
+      },
+      hostCodexPlan: null,
+    });
+    vi.mocked(executeWarmMainSubscriptionTurn).mockResolvedValue({
+      content: 'Warm subscription reply',
+      leaseState: 'warm_reuse',
+      timing: {
+        leaseRequestedAt: '2026-03-22T00:00:00.000Z',
+        leaseReadyAt: '2026-03-22T00:00:01.000Z',
+        taskDispatchedAt: '2026-03-22T00:00:02.000Z',
+      },
+    });
+
+    const result = await executeMainChannel(
+      {
+        runId: queuedRun.run.id,
+        threadId: queuedRun.run.thread_id,
+        requestedBy: 'owner-1',
+        triggerMessageId: queuedRun.message.id,
+        triggerContent: queuedRun.message.content,
+      },
+      new AbortController().signal,
+    );
+
+    expect(result.content).toBe('Warm subscription reply');
+    expect(executeWarmMainSubscriptionTurn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        turn: expect.objectContaining({
+          runId: queuedRun.run.id,
+          timeoutProfile: 'fast_lane',
+        }),
+        timeoutProfile: 'fast_lane',
+        recoveryMode: 'normal',
+      }),
+    );
+    expect(executeContainerAgentTurn).not.toHaveBeenCalled();
+
+    const runRow = getDb()
+      .prepare(`SELECT metadata_json FROM talk_runs WHERE id = ?`)
+      .get(queuedRun.run.id) as { metadata_json: string | null } | undefined;
+    const metadata = JSON.parse(runRow?.metadata_json || '{}') as Record<
+      string,
+      unknown
+    >;
+    expect(metadata.executionStrategy).toBe('browser_fast_lane');
+    expect(metadata.routeReason).toBe('subscription_fallback');
+    expect(metadata.leaseState).toBe('warm_reuse');
+    expect(metadata.timing).toMatchObject({
+      leaseRequestedAt: expect.any(String),
+      leaseReadyAt: '2026-03-22T00:00:01.000Z',
+      taskDispatchedAt: '2026-03-22T00:00:02.000Z',
+      completedAt: expect.any(String),
+    });
+  });
+
+  it('falls back to one-shot container execution after warm worker recovery fails', async () => {
+    const queuedRun = enqueueMainTurnAtomic({
+      threadId: 'thread-subscription-fallback',
+      userId: 'owner-1',
+      content: 'Open LinkedIn and tell me what you can access.',
+      messageId: 'msg-subscription-fallback',
+      runId: 'run-subscription-fallback',
+    });
+
+    vi.mocked(planMainExecution).mockReturnValue({
+      policy: 'container_only',
+      effectiveTools: [
+        {
+          toolFamily: 'browser',
+          runtimeTools: ['browser_open'],
+          enabled: true,
+          requiresApproval: false,
+        },
+      ],
+      heavyToolFamilies: [],
+      directPlan: null,
+      containerPlan: {
+        backend: 'container',
+        routeReason: 'subscription_fallback',
+        providerId: 'provider.anthropic',
+        modelId: 'claude-sonnet-4-6',
+        effectiveTools: [
+          {
+            toolFamily: 'browser',
+            runtimeTools: ['browser_open'],
+            enabled: true,
+            requiresApproval: false,
+          },
+        ],
+        heavyToolFamilies: [],
+        containerCredential: {
+          authMode: 'subscription',
+          credentialSource: 'oauth_token',
+          secrets: {
+            CLAUDE_CODE_OAUTH_TOKEN: 'oauth-test',
+          },
+        },
+      },
+      hostCodexPlan: null,
+    });
+    vi.mocked(executeWarmMainSubscriptionTurn)
+      .mockRejectedValueOnce(
+        new MainSubscriptionWorkerManagerError(
+          'First warm worker failed',
+          'worker_boot_failed',
+        ),
+      )
+      .mockRejectedValueOnce(
+        new MainSubscriptionWorkerManagerError(
+          'Recovered warm worker failed',
+          'worker_unresponsive',
+        ),
+      );
+    vi.mocked(executeContainerAgentTurn).mockResolvedValue({
+      content: 'Fallback one-shot reply',
+    });
+
+    const result = await executeMainChannel(
+      {
+        runId: queuedRun.run.id,
+        threadId: queuedRun.run.thread_id,
+        requestedBy: 'owner-1',
+        triggerMessageId: queuedRun.message.id,
+        triggerContent: queuedRun.message.content,
+      },
+      new AbortController().signal,
+    );
+
+    expect(result.content).toBe('Fallback one-shot reply');
+    expect(executeWarmMainSubscriptionTurn).toHaveBeenCalledTimes(2);
+    expect(executeContainerAgentTurn).toHaveBeenCalledTimes(1);
+
+    const runRow = getDb()
+      .prepare(`SELECT metadata_json FROM talk_runs WHERE id = ?`)
+      .get(queuedRun.run.id) as { metadata_json: string | null } | undefined;
+    const metadata = JSON.parse(runRow?.metadata_json || '{}') as Record<
+      string,
+      unknown
+    >;
+    expect(metadata.leaseState).toBe('one_shot_fallback');
   });
 
   it('injects older Main thread facts into the direct backend context package', async () => {

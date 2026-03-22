@@ -9,6 +9,7 @@ vi.mock('../tools/browser-tools.js', () => ({
 import {
   executeBrowserBridgeRequest,
   registerBrowserBridgeRunAbort,
+  subscribeBrowserBridgeRunEvents,
   unregisterBrowserBridgeRunAbort,
 } from './bridge.js';
 import { BrowserRunPausedError } from './run-paused-error.js';
@@ -111,5 +112,62 @@ describe('browser bridge request handler', () => {
 
     expect(abortSpy).toHaveBeenCalledTimes(1);
     unregisterBrowserBridgeRunAbort('run-paused');
+  });
+
+  it('emits bridge activity and page-ready events and passes the timeout profile through', async () => {
+    const listener = vi.fn();
+    const unsubscribe = subscribeBrowserBridgeRunEvents('run-events', listener);
+    executeBrowserToolMock.mockResolvedValue({
+      result: JSON.stringify({ status: 'ok' }),
+    });
+
+    await expect(
+      executeBrowserBridgeRequest({
+        request: {
+          requestId: 'bridge_events_1',
+          toolName: 'browser_open',
+          args: {
+            siteKey: 'linkedin',
+            url: 'https://www.linkedin.com/feed/',
+          },
+          context: {
+            runId: 'run-events',
+            userId: 'owner-1',
+            talkId: 'talk-1',
+            timeoutProfile: 'fast_lane',
+          },
+        },
+        signal: new AbortController().signal,
+      }),
+    ).resolves.toEqual({
+      requestId: 'bridge_events_1',
+      result: JSON.stringify({ status: 'ok' }),
+    });
+
+    expect(executeBrowserToolMock).toHaveBeenCalledWith({
+      toolName: 'browser_open',
+      args: {
+        siteKey: 'linkedin',
+        url: 'https://www.linkedin.com/feed/',
+      },
+      context: {
+        signal: expect.any(AbortSignal),
+        runId: 'run-events',
+        userId: 'owner-1',
+        talkId: 'talk-1',
+        timeoutProfile: 'fast_lane',
+      },
+    });
+    expect(listener).toHaveBeenNthCalledWith(1, {
+      type: 'activity',
+      runId: 'run-events',
+      toolName: 'browser_open',
+    });
+    expect(listener).toHaveBeenNthCalledWith(2, {
+      type: 'page_ready',
+      runId: 'run-events',
+      currentStep: 'Reading page access…',
+    });
+    unsubscribe();
   });
 });

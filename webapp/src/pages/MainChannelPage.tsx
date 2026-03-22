@@ -175,6 +175,14 @@ function humanizeRouteReason(value: MainRun['routeReason']): string | null {
   return null;
 }
 
+function humanizeLeaseState(value: MainRun['leaseState']): string | null {
+  if (value === 'cold_boot') return 'Warm worker cold boot';
+  if (value === 'warm_reuse') return 'Warm worker reuse';
+  if (value === 'recovered_cold_boot') return 'Warm worker recovery';
+  if (value === 'one_shot_fallback') return 'One-shot fallback';
+  return null;
+}
+
 function formatDurationMs(ms: number): string {
   if (ms < 1000) {
     return `${Math.round(ms)}ms`;
@@ -200,12 +208,18 @@ function summarizeTimeoutPhase(
   fallback: string | null,
 ): string | null {
   switch (timeoutPhase) {
+    case 'lease_queue':
+      return 'The run timed out waiting for an available warm subscription worker.';
+    case 'lease_boot':
+      return 'The warm subscription worker took too long to start.';
     case 'queue_to_executor_start':
       return 'The run timed out before execution could start.';
     case 'first_progress':
       return 'The run timed out before the model or browser produced visible progress.';
     case 'first_page_ready':
       return 'The browser timed out before it reached a usable page state.';
+    case 'worker_unresponsive':
+      return 'The warm subscription worker stopped responding.';
     case 'total_run':
       return 'The run exceeded its total time budget.';
     default:
@@ -217,15 +231,27 @@ function formatMainRunMetaLine(run: MainRun): string | null {
   const parts: string[] = [];
   const strategy = humanizeExecutionStrategy(run.executionStrategy);
   const routeReason = humanizeRouteReason(run.routeReason);
+  const leaseState = humanizeLeaseState(run.leaseState);
   if (strategy) {
     parts.push(strategy);
   }
   if (routeReason) {
     parts.push(routeReason);
   }
+  if (leaseState) {
+    parts.push(leaseState);
+  }
   const queueMs = diffTimingMs(
     run.timing?.queueStartedAt || run.createdAt,
     run.timing?.executorStartedAt,
+  );
+  const leaseMs = diffTimingMs(
+    run.timing?.leaseRequestedAt,
+    run.timing?.leaseReadyAt,
+  );
+  const dispatchMs = diffTimingMs(
+    run.timing?.leaseReadyAt,
+    run.timing?.taskDispatchedAt,
   );
   const providerMs = diffTimingMs(
     run.timing?.executorStartedAt,
@@ -237,6 +263,12 @@ function formatMainRunMetaLine(run: MainRun): string | null {
   );
   if (queueMs != null) {
     parts.push(`Queue ${formatDurationMs(queueMs)}`);
+  }
+  if (leaseMs != null) {
+    parts.push(`Lease ${formatDurationMs(leaseMs)}`);
+  }
+  if (dispatchMs != null) {
+    parts.push(`Dispatch ${formatDurationMs(dispatchMs)}`);
   }
   if (providerMs != null) {
     parts.push(`Provider ${formatDurationMs(providerMs)}`);

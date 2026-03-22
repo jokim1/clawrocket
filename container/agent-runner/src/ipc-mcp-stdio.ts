@@ -33,6 +33,8 @@ const browserBridgeSocketPath =
 const browserRunId = process.env.NANOCLAW_BROWSER_RUN_ID || '';
 const browserUserId = process.env.NANOCLAW_BROWSER_USER_ID || '';
 const browserTalkId = process.env.NANOCLAW_BROWSER_TALK_ID || '';
+const browserTimeoutProfile =
+  process.env.NANOCLAW_BROWSER_TIMEOUT_PROFILE || 'default';
 
 function writeIpcFile(dir: string, data: object): string {
   fs.mkdirSync(dir, { recursive: true });
@@ -69,6 +71,8 @@ function registerBrowserTools(): void {
       runId: browserRunId,
       userId: browserUserId,
       talkId: browserTalkId || null,
+      timeoutProfile:
+        browserTimeoutProfile === 'fast_lane' ? 'fast_lane' : 'default',
     });
     return {
       content: [{ type: 'text' as const, text: response.result }],

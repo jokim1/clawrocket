@@ -4,6 +4,7 @@ import {
   type BrowserResumeMetadata,
   type CarriedBrowserSessionMetadata,
   type ExecutionDecisionMetadata,
+  type MainRunLeaseState,
   type MainRunTimingMetadata,
 } from '../../browser/metadata.js';
 import { buildMainExecutionPreview } from '../../agents/execution-preview.js';
@@ -265,6 +266,7 @@ export interface MainRunApiRecord {
   routeReason: 'browser_fast_lane' | 'subscription_fallback' | 'normal' | null;
   currentStep: string | null;
   timeoutPhase: string | null;
+  leaseState: MainRunLeaseState | null;
   timing: MainRunTimingMetadata | null;
   streamedTextPreview: string | null;
   lastProgressMessage: string | null;
@@ -402,6 +404,13 @@ function toMainRunApiRecord(run: {
       typeof metadata.currentStep === 'string' ? metadata.currentStep : null,
     timeoutPhase:
       typeof metadata.timeoutPhase === 'string' ? metadata.timeoutPhase : null,
+    leaseState:
+      metadata.leaseState === 'cold_boot' ||
+      metadata.leaseState === 'warm_reuse' ||
+      metadata.leaseState === 'recovered_cold_boot' ||
+      metadata.leaseState === 'one_shot_fallback'
+        ? metadata.leaseState
+        : null,
     timing: parseMetadataObject<MainRunTimingMetadata>(metadata.timing),
     streamedTextPreview:
       typeof metadata.streamedTextPreview === 'string'

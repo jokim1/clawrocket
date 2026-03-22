@@ -456,6 +456,113 @@ describe('MainChannelPage', () => {
     ).toBeTruthy();
   });
 
+  it('renders warm worker lease metadata for subscription fallback runs', async () => {
+    const queuedAt = isoOffset(-8_000);
+    const executorStartedAt = isoOffset(-7_000);
+    const leaseRequestedAt = isoOffset(-6_000);
+    const leaseReadyAt = isoOffset(-5_000);
+    const taskDispatchedAt = isoOffset(-4_000);
+    const providerStartedAt = isoOffset(-3_000);
+    listMainThreadsMock.mockResolvedValue([
+      {
+        threadId: 'thread-main-warm-worker',
+        title: 'LinkedIn Messaging',
+        isPinned: false,
+        lastMessageAt: queuedAt,
+        messageCount: 1,
+        hasActiveRun: true,
+      },
+    ]);
+    getMainThreadMock.mockResolvedValue([
+      {
+        id: 'msg-warm-worker-1',
+        threadId: 'thread-main-warm-worker',
+        role: 'user',
+        content: 'Open LinkedIn and tell me what you can access.',
+        agentId: null,
+        createdBy: 'user-1',
+        createdAt: queuedAt,
+      },
+    ]);
+    getMainRegisteredAgentMock.mockResolvedValue(
+      buildMainAgentSnapshot({ browserEnabled: true }),
+    );
+    listMainRunsMock.mockResolvedValue([
+      {
+        id: 'run-main-warm-worker',
+        threadId: 'thread-main-warm-worker',
+        status: 'running',
+        createdAt: queuedAt,
+        startedAt: executorStartedAt,
+        endedAt: null,
+        triggerMessageId: 'msg-warm-worker-1',
+        targetAgentId: null,
+        cancelReason: null,
+        kind: null,
+        parentRunId: null,
+        promotionState: null,
+        promotionChildRunId: null,
+        requestedToolFamilies: ['browser'],
+        userVisibleSummary: null,
+        browserBlock: null,
+        browserResume: null,
+        carriedBrowserSessions: [],
+        executionDecision: {
+          backend: 'container',
+          authPath: 'subscription',
+          credentialSource: 'oauth_token',
+          routeReason: 'subscription_fallback',
+          plannerReason: 'container_only',
+          providerId: 'provider.anthropic',
+          modelId: 'claude-sonnet-4-6',
+        },
+        executionStrategy: 'browser_fast_lane',
+        routeReason: 'subscription_fallback',
+        currentStep: 'Reusing warm subscription worker…',
+        timeoutPhase: null,
+        leaseState: 'warm_reuse',
+        timing: {
+          queueStartedAt: queuedAt,
+          executorStartedAt,
+          leaseRequestedAt,
+          leaseReadyAt,
+          taskDispatchedAt,
+          firstProviderEventAt: providerStartedAt,
+        },
+        streamedTextPreview: null,
+        lastProgressMessage: 'Reusing warm subscription worker…',
+        lastHeartbeatAt: providerStartedAt,
+        terminalSummary: null,
+        resumeRequestedAt: null,
+        resumeRequestedBy: null,
+      },
+    ]);
+
+    render(
+      <MemoryRouter initialEntries={['/app/main/thread-main-warm-worker']}>
+        <Routes>
+          <Route
+            path="/app/main"
+            element={<MainChannelPage onUnauthorized={vi.fn()} />}
+          />
+          <Route
+            path="/app/main/:threadId"
+            element={<MainChannelPage onUnauthorized={vi.fn()} />}
+          />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    expect(
+      await screen.findAllByText('* Reusing warm subscription worker…'),
+    ).toHaveLength(2);
+    expect(
+      screen.getByText(
+        'Browser fast lane · Subscription fallback · Warm worker reuse · Queue 1.0s · Lease 1.0s · Dispatch 1.0s · Provider 4.0s',
+      ),
+    ).toBeTruthy();
+  });
+
   it('navigates away from a Main thread that now returns 404', async () => {
     listMainThreadsMock.mockResolvedValue([
       {
