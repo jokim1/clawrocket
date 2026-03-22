@@ -459,7 +459,7 @@ describe('talk channel routes', () => {
       targetKind: 'channel',
       targetId: 'slack:C123',
       displayName: '#family-ops',
-      metadataJson: JSON.stringify({ isPrivate: false }),
+      metadataJson: JSON.stringify({ isPrivate: false, isMember: true }),
     });
 
     const res = await server.request('/api/v1/talks/talk-1/channels', {
@@ -486,6 +486,48 @@ describe('talk channel routes', () => {
         targetId: 'slack:C123',
       }),
     );
+  });
+
+  it('rejects Slack talk channel bindings when the app is not in the channel', async () => {
+    const slackConnection = upsertChannelConnection({
+      platform: 'slack',
+      connectionMode: 'oauth_workspace',
+      accountKey: 'slack:T123',
+      displayName: 'KimFamily',
+      enabled: true,
+      healthStatus: 'healthy',
+      config: {
+        teamId: 'T123',
+        teamName: 'KimFamily',
+        teamUrl: 'kimfamily-co.slack.com',
+      },
+    });
+    upsertChannelTarget({
+      connectionId: slackConnection.id,
+      targetKind: 'channel',
+      targetId: 'slack:C123',
+      displayName: '#general',
+      metadataJson: JSON.stringify({ isPrivate: false, isMember: false }),
+    });
+
+    const res = await server.request('/api/v1/talks/talk-1/channels', {
+      method: 'POST',
+      headers: {
+        ...authHeaders('owner-token'),
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        connectionId: slackConnection.id,
+        targetKind: 'channel',
+        targetId: 'slack:C123',
+        displayName: '#general',
+      }),
+    });
+
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as any;
+    expect(body.ok).toBe(false);
+    expect(body.error.code).toBe('slack_target_not_joined');
   });
 
   it('returns channel occupancy metadata and pagination for Slack targets', async () => {

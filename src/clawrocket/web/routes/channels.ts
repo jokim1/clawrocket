@@ -37,6 +37,7 @@ import {
   diagnoseBinding,
   type BindingDiagnosis,
 } from '../../channels/channel-diagnosis.js';
+import { ChannelDeliveryError } from '../../channels/channel-errors.js';
 import { encryptChannelSecret } from '../../channels/channel-secret-store.js';
 import { encryptChannelProviderSecret } from '../../channels/channel-provider-secret-store.js';
 import {
@@ -289,6 +290,43 @@ function parseTargetMetadata(
   } catch {
     return null;
   }
+}
+
+function readMetadataBoolean(
+  metadata: Record<string, unknown> | null,
+  key: string,
+): boolean | null {
+  const value = metadata?.[key];
+  return typeof value === 'boolean' ? value : null;
+}
+
+function formatChannelTestSendError(
+  platform: 'telegram' | 'slack',
+  error: unknown,
+): string {
+  if (platform === 'slack') {
+    if (error instanceof ChannelDeliveryError) {
+      switch (error.code) {
+        case 'not_in_channel':
+          return 'Slack app is not in this channel yet. In Slack, open the channel and run /invite @YourAppName, then sync channels again.';
+        case 'channel_not_found':
+          return 'Slack could not find this channel. Sync channels again in Connectors and try again.';
+        case 'invalid_auth':
+          return 'Slack workspace authorization is no longer valid. Reconnect the workspace in Connectors and try again.';
+        case 'rate_limited':
+          return 'Slack rate-limited the test send. Try again in a moment.';
+        default:
+          break;
+      }
+    }
+    if (
+      error instanceof Error &&
+      error.message.startsWith('No runtime for channel connection')
+    ) {
+      return 'Slack workspace is not connected right now. Check Connectors and try again.';
+    }
+  }
+  return error instanceof Error ? error.message : 'Channel test send failed';
 }
 
 function toSlackProviderConfigApiRecord(input: {
@@ -1316,6 +1354,23 @@ export function createTalkChannelRoute(input: {
       },
     };
   }
+  const targetMetadata = parseTargetMetadata(target.metadata_json);
+  if (
+    connection.platform === 'slack' &&
+    readMetadataBoolean(targetMetadata, 'isMember') === false
+  ) {
+    return {
+      statusCode: 400,
+      body: {
+        ok: false,
+        error: {
+          code: 'slack_target_not_joined',
+          message:
+            'Invite the Slack app to this channel first, then sync channels again before binding it to a Talk.',
+        },
+      },
+    };
+  }
   const existingBinding = getActiveTalkChannelBindingOwner({
     connectionId: input.connectionId,
     targetKind: input.targetKind,
@@ -1762,8 +1817,7 @@ export function testTalkChannelBindingRoute(input: {
         ok: false,
         error: {
           code: 'channel_test_failed',
-          message:
-            error instanceof Error ? error.message : 'Channel test send failed',
+          message: formatChannelTestSendError(binding.platform, error),
         },
       },
     }));
@@ -1822,11 +1876,12 @@ export async function unquarantineTalkChannelBindingRoute(input: {
     };
   } catch (error) {
     const code =
-      error && typeof error === 'object' && 'code' in error
-        ? String((error as { code: string }).code)
-        : 'test_failed';
-    const message =
-      error instanceof Error ? error.message : 'Channel test send failed';
+      error instanceof ChannelDeliveryError
+        ? error.code
+        : error && typeof error === 'object' && 'code' in error
+          ? String((error as { code: string }).code)
+          : 'test_failed';
+    const message = formatChannelTestSendError(binding.platform, error);
     const errorAt = new Date().toISOString();
     quarantineBinding(input.bindingId, code);
     updateBindingDeliveryResult(input.bindingId, {

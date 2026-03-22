@@ -1698,7 +1698,7 @@ describe('TalkDetailPage', () => {
 
     await user.click(bindingView.getByRole('button', { name: 'Test Send' }));
     expect(
-      await screen.findByText('Sent a test message to Cal Strategy Room.'),
+      await bindingView.findByText('Sent a test message to Cal Strategy Room.'),
     ).toBeTruthy();
 
     await user.click(bindingView.getAllByRole('button', { name: 'Retry' })[0]);
@@ -1733,6 +1733,7 @@ describe('TalkDetailPage', () => {
           targetKind: 'channel',
           targetId: 'slack:C123',
           displayName: '#family-ops',
+          metadata: { isMember: true },
           approved: false,
         }),
         buildChannelTarget({
@@ -1740,6 +1741,7 @@ describe('TalkDetailPage', () => {
           targetKind: 'channel',
           targetId: 'slack:C124',
           displayName: '#parents-council',
+          metadata: { isMember: true },
           approved: false,
         }),
       ],
@@ -1796,6 +1798,7 @@ describe('TalkDetailPage', () => {
           targetKind: 'channel',
           targetId: 'slack:C123',
           displayName: '#family-ops',
+          metadata: { isMember: true },
           approved: false,
         }),
         buildChannelTarget({
@@ -1803,6 +1806,7 @@ describe('TalkDetailPage', () => {
           targetKind: 'channel',
           targetId: 'slack:C456',
           displayName: '#launch-room',
+          metadata: { isMember: true },
           approved: false,
         }),
       ],
@@ -1839,6 +1843,7 @@ describe('TalkDetailPage', () => {
           targetKind: 'channel',
           targetId: 'slack:C123',
           displayName: '#family-ops',
+          metadata: { isMember: true },
           approved: false,
           activeBindingId: 'binding-existing',
           activeBindingTalkId: 'talk-2',
@@ -1859,6 +1864,83 @@ describe('TalkDetailPage', () => {
       '/app/talks/talk-2/channels',
     );
     expect(screen.getByRole('button', { name: 'Create Binding' })).toBeDisabled();
+  });
+
+  it('disables Slack channels the app has not joined yet', async () => {
+    installTalkDetailFetch({
+      channelConnections: [
+        buildChannelConnection({
+          id: 'channel-conn:slack:kimfamily',
+          platform: 'slack',
+          accountKey: 'slack:T123',
+          displayName: 'KimFamily',
+          config: { teamId: 'T123', teamName: 'KimFamily' },
+        }),
+      ],
+      channelTargets: [
+        buildChannelTarget({
+          connectionId: 'channel-conn:slack:kimfamily',
+          targetKind: 'channel',
+          targetId: 'slack:C123',
+          displayName: '#general',
+          metadata: { isMember: false },
+          approved: false,
+        }),
+      ],
+      talkChannels: [],
+    });
+
+    renderDetailPage('/app/talks/talk-1/channels');
+    await screen.findByRole('heading', { name: 'Connected Channels' });
+
+    expect(screen.getByText('Invite Slack app to channel first')).toBeTruthy();
+    expect(screen.getByRole('button', { name: /#general/i })).toHaveAttribute(
+      'aria-disabled',
+      'true',
+    );
+    expect(screen.getByRole('button', { name: 'Create Binding' })).toBeDisabled();
+  });
+
+  it('shows inline Slack test-send errors on the binding card', async () => {
+    const user = userEvent.setup();
+
+    installTalkDetailFetch({
+      talkChannels: [
+        buildTalkChannelBinding({
+          id: 'binding-1',
+          talkId: 'talk-1',
+          connectionId: 'channel-conn:slack:kimfamily',
+          platform: 'slack',
+          connectionDisplayName: 'Slack (KimFamily)',
+          targetKind: 'channel',
+          targetId: 'slack:C123',
+          displayName: '#general',
+        }),
+      ],
+      onTestChannel: () => ({
+        status: 502,
+        code: 'channel_test_failed',
+        message:
+          'Slack app is not in this channel yet. In Slack, open the channel and run /invite @YourAppName, then sync channels again.',
+      }),
+    });
+
+    renderDetailPage('/app/talks/talk-1/channels');
+    await screen.findByRole('heading', { name: 'Connected Channels' });
+
+    const bindingCard = screen
+      .getByRole('heading', { name: /\[Slack\]\s+#general/i })
+      .closest('article');
+    if (!bindingCard) {
+      throw new Error('Expected Slack binding card');
+    }
+    const bindingView = within(bindingCard);
+
+    await user.click(bindingView.getByRole('button', { name: 'Test Send' }));
+
+    expect(
+      await bindingView.findByText(/Slack app is not in this channel yet/i),
+    ).toBeTruthy();
   });
 
   it('updates nicknames in auto and custom modes and saves talk agents from the Agents tab', async () => {
@@ -4431,6 +4513,9 @@ function installTalkDetailFetch(input?: {
     attachmentIds?: string[];
     threadId?: string | null;
   }) => { talkId: string; message: TalkMessage; runs: TalkRun[] };
+  onTestChannel?: (bindingId: string) =>
+    | { status: number; code?: string; message: string }
+    | void;
   onListMessages?: (input: {
     threadId: string | null;
     visibleMessages: TalkMessage[];
@@ -5785,6 +5870,19 @@ function installTalkDetailFetch(input?: {
         /\/api\/v1\/talks\/talk-1\/channels\/[^/]+\/test$/.test(url) &&
         method === 'POST'
       ) {
+        const bindingId = url
+          .split('/api/v1/talks/talk-1/channels/')[1]
+          .split('/')[0];
+        const testResult = input?.onTestChannel?.(bindingId);
+        if (testResult) {
+          return jsonResponse(testResult.status, {
+            ok: false,
+            error: {
+              code: testResult.code ?? 'channel_test_failed',
+              message: testResult.message,
+            },
+          });
+        }
         return jsonResponse(200, {
           ok: true,
           data: { sent: true },

@@ -15,6 +15,7 @@ import {
   rollbackDeliveryAttemptCount,
   updateBindingDeliveryResult,
   updateConnectionProbeResult,
+  upsertChannelConnection,
   upsertTalk,
   upsertUser,
 } from '../db/index.js';
@@ -317,6 +318,55 @@ describe('testTalkChannelBindingRoute', () => {
       .prepare('SELECT health_status FROM channel_connections WHERE id = ?')
       .get(connectionId) as { health_status: string };
     expect(conn.health_status).toBe('healthy');
+  });
+
+  it('formats Slack not_in_channel errors with invite guidance', async () => {
+    const slackConnection = upsertChannelConnection({
+      platform: 'slack',
+      connectionMode: 'oauth_workspace',
+      accountKey: 'slack:T123',
+      displayName: 'KimFamily',
+      enabled: true,
+      healthStatus: 'healthy',
+      config: {
+        teamId: 'T123',
+        teamName: 'KimFamily',
+      },
+    });
+    const slackBinding = createTalkChannelBinding({
+      talkId: 'talk-1',
+      connectionId: slackConnection.id,
+      targetKind: 'channel',
+      targetId: 'slack:C123',
+      displayName: '#general',
+      createdBy: 'owner-1',
+      now: '2024-06-01T00:00:00.000Z',
+    });
+
+    const result = await testTalkChannelBindingRoute({
+      auth: {
+        userId: 'owner-1',
+        role: 'owner',
+        sessionId: 'sess-1',
+        authType: 'cookie' as const,
+      },
+      talkId: 'talk-1',
+      bindingId: slackBinding.id,
+      sendTestMessage: vi
+        .fn()
+        .mockRejectedValue(
+          new ChannelDeliveryError(
+            'not_in_channel',
+            'permanent',
+            'not_in_channel',
+          ),
+        ),
+    });
+
+    expect(result.statusCode).toBe(502);
+    expect((result.body as any).error.message).toContain(
+      'run /invite @YourAppName',
+    );
   });
 });
 

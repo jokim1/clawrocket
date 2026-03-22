@@ -1545,6 +1545,14 @@ function buildChannelTargetOccupancyLabel(
     : `Bound to ${target.activeBindingTalkTitle || 'another Talk'}`;
 }
 
+function readChannelTargetBooleanMetadata(
+  target: ChannelTarget,
+  key: string,
+): boolean | null {
+  const value = target.metadata?.[key];
+  return typeof value === 'boolean' ? value : null;
+}
+
 function formatChannelReasonCode(value: string | null): string {
   if (!value) return 'None';
   switch (value) {
@@ -2433,6 +2441,12 @@ export function TalkDetailPage({
     status: 'idle' | 'loading' | 'saving' | 'error' | 'success';
     message?: string;
   }>({ status: 'idle' });
+  const [channelTestStatus, setChannelTestStatus] = useState<{
+    bindingId: string | null;
+    status: 'idle' | 'sending' | 'error' | 'success';
+    message?: string;
+    location?: 'diagnosis' | 'footer';
+  }>({ bindingId: null, status: 'idle' });
 
   const titleInputRef = useRef<HTMLInputElement | null>(null);
   const messageElementRefs = useRef<Map<string, HTMLElement>>(new Map());
@@ -3900,16 +3914,26 @@ export function TalkDetailPage({
           target,
           channelConnections,
         );
+        const connection =
+          channelConnections.find(
+            (candidate) => candidate.id === target.connectionId,
+          ) || null;
         const occupiedByThisTalk = target.activeBindingTalkId === talkId;
         const occupiedByOtherTalk =
           Boolean(target.activeBindingTalkId) && !occupiedByThisTalk;
+        const requiresInvite =
+          connection?.platform === 'slack' &&
+          readChannelTargetBooleanMetadata(target, 'isMember') === false;
         return {
           key,
           label,
           metaLabel,
-          occupancyLabel: buildChannelTargetOccupancyLabel(target, talkId),
+          occupancyLabel: requiresInvite
+            ? 'Invite Slack app to channel first'
+            : buildChannelTargetOccupancyLabel(target, talkId),
           occupiedByThisTalk,
           occupiedByOtherTalk,
+          requiresInvite,
           openTalkHref:
             occupiedByOtherTalk &&
             target.activeBindingTalkAccessible &&
@@ -5239,6 +5263,19 @@ export function TalkDetailPage({
       });
       return;
     }
+    if (
+      selectedChannelPlatform === 'slack' &&
+      selectedChannelTarget &&
+      readChannelTargetBooleanMetadata(selectedChannelTarget, 'isMember') ===
+        false
+    ) {
+      setChannelStatus({
+        status: 'error',
+        message:
+          'Invite the Slack app to this channel first, then sync channels again before binding it to this Talk.',
+      });
+      return;
+    }
     setChannelStatus({ status: 'saving' });
     try {
       await createTalkChannel({
@@ -5395,33 +5432,56 @@ export function TalkDetailPage({
   );
 
   const handleTestChannel = useCallback(
-    async (binding: TalkChannelBinding) => {
+    async (
+      binding: TalkChannelBinding,
+      location: 'diagnosis' | 'footer' = 'footer',
+    ) => {
       if (!canEditChannels) return;
-      setChannelStatus({ status: 'saving' });
+      setChannelStatus({ status: 'saving', message: 'Sending test…' });
+      setChannelTestStatus({
+        bindingId: binding.id,
+        status: 'sending',
+        message: 'Sending test…',
+        location,
+      });
       try {
         await testTalkChannelBinding({
           talkId,
           bindingId: binding.id,
         });
+        await reloadTalkChannels({ quiet: true });
         setChannelStatus({
           status: 'success',
           message: `Sent a test message to ${binding.displayName}.`,
+        });
+        setChannelTestStatus({
+          bindingId: binding.id,
+          status: 'success',
+          message: `Sent a test message to ${binding.displayName}.`,
+          location,
         });
       } catch (err) {
         if (err instanceof UnauthorizedError) {
           handleUnauthorized();
           return;
         }
+        const message =
+          err instanceof Error
+            ? err.message
+            : 'Failed to send test channel message.';
         setChannelStatus({
           status: 'error',
-          message:
-            err instanceof Error
-              ? err.message
-              : 'Failed to send test channel message.',
+          message,
+        });
+        setChannelTestStatus({
+          bindingId: binding.id,
+          status: 'error',
+          message,
+          location,
         });
       }
     },
-    [canEditChannels, handleUnauthorized, talkId],
+    [canEditChannels, handleUnauthorized, reloadTalkChannels, talkId],
   );
 
   const handleRetryIngressFailure = useCallback(
@@ -9672,6 +9732,7 @@ export function TalkDetailPage({
                               const selected =
                                 channelCreateDraft.targetKey === option.key;
                               const disabled =
+                                option.requiresInvite ||
                                 option.occupiedByThisTalk ||
                                 option.occupiedByOtherTalk;
                               return (
@@ -10034,8 +10095,18 @@ export function TalkDetailPage({
                           <div style={{ marginBottom: 8 }}>
                             <button
                               className="btn btn-sm"
-                              disabled={channelStatus.status === 'saving'}
+                              disabled={
+                                channelStatus.status === 'saving' ||
+                                (channelTestStatus.bindingId === binding.id &&
+                                  channelTestStatus.status === 'sending')
+                              }
                               onClick={async () => {
+                                if (
+                                  binding.diagnosis.action?.type === 'test'
+                                ) {
+                                  await handleTestChannel(binding, 'diagnosis');
+                                  return;
+                                }
                                 try {
                                   if (
                                     binding.diagnosis.action?.type ===
@@ -10070,21 +10141,6 @@ export function TalkDetailPage({
                                       status: 'success',
                                       message: 'Retried failed deliveries.',
                                     });
-                                  } else if (
-                                    binding.diagnosis.action?.type === 'test'
-                                  ) {
-                                    setChannelStatus({
-                                      status: 'saving',
-                                      message: 'Sending test…',
-                                    });
-                                    await testTalkChannelBinding({
-                                      talkId: binding.talkId,
-                                      bindingId: binding.id,
-                                    });
-                                    setChannelStatus({
-                                      status: 'success',
-                                      message: 'Test message sent.',
-                                    });
                                   }
                                   reloadTalkChannels();
                                 } catch (err) {
@@ -10100,6 +10156,27 @@ export function TalkDetailPage({
                             >
                               {binding.diagnosis.action.label}
                             </button>
+                            {channelTestStatus.bindingId === binding.id &&
+                            channelTestStatus.location === 'diagnosis' &&
+                            channelTestStatus.status !== 'idle' ? (
+                              <div
+                                className={`inline-banner ${
+                                  channelTestStatus.status === 'error'
+                                    ? 'inline-banner-error'
+                                    : channelTestStatus.status === 'success'
+                                      ? 'inline-banner-success'
+                                      : ''
+                                }`}
+                                role={
+                                  channelTestStatus.status === 'error'
+                                    ? 'alert'
+                                    : 'status'
+                                }
+                                style={{ marginTop: 8 }}
+                              >
+                                {channelTestStatus.message}
+                              </div>
+                            ) : null}
                           </div>
                         ) : null}
                         <div className="connector-meta-grid">
@@ -10361,10 +10438,20 @@ export function TalkDetailPage({
                           <button
                             type="button"
                             className="secondary-btn"
-                            onClick={() => void handleTestChannel(binding)}
-                            disabled={channelStatus.status === 'saving'}
+                            onClick={() =>
+                              void handleTestChannel(binding, 'footer')
+                            }
+                            disabled={
+                              channelStatus.status === 'saving' ||
+                              (channelTestStatus.bindingId === binding.id &&
+                                channelTestStatus.status === 'sending')
+                            }
                           >
-                            Test Send
+                            {channelTestStatus.bindingId === binding.id &&
+                            channelTestStatus.location === 'footer' &&
+                            channelTestStatus.status === 'sending'
+                              ? 'Sending…'
+                              : 'Test Send'}
                           </button>
                           <button
                             type="button"
@@ -10380,6 +10467,27 @@ export function TalkDetailPage({
                             Delete
                           </button>
                         </div>
+                        {channelTestStatus.bindingId === binding.id &&
+                        channelTestStatus.location === 'footer' &&
+                        channelTestStatus.status !== 'idle' ? (
+                          <div
+                            className={`inline-banner ${
+                              channelTestStatus.status === 'error'
+                                ? 'inline-banner-error'
+                                : channelTestStatus.status === 'success'
+                                  ? 'inline-banner-success'
+                                  : ''
+                            }`}
+                            role={
+                              channelTestStatus.status === 'error'
+                                ? 'alert'
+                                : 'status'
+                            }
+                            style={{ marginTop: '0.75rem' }}
+                          >
+                            {channelTestStatus.message}
+                          </div>
+                        ) : null}
 
                         {failures.ingress.length > 0 ? (
                           <div style={{ marginTop: '1rem' }}>
