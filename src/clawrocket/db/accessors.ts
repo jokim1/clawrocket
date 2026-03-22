@@ -2,6 +2,7 @@ import { randomUUID } from 'crypto';
 
 import { getDb } from '../../db.js';
 import { refreshMainThreadSummary } from '../agents/main-context-loader.js';
+import type { BrowserBlockMetadata } from '../browser/metadata.js';
 import { notifyOutboxEvent } from '../channels/outbox-notifier.js';
 import {
   inferThreadTitleFromContent,
@@ -4576,6 +4577,335 @@ function isMainPromotionChildRun(run: TalkRunRecord): boolean {
   return parseMainRunMetadata(run.metadata_json).kind === 'main_promotion';
 }
 
+function parseMainBrowserBlockMetadata(
+  metadataJson: string | null | undefined,
+): BrowserBlockMetadata | null {
+  const metadata = parseRunMetadataJson(metadataJson);
+  const browserBlock = metadata.browserBlock;
+  if (
+    !browserBlock ||
+    typeof browserBlock !== 'object' ||
+    Array.isArray(browserBlock)
+  ) {
+    return null;
+  }
+  return browserBlock as BrowserBlockMetadata;
+}
+
+function parseMainResumeRequestMetadata(
+  metadataJson: string | null | undefined,
+): {
+  resumeRequestedAt: string | null;
+  resumeRequestedBy: string | null;
+} {
+  const metadata = parseRunMetadataJson(metadataJson);
+  return {
+    resumeRequestedAt:
+      typeof metadata.resumeRequestedAt === 'string'
+        ? metadata.resumeRequestedAt
+        : null,
+    resumeRequestedBy:
+      typeof metadata.resumeRequestedBy === 'string'
+        ? metadata.resumeRequestedBy
+        : null,
+  };
+}
+
+function parseMainRunUserVisibleSummary(
+  metadataJson: string | null | undefined,
+): string | null {
+  const metadata = parseRunMetadataJson(metadataJson);
+  return typeof metadata.userVisibleSummary === 'string'
+    ? metadata.userVisibleSummary
+    : null;
+}
+
+export function countRunnableMainRuns(input: {
+  threadId: string;
+  excludeRunId?: string | null;
+}): number {
+  const row = input.excludeRunId
+    ? (getDb()
+        .prepare(
+          `
+          SELECT COUNT(*) AS count
+          FROM talk_runs
+          WHERE thread_id = ? AND talk_id IS NULL
+            AND id != ?
+            AND status IN ('queued', 'running')
+        `,
+        )
+        .get(input.threadId, input.excludeRunId) as { count: number }) || {
+        count: 0,
+      }
+    : (getDb()
+        .prepare(
+          `
+          SELECT COUNT(*) AS count
+          FROM talk_runs
+          WHERE thread_id = ? AND talk_id IS NULL
+            AND status IN ('queued', 'running')
+        `,
+        )
+        .get(input.threadId) as { count: number }) || { count: 0 };
+  return row.count || 0;
+}
+
+export function getUnambiguousPausedMainBrowserOwner(input: {
+  threadId: string;
+  excludeRunId?: string | null;
+}): {
+  runId: string;
+  sessionId: string;
+  siteKey: string;
+  accountLabel: string | null;
+  url: string;
+  title: string;
+  summary: string | null;
+} | null {
+  const pausedRuns = getDb()
+    .prepare(
+      `
+      SELECT *
+      FROM talk_runs
+      WHERE talk_id IS NULL
+        AND thread_id = ?
+        AND status = 'awaiting_confirmation'
+        ${input.excludeRunId ? 'AND id != ?' : ''}
+      ORDER BY created_at ASC, id ASC
+    `,
+    )
+    .all(
+      ...(input.excludeRunId
+        ? [input.threadId, input.excludeRunId]
+        : [input.threadId]),
+    ) as TalkRunRecord[];
+
+  const owners: Array<{
+    run: TalkRunRecord;
+    browserBlock: BrowserBlockMetadata;
+  }> = [];
+  for (const run of pausedRuns) {
+    const browserBlock = parseMainBrowserBlockMetadata(run.metadata_json);
+    if (!browserBlock?.sessionId || browserBlock.kind === 'session_conflict') {
+      continue;
+    }
+    owners.push({ run, browserBlock });
+  }
+  if (owners.length !== 1) {
+    return null;
+  }
+  const owner = owners[0];
+  return {
+    runId: owner.run.id,
+    sessionId: owner.browserBlock.sessionId!,
+    siteKey: owner.browserBlock.siteKey,
+    accountLabel: owner.browserBlock.accountLabel ?? null,
+    url: owner.browserBlock.url,
+    title: owner.browserBlock.title,
+    summary:
+      parseMainRunUserVisibleSummary(owner.run.metadata_json) ||
+      owner.browserBlock.message ||
+      null,
+  };
+}
+
+export function getPausedMainBrowserOwnerForProfile(input: {
+  threadId: string;
+  siteKey: string;
+  accountLabel?: string | null;
+  excludeRunId?: string | null;
+}): {
+  runId: string;
+  sessionId: string;
+  siteKey: string;
+  accountLabel: string | null;
+  url: string;
+  title: string;
+  summary: string | null;
+} | null {
+  const pausedRuns = getDb()
+    .prepare(
+      `
+      SELECT *
+      FROM talk_runs
+      WHERE talk_id IS NULL
+        AND thread_id = ?
+        AND status = 'awaiting_confirmation'
+        ${input.excludeRunId ? 'AND id != ?' : ''}
+      ORDER BY created_at ASC, id ASC
+    `,
+    )
+    .all(
+      ...(input.excludeRunId
+        ? [input.threadId, input.excludeRunId]
+        : [input.threadId]),
+    ) as TalkRunRecord[];
+
+  const normalizedAccountLabel = input.accountLabel ?? null;
+  const owners: Array<{
+    run: TalkRunRecord;
+    browserBlock: BrowserBlockMetadata;
+  }> = [];
+  for (const run of pausedRuns) {
+    const browserBlock = parseMainBrowserBlockMetadata(run.metadata_json);
+    if (!browserBlock?.sessionId || browserBlock.kind === 'session_conflict') {
+      continue;
+    }
+    if (
+      browserBlock.siteKey !== input.siteKey ||
+      (browserBlock.accountLabel ?? null) !== normalizedAccountLabel
+    ) {
+      continue;
+    }
+    owners.push({ run, browserBlock });
+  }
+
+  if (owners.length !== 1) {
+    return null;
+  }
+  const owner = owners[0];
+  return {
+    runId: owner.run.id,
+    sessionId: owner.browserBlock.sessionId!,
+    siteKey: owner.browserBlock.siteKey,
+    accountLabel: owner.browserBlock.accountLabel ?? null,
+    url: owner.browserBlock.url,
+    title: owner.browserBlock.title,
+    summary:
+      parseMainRunUserVisibleSummary(owner.run.metadata_json) ||
+      owner.browserBlock.message ||
+      null,
+  };
+}
+
+function queuePausedMainRun(
+  run: TalkRunRecord,
+  now: string,
+  reason: 'deferred_resume' | 'session_conflict_cleared',
+): boolean {
+  const current = parseRunMetadataJson(run.metadata_json);
+  const next = { ...current };
+  delete next.browserBlock;
+  delete next.resumeRequestedAt;
+  delete next.resumeRequestedBy;
+  const metadataJson = JSON.stringify({
+    ...next,
+    lastHeartbeatAt: now,
+  });
+  const updated = getDb()
+    .prepare(
+      `
+      UPDATE talk_runs
+      SET status = 'queued',
+          cancel_reason = NULL,
+          ended_at = NULL,
+          metadata_json = ?
+      WHERE id = ? AND status = 'awaiting_confirmation'
+    `,
+    )
+    .run(metadataJson, run.id);
+  if (updated.changes !== 1) {
+    return false;
+  }
+
+  appendOutboxEvent({
+    topic: `user:${run.requested_by}`,
+    eventType: 'browser_unblocked',
+    payload: JSON.stringify({
+      runId: run.id,
+      threadId: run.thread_id,
+      reason,
+    }),
+  });
+  appendOutboxEvent({
+    topic: `user:${run.requested_by}`,
+    eventType: 'main_run_queued',
+    payload: JSON.stringify({
+      runId: run.id,
+      threadId: run.thread_id,
+      status: 'queued',
+    }),
+  });
+  return true;
+}
+
+export function queueNextDeferredMainRunIfIdle(
+  threadId: string,
+  now = new Date().toISOString(),
+): string | null {
+  // This helper is often called from inside an outer better-sqlite3
+  // transaction. queuePausedMainRun() appends an outbox event, and the SSE
+  // notifier is intentionally deferred with queueMicrotask so subscribers are
+  // notified only after the surrounding synchronous transaction returns. If
+  // this code ever moves to async transaction semantics, revisit that ordering.
+  if (countRunnableMainRuns({ threadId }) > 0) {
+    return null;
+  }
+
+  const pausedRuns = getDb()
+    .prepare(
+      `
+      SELECT *
+      FROM talk_runs
+      WHERE talk_id IS NULL
+        AND thread_id = ?
+        AND status = 'awaiting_confirmation'
+      ORDER BY created_at ASC, id ASC
+    `,
+    )
+    .all(threadId) as TalkRunRecord[];
+
+  const deferredResumeCandidate = pausedRuns
+    .map((run) => ({
+      run,
+      resumeRequestedAt: parseMainResumeRequestMetadata(run.metadata_json)
+        .resumeRequestedAt,
+    }))
+    .filter(
+      (entry): entry is { run: TalkRunRecord; resumeRequestedAt: string } =>
+        typeof entry.resumeRequestedAt === 'string' &&
+        entry.resumeRequestedAt.length > 0,
+    )
+    .sort((left, right) =>
+      left.resumeRequestedAt.localeCompare(right.resumeRequestedAt),
+    )[0];
+  if (
+    deferredResumeCandidate &&
+    queuePausedMainRun(deferredResumeCandidate.run, now, 'deferred_resume')
+  ) {
+    return deferredResumeCandidate.run.id;
+  }
+
+  for (const run of pausedRuns) {
+    const browserBlock = parseMainBrowserBlockMetadata(run.metadata_json);
+    if (
+      !browserBlock ||
+      browserBlock.kind !== 'session_conflict' ||
+      !browserBlock.conflictingRunId
+    ) {
+      continue;
+    }
+    const ownerRun = getTalkRunById(browserBlock.conflictingRunId);
+    const ownerBlock = ownerRun
+      ? parseMainBrowserBlockMetadata(ownerRun.metadata_json)
+      : null;
+    const ownerStillBlocking =
+      ownerRun?.status === 'awaiting_confirmation' &&
+      ownerBlock?.kind !== 'session_conflict' &&
+      ownerBlock?.sessionId &&
+      ownerBlock.sessionId === browserBlock.conflictingSessionId;
+    if (ownerStillBlocking) {
+      continue;
+    }
+    if (queuePausedMainRun(run, now, 'session_conflict_cleared')) {
+      return run.id;
+    }
+  }
+
+  return null;
+}
+
 function updateParentPromotionState(
   parentRunId: string,
   input: {
@@ -4832,18 +5162,8 @@ export function enqueueMainTurnAtomic(input: {
         now,
       });
 
-      // Active-run guard: one active run per thread
-      const active = getDb()
-        .prepare(
-          `
-          SELECT COUNT(*) AS count
-          FROM talk_runs
-          WHERE thread_id = ? AND talk_id IS NULL
-            AND status IN ('queued', 'running', 'awaiting_confirmation')
-        `,
-        )
-        .get(txInput.threadId) as { count: number };
-      if ((active?.count || 0) > 0) {
+      // Runnable-run guard: paused runs may coexist, but queued/running remain exclusive.
+      if (countRunnableMainRuns({ threadId: txInput.threadId }) > 0) {
         throw new MainThreadBusyError(txInput.threadId);
       }
 
@@ -5194,6 +5514,8 @@ export function completeMainRunAtomic(input: {
         }),
       });
 
+      queueNextDeferredMainRunIfIdle(txInput.threadId, now);
+
       return { applied: true };
     },
   );
@@ -5277,6 +5599,8 @@ export function failMainRunAtomic(input: {
         }),
       });
 
+      queueNextDeferredMainRunIfIdle(txInput.threadId, now);
+
       return { applied: true };
     },
   );
@@ -5347,6 +5671,8 @@ export function failInterruptedMainRunsOnStartup(now?: string): {
             endedAt: currentNow,
           }),
         });
+
+        queueNextDeferredMainRunIfIdle(run.thread_id, currentNow);
       }
 
       return { failedRunIds };

@@ -7,6 +7,7 @@ import {
 import {
   canUserAccessMainThread,
   canUserAccessTalk,
+  cancelBrowserBlockedRun,
   getBrowserBlockForRun,
   getPendingRunConfirmationById,
   getTalkRunById,
@@ -348,6 +349,7 @@ export async function resumeBrowserBlockedRunRoute(input: {
         runId: input.runId,
         resumed: true,
         browserResume,
+        queueState: resumed.queueState,
       },
     },
     wakeMain: resumed.run?.talk_id == null,
@@ -456,10 +458,112 @@ export async function approveBrowserConfirmationRoute(input: {
         runId: confirmation.run_id,
         approved: true,
         browserResume,
+        queueState: resumed.queueState,
       },
     },
     wakeMain: resumed.run?.talk_id == null,
     wakeTalk: resumed.run?.talk_id != null,
+  };
+}
+
+export async function cancelConflictingBrowserRunRoute(input: {
+  auth: AuthContext;
+  runId: string;
+}): Promise<{
+  statusCode: number;
+  body: ApiEnvelope<Record<string, unknown>>;
+  wakeMain: boolean;
+  wakeTalk: boolean;
+}> {
+  const run = getTalkRunById(input.runId);
+  if (
+    !run ||
+    run.status !== 'awaiting_confirmation' ||
+    !canAccessRun(input.auth, input.runId)
+  ) {
+    return {
+      statusCode: 404,
+      body: {
+        ok: false,
+        error: {
+          code: 'blocked_run_not_found',
+          message: 'Blocked run not found.',
+        },
+      },
+      wakeMain: false,
+      wakeTalk: false,
+    };
+  }
+
+  const browserBlock = getBrowserBlockForRun(input.runId);
+  if (
+    !browserBlock ||
+    browserBlock.kind !== 'session_conflict' ||
+    !browserBlock.conflictingRunId
+  ) {
+    return {
+      statusCode: 400,
+      body: {
+        ok: false,
+        error: {
+          code: 'session_conflict_missing',
+          message: 'Run is not blocked by a conflicting browser session.',
+        },
+      },
+      wakeMain: false,
+      wakeTalk: false,
+    };
+  }
+
+  if (!canAccessRun(input.auth, browserBlock.conflictingRunId)) {
+    return {
+      statusCode: 404,
+      body: {
+        ok: false,
+        error: {
+          code: 'conflicting_run_not_found',
+          message: 'The conflicting blocked run could not be found.',
+        },
+      },
+      wakeMain: false,
+      wakeTalk: false,
+    };
+  }
+
+  const cancelled = cancelBrowserBlockedRun({
+    runId: browserBlock.conflictingRunId,
+    cancelledBy: input.auth.userId,
+    cancelReason: 'browser_session_conflict_cancelled',
+  });
+  if (!cancelled.applied) {
+    return {
+      statusCode: 409,
+      body: {
+        ok: false,
+        error: {
+          code: 'conflicting_run_cancel_failed',
+          message: 'The conflicting browser task could not be cancelled.',
+        },
+      },
+      wakeMain: false,
+      wakeTalk: false,
+    };
+  }
+
+  const updatedRun = getTalkRunById(input.runId);
+  return {
+    statusCode: 200,
+    body: {
+      ok: true,
+      data: {
+        runId: input.runId,
+        conflictingRunId: browserBlock.conflictingRunId,
+        queuedCurrentRun: updatedRun?.status === 'queued',
+        currentRunStatus: updatedRun?.status ?? null,
+      },
+    },
+    wakeMain: cancelled.run?.talk_id == null,
+    wakeTalk: cancelled.run?.talk_id != null,
   };
 }
 

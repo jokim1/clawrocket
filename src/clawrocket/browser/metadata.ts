@@ -22,6 +22,9 @@ export interface BrowserBlockMetadata {
   sessionId: string | null;
   siteKey: string;
   accountLabel: string | null;
+  conflictingRunId?: string | null;
+  conflictingSessionId?: string | null;
+  conflictingRunSummary?: string | null;
   url: string;
   title: string;
   message: string;

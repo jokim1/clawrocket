@@ -159,7 +159,11 @@ const STREAMED_TEXT_PREVIEW_MAX_CHARS = 4_000;
 
 function getBrowserBlockStatusLabel(
   browserBlock: MainRun['browserBlock'],
+  resumeRequestedAt?: string | null,
 ): string {
+  if (resumeRequestedAt) {
+    return 'Resume requested';
+  }
   if (!browserBlock) {
     return 'Waiting for approval';
   }
@@ -170,6 +174,8 @@ function getBrowserBlockStatusLabel(
       return 'Approval required';
     case 'human_step_required':
       return 'Manual step required';
+    case 'session_conflict':
+      return 'Waiting for browser session';
   }
 }
 
@@ -1735,7 +1741,11 @@ export function MainChannelPage({
       if (blockedRun) {
         return (
           <span className="main-thread-item-meta main-thread-item-meta-responding">
-            * {getBrowserBlockStatusLabel(blockedRun.browserBlock)}
+            *{' '}
+            {getBrowserBlockStatusLabel(
+              blockedRun.browserBlock,
+              blockedRun.resumeRequestedAt,
+            )}
           </span>
         );
       }
@@ -1972,11 +1982,17 @@ export function MainChannelPage({
                     : isStalled
                       ? 'Stalled'
                     : run.status === 'awaiting_confirmation'
-                      ? getBrowserBlockStatusLabel(run.browserBlock)
+                      ? getBrowserBlockStatusLabel(
+                          run.browserBlock,
+                          run.resumeRequestedAt,
+                        )
                     : run.status === 'queued'
                         ? 'Queued'
                         : 'Working';
                 const runBodyCopy =
+                  (run.resumeRequestedAt
+                    ? 'Will resume when current task finishes.'
+                    : null) ||
                   run.streamedTextPreview ||
                   run.lastProgressMessage ||
                   run.userVisibleSummary ||
@@ -2001,6 +2017,7 @@ export function MainChannelPage({
                       <BrowserBlockedRunCard
                         runId={run.id}
                         browserBlock={run.browserBlock}
+                        resumeRequestedAt={run.resumeRequestedAt}
                         executionDecision={run.executionDecision}
                         onUnauthorized={onUnauthorized}
                         onStateChanged={refreshActiveThread}

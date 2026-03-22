@@ -37,7 +37,8 @@ export type BrowserResultStatus =
 export type BrowserBlockedKind =
   | 'auth_required'
   | 'confirmation_required'
-  | 'human_step_required';
+  | 'human_step_required'
+  | 'session_conflict';
 
 export type BrowserSessionState =
   | 'active'

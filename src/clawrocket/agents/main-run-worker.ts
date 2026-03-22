@@ -18,8 +18,10 @@ import {
   createMainPromotionRunAtomic,
   failInterruptedMainRunsOnStartup,
   failMainRunAtomic,
+  getUnambiguousPausedMainBrowserOwner,
   getTalkMessageById,
   getTalkRunById,
+  pauseRunForBrowserBlock,
   updateTalkRunMetadata,
   type TalkRunRecord,
 } from '../db/index.js';
@@ -79,6 +81,23 @@ function appendStreamedPreview(currentPreview: string, delta: string): string {
   return nextPreview.slice(
     nextPreview.length - STREAMED_TEXT_PREVIEW_MAX_CHARS,
   );
+}
+
+function parseRequestedToolFamilies(run: TalkRunRecord): string[] {
+  if (!run.metadata_json) return [];
+  try {
+    const parsed = JSON.parse(run.metadata_json) as {
+      requestedToolFamilies?: unknown;
+    };
+    if (!Array.isArray(parsed.requestedToolFamilies)) {
+      return [];
+    }
+    return parsed.requestedToolFamilies.filter(
+      (entry): entry is string => typeof entry === 'string',
+    );
+  } catch {
+    return [];
+  }
 }
 
 interface ActiveRun {
@@ -227,6 +246,49 @@ export class MainRunWorker implements MainRunWorkerControl {
         `Trigger message not found: ${run.trigger_message_id}`,
       );
       return;
+    }
+
+    const requestedToolFamilies = parseRequestedToolFamilies(run);
+    if (run.thread_id && requestedToolFamilies.includes('browser')) {
+      const owner = getUnambiguousPausedMainBrowserOwner({
+        threadId: run.thread_id,
+        excludeRunId: run.id,
+      });
+      if (owner) {
+        const now = new Date().toISOString();
+        pauseRunForBrowserBlock({
+          runId: run.id,
+          browserBlock: {
+            kind: 'session_conflict',
+            sessionId: owner.sessionId,
+            siteKey: owner.siteKey,
+            accountLabel: owner.accountLabel,
+            conflictingRunId: owner.runId,
+            conflictingSessionId: owner.sessionId,
+            conflictingRunSummary: owner.summary,
+            url: owner.url,
+            title: owner.title,
+            message: `Another paused browser task already owns the ${owner.siteKey} session. Resolve that task before this run can continue.`,
+            riskReason: 'session_conflict',
+            setupCommand: null,
+            artifacts: [],
+            confirmationId: null,
+            pendingToolCall: null,
+            createdAt: now,
+            updatedAt: now,
+          },
+        });
+        logger.info(
+          {
+            runId: run.id,
+            threadId: run.thread_id,
+            conflictingRunId: owner.runId,
+            siteKey: owner.siteKey,
+          },
+          'Main run paused due to an existing browser-session conflict',
+        );
+        return;
+      }
     }
 
     const sanitizer = createTalkResponseStreamSanitizer();
