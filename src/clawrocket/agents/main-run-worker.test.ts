@@ -2,7 +2,7 @@
  * Integration tests for MainRunWorker: claim → execute → sanitize → complete/fail.
  */
 import { randomUUID } from 'crypto';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { getDb } from '../../db.js';
 import {
@@ -355,6 +355,70 @@ describe('MainRunWorker integration', () => {
     expect(metadata.streamedTextPreview).toBe('Partial preview');
     expect(metadata.terminalSummary?.statusLabel).toBe('Failed');
     expect(metadata.terminalSummary?.body).toBe('boom failure');
+  });
+
+  it('emits heartbeats for slow-running runs before model output arrives', async () => {
+    vi.useFakeTimers();
+    try {
+      const { runId, threadId } = enqueueTurn();
+      let resolveRun!: (value: MainExecutorOutput) => void;
+      const completion = new Promise<MainExecutorOutput>((resolve) => {
+        resolveRun = resolve;
+      });
+
+      const worker = new MainRunWorker({
+        pollMs: 10,
+        maxConcurrency: 1,
+        heartbeatMs: 1_000,
+        executor: async (
+          input: MainExecutorInput,
+          _signal: AbortSignal,
+          emit?: (event: MainExecutionEvent) => void,
+        ): Promise<MainExecutorOutput> => {
+          emit?.({
+            type: 'main_response_started',
+            runId: input.runId,
+            threadId: input.threadId,
+            agentId: AGENT_ID,
+            agentName: 'Test Agent',
+          });
+          return completion;
+        },
+      });
+      await worker.start();
+
+      await vi.advanceTimersByTimeAsync(2_100);
+
+      const heartbeatEvents = getOutboxEventsForTopics(
+        [`user:${USER_A}`],
+        0,
+      ).filter((event) => event.event_type === 'main_heartbeat');
+      expect(heartbeatEvents.length).toBeGreaterThanOrEqual(2);
+
+      const metadata = JSON.parse(
+        getTalkRunById(runId)?.metadata_json || '{}',
+      ) as {
+        lastHeartbeatAt?: string | null;
+      };
+      expect(typeof metadata.lastHeartbeatAt).toBe('string');
+
+      resolveRun({
+        content: 'done',
+        agentId: AGENT_ID,
+        agentName: 'Test Agent',
+        providerId: PROVIDER_ID,
+        modelId: MODEL_ID,
+        threadId,
+        latencyMs: 42,
+        usage: { inputTokens: 10, outputTokens: 20, estimatedCostUsd: 0.001 },
+      });
+
+      await vi.advanceTimersByTimeAsync(50);
+      await worker.stop();
+      expect(getTalkRunById(runId)?.status).toBe('completed');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('fails the run and emits terminal event on executor error', async () => {

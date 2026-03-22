@@ -47,6 +47,7 @@ export type MainExecutorFn = typeof executeMainChannel;
 export interface MainRunWorkerOptions {
   pollMs?: number;
   maxConcurrency?: number;
+  heartbeatMs?: number;
   /** Override executor for testing. Defaults to executeMainChannel. */
   executor?: MainExecutorFn;
 }
@@ -71,6 +72,7 @@ function isAbortError(error: unknown): boolean {
 
 const STREAMED_TEXT_PREVIEW_MAX_CHARS = 4_000;
 const STREAMED_TEXT_PERSIST_INTERVAL_MS = 1_000;
+const MAIN_RUN_HEARTBEAT_INTERVAL_MS = 10_000;
 
 function appendStreamedPreview(currentPreview: string, delta: string): string {
   if (!delta) return currentPreview;
@@ -108,6 +110,7 @@ interface ActiveRun {
 export class MainRunWorker implements MainRunWorkerControl {
   private readonly pollMs: number;
   private readonly maxConcurrency: number;
+  private readonly heartbeatMs: number;
   private readonly executor: MainExecutorFn;
 
   private running = false;
@@ -124,6 +127,10 @@ export class MainRunWorker implements MainRunWorkerControl {
     this.maxConcurrency = Math.max(
       1,
       Math.floor(options.maxConcurrency ?? TALK_RUN_MAX_CONCURRENCY),
+    );
+    this.heartbeatMs = Math.max(
+      1_000,
+      Math.floor(options.heartbeatMs ?? MAIN_RUN_HEARTBEAT_INTERVAL_MS),
     );
     this.executor = options.executor ?? executeMainChannel;
   }
@@ -319,6 +326,8 @@ export class MainRunWorker implements MainRunWorkerControl {
       }));
     };
 
+    const heartbeatTimer = this.startRunHeartbeat(run);
+
     try {
       const output = await this.executor(
         {
@@ -480,7 +489,41 @@ export class MainRunWorker implements MainRunWorkerControl {
         persistPreviewIfNeeded(true);
       }
       this.failRun(run, 'execution_failed', errorMessage(error));
+    } finally {
+      this.stopRunHeartbeat(heartbeatTimer);
     }
+  }
+
+  private startRunHeartbeat(
+    run: TalkRunRecord,
+  ): ReturnType<typeof setInterval> | null {
+    if (this.heartbeatMs <= 0) return null;
+    return setInterval(() => {
+      const currentRun = getTalkRunById(run.id);
+      if (!currentRun || currentRun.status !== 'running') {
+        return;
+      }
+
+      const heartbeatAt = new Date().toISOString();
+      updateTalkRunMetadata(run.id, (current) => ({
+        ...current,
+        lastHeartbeatAt: heartbeatAt,
+      }));
+      appendOutboxEvent({
+        topic: `user:${run.requested_by}`,
+        eventType: 'main_heartbeat',
+        payload: JSON.stringify({
+          runId: run.id,
+          threadId: run.thread_id,
+          at: heartbeatAt,
+        }),
+      });
+    }, this.heartbeatMs);
+  }
+
+  private stopRunHeartbeat(timer: ReturnType<typeof setInterval> | null): void {
+    if (!timer) return;
+    clearInterval(timer);
   }
 
   private failRun(

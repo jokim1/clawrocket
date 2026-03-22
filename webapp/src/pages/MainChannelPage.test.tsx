@@ -1492,6 +1492,94 @@ describe('MainChannelPage', () => {
     ).toBeTruthy();
   });
 
+  it('clears a stalled run when a heartbeat event arrives', async () => {
+    getMainRegisteredAgentMock.mockResolvedValue(
+      buildMainAgentSnapshot({ browserEnabled: false }),
+    );
+    listMainThreadsMock.mockResolvedValue([
+      {
+        threadId: 'thread-main-stalled',
+        title: 'LinkedIn Messaging',
+        isPinned: false,
+        lastMessageAt: isoOffset(-10_000),
+        messageCount: 1,
+        hasActiveRun: true,
+      },
+    ]);
+    getMainThreadMock.mockResolvedValue([
+      {
+        id: 'msg-main-1',
+        threadId: 'thread-main-stalled',
+        role: 'user',
+        content: 'Check LinkedIn',
+        agentId: null,
+        createdBy: 'user-1',
+        createdAt: isoOffset(-40_000),
+      },
+    ]);
+    listMainRunsMock.mockResolvedValue([
+      {
+        id: 'run-main-stalled',
+        threadId: 'thread-main-stalled',
+        status: 'running',
+        createdAt: isoOffset(-40_000),
+        startedAt: isoOffset(-39_000),
+        endedAt: null,
+        triggerMessageId: 'msg-main-1',
+        targetAgentId: null,
+        cancelReason: null,
+        kind: null,
+        parentRunId: null,
+        promotionState: null,
+        promotionChildRunId: null,
+        requestedToolFamilies: [],
+        userVisibleSummary: 'Checking LinkedIn…',
+        browserBlock: null,
+        browserResume: null,
+        carriedBrowserSessions: [],
+        executionDecision: null,
+        lastHeartbeatAt: isoOffset(-35_000),
+        streamedTextPreview: null,
+        lastProgressMessage: null,
+        terminalSummary: null,
+      },
+    ]);
+
+    render(
+      <MemoryRouter initialEntries={['/app/main/thread-main-stalled']}>
+        <Routes>
+          <Route
+            path="/app/main"
+            element={<MainChannelPage onUnauthorized={vi.fn()} />}
+          />
+          <Route
+            path="/app/main/:threadId"
+            element={<MainChannelPage onUnauthorized={vi.fn()} />}
+          />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByText('Stalled')).toBeTruthy();
+    const streamCallbacks = (
+      openMainStreamMock.mock.calls as unknown as Array<[MainStreamCallbacks]>
+    )[0]?.[0];
+    expect(streamCallbacks).toBeTruthy();
+
+    act(() => {
+      streamCallbacks?.onHeartbeat?.({
+        runId: 'run-main-stalled',
+        threadId: 'thread-main-stalled',
+        at: new Date().toISOString(),
+      });
+    });
+
+    await waitFor(() => {
+      expect(screen.queryByText('Stalled')).toBeNull();
+    });
+    expect(screen.getByText('Working')).toBeTruthy();
+  });
+
   it('renders persisted failed Main runs when the live response bubble is no longer present', async () => {
     listMainThreadsMock.mockResolvedValue([
       {
