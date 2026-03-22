@@ -537,6 +537,7 @@ describe('main-executor (pure)', () => {
 
   it('dispatches browser tool calls from Main through executeBrowserTool', async () => {
     const now = new Date().toISOString();
+    const events: MainExecutionEvent[] = [];
     createMessage({
       id: 'msg-browser-dispatch',
       talkId: null,
@@ -586,8 +587,11 @@ describe('main-executor (pure)', () => {
       containerPlan: null,
       hostCodexPlan: null,
     });
-    vi.mocked(executeBrowserTool).mockResolvedValue({
-      result: '{"status":"ok"}',
+    vi.mocked(executeBrowserTool).mockImplementation(async ({ context }) => {
+      context.onProgress?.('Opening linkedin…');
+      return {
+        result: '{"status":"ok"}',
+      };
     });
     vi.mocked(executeWithAgent).mockImplementation(
       async (_agentId, _context, _content, options) => {
@@ -616,6 +620,7 @@ describe('main-executor (pure)', () => {
         triggerContent: 'Use browser tools',
       },
       new AbortController().signal,
+      (event) => events.push(event),
     );
 
     expect(executeBrowserTool).toHaveBeenCalledWith({
@@ -628,7 +633,14 @@ describe('main-executor (pure)', () => {
         signal: expect.any(AbortSignal),
         userId: 'owner-1',
         runId: 'run-main-browser-dispatch',
+        onProgress: expect.any(Function),
       },
+    });
+    expect(events).toContainEqual({
+      type: 'main_progress_update',
+      runId: 'run-main-browser-dispatch',
+      threadId: 'thread-browser-dispatch',
+      message: 'Opening linkedin…',
     });
   });
 

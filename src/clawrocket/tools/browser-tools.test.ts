@@ -201,6 +201,55 @@ describe('browser-tools', () => {
     );
   });
 
+  it('emits periodic progress callbacks while a browser tool is still running', async () => {
+    vi.useFakeTimers();
+    createRun('run-browser-progress');
+    const onProgress = vi.fn();
+    browserServiceMocks.service.open.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          setTimeout(() => {
+            resolve({
+              status: 'ok',
+              siteKey: 'linkedin',
+              accountLabel: null,
+              sessionId: 'bs_linkedin_progress',
+              url: 'https://www.linkedin.com/messaging/',
+              title: 'LinkedIn Messaging',
+              reusedSession: true,
+              createdProfile: false,
+              message: 'Opened existing session.',
+            });
+          }, 21_000);
+        }),
+    );
+
+    const pending = executeBrowserTool({
+      toolName: 'browser_open',
+      args: {
+        siteKey: 'linkedin',
+        url: 'https://www.linkedin.com/messaging/',
+      },
+      context: {
+        signal: new AbortController().signal,
+        runId: 'run-browser-progress',
+        userId: 'owner-1',
+        talkId: TALK_ID,
+        onProgress,
+      },
+    });
+
+    await vi.advanceTimersByTimeAsync(21_000);
+    await expect(pending).resolves.toEqual({
+      result: expect.stringContaining('"status":"ok"'),
+    });
+    expect(onProgress).toHaveBeenCalledTimes(3);
+    expect(onProgress).toHaveBeenNthCalledWith(1, 'Opening linkedin…');
+    expect(onProgress).toHaveBeenNthCalledWith(2, 'Opening linkedin…');
+    expect(onProgress).toHaveBeenNthCalledWith(3, 'Opening linkedin…');
+    vi.useRealTimers();
+  });
+
   it('pauses the Talk run and records confirmation-required browser_act state', async () => {
     createRun('run-browser-act');
     browserServiceMocks.service.act.mockResolvedValue({
