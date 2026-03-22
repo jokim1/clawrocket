@@ -528,6 +528,11 @@ export type CarriedBrowserSession = {
   lastUpdatedAt: string;
 };
 
+export type MainRunTerminalSummary = {
+  statusLabel: 'Failed' | 'Cancelled';
+  body: string;
+};
+
 export type BrowserSessionStatus = {
   sessionId: string;
   siteKey: string;
@@ -1718,6 +1723,14 @@ export async function startBrowserTakeover(
       includeJson: true,
       body: '{}',
     },
+  );
+}
+
+export async function getBrowserSessionStatus(
+  sessionId: string,
+): Promise<BrowserSessionStatus> {
+  return apiRequest<BrowserSessionStatus>(
+    `/api/v1/browser/sessions/${encodeURIComponent(sessionId)}`,
   );
 }
 
@@ -3239,6 +3252,10 @@ export type MainRun = {
   browserResume?: BrowserResume | null;
   carriedBrowserSessions?: CarriedBrowserSession[];
   executionDecision?: ExecutionDecision | null;
+  streamedTextPreview?: string | null;
+  lastProgressMessage?: string | null;
+  lastHeartbeatAt?: string | null;
+  terminalSummary?: MainRunTerminalSummary | null;
 };
 
 export async function listMainThreads(): Promise<MainThreadSummary[]> {

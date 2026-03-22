@@ -539,6 +539,30 @@ export class BrowserService {
   ): Promise<BrowserSessionStatusSnapshot | null> {
     const session = this.sessionsById.get(sessionId);
     if (!session) return null;
+    if (
+      session.owner !== 'user' &&
+      session.state !== 'closed' &&
+      session.state !== 'dead' &&
+      session.blockedKind !== 'confirmation_required'
+    ) {
+      const blockedState = await detectBlockedState(session.page);
+      if (blockedState.kind) {
+        this.markSessionBlocked(
+          session,
+          blockedState.kind,
+          blockedState.reason ||
+            (blockedState.kind === 'human_step_required'
+              ? 'This session is waiting on a human-only browser step.'
+              : 'This session is waiting on interactive authentication.'),
+        );
+      } else if (
+        session.state === 'blocked' &&
+        (session.blockedKind === 'auth_required' ||
+          session.blockedKind === 'human_step_required')
+      ) {
+        this.markSessionActive(session);
+      }
+    }
     return this.buildStatusSnapshot(session);
   }
 

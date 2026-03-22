@@ -4894,6 +4894,7 @@ export function enqueueMainTurnAtomic(input: {
             timing: {
               enqueuedAt: now,
             },
+            lastHeartbeatAt: now,
           }),
         );
 
@@ -4952,6 +4953,7 @@ export function enqueueMainTurnAtomic(input: {
           timing: {
             enqueuedAt: now,
           },
+          lastHeartbeatAt: now,
         }),
       };
 
@@ -5023,6 +5025,7 @@ export function claimQueuedMainRuns(
                 ...timing,
                 claimedAt: startedAt,
               },
+              lastHeartbeatAt: startedAt,
             };
           });
           appendOutboxEvent({
@@ -5099,6 +5102,9 @@ export function completeMainRunAtomic(input: {
             ...timing,
             completedAt: now,
           },
+          lastHeartbeatAt: now,
+          lastProgressMessage: null,
+          terminalSummary: null,
         };
       });
 
@@ -5236,6 +5242,13 @@ export function failMainRunAtomic(input: {
           timing: {
             ...timing,
             completedAt: now,
+          },
+          lastHeartbeatAt: now,
+          terminalSummary: {
+            statusLabel: 'Failed',
+            body:
+              txInput.errorMessage ||
+              'The run failed before a response could be recorded.',
           },
         };
       });

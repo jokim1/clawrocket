@@ -157,6 +157,49 @@ export async function startBrowserTakeoverRoute(input: {
   }
 }
 
+export async function getBrowserSessionStatusRoute(input: {
+  auth: AuthContext;
+  sessionId: string;
+}): Promise<{
+  statusCode: number;
+  body: ApiEnvelope<BrowserSessionStatusSnapshot>;
+}> {
+  if (!(await canAccessSession(input.auth, input.sessionId))) {
+    return {
+      statusCode: 404,
+      body: {
+        ok: false,
+        error: {
+          code: 'browser_session_not_found',
+          message: 'Browser session not found.',
+        },
+      },
+    };
+  }
+
+  const snapshot = await getBrowserService().getSessionStatus(input.sessionId);
+  if (!snapshot) {
+    return {
+      statusCode: 404,
+      body: {
+        ok: false,
+        error: {
+          code: 'browser_session_not_found',
+          message: 'Browser session not found.',
+        },
+      },
+    };
+  }
+
+  return {
+    statusCode: 200,
+    body: {
+      ok: true,
+      data: snapshot,
+    },
+  };
+}
+
 export async function resumeBrowserSessionRoute(input: {
   auth: AuthContext;
   sessionId: string;

@@ -20,6 +20,7 @@ import {
   getOrCreateDefaultThread,
   listMainThreadsForUser,
   MainThreadBusyError,
+  updateTalkRunMetadata,
   updateMainThreadMetadata,
   getTalkRunById,
   upsertTalk,
@@ -30,6 +31,7 @@ import {
   deleteMainThreadRoute,
   listMainThreadsRoute,
   getMainThreadRoute,
+  listMainRunsRoute,
   patchMainThreadRoute,
   postMainMessageRoute,
 } from '../web/routes/main-channel.js';
@@ -727,6 +729,51 @@ describe('Main channel routes', () => {
         expect(result.body.data.length).toBeGreaterThanOrEqual(1);
         expect(result.body.data[0].role).toBe('user');
         expect(result.body.data[0].content).toBe('hello');
+      }
+    });
+  });
+
+  describe('listMainRunsRoute', () => {
+    it('returns persisted preview, progress, heartbeat, and terminal summary fields', () => {
+      const threadId = randomUUID();
+      const runId = `run_${randomUUID()}`;
+      enqueueMainTurnAtomic({
+        threadId,
+        userId: USER_A,
+        content: 'hello',
+        messageId: `msg_${randomUUID()}`,
+        runId,
+      });
+      claimQueuedMainRuns(1);
+      updateTalkRunMetadata(runId, (current) => ({
+        ...current,
+        streamedTextPreview: 'Working on LinkedIn…',
+        lastProgressMessage: 'Opening LinkedIn…',
+        lastHeartbeatAt: '2026-03-21T20:00:00.000Z',
+        terminalSummary: {
+          statusLabel: 'Failed',
+          body: 'LinkedIn authentication failed.',
+        },
+      }));
+
+      const result = listMainRunsRoute(makeAuth(USER_A), threadId);
+      expect(result.statusCode).toBe(200);
+      expect(result.body.ok).toBe(true);
+      if (result.body.ok) {
+        expect(result.body.data).toHaveLength(1);
+        expect(result.body.data[0].streamedTextPreview).toBe(
+          'Working on LinkedIn…',
+        );
+        expect(result.body.data[0].lastProgressMessage).toBe(
+          'Opening LinkedIn…',
+        );
+        expect(result.body.data[0].lastHeartbeatAt).toBe(
+          '2026-03-21T20:00:00.000Z',
+        );
+        expect(result.body.data[0].terminalSummary).toEqual({
+          statusLabel: 'Failed',
+          body: 'LinkedIn authentication failed.',
+        });
       }
     });
   });

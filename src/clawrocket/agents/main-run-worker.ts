@@ -20,6 +20,7 @@ import {
   failMainRunAtomic,
   getTalkMessageById,
   getTalkRunById,
+  updateTalkRunMetadata,
   type TalkRunRecord,
 } from '../db/index.js';
 import { logger } from '../../logger.js';
@@ -64,6 +65,20 @@ function errorMessage(error: unknown): string {
 
 function isAbortError(error: unknown): boolean {
   return error instanceof Error && error.name === 'AbortError';
+}
+
+const STREAMED_TEXT_PREVIEW_MAX_CHARS = 4_000;
+const STREAMED_TEXT_PERSIST_INTERVAL_MS = 1_000;
+
+function appendStreamedPreview(currentPreview: string, delta: string): string {
+  if (!delta) return currentPreview;
+  const nextPreview = `${currentPreview}${delta}`;
+  if (nextPreview.length <= STREAMED_TEXT_PREVIEW_MAX_CHARS) {
+    return nextPreview;
+  }
+  return nextPreview.slice(
+    nextPreview.length - STREAMED_TEXT_PREVIEW_MAX_CHARS,
+  );
 }
 
 interface ActiveRun {
@@ -215,6 +230,32 @@ export class MainRunWorker implements MainRunWorkerControl {
     }
 
     const sanitizer = createTalkResponseStreamSanitizer();
+    let streamedPreview = '';
+    let lastPreviewPersistAt = 0;
+
+    const persistRunSnapshot = (
+      updater: (current: Record<string, unknown>) => Record<string, unknown>,
+    ) => {
+      updateTalkRunMetadata(run.id, updater);
+    };
+
+    const persistPreviewIfNeeded = (force = false) => {
+      const now = Date.now();
+      if (
+        !force &&
+        lastPreviewPersistAt !== 0 &&
+        now - lastPreviewPersistAt < STREAMED_TEXT_PERSIST_INTERVAL_MS
+      ) {
+        return;
+      }
+      lastPreviewPersistAt = now;
+      const heartbeatAt = new Date(now).toISOString();
+      persistRunSnapshot((current) => ({
+        ...current,
+        streamedTextPreview: streamedPreview || null,
+        lastHeartbeatAt: heartbeatAt,
+      }));
+    };
 
     try {
       const output = await this.executor(
@@ -228,22 +269,60 @@ export class MainRunWorker implements MainRunWorkerControl {
         },
         signal,
         (event: MainExecutionEvent) => {
+          let eventToPublish = event;
           // Sanitize streaming deltas before publishing
           if (event.type === 'main_response_delta') {
             const cleaned = sanitizer.push(event.text);
             if (!cleaned) return;
-            event = { ...event, text: cleaned };
+            eventToPublish = { ...event, text: cleaned };
+            streamedPreview = appendStreamedPreview(streamedPreview, cleaned);
+            if (
+              lastPreviewPersistAt === 0 ||
+              Date.now() - lastPreviewPersistAt >=
+                STREAMED_TEXT_PERSIST_INTERVAL_MS
+            ) {
+              persistPreviewIfNeeded(true);
+            }
+          }
+          switch (eventToPublish.type) {
+            case 'main_response_started':
+              persistRunSnapshot((current) => ({
+                ...current,
+                lastHeartbeatAt: new Date().toISOString(),
+                lastProgressMessage: null,
+                terminalSummary: null,
+              }));
+              break;
+            case 'main_progress_update':
+              persistRunSnapshot((current) => ({
+                ...current,
+                lastProgressMessage: eventToPublish.message,
+                lastHeartbeatAt: new Date().toISOString(),
+              }));
+              break;
+            case 'main_response_usage':
+            case 'main_promotion_pending':
+              persistRunSnapshot((current) => ({
+                ...current,
+                lastHeartbeatAt: new Date().toISOString(),
+              }));
+              break;
+            default:
+              break;
           }
           appendOutboxEvent({
             topic: `user:${run.requested_by}`,
-            eventType: event.type,
-            payload: JSON.stringify(event),
+            eventType: eventToPublish.type,
+            payload: JSON.stringify(eventToPublish),
           });
         },
       );
 
       // Sanitize stored content (strip internal tags)
       const sanitizedContent = stripInternalTalkResponseText(output.content);
+      if (streamedPreview) {
+        persistPreviewIfNeeded(true);
+      }
 
       // Atomic: run status + assistant message + llm_attempt + terminal event
       const completed = completeMainRunAtomic({
@@ -312,6 +391,9 @@ export class MainRunWorker implements MainRunWorkerControl {
       }
     } catch (error) {
       if (error instanceof BrowserRunPausedError) {
+        if (streamedPreview) {
+          persistPreviewIfNeeded(true);
+        }
         logger.info(
           {
             runId: run.id,
@@ -323,12 +405,18 @@ export class MainRunWorker implements MainRunWorkerControl {
         return;
       }
       if (isAbortError(error)) {
+        if (streamedPreview) {
+          persistPreviewIfNeeded(true);
+        }
         if (!this.running) return;
         if (this.isCancelled(run.id)) return;
         this.failRun(run, 'execution_aborted', errorMessage(error));
         return;
       }
 
+      if (streamedPreview) {
+        persistPreviewIfNeeded(true);
+      }
       this.failRun(run, 'execution_failed', errorMessage(error));
     }
   }
