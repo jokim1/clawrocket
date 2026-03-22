@@ -1350,6 +1350,11 @@ export function MainChannelPage({
   // ── Build timeline entries ──
   const timeline = useMemo(() => {
     const entries: MainTimelineEntry[] = [];
+    const visibleMessageIds = new Set(
+      state.messages
+        .filter((message) => message.threadId === state.activeThreadId)
+        .map((message) => message.id),
+    );
     const assistantRunIds = new Set(
       state.messages
         .filter(
@@ -1372,6 +1377,13 @@ export function MainChannelPage({
         isMainRunActive(run) && !isBlockedBrowserRun;
       if (isPromotionPending || isBlockedBrowserRun || isGenericActiveRun) {
         entries.push({ kind: 'run', run });
+        continue;
+      }
+
+      if (
+        !run.triggerMessageId ||
+        !visibleMessageIds.has(run.triggerMessageId)
+      ) {
         continue;
       }
 

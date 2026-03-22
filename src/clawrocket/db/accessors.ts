@@ -4928,10 +4928,19 @@ export function listMainRunsForThread(threadId: string): TalkRunRecord[] {
   return getDb()
     .prepare(
       `
-      SELECT *
-      FROM talk_runs
-      WHERE talk_id IS NULL AND thread_id = ?
-      ORDER BY created_at DESC, id DESC
+      SELECT r.*
+      FROM talk_runs r
+      LEFT JOIN talk_messages m
+        ON m.id = r.trigger_message_id
+       AND m.talk_id IS NULL
+       AND m.thread_id = r.thread_id
+      WHERE r.talk_id IS NULL
+        AND r.thread_id = ?
+        AND (
+          r.status IN ('queued', 'running', 'awaiting_confirmation')
+          OR m.id IS NOT NULL
+        )
+      ORDER BY r.created_at DESC, r.id DESC
     `,
     )
     .all(threadId) as TalkRunRecord[];

@@ -711,6 +711,123 @@ describe('MainChannelPage', () => {
     expect(within(dialog).getByText('Keep this latest main note')).toBeTruthy();
   });
 
+  it('removes persisted failed run cards when their trigger messages are deleted from Main history', async () => {
+    const user = userEvent.setup();
+    vi.stubGlobal('confirm', vi.fn(() => true));
+    listMainThreadsMock.mockResolvedValue([
+      {
+        threadId: 'thread-main-1',
+        title: 'Planning',
+        isPinned: false,
+        lastMessageAt: '2026-03-18T12:00:02.000Z',
+        messageCount: 2,
+        hasActiveRun: false,
+      },
+    ]);
+    const initialMessages = [
+      {
+        id: 'msg-1',
+        threadId: 'thread-main-1',
+        role: 'user' as const,
+        content: 'Old main prompt',
+        agentId: null,
+        createdBy: 'user-1',
+        createdAt: '2026-03-18T12:00:00.000Z',
+      },
+      {
+        id: 'msg-2',
+        threadId: 'thread-main-1',
+        role: 'user' as const,
+        content: 'Keep this latest main note',
+        agentId: null,
+        createdBy: 'user-1',
+        createdAt: '2026-03-18T12:00:02.000Z',
+      },
+    ];
+    getMainThreadMock
+      .mockResolvedValueOnce(initialMessages)
+      .mockResolvedValueOnce([initialMessages[1]!]);
+    listMainRunsMock
+      .mockResolvedValueOnce([
+      {
+        id: 'run-main-1',
+        threadId: 'thread-main-1',
+        status: 'failed',
+        createdAt: '2026-03-18T12:00:01.000Z',
+        startedAt: '2026-03-18T12:00:01.000Z',
+        endedAt: '2026-03-18T12:00:01.500Z',
+        triggerMessageId: 'msg-1',
+        targetAgentId: null,
+        cancelReason: 'execution_failed',
+        kind: null,
+        parentRunId: null,
+        promotionState: null,
+        promotionChildRunId: null,
+        requestedToolFamilies: [],
+        userVisibleSummary: 'Checking LinkedIn…',
+        browserBlock: null,
+        browserResume: null,
+        carriedBrowserSessions: [],
+        executionDecision: null,
+        streamedTextPreview: null,
+        lastProgressMessage: null,
+        lastHeartbeatAt: '2026-03-18T12:00:01.500Z',
+        terminalSummary: {
+          statusLabel: 'Failed',
+          body: 'Anthropic API error: Unauthorized',
+        },
+      },
+      ])
+      .mockResolvedValueOnce([]);
+    deleteMainMessagesMock.mockResolvedValue({
+      threadId: 'thread-main-1',
+      deletedCount: 1,
+      deletedMessageIds: ['msg-1'],
+      threadDeleted: false,
+    });
+
+    render(
+      <MemoryRouter initialEntries={['/app/main/thread-main-1']}>
+        <Routes>
+          <Route
+            path="/app/main"
+            element={<MainChannelPage onUnauthorized={vi.fn()} />}
+          />
+          <Route
+            path="/app/main/:threadId"
+            element={<MainChannelPage onUnauthorized={vi.fn()} />}
+          />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    expect(
+      await screen.findByText('Anthropic API error: Unauthorized'),
+    ).toBeTruthy();
+
+    const composer = await screen.findByPlaceholderText('Message Nanoclaw…');
+    await user.type(composer, '/edit');
+    await user.keyboard('{Enter}');
+    expect(
+      await screen.findByRole('dialog', { name: 'Edit history' }),
+    ).toBeTruthy();
+
+    await user.click(screen.getByLabelText(/You.*Old main prompt/i));
+    await user.click(screen.getByRole('button', { name: 'Delete selected' }));
+
+    await waitFor(() =>
+      expect(screen.queryByRole('dialog', { name: 'Edit history' })).toBeNull(),
+    );
+    expect(
+      await screen.findByText('Deleted 1 message from this Main thread history.'),
+    ).toBeTruthy();
+    await waitFor(() => {
+      expect(screen.queryByText('Old main prompt')).toBeNull();
+      expect(screen.queryByText('Anthropic API error: Unauthorized')).toBeNull();
+    });
+    expect(screen.getByText('Keep this latest main note')).toBeTruthy();
+  });
+
   it('shows pending copy in the thread sidebar when a thread is still responding', async () => {
     listMainThreadsMock.mockResolvedValue([
       {
