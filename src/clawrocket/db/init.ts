@@ -1255,6 +1255,7 @@ function createClawrocketSchema(database: Database.Database): void {
   migrateGoogleToolingTables(database);
 
   migrateChannelBindingHealthColumns(database);
+  migrateActiveTalkChannelBindingUniqueness(database);
   migrateConnectionProbeFailuresColumn(database);
   migrateChannelConnectionSecretsTable(database);
   migrateChannelProviderConfigTables(database);
@@ -2998,6 +2999,51 @@ function migrateChannelBindingHealthColumns(database: Database.Database): void {
     ALTER TABLE talk_channel_bindings ADD COLUMN last_delivery_error_at TEXT;
     ALTER TABLE talk_channel_bindings ADD COLUMN health_quarantined INTEGER NOT NULL DEFAULT 0;
     ALTER TABLE talk_channel_bindings ADD COLUMN health_quarantine_code TEXT;
+  `);
+}
+
+function migrateActiveTalkChannelBindingUniqueness(
+  database: Database.Database,
+): void {
+  const duplicateBindingIds = database
+    .prepare(
+      `
+      SELECT b1.id
+      FROM talk_channel_bindings b1
+      JOIN talk_channel_bindings b2
+        ON b1.connection_id = b2.connection_id
+       AND b1.target_kind = b2.target_kind
+       AND b1.target_id = b2.target_id
+       AND b1.active = 1
+       AND b2.active = 1
+       AND (
+         b1.updated_at < b2.updated_at
+         OR (b1.updated_at = b2.updated_at AND b1.id < b2.id)
+       )
+    `,
+    )
+    .all() as Array<{ id: string }>;
+
+  if (duplicateBindingIds.length > 0) {
+    const now = new Date().toISOString();
+    const deactivateStmt = database.prepare(
+      `
+      UPDATE talk_channel_bindings
+      SET active = 0,
+          updated_at = ?
+      WHERE id = ?
+    `,
+    );
+    const tx = database.transaction((rows: Array<{ id: string }>) => {
+      rows.forEach((row) => deactivateStmt.run(now, row.id));
+    });
+    tx(duplicateBindingIds);
+  }
+
+  database.exec(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_talk_channel_bindings_active_target_unique
+      ON talk_channel_bindings(connection_id, target_kind, target_id)
+      WHERE active = 1;
   `);
 }
 

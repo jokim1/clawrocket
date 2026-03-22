@@ -344,8 +344,7 @@ describe('DataConnectorsPage', () => {
     expect(screen.getByLabelText('Client ID')).toHaveValue('123456.7890');
   });
 
-  it('approves a discovered Slack channel from the connectors page', async () => {
-    const user = userEvent.setup();
+  it('shows synced Slack channels in the connectors inventory without requiring approval', async () => {
     installDataConnectorsFetch();
 
     render(
@@ -355,18 +354,9 @@ describe('DataConnectorsPage', () => {
     );
 
     await screen.findByRole('heading', { name: 'Connected Workspaces' });
-    expect(screen.getByText('#product-launch')).toBeTruthy();
-
-    await user.click(screen.getByRole('button', { name: 'Approve' }));
-
-    expect(
-      await screen.findByText('#product-launch approved for Talk bindings.'),
-    ).toBeTruthy();
-    const approvedCard = screen
-      .getByRole('heading', { name: 'Approved Channels' })
-      .closest('div');
-    expect(approvedCard).toBeTruthy();
-    expect(screen.getAllByText('#product-launch').length).toBeGreaterThan(0);
+    expect(await screen.findByText('#product-launch')).toBeTruthy();
+    expect(screen.getByRole('heading', { name: 'Synced Channels' })).toBeTruthy();
+    expect(screen.getByText('Available')).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Approve' })).toBeNull();
   });
 });
@@ -613,6 +603,9 @@ function installDataConnectorsFetch(input?: {
           ok: true,
           data: {
             targets: targets.map(toChannelTargetApiRecord),
+            totalCount: targets.length,
+            hasMore: false,
+            nextOffset: null,
           },
         });
       }
@@ -814,5 +807,9 @@ function toChannelTargetApiRecord(target: ChannelTarget) {
     last_seen_at: target.lastSeenAt,
     created_at: target.createdAt,
     updated_at: target.updatedAt,
+    active_binding_id: target.activeBindingId ?? null,
+    active_binding_talk_id: target.activeBindingTalkId ?? null,
+    active_binding_talk_title: target.activeBindingTalkTitle ?? null,
+    active_binding_talk_accessible: target.activeBindingTalkAccessible ? 1 : 0,
   };
 }

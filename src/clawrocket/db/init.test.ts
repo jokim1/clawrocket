@@ -182,6 +182,111 @@ describe('clawrocket schema init', () => {
     );
   });
 
+  it('deactivates older duplicate active talk channel bindings before creating the unique target index', () => {
+    _initTestDatabase();
+    const db = getDb();
+    const baseTime = '2026-03-21T00:00:00.000Z';
+
+    upsertUser({
+      id: 'owner-1',
+      email: 'owner@example.com',
+      displayName: 'Owner',
+      role: 'owner',
+    });
+
+    db.exec(
+      'DROP INDEX IF EXISTS idx_talk_channel_bindings_active_target_unique;',
+    );
+
+    db.prepare(
+      `INSERT INTO talks (id, owner_id, topic_title, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?)`,
+    ).run('talk-1', 'owner-1', 'Family Ops', baseTime, baseTime);
+    db.prepare(
+      `INSERT INTO talks (id, owner_id, topic_title, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?)`,
+    ).run('talk-2', 'owner-1', 'Family Announcements', baseTime, baseTime);
+    db.prepare(
+      `INSERT INTO channel_connections (
+         id, platform, connection_mode, account_key, display_name, enabled,
+         health_status, config_json, created_at, updated_at, created_by, updated_by
+       ) VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      'channel-conn:slack:kimfamily',
+      'slack',
+      'oauth_workspace',
+      'slack:T123',
+      'KimFamily',
+      'healthy',
+      JSON.stringify({ teamId: 'T123', teamName: 'KimFamily' }),
+      baseTime,
+      baseTime,
+      'owner-1',
+      'owner-1',
+    );
+
+    db.prepare(
+      `INSERT INTO talk_channel_bindings (
+         id, talk_id, connection_id, target_kind, target_id, display_name,
+         response_mode, active, created_at, updated_at, created_by, updated_by
+       ) VALUES (?, ?, ?, ?, ?, ?, 'mentions', 1, ?, ?, ?, ?)`,
+    ).run(
+      'binding-old',
+      'talk-1',
+      'channel-conn:slack:kimfamily',
+      'channel',
+      'slack:C123',
+      '#family-ops',
+      '2026-03-21T00:00:00.000Z',
+      '2026-03-21T00:00:00.000Z',
+      'owner-1',
+      'owner-1',
+    );
+    db.prepare(
+      `INSERT INTO talk_channel_bindings (
+         id, talk_id, connection_id, target_kind, target_id, display_name,
+         response_mode, active, created_at, updated_at, created_by, updated_by
+       ) VALUES (?, ?, ?, ?, ?, ?, 'mentions', 1, ?, ?, ?, ?)`,
+    ).run(
+      'binding-new',
+      'talk-2',
+      'channel-conn:slack:kimfamily',
+      'channel',
+      'slack:C123',
+      '#family-ops',
+      '2026-03-21T00:01:00.000Z',
+      '2026-03-21T00:02:00.000Z',
+      'owner-1',
+      'owner-1',
+    );
+
+    initClawrocketSchema();
+
+    const bindings = db
+      .prepare(
+        `SELECT id, active
+         FROM talk_channel_bindings
+         WHERE connection_id = 'channel-conn:slack:kimfamily'
+           AND target_id = 'slack:C123'
+         ORDER BY id`,
+      )
+      .all() as Array<{ id: string; active: number }>;
+    expect(bindings).toEqual([
+      { id: 'binding-new', active: 1 },
+      { id: 'binding-old', active: 0 },
+    ]);
+
+    const index = db
+      .prepare(
+        `SELECT name
+         FROM sqlite_master
+         WHERE type = 'index'
+           AND name = 'idx_talk_channel_bindings_active_target_unique'`,
+      )
+      .get() as { name: string } | undefined;
+    expect(index?.name).toBe('idx_talk_channel_bindings_active_target_unique');
+  });
+
   it('seeds separate main and default Talk agents', () => {
     _initTestDatabase();
     const db = getDb();

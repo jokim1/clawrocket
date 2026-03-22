@@ -9,6 +9,7 @@ import {
   deleteChannelIngressQueueRow,
   deleteTalkChannelBinding,
   ensureSystemManagedTelegramConnection,
+  getActiveTalkChannelBindingOwner,
   getChannelConnectionByPlatformAccount,
   getChannelTarget,
   getChannelConnectionById,
@@ -26,6 +27,8 @@ import {
   setChannelProviderSecret,
   setChannelConnectionSecret,
   unapproveChannelTarget,
+  upsertChannelTarget,
+  updateChannelConnectionConfig,
   updateBindingDeliveryResult,
   updateConnectionProbeResult,
   updateTalkChannelBinding,
@@ -124,6 +127,24 @@ export interface SlackProviderConfigApiRecord {
   availabilityReason: string | null;
   updatedAt: string | null;
   updatedBy: string | null;
+}
+
+export interface ChannelTargetApiRecord {
+  connection_id: string;
+  target_kind: string;
+  target_id: string;
+  display_name: string;
+  metadata_json: string | null;
+  approved: number;
+  registered_at: string | null;
+  registered_by: string | null;
+  last_seen_at: string;
+  created_at: string;
+  updated_at: string;
+  active_binding_id: string | null;
+  active_binding_talk_id: string | null;
+  active_binding_talk_title: string | null;
+  active_binding_talk_accessible: number;
 }
 
 const manualIngressRetryTimestamps = new Map<string, number[]>();
@@ -291,6 +312,19 @@ function toSlackProviderConfigApiRecord(input: {
   };
 }
 
+function toChannelTargetApiRecord(
+  auth: AuthContext,
+  record: ReturnType<typeof searchChannelTargets>['targets'][number],
+): ChannelTargetApiRecord {
+  const talkAccessible = record.active_binding_talk_id
+    ? Boolean(getTalkForUser(record.active_binding_talk_id, auth.userId))
+    : false;
+  return {
+    ...record,
+    active_binding_talk_accessible: talkAccessible ? 1 : 0,
+  };
+}
+
 function toChannelConnectionApiRecord(
   record: ReturnType<typeof listChannelConnections>[number],
 ): ChannelConnectionApiRecord {
@@ -330,6 +364,7 @@ export function listChannelTargetsRoute(input: {
   connectionId: string;
   query?: string;
   limit?: number;
+  offset?: number;
   approval?: 'all' | 'approved' | 'discovered';
 }) {
   if (!canManageConnections(input.auth)) {
@@ -339,18 +374,25 @@ export function listChannelTargetsRoute(input: {
   if (!connection) {
     return notFound('Channel connection not found.');
   }
+  const page = searchChannelTargets({
+    connectionId: input.connectionId,
+    query: input.query,
+    limit: input.limit,
+    offset: input.offset,
+    approval: input.approval,
+  });
   return {
     statusCode: 200,
     body: {
       ok: true,
       data: {
         connection,
-        targets: searchChannelTargets({
-          connectionId: input.connectionId,
-          query: input.query,
-          limit: input.limit,
-          approval: input.approval,
-        }),
+        targets: page.targets.map((target) =>
+          toChannelTargetApiRecord(input.auth, target),
+        ),
+        totalCount: page.totalCount,
+        hasMore: page.hasMore,
+        nextOffset: page.nextOffset,
       },
     },
   };
@@ -373,7 +415,9 @@ export function getTelegramChannelConnectorRoute(input: { auth: AuthContext }) {
           connectionId: connection.id,
           limit: 200,
           approval: 'all',
-        }),
+        }).targets.map((target) =>
+          toChannelTargetApiRecord(input.auth, target),
+        ),
       },
     },
   };
@@ -879,6 +923,17 @@ export async function syncSlackWorkspaceRoute(input: {
     const result = await syncSlackWorkspaceTargets({
       connectionId: input.connectionId,
     });
+    updateChannelConnectionConfig({
+      connectionId: input.connectionId,
+      config: {
+        ...(parseTargetMetadata(connection.config_json) || {}),
+        lastSyncedAt: new Date().toISOString(),
+        lastSyncTotalCount: result.syncedCount,
+        lastSyncPublicCount: result.publicCount,
+        lastSyncPrivateCount: result.privateCount,
+      },
+      updatedBy: input.auth.userId,
+    });
     return {
       statusCode: 200,
       body: {
@@ -955,6 +1010,15 @@ export async function diagnoseSlackWorkspaceTargetRoute(input: {
       connectionId: input.connectionId,
       rawInput: input.rawInput,
     });
+    if (result.ok && result.target) {
+      upsertChannelTarget({
+        connectionId: input.connectionId,
+        targetKind: result.target.targetKind,
+        targetId: result.target.targetId,
+        displayName: result.target.displayName,
+        metadataJson: JSON.stringify(result.target.metadata || {}),
+      });
+    }
     return {
       statusCode: result.ok ? 200 : 400,
       body: result.ok
@@ -1237,7 +1301,10 @@ export function createTalkChannelRoute(input: {
     targetKind: input.targetKind,
     targetId: input.targetId,
   });
-  if (!target || target.approved !== 1) {
+  if (!target) {
+    return notFound('Channel target not found.');
+  }
+  if (connection.platform !== 'slack' && target.approved !== 1) {
     return {
       statusCode: 400,
       body: {
@@ -1249,24 +1316,90 @@ export function createTalkChannelRoute(input: {
       },
     };
   }
-
-  const binding = createTalkChannelBinding({
-    talkId: input.talkId,
+  const existingBinding = getActiveTalkChannelBindingOwner({
     connectionId: input.connectionId,
     targetKind: input.targetKind,
     targetId: input.targetId,
-    displayName: input.displayName.trim() || input.targetId,
-    createdBy: input.auth.userId,
-    responseMode: input.responseMode,
-    responderMode: input.responderMode,
-    responderAgentId: input.responderAgentId,
-    deliveryMode: input.deliveryMode,
-    channelContextNote: input.channelContextNote,
-    inboundRateLimitPerMinute: input.inboundRateLimitPerMinute,
-    maxPendingEvents: input.maxPendingEvents,
-    overflowPolicy: input.overflowPolicy,
-    maxDeferredAgeMinutes: input.maxDeferredAgeMinutes,
   });
+  if (existingBinding) {
+    const message =
+      existingBinding.talk_id === input.talkId
+        ? `${target.display_name} is already bound to this talk.`
+        : `${target.display_name} is already bound to ${existingBinding.talk_title}.`;
+    return {
+      statusCode: 409,
+      body: {
+        ok: false,
+        error: {
+          code: 'target_already_bound',
+          message,
+          details: {
+            bindingId: existingBinding.id,
+            talkId: existingBinding.talk_id,
+            talkTitle: existingBinding.talk_title,
+          },
+        },
+      },
+    };
+  }
+
+  let binding;
+  try {
+    binding = createTalkChannelBinding({
+      talkId: input.talkId,
+      connectionId: input.connectionId,
+      targetKind: input.targetKind,
+      targetId: input.targetId,
+      displayName: input.displayName.trim() || input.targetId,
+      createdBy: input.auth.userId,
+      responseMode: input.responseMode,
+      responderMode: input.responderMode,
+      responderAgentId: input.responderAgentId,
+      deliveryMode: input.deliveryMode,
+      channelContextNote: input.channelContextNote,
+      inboundRateLimitPerMinute: input.inboundRateLimitPerMinute,
+      maxPendingEvents: input.maxPendingEvents,
+      overflowPolicy: input.overflowPolicy,
+      maxDeferredAgeMinutes: input.maxDeferredAgeMinutes,
+    });
+  } catch (error) {
+    if (
+      error instanceof Error &&
+      (error.message.includes(
+        'idx_talk_channel_bindings_active_target_unique',
+      ) ||
+        error.message.includes(
+          'UNIQUE constraint failed: talk_channel_bindings.connection_id, talk_channel_bindings.target_kind, talk_channel_bindings.target_id',
+        ))
+    ) {
+      const conflictingBinding = getActiveTalkChannelBindingOwner({
+        connectionId: input.connectionId,
+        targetKind: input.targetKind,
+        targetId: input.targetId,
+      });
+      const message = conflictingBinding
+        ? `${target.display_name} is already bound to ${conflictingBinding.talk_title}.`
+        : `${target.display_name} is already bound to another talk.`;
+      return {
+        statusCode: 409,
+        body: {
+          ok: false,
+          error: {
+            code: 'target_already_bound',
+            message,
+            details: conflictingBinding
+              ? {
+                  bindingId: conflictingBinding.id,
+                  talkId: conflictingBinding.talk_id,
+                  talkTitle: conflictingBinding.talk_title,
+                }
+              : undefined,
+          },
+        },
+      };
+    }
+    throw error;
+  }
 
   return {
     statusCode: 201,

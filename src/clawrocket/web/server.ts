@@ -3785,10 +3785,15 @@ function buildApp(opts: WebServerOptions): Hono {
 
     const query = c.req.query('query');
     const rawLimit = c.req.query('limit');
+    const rawOffset = c.req.query('offset');
     const approval = c.req.query('approval');
     const parsedLimit =
       rawLimit && rawLimit.trim()
         ? Number.parseInt(rawLimit.trim(), 10)
+        : undefined;
+    const parsedOffset =
+      rawOffset && rawOffset.trim()
+        ? Number.parseInt(rawOffset.trim(), 10)
         : undefined;
 
     const result = listChannelTargetsRoute({
@@ -3796,6 +3801,7 @@ function buildApp(opts: WebServerOptions): Hono {
       connectionId,
       query,
       limit: Number.isFinite(parsedLimit) ? parsedLimit : undefined,
+      offset: Number.isFinite(parsedOffset) ? parsedOffset : undefined,
       approval:
         approval === 'approved' || approval === 'discovered' ? approval : 'all',
     });

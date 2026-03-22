@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createHmac } from 'crypto';
 
+import * as slackConnector from '../../channels/slack-connector.js';
 import * as telegramConnector from '../../channels/telegram-connector.js';
 import { encryptChannelSecret } from '../../channels/channel-secret-store.js';
 import { encryptChannelProviderSecret } from '../../channels/channel-provider-secret-store.js';
@@ -437,6 +438,274 @@ describe('talk channel routes', () => {
     const body = (await res.json()) as any;
     expect(body.ok).toBe(false);
     expect(body.error.code).toBe('target_not_approved');
+  });
+
+  it('allows Slack talk channel bindings for discovered targets without approval', async () => {
+    const slackConnection = upsertChannelConnection({
+      platform: 'slack',
+      connectionMode: 'oauth_workspace',
+      accountKey: 'slack:T123',
+      displayName: 'KimFamily',
+      enabled: true,
+      healthStatus: 'healthy',
+      config: {
+        teamId: 'T123',
+        teamName: 'KimFamily',
+        teamUrl: 'kimfamily-co.slack.com',
+      },
+    });
+    upsertChannelTarget({
+      connectionId: slackConnection.id,
+      targetKind: 'channel',
+      targetId: 'slack:C123',
+      displayName: '#family-ops',
+      metadataJson: JSON.stringify({ isPrivate: false }),
+    });
+
+    const res = await server.request('/api/v1/talks/talk-1/channels', {
+      method: 'POST',
+      headers: {
+        ...authHeaders('owner-token'),
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        connectionId: slackConnection.id,
+        targetKind: 'channel',
+        targetId: 'slack:C123',
+        displayName: '#family-ops',
+      }),
+    });
+
+    expect(res.status).toBe(201);
+    const body = (await res.json()) as any;
+    expect(body.ok).toBe(true);
+    expect(body.data.binding).toEqual(
+      expect.objectContaining({
+        connectionId: slackConnection.id,
+        platform: 'slack',
+        targetId: 'slack:C123',
+      }),
+    );
+  });
+
+  it('returns channel occupancy metadata and pagination for Slack targets', async () => {
+    const slackConnection = upsertChannelConnection({
+      platform: 'slack',
+      connectionMode: 'oauth_workspace',
+      accountKey: 'slack:T123',
+      displayName: 'KimFamily',
+      enabled: true,
+      healthStatus: 'healthy',
+      config: {
+        teamId: 'T123',
+        teamName: 'KimFamily',
+        teamUrl: 'kimfamily-co.slack.com',
+      },
+    });
+    upsertChannelTarget({
+      connectionId: slackConnection.id,
+      targetKind: 'channel',
+      targetId: 'slack:C123',
+      displayName: '#family-ops',
+      metadataJson: JSON.stringify({ isPrivate: false }),
+    });
+    upsertChannelTarget({
+      connectionId: slackConnection.id,
+      targetKind: 'channel',
+      targetId: 'slack:C124',
+      displayName: '#parents-council',
+      metadataJson: JSON.stringify({ isPrivate: true }),
+    });
+
+    const created = await server.request('/api/v1/talks/talk-1/channels', {
+      method: 'POST',
+      headers: {
+        ...authHeaders('owner-token'),
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        connectionId: slackConnection.id,
+        targetKind: 'channel',
+        targetId: 'slack:C123',
+        displayName: '#family-ops',
+      }),
+    });
+    expect(created.status).toBe(201);
+
+    const res = await server.request(
+      `/api/v1/channel-connections/${encodeURIComponent(slackConnection.id)}/targets?limit=1&offset=0`,
+      {
+        method: 'GET',
+        headers: authHeaders('owner-token'),
+      },
+    );
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as any;
+    expect(body.ok).toBe(true);
+    expect(body.data.totalCount).toBe(2);
+    expect(body.data.hasMore).toBe(true);
+    expect(body.data.nextOffset).toBe(1);
+    expect(body.data.targets[0]).toEqual(
+      expect.objectContaining({
+        connection_id: slackConnection.id,
+        active_binding_talk_id: 'talk-1',
+        active_binding_talk_title: 'Channels Route Test',
+        active_binding_talk_accessible: 1,
+      }),
+    );
+  });
+
+  it('returns a conflict when a Slack channel is already bound to another talk', async () => {
+    const registeredAgent = createRegisteredAgent({
+      name: 'Slack Agent',
+      providerId: 'openai',
+      modelId: 'gpt-5-mini',
+    });
+    upsertTalk({
+      id: 'talk-2',
+      ownerId: 'owner-1',
+      topicTitle: 'Family Announcements',
+    });
+    setTalkAgents('talk-2', [
+      {
+        id: registeredAgent.id,
+        sourceKind: 'provider',
+        providerId: 'openai',
+        modelId: 'gpt-5-mini',
+        nickname: 'Slack Agent',
+        nicknameMode: 'auto',
+        personaRole: 'General',
+        isPrimary: true,
+        sortOrder: 0,
+      },
+    ]);
+    const slackConnection = upsertChannelConnection({
+      platform: 'slack',
+      connectionMode: 'oauth_workspace',
+      accountKey: 'slack:T123',
+      displayName: 'KimFamily',
+      enabled: true,
+      healthStatus: 'healthy',
+      config: {
+        teamId: 'T123',
+        teamName: 'KimFamily',
+        teamUrl: 'kimfamily-co.slack.com',
+      },
+    });
+    upsertChannelTarget({
+      connectionId: slackConnection.id,
+      targetKind: 'channel',
+      targetId: 'slack:C123',
+      displayName: '#family-ops',
+      metadataJson: JSON.stringify({ isPrivate: false }),
+    });
+
+    const first = await server.request('/api/v1/talks/talk-2/channels', {
+      method: 'POST',
+      headers: {
+        ...authHeaders('owner-token'),
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        connectionId: slackConnection.id,
+        targetKind: 'channel',
+        targetId: 'slack:C123',
+        displayName: '#family-ops',
+      }),
+    });
+    expect(first.status).toBe(201);
+
+    const second = await server.request('/api/v1/talks/talk-1/channels', {
+      method: 'POST',
+      headers: {
+        ...authHeaders('owner-token'),
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        connectionId: slackConnection.id,
+        targetKind: 'channel',
+        targetId: 'slack:C123',
+        displayName: '#family-ops',
+      }),
+    });
+
+    expect(second.status).toBe(409);
+    const body = (await second.json()) as any;
+    expect(body.ok).toBe(false);
+    expect(body.error.code).toBe('target_already_bound');
+    expect(body.error.message).toContain('Family Announcements');
+    expect(body.error.details).toEqual(
+      expect.objectContaining({
+        talkId: 'talk-2',
+        talkTitle: 'Family Announcements',
+      }),
+    );
+  });
+
+  it('discovers Slack targets from the diagnostic route without approving them', async () => {
+    const slackConnection = upsertChannelConnection({
+      platform: 'slack',
+      connectionMode: 'oauth_workspace',
+      accountKey: 'slack:T123',
+      displayName: 'KimFamily',
+      enabled: true,
+      healthStatus: 'healthy',
+      config: {
+        teamId: 'T123',
+        teamName: 'KimFamily',
+        teamUrl: 'kimfamily-co.slack.com',
+      },
+    });
+    const diagnoseSpy = vi
+      .spyOn(slackConnector, 'diagnoseSlackTarget')
+      .mockResolvedValue({
+        ok: true,
+        code: 'ok',
+        message: 'Found channel',
+        target: {
+          ok: true,
+          targetKind: 'channel',
+          targetId: 'slack:C123',
+          displayName: '#family-ops',
+          metadata: { isPrivate: false },
+        },
+      });
+
+    const res = await server.request(
+      `/api/v1/channel-connectors/slack/workspaces/${encodeURIComponent(slackConnection.id)}/diagnose-target`,
+      {
+        method: 'POST',
+        headers: {
+          ...authHeaders('owner-token'),
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({ rawInput: 'C123' }),
+      },
+    );
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as any;
+    expect(body.ok).toBe(true);
+    expect(body.data.target.targetId).toBe('slack:C123');
+
+    const listed = await server.request(
+      `/api/v1/channel-connections/${encodeURIComponent(slackConnection.id)}/targets?approval=discovered`,
+      {
+        method: 'GET',
+        headers: authHeaders('owner-token'),
+      },
+    );
+    expect(listed.status).toBe(200);
+    const listedBody = (await listed.json()) as any;
+    expect(listedBody.data.targets).toEqual([
+      expect.objectContaining({
+        target_id: 'slack:C123',
+        approved: 0,
+      }),
+    ]);
+
+    diagnoseSpy.mockRestore();
   });
 
   it('deactivates existing bindings when a telegram target is unapproved', async () => {

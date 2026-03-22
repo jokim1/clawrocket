@@ -549,8 +549,8 @@ export function DataConnectorsPage({
         <p className="settings-copy">
           Manage workspace-level integrations. Data connectors power retrieval
           and query tools during execution. Channel connectors authenticate
-          external inboxes and expose approved destinations that Talks can bind
-          to.
+          external inboxes, sync available destinations, and support Talk-level
+          channel binding.
         </p>
         <div className="talk-subtabs-row" style={{ justifyContent: 'flex-start' }}>
           <div className="talk-tabs talk-subtabs" role="tablist" aria-label="Connector tabs">

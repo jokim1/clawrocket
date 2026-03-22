@@ -1634,7 +1634,9 @@ describe('phase 0 schema and reliability tables', () => {
       query: '%',
       limit: 10,
     });
-    expect(matches.map((row) => row.display_name)).toEqual(['100% Coverage']);
+    expect(matches.targets.map((row) => row.display_name)).toEqual([
+      '100% Coverage',
+    ]);
   });
 
   it('enforces first-writer-wins between cancel and fail transitions', () => {

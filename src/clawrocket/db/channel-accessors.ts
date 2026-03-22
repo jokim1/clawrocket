@@ -86,6 +86,16 @@ export interface ChannelTargetRecord {
   last_seen_at: string;
   created_at: string;
   updated_at: string;
+  active_binding_id: string | null;
+  active_binding_talk_id: string | null;
+  active_binding_talk_title: string | null;
+}
+
+export interface ChannelTargetSearchPage {
+  targets: ChannelTargetRecord[];
+  totalCount: number;
+  hasMore: boolean;
+  nextOffset: number | null;
 }
 
 export interface TalkChannelBindingRecord {
@@ -779,49 +789,82 @@ export function searchChannelTargets(input: {
   connectionId: string;
   query?: string;
   limit?: number;
+  offset?: number;
   approval?: 'all' | 'approved' | 'discovered';
-}): ChannelTargetRecord[] {
+}): ChannelTargetSearchPage {
   const query = input.query?.trim() || '';
   const escaped = query
     .replace(/\\/g, '\\\\')
     .replace(/%/g, '\\%')
     .replace(/_/g, '\\_');
   const like = `%${escaped}%`;
-  const limit = Math.max(1, Math.min(50, Math.floor(input.limit ?? 20)));
+  const limit = Math.max(1, Math.min(100, Math.floor(input.limit ?? 20)));
+  const offset = Math.max(0, Math.floor(input.offset ?? 0));
   const approval = input.approval || 'all';
   const approvalSql =
     approval === 'approved'
-      ? 'AND approved = 1'
+      ? 'AND ct.approved = 1'
       : approval === 'discovered'
-        ? 'AND approved = 0'
+        ? 'AND ct.approved = 0'
         : '';
-  if (!query) {
-    return getDb()
-      .prepare(
-        `
-        SELECT *
-        FROM channel_targets
-        WHERE connection_id = ?
-        ${approvalSql}
-        ORDER BY last_seen_at DESC, display_name ASC
-        LIMIT ?
-      `,
-      )
-      .all(input.connectionId, limit) as ChannelTargetRecord[];
-  }
-  return getDb()
+  const querySql = query
+    ? `
+        AND (
+          ct.display_name LIKE ? ESCAPE '\\'
+          OR ct.target_id LIKE ? ESCAPE '\\'
+        )
+      `
+    : '';
+  const countRow = getDb()
     .prepare(
       `
-      SELECT *
-      FROM channel_targets
-      WHERE connection_id = ?
-        ${approvalSql}
-        AND (display_name LIKE ? ESCAPE '\\' OR target_id LIKE ? ESCAPE '\\')
-      ORDER BY last_seen_at DESC, display_name ASC
-      LIMIT ?
+      SELECT COUNT(*) AS count
+      FROM channel_targets ct
+      WHERE ct.connection_id = ?
+      ${approvalSql}
+      ${querySql}
     `,
     )
-    .all(input.connectionId, like, like, limit) as ChannelTargetRecord[];
+    .get(
+      ...(query ? [input.connectionId, like, like] : [input.connectionId]),
+    ) as { count: number } | undefined;
+  const totalCount = countRow?.count || 0;
+  const targets = getDb()
+    .prepare(
+      `
+      SELECT
+        ct.*,
+        b.id AS active_binding_id,
+        b.talk_id AS active_binding_talk_id,
+        COALESCE(t.topic_title, '(Untitled Talk)') AS active_binding_talk_title
+      FROM channel_targets ct
+      LEFT JOIN talk_channel_bindings b
+        ON b.connection_id = ct.connection_id
+       AND b.target_kind = ct.target_kind
+       AND b.target_id = ct.target_id
+       AND b.active = 1
+      LEFT JOIN talks t
+        ON t.id = b.talk_id
+      WHERE ct.connection_id = ?
+      ${approvalSql}
+      ${querySql}
+      ORDER BY ct.last_seen_at DESC, ct.display_name ASC
+      LIMIT ?
+      OFFSET ?
+    `,
+    )
+    .all(
+      ...(query
+        ? [input.connectionId, like, like, limit, offset]
+        : [input.connectionId, limit, offset]),
+    ) as ChannelTargetRecord[];
+  const hasMore = offset + targets.length < totalCount;
+  return {
+    targets,
+    totalCount,
+    hasMore,
+    nextOffset: hasMore ? offset + targets.length : null,
+  };
 }
 
 const HYDRATED_TALK_CHANNEL_BINDING_SELECT = `
@@ -1027,11 +1070,53 @@ export function getResolvedTalkChannelBinding(input: {
       WHERE b.connection_id = ?
         AND b.target_kind = ?
         AND b.target_id = ?
+        AND b.active = 1
+      ORDER BY b.updated_at DESC, b.id DESC
       LIMIT 1
     `,
     )
     .get(input.connectionId, input.targetKind, input.targetId) as
     | ResolvedTalkChannelBindingRecord
+    | undefined;
+}
+
+export function getActiveTalkChannelBindingOwner(input: {
+  connectionId: string;
+  targetKind: string;
+  targetId: string;
+}):
+  | {
+      id: string;
+      talk_id: string;
+      talk_title: string;
+      display_name: string;
+    }
+  | undefined {
+  return getDb()
+    .prepare(
+      `
+      SELECT
+        b.id,
+        b.talk_id,
+        COALESCE(t.topic_title, '(Untitled Talk)') AS talk_title,
+        b.display_name
+      FROM talk_channel_bindings b
+      LEFT JOIN talks t ON t.id = b.talk_id
+      WHERE b.connection_id = ?
+        AND b.target_kind = ?
+        AND b.target_id = ?
+        AND b.active = 1
+      ORDER BY b.updated_at DESC, b.id DESC
+      LIMIT 1
+    `,
+    )
+    .get(input.connectionId, input.targetKind, input.targetId) as
+    | {
+        id: string;
+        talk_id: string;
+        talk_title: string;
+        display_name: string;
+      }
     | undefined;
 }
 
