@@ -1732,7 +1732,7 @@ describe('phase 0 schema and reliability tables', () => {
     ).toThrow(ThreadDeleteConflictError);
   });
 
-  it('treats awaiting confirmation main runs as busy when enqueueing another turn', () => {
+  it('allows enqueueing another Main turn when the only existing run is awaiting confirmation', () => {
     upsertUser({
       id: 'owner-1',
       email: 'owner@example.com',
@@ -1763,7 +1763,12 @@ describe('phase 0 schema and reliability tables', () => {
         messageId: 'main-msg-awaiting-busy-2',
         runId: 'main-run-awaiting-busy-2',
       }),
-    ).toThrow(MainThreadBusyError);
+    ).not.toThrow();
+
+    const secondRun = getDb()
+      .prepare(`SELECT status FROM talk_runs WHERE id = ?`)
+      .get('main-run-awaiting-busy-2') as { status: string } | undefined;
+    expect(secondRun?.status).toBe('queued');
   });
 
   it('cancels only the requested thread when sibling threads still have active work', () => {

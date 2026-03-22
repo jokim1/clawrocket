@@ -264,6 +264,8 @@ export interface MainRunApiRecord {
   lastProgressMessage: string | null;
   lastHeartbeatAt: string | null;
   terminalSummary: MainRunTerminalSummaryApiRecord | null;
+  resumeRequestedAt: string | null;
+  resumeRequestedBy: string | null;
 }
 
 function parseRunMetadata(
@@ -392,6 +394,14 @@ function toMainRunApiRecord(run: {
         ? metadata.lastHeartbeatAt
         : null,
     terminalSummary: parseTerminalSummary(metadata.terminalSummary),
+    resumeRequestedAt:
+      typeof metadata.resumeRequestedAt === 'string'
+        ? metadata.resumeRequestedAt
+        : null,
+    resumeRequestedBy:
+      typeof metadata.resumeRequestedBy === 'string'
+        ? metadata.resumeRequestedBy
+        : null,
   };
 }
 
