@@ -634,6 +634,8 @@ describe('main-executor (pure)', () => {
         userId: 'owner-1',
         runId: 'run-main-browser-dispatch',
         onProgress: expect.any(Function),
+        onPageReady: expect.any(Function),
+        timeoutProfile: 'default',
       },
     });
     expect(events).toContainEqual({
@@ -642,6 +644,98 @@ describe('main-executor (pure)', () => {
       threadId: 'thread-browser-dispatch',
       message: 'Opening linkedin…',
     });
+  });
+
+  it('uses browser fast lane for explicit browser access intents and records the strategy metadata', async () => {
+    const queuedRun = enqueueMainTurnAtomic({
+      threadId: 'thread-browser-fast-lane',
+      userId: 'owner-1',
+      content: 'Open LinkedIn and tell me what you can access.',
+      messageId: 'msg-browser-fast-lane',
+      runId: 'run-main-browser-fast-lane',
+    });
+
+    vi.mocked(planMainExecution).mockReturnValue({
+      policy: 'direct_only',
+      effectiveTools: [
+        {
+          toolFamily: 'browser',
+          runtimeTools: ['browser_open'],
+          enabled: true,
+          requiresApproval: false,
+        },
+      ],
+      heavyToolFamilies: [],
+      directPlan: {
+        backend: 'direct_http',
+        routeReason: 'normal',
+        authPath: 'api_key',
+        credentialSource: 'env',
+        effectiveTools: [
+          {
+            toolFamily: 'browser',
+            runtimeTools: ['browser_open'],
+            enabled: true,
+            requiresApproval: false,
+          },
+        ],
+        providerId: 'provider.anthropic',
+        modelId: 'claude-sonnet-4-6',
+        binding: {
+          providerConfig: {
+            providerId: 'provider.anthropic',
+            baseUrl: 'https://api.anthropic.com',
+            apiFormat: 'anthropic_messages',
+            authScheme: 'x_api_key',
+          },
+          secret: { apiKey: 'sk-ant-test' },
+        },
+      },
+      containerPlan: null,
+      hostCodexPlan: null,
+    });
+
+    vi.mocked(executeWithAgent).mockResolvedValue({
+      content: 'LinkedIn looks reachable.',
+      agentId: 'agent.main',
+      providerId: 'provider.anthropic',
+      modelId: 'claude-sonnet-4-6',
+    });
+
+    await executeMainChannel(
+      {
+        runId: queuedRun.run.id,
+        threadId: 'thread-browser-fast-lane',
+        requestedBy: 'owner-1',
+        triggerMessageId: queuedRun.message.id,
+        triggerContent: 'Open LinkedIn and tell me what you can access.',
+      },
+      new AbortController().signal,
+    );
+
+    expect(executeWithAgent).toHaveBeenCalledWith(
+      'agent.main',
+      expect.objectContaining({
+        systemPrompt: expect.stringContaining('Browser Fast Lane'),
+      }),
+      'Open LinkedIn and tell me what you can access.',
+      expect.objectContaining({
+        maxToolIterations: 3,
+        toolIterationLimitFallback: expect.stringContaining(
+          'browser fast-lane step limit',
+        ),
+      }),
+    );
+
+    const runRow = getDb()
+      .prepare(`SELECT metadata_json FROM talk_runs WHERE id = ?`)
+      .get(queuedRun.run.id) as { metadata_json: string | null } | undefined;
+    const metadata = JSON.parse(runRow?.metadata_json || '{}') as Record<
+      string,
+      unknown
+    >;
+    expect(metadata.executionStrategy).toBe('browser_fast_lane');
+    expect(metadata.routeReason).toBe('browser_fast_lane');
   });
 
   it('rejects browser tool calls in Main when browser is not enabled', async () => {

@@ -4,6 +4,7 @@ import {
   type BrowserResumeMetadata,
   type CarriedBrowserSessionMetadata,
   type ExecutionDecisionMetadata,
+  type MainRunTimingMetadata,
 } from '../../browser/metadata.js';
 import { buildMainExecutionPreview } from '../../agents/execution-preview.js';
 import { getMainAgent } from '../../agents/agent-registry.js';
@@ -260,6 +261,11 @@ export interface MainRunApiRecord {
   browserResume: BrowserResumeMetadata | null;
   carriedBrowserSessions: CarriedBrowserSessionMetadata[];
   executionDecision: ExecutionDecisionMetadata | null;
+  executionStrategy: 'browser_fast_lane' | 'generic_agent_loop' | null;
+  routeReason: 'browser_fast_lane' | 'subscription_fallback' | 'normal' | null;
+  currentStep: string | null;
+  timeoutPhase: string | null;
+  timing: MainRunTimingMetadata | null;
   streamedTextPreview: string | null;
   lastProgressMessage: string | null;
   lastHeartbeatAt: string | null;
@@ -381,6 +387,22 @@ function toMainRunApiRecord(run: {
     executionDecision: parseMetadataObject<ExecutionDecisionMetadata>(
       metadata.executionDecision,
     ),
+    executionStrategy:
+      metadata.executionStrategy === 'browser_fast_lane' ||
+      metadata.executionStrategy === 'generic_agent_loop'
+        ? metadata.executionStrategy
+        : null,
+    routeReason:
+      metadata.routeReason === 'browser_fast_lane' ||
+      metadata.routeReason === 'subscription_fallback' ||
+      metadata.routeReason === 'normal'
+        ? metadata.routeReason
+        : null,
+    currentStep:
+      typeof metadata.currentStep === 'string' ? metadata.currentStep : null,
+    timeoutPhase:
+      typeof metadata.timeoutPhase === 'string' ? metadata.timeoutPhase : null,
+    timing: parseMetadataObject<MainRunTimingMetadata>(metadata.timing),
     streamedTextPreview:
       typeof metadata.streamedTextPreview === 'string'
         ? metadata.streamedTextPreview

@@ -395,6 +395,33 @@ function buildLaunchOptions(
   return options;
 }
 
+async function gotoWithOptionalRetry(input: {
+  page: Page;
+  url: string;
+  timeoutMs: number;
+  retryOnTimeout?: boolean;
+}): Promise<void> {
+  try {
+    await input.page.goto(input.url, {
+      waitUntil: 'domcontentloaded',
+      timeout: input.timeoutMs,
+    });
+    return;
+  } catch (error) {
+    const isTimeoutError =
+      error instanceof Error &&
+      (error.name === 'TimeoutError' || /timeout/i.test(error.message));
+    if (!input.retryOnTimeout || !isTimeoutError) {
+      throw error;
+    }
+  }
+
+  await input.page.goto(input.url, {
+    waitUntil: 'domcontentloaded',
+    timeout: input.timeoutMs,
+  });
+}
+
 async function ensurePrimaryPage(context: BrowserContext): Promise<Page> {
   const pages = context.pages();
   if (pages.length > 0) {
@@ -935,7 +962,11 @@ export class BrowserService {
     accountLabel?: string | null;
     headed?: boolean;
     reuseSession?: boolean;
+    navigationTimeoutMs?: number;
+    retryOnInitialTimeout?: boolean;
   }): Promise<BrowserOpenResult> {
+    const navigationTimeoutMs =
+      input.navigationTimeoutMs ?? DEFAULT_NAVIGATION_TIMEOUT_MS;
     const { profile, created } = ensureBrowserProfile({
       siteKey: input.siteKey,
       accountLabel: input.accountLabel,
@@ -1009,9 +1040,11 @@ export class BrowserService {
       session = await this.createSession({ profile, headed });
     }
 
-    await session.page.goto(input.url, {
-      waitUntil: 'domcontentloaded',
-      timeout: DEFAULT_NAVIGATION_TIMEOUT_MS,
+    await gotoWithOptionalRetry({
+      page: session.page,
+      url: input.url,
+      timeoutMs: navigationTimeoutMs,
+      retryOnTimeout: input.retryOnInitialTimeout === true,
     });
     await this.refreshSessionLocation(session);
 

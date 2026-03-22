@@ -527,9 +527,25 @@ export type ExecutionDecision = {
     | 'auth_token'
     | 'host_auth'
     | 'missing';
+  routeReason?:
+    | 'browser_fast_lane'
+    | 'subscription_fallback'
+    | 'normal'
+    | null;
   plannerReason: string;
   providerId: string;
   modelId: string;
+};
+
+export type MainRunTiming = {
+  queueStartedAt?: string | null;
+  executorStartedAt?: string | null;
+  firstProviderEventAt?: string | null;
+  firstTokenAt?: string | null;
+  firstBrowserEventAt?: string | null;
+  firstPageReadyAt?: string | null;
+  blockedAt?: string | null;
+  completedAt?: string | null;
 };
 
 export type CarriedBrowserSession = {
@@ -3312,6 +3328,11 @@ export type MainRun = {
   browserResume?: BrowserResume | null;
   carriedBrowserSessions?: CarriedBrowserSession[];
   executionDecision?: ExecutionDecision | null;
+  executionStrategy?: 'browser_fast_lane' | 'generic_agent_loop' | null;
+  routeReason?: 'browser_fast_lane' | 'subscription_fallback' | 'normal' | null;
+  currentStep?: string | null;
+  timeoutPhase?: string | null;
+  timing?: MainRunTiming | null;
   streamedTextPreview?: string | null;
   lastProgressMessage?: string | null;
   lastHeartbeatAt?: string | null;

@@ -33,6 +33,7 @@ import {
 } from '../talks/internal-tags.js';
 import {
   executeMainChannel,
+  MainRunPhaseTimeoutError,
   type MainExecutionEvent,
 } from './main-executor.js';
 import { refreshMainThreadSummary } from './main-context-loader.js';
@@ -361,6 +362,11 @@ export class MainRunWorker implements MainRunWorkerControl {
                 ...current,
                 lastHeartbeatAt: new Date().toISOString(),
                 lastProgressMessage: null,
+                currentStep:
+                  typeof current.currentStep === 'string'
+                    ? current.currentStep
+                    : 'Starting model…',
+                timeoutPhase: null,
                 terminalSummary: null,
               }));
               break;
@@ -368,6 +374,7 @@ export class MainRunWorker implements MainRunWorkerControl {
               persistRunSnapshot((current) => ({
                 ...current,
                 lastProgressMessage: eventToPublish.message,
+                currentStep: eventToPublish.message,
                 lastHeartbeatAt: new Date().toISOString(),
               }));
               break;
@@ -488,6 +495,15 @@ export class MainRunWorker implements MainRunWorkerControl {
       if (streamedPreview) {
         persistPreviewIfNeeded(true);
       }
+      if (error instanceof MainRunPhaseTimeoutError) {
+        this.failRun(
+          run,
+          'execution_timeout',
+          error.message,
+          error.timeoutPhase,
+        );
+        return;
+      }
       this.failRun(run, 'execution_failed', errorMessage(error));
     } finally {
       this.stopRunHeartbeat(heartbeatTimer);
@@ -530,6 +546,7 @@ export class MainRunWorker implements MainRunWorkerControl {
     run: TalkRunRecord,
     errorCode: string,
     errorMessageText: string,
+    timeoutPhase?: string | null,
   ): void {
     const result = failMainRunAtomic({
       runId: run.id,
@@ -537,6 +554,7 @@ export class MainRunWorker implements MainRunWorkerControl {
       requestedBy: run.requested_by,
       errorCode,
       errorMessage: errorMessageText,
+      timeoutPhase: timeoutPhase ?? null,
     });
     if (!result.applied) {
       logger.debug(

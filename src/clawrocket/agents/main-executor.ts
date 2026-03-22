@@ -33,6 +33,7 @@ import {
   EXECUTOR_MAIN_PROJECT_PATH_KEY,
   getContainerAllowedTools,
   planMainExecution,
+  type ExecutionRouteReason,
   type MainExecutionPlan,
 } from './execution-planner.js';
 import { getMainAgent } from './agent-registry.js';
@@ -92,6 +93,23 @@ export interface MainPromotionRequest {
   userVisibleSummary: string;
   handoffNote: string | null;
   requiresApproval: boolean;
+}
+
+type MainExecutionStrategy = 'browser_fast_lane' | 'generic_agent_loop';
+type BrowserTimeoutProfile = 'default' | 'fast_lane';
+
+export class MainRunPhaseTimeoutError extends Error {
+  constructor(
+    public readonly timeoutPhase:
+      | 'queue_to_executor_start'
+      | 'first_progress'
+      | 'first_page_ready'
+      | 'total_run',
+    message: string,
+  ) {
+    super(message);
+    this.name = 'MainRunPhaseTimeoutError';
+  }
 }
 
 /** Streaming-only events emitted during execution. Terminal events are worker-owned. */
@@ -176,6 +194,74 @@ const REQUEST_HEAVY_EXECUTION_TOOL = {
   },
 } satisfies ExecutionContext['contextTools'][number];
 
+const BROWSER_FAST_LANE_MAX_TOOL_ITERATIONS = 3;
+const MAIN_RUN_QUEUE_START_BUDGET_MS = 2_000;
+const MAIN_RUN_FIRST_PROGRESS_BUDGET_MS = 10_000;
+const MAIN_RUN_FIRST_PAGE_READY_BUDGET_MS = 20_000;
+const MAIN_RUN_FAST_LANE_TOTAL_BUDGET_MS = 90_000;
+const MAIN_RUN_SUBSCRIPTION_FALLBACK_TOTAL_BUDGET_MS = 120_000;
+
+function looksLikeBrowserFastLaneIntent(content: string): boolean {
+  const normalized = content.trim().toLowerCase();
+  if (!normalized) {
+    return false;
+  }
+  const mentionsSurface =
+    /https?:\/\//.test(normalized) ||
+    /\blinkedin\b/.test(normalized) ||
+    /\b(browser|website|page|site|session)\b/.test(normalized);
+  if (!mentionsSurface) {
+    return false;
+  }
+  return /\b(open|access|check|inspect|visit|navigate|log in|login|see|show|tell me what you can access|what can you access)\b/.test(
+    normalized,
+  );
+}
+
+function shouldUseBrowserFastLane(input: {
+  triggerContent: string;
+  mainPlan: MainExecutionPlan;
+  promotedRun: MainPromotionRequest | null;
+  useHostCodex: boolean;
+}): boolean {
+  return (
+    !input.promotedRun &&
+    !input.useHostCodex &&
+    Boolean(input.mainPlan.directPlan) &&
+    toolFamilyEnabled(input.mainPlan.effectiveTools, 'browser') &&
+    looksLikeBrowserFastLaneIntent(input.triggerContent)
+  );
+}
+
+function buildBrowserFastLaneSection(): string {
+  return [
+    'This run is on the browser fast lane.',
+    'Use browser tools first and keep the run tightly bounded.',
+    'Open or reuse the target browser session immediately.',
+    'Classify whether the page is accessible, blocked by login, or waiting for phone/app approval.',
+    'Stop exploring once the page state is known and summarize only what is accessible or visible.',
+    'Prefer the minimum tool calls needed to answer. Do not wander or perform unrelated browsing.',
+  ].join('\n');
+}
+
+function deriveRouteReason(input: {
+  strategy: MainExecutionStrategy;
+  shouldUseContainer: boolean;
+  useHostCodex: boolean;
+  mainPlan: MainExecutionPlan;
+}): ExecutionRouteReason {
+  if (input.strategy === 'browser_fast_lane') {
+    return 'browser_fast_lane';
+  }
+  if (input.shouldUseContainer) {
+    return input.mainPlan.containerPlan?.routeReason || 'normal';
+  }
+  if (input.useHostCodex) {
+    return 'normal';
+  }
+  return input.mainPlan.directPlan?.routeReason || 'normal';
+}
+
 function parseObject(
   value: string | null | undefined,
 ): Record<string, unknown> {
@@ -225,6 +311,61 @@ function updateRunTiming(runId: string, patch: Record<string, unknown>): void {
       },
     };
   });
+}
+
+function updateRunStateMetadata(
+  runId: string,
+  patch: Record<string, unknown>,
+): void {
+  updateTalkRunMetadata(runId, (current) => ({
+    ...current,
+    ...patch,
+  }));
+}
+
+function parseRunTimingMetadata(
+  metadata: Record<string, unknown>,
+): Record<string, unknown> {
+  const timing = metadata.timing;
+  if (timing && typeof timing === 'object' && !Array.isArray(timing)) {
+    return { ...(timing as Record<string, unknown>) };
+  }
+  return {};
+}
+
+function parseIsoMs(value: unknown): number | null {
+  if (typeof value !== 'string') {
+    return null;
+  }
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) ? timestamp : null;
+}
+
+function createChildSignal(parentSignal: AbortSignal): {
+  signal: AbortSignal;
+  abort: (reason: unknown) => void;
+  cleanup: () => void;
+} {
+  const controller = new AbortController();
+  const onAbort = () => controller.abort(parentSignal.reason || 'aborted');
+  if (parentSignal.aborted) {
+    onAbort();
+  } else {
+    parentSignal.addEventListener('abort', onAbort, { once: true });
+  }
+  return {
+    signal: controller.signal,
+    abort: (reason) => {
+      if (!controller.signal.aborted) {
+        controller.abort(
+          reason instanceof Error ? reason : new Error(String(reason)),
+        );
+      }
+    },
+    cleanup: () => {
+      parentSignal.removeEventListener('abort', onAbort);
+    },
+  };
 }
 
 function validatePromotionRequest(
@@ -318,6 +459,7 @@ function buildExecutionDecisionForMain(input: {
   agent: RegisteredAgentRecord;
   mainPlan: MainExecutionPlan;
   backend: 'direct_http' | 'container' | 'host_codex';
+  routeReason: ExecutionRouteReason;
 }): ExecutionDecisionMetadata {
   if (input.backend === 'container') {
     const containerPlan = input.mainPlan.containerPlan;
@@ -328,6 +470,7 @@ function buildExecutionDecisionForMain(input: {
       backend: 'container',
       authPath: containerPlan.containerCredential.authMode,
       credentialSource: containerPlan.containerCredential.credentialSource,
+      routeReason: input.routeReason,
       plannerReason: input.mainPlan.policy,
       providerId: input.agent.provider_id,
       modelId: input.agent.model_id,
@@ -343,6 +486,7 @@ function buildExecutionDecisionForMain(input: {
       backend: 'host_codex',
       authPath: hostCodexPlan.authPath,
       credentialSource: hostCodexPlan.credentialSource,
+      routeReason: input.routeReason,
       plannerReason: input.mainPlan.policy,
       providerId: input.agent.provider_id,
       modelId: input.agent.model_id,
@@ -357,6 +501,7 @@ function buildExecutionDecisionForMain(input: {
     backend: 'direct_http',
     authPath: directPlan.authPath,
     credentialSource: directPlan.credentialSource,
+    routeReason: input.routeReason,
     plannerReason: input.mainPlan.policy,
     providerId: input.agent.provider_id,
     modelId: input.agent.model_id,
@@ -406,7 +551,9 @@ export async function executeMainChannel(
 
   const mainPlan = planMainExecution(agent, input.requestedBy);
   const useHostCodex = mainPlan.policy === 'host_codex_only';
-  const runMetadata = parseObject(getTalkRunById(input.runId)?.metadata_json);
+  const runRecord = getTalkRunById(input.runId);
+  const runMetadata = parseObject(runRecord?.metadata_json);
+  const timingMetadata = parseRunTimingMetadata(runMetadata);
   const browserResumeSection = buildBrowserResumeSection(runMetadata);
   const promotedRun =
     runMetadata.kind === 'main_promotion'
@@ -432,10 +579,67 @@ export async function executeMainChannel(
           requiresApproval: false,
         } satisfies MainPromotionRequest)
       : null;
+  const executionStrategy: MainExecutionStrategy = shouldUseBrowserFastLane({
+    triggerContent: input.triggerContent,
+    mainPlan,
+    promotedRun,
+    useHostCodex,
+  })
+    ? 'browser_fast_lane'
+    : 'generic_agent_loop';
+  const shouldUseContainer =
+    Boolean(promotedRun) || mainPlan.policy === 'container_only';
+  const routeReason = deriveRouteReason({
+    strategy: executionStrategy,
+    shouldUseContainer,
+    useHostCodex,
+    mainPlan,
+  });
+  const backend = useHostCodex
+    ? 'host_codex'
+    : shouldUseContainer
+      ? 'container'
+      : 'direct_http';
+  const executorStartedAt = new Date().toISOString();
+  const queueStartedAtMs = parseIsoMs(
+    timingMetadata.queueStartedAt || timingMetadata.enqueuedAt,
+  );
 
   updateRunTiming(input.runId, {
-    executorStartedAt: new Date().toISOString(),
+    queueStartedAt:
+      typeof timingMetadata.queueStartedAt === 'string'
+        ? timingMetadata.queueStartedAt
+        : typeof timingMetadata.enqueuedAt === 'string'
+          ? timingMetadata.enqueuedAt
+          : null,
+    executorStartedAt,
   });
+  updateRunStateMetadata(input.runId, {
+    executionStrategy,
+    routeReason,
+    timeoutPhase: null,
+    currentStep:
+      executionStrategy === 'browser_fast_lane'
+        ? 'Starting browser-first model…'
+        : shouldUseContainer
+          ? routeReason === 'subscription_fallback'
+            ? 'Starting Claude subscription runtime…'
+            : 'Starting container runtime…'
+          : useHostCodex
+            ? 'Starting host runtime…'
+            : 'Starting model…',
+  });
+
+  if (
+    queueStartedAtMs &&
+    Date.parse(executorStartedAt) - queueStartedAtMs >
+      MAIN_RUN_QUEUE_START_BUDGET_MS
+  ) {
+    throw new MainRunPhaseTimeoutError(
+      'queue_to_executor_start',
+      'The run waited too long in the queue before execution started.',
+    );
+  }
 
   emitEvent({
     type: 'main_response_started',
@@ -458,24 +662,17 @@ export async function executeMainChannel(
     executionDecision: buildExecutionDecisionForMain({
       agent,
       mainPlan,
-      backend: useHostCodex
-        ? 'host_codex'
-        : promotedRun || mainPlan.policy === 'container_only'
-          ? 'container'
-          : 'direct_http',
+      backend,
+      routeReason,
     }),
-    renderer: useHostCodex
-      ? 'host_codex'
-      : promotedRun || mainPlan.policy === 'container_only'
-        ? 'container'
-        : 'direct_http',
+    executionStrategy,
+    routeReason,
+    renderer: backend,
     executionPolicy: mainPlan.policy,
   }));
 
   // --- Step 3: Execute via agent router ---
   // Main channel has web tools but no context-source or connector tools.
-  const shouldUseContainer =
-    Boolean(promotedRun) || mainPlan.policy === 'container_only';
   const projectMountHostPath = resolveValidatedProjectMountPath(
     getSettingValue(EXECUTOR_MAIN_PROJECT_PATH_KEY),
     true,
@@ -502,220 +699,210 @@ export async function executeMainChannel(
       buildPromotionHandoffSection(promotedRun),
     );
   }
-  if (shouldUseContainer) {
-    const containerPlan = mainPlan.containerPlan;
-    if (!containerPlan) {
-      throw new Error(
-        'Main container execution is not configured for this agent',
-      );
-    }
-    const containerEffectiveTools = promotedRun
-      ? containerPlan.effectiveTools.filter(
-          (tool) =>
-            tool.toolFamily === 'web' ||
-            tool.toolFamily === 'browser' ||
-            promotedRun.requiredToolFamilies.includes(
-              tool.toolFamily as 'shell' | 'filesystem',
-            ),
-        )
-      : containerPlan.effectiveTools;
-    const result = await executeContainerAgentTurn({
-      runId: input.runId,
-      userId: input.requestedBy,
-      agent,
-      promptLabel: 'main',
-      userMessage: renderMainPromptPayload(mainContext, input.triggerContent),
-      signal,
-      allowedTools: getContainerAllowedTools({
-        effectiveTools: containerEffectiveTools,
-      }),
-      context: {
-        systemPrompt,
-        history: mainContext.history,
-      },
-      modelContextWindow,
-      containerCredential: containerPlan.containerCredential,
-      threadId: input.threadId,
-      projectMountHostPath,
-      enableBrowserTools: containerEffectiveTools.some(
-        (tool) => tool.toolFamily === 'browser' && tool.enabled,
-      ),
-    });
-
-    updateRunTiming(input.runId, {
-      completedAt: new Date().toISOString(),
-    });
-    return {
-      content: result.content,
-      agentId: agent.id,
-      agentName: agent.name,
-      providerId: agent.provider_id,
-      modelId: agent.model_id,
-      threadId: input.threadId,
-      latencyMs: Date.now() - startTime,
-      promotionRequest: null,
-    };
+  if (executionStrategy === 'browser_fast_lane') {
+    systemPrompt = appendSystemSection(
+      systemPrompt,
+      'Browser Fast Lane',
+      buildBrowserFastLaneSection(),
+    );
   }
 
-  if (useHostCodex) {
-    const hostCodexPlan = mainPlan.hostCodexPlan;
-    if (!hostCodexPlan) {
-      throw new Error(
-        'Main Codex host execution is not configured for this agent',
-      );
-    }
-    const result = await executeCodexAgentTurn({
-      runId: input.runId,
-      userId: input.requestedBy,
-      agent,
-      promptLabel: 'main',
-      userMessage: renderMainPromptPayload(mainContext, input.triggerContent),
-      signal,
-      context: {
-        systemPrompt,
-        history: mainContext.history,
-      },
-      modelContextWindow,
-      threadId: input.threadId,
-      projectMountHostPath,
-      enableWebTools: hostCodexPlan.effectiveTools.some(
-        (tool) => tool.toolFamily === 'web' && tool.enabled,
-      ),
-      enableBrowserTools: hostCodexPlan.effectiveTools.some(
-        (tool) => tool.toolFamily === 'browser' && tool.enabled,
-      ),
-      onProgressUpdate: (message) => {
-        emitEvent({
-          type: 'main_progress_update',
-          runId: input.runId,
-          threadId: input.threadId,
-          message,
-        });
-      },
-    });
+  const executionSignalControl = createChildSignal(signal);
+  const executionSignal = executionSignalControl.signal;
+  let phaseTimeoutError: MainRunPhaseTimeoutError | null = null;
+  const budgetTimers = new Set<ReturnType<typeof setTimeout>>();
+  let firstMeaningfulProgressRecorded = false;
+  let firstBrowserEventRecorded = false;
+  let firstPageReadyRecorded = false;
 
-    if (
-      result.usage?.inputTokens !== undefined ||
-      result.usage?.cachedInputTokens !== undefined ||
-      result.usage?.outputTokens !== undefined
-    ) {
+  const clearBudgetTimer = (timer: ReturnType<typeof setTimeout> | null) => {
+    if (!timer) return;
+    clearTimeout(timer);
+    budgetTimers.delete(timer);
+  };
+  const clearAllBudgetTimers = () => {
+    for (const timer of budgetTimers) {
+      clearTimeout(timer);
+    }
+    budgetTimers.clear();
+  };
+  const triggerTimeout = (
+    timeoutPhase: 'first_progress' | 'first_page_ready' | 'total_run',
+    message: string,
+  ) => {
+    if (phaseTimeoutError) return;
+    phaseTimeoutError = new MainRunPhaseTimeoutError(timeoutPhase, message);
+    executionSignalControl.abort(phaseTimeoutError);
+  };
+  const scheduleBudgetTimer = (
+    timeoutMs: number,
+    timeoutPhase: 'first_progress' | 'first_page_ready' | 'total_run',
+    message: string,
+  ) => {
+    const timer = setTimeout(
+      () => triggerTimeout(timeoutPhase, message),
+      timeoutMs,
+    );
+    budgetTimers.add(timer);
+    return timer;
+  };
+  let firstProgressTimer: ReturnType<typeof setTimeout> | null = null;
+  let firstPageReadyTimer: ReturnType<typeof setTimeout> | null = null;
+  let totalBudgetTimer: ReturnType<typeof setTimeout> | null = null;
+  const markMeaningfulProgress = () => {
+    if (firstMeaningfulProgressRecorded) {
+      return;
+    }
+    firstMeaningfulProgressRecorded = true;
+    clearBudgetTimer(firstProgressTimer);
+    firstProgressTimer = null;
+  };
+  const markFirstBrowserEvent = () => {
+    markMeaningfulProgress();
+    if (firstBrowserEventRecorded) {
+      return;
+    }
+    firstBrowserEventRecorded = true;
+    updateRunTiming(input.runId, {
+      firstBrowserEventAt: new Date().toISOString(),
+    });
+  };
+  const markFirstPageReady = (currentStep?: string) => {
+    if (firstPageReadyRecorded) {
+      return;
+    }
+    firstPageReadyRecorded = true;
+    clearBudgetTimer(firstPageReadyTimer);
+    firstPageReadyTimer = null;
+    updateRunTiming(input.runId, {
+      firstPageReadyAt: new Date().toISOString(),
+    });
+    if (currentStep) {
       emitEvent({
-        type: 'main_response_usage',
+        type: 'main_progress_update',
         runId: input.runId,
         threadId: input.threadId,
-        usage: {
-          inputTokens: result.usage.inputTokens ?? 0,
-          cachedInputTokens: result.usage.cachedInputTokens,
-          outputTokens: result.usage.outputTokens ?? 0,
-        },
+        message: currentStep,
       });
     }
-
-    updateRunTiming(input.runId, {
-      completedAt: new Date().toISOString(),
-    });
-    return {
-      content: result.content,
-      agentId: agent.id,
-      agentName: agent.name,
-      providerId: agent.provider_id,
-      modelId: agent.model_id,
-      threadId: input.threadId,
-      latencyMs: Date.now() - startTime,
-      promotionRequest: null,
-      usage: result.usage
-        ? {
-            inputTokens: result.usage.inputTokens ?? 0,
-            cachedInputTokens: result.usage.cachedInputTokens,
-            outputTokens: result.usage.outputTokens ?? 0,
-          }
-        : undefined,
-    };
-  }
-
-  if (!mainPlan.directPlan) {
-    throw new Error('Main direct execution is not configured for this agent');
-  }
-
-  let firstProviderEventRecorded = false;
-  let firstTokenRecorded = false;
-  let promotionRequest: MainPromotionRequest | null = null;
-  const directContextTools = [
-    ...(toolFamilyEnabled(mainPlan.effectiveTools, 'web')
-      ? WEB_TOOL_DEFINITIONS
-      : []),
-    ...(toolFamilyEnabled(mainPlan.effectiveTools, 'browser')
-      ? BROWSER_TOOL_DEFINITIONS
-      : []),
-  ];
-  const context: ExecutionContext = {
-    systemPrompt: browserResumeSection
-      ? `${buildMainSystemPrompt(mainContext.summaryText)}\n\n# Browser Resume Context\n\n${browserResumeSection}`
-      : buildMainSystemPrompt(mainContext.summaryText),
-    contextTools:
-      mainPlan.policy === 'direct_with_promotion'
-        ? [...directContextTools, REQUEST_HEAVY_EXECUTION_TOOL]
-        : directContextTools,
-    connectorTools: [],
-    history: mainContext.history,
   };
-  const result = await executeWithAgent(
-    agent.id,
-    context,
-    input.triggerContent,
-    {
-      runId: input.runId,
-      userId: input.requestedBy,
-      signal,
-      alwaysAllowedContextToolNames:
-        mainPlan.policy === 'direct_with_promotion'
-          ? [REQUEST_HEAVY_EXECUTION_TOOL.name]
-          : undefined,
-      emit: (event: ExecutionEvent) => {
-        if (
-          !firstProviderEventRecorded &&
-          (event.type === 'text_delta' ||
-            event.type === 'tool_call' ||
-            event.type === 'tool_result' ||
-            event.type === 'usage')
-        ) {
-          firstProviderEventRecorded = true;
-          const firstProviderEventAt = new Date().toISOString();
-          updateRunTiming(input.runId, {
-            firstProviderEventAt,
-          });
+
+  if (!shouldUseContainer) {
+    firstProgressTimer = scheduleBudgetTimer(
+      MAIN_RUN_FIRST_PROGRESS_BUDGET_MS,
+      'first_progress',
+      'The run did not produce provider or browser progress quickly enough.',
+    );
+  }
+  if (executionStrategy === 'browser_fast_lane') {
+    firstPageReadyTimer = scheduleBudgetTimer(
+      MAIN_RUN_FIRST_PAGE_READY_BUDGET_MS,
+      'first_page_ready',
+      'The browser did not reach a usable page state quickly enough.',
+    );
+    totalBudgetTimer = scheduleBudgetTimer(
+      MAIN_RUN_FAST_LANE_TOTAL_BUDGET_MS,
+      'total_run',
+      'The browser fast-lane run exceeded its maximum time budget.',
+    );
+  } else if (shouldUseContainer && routeReason === 'subscription_fallback') {
+    totalBudgetTimer = scheduleBudgetTimer(
+      MAIN_RUN_SUBSCRIPTION_FALLBACK_TOTAL_BUDGET_MS,
+      'total_run',
+      'The subscription fallback run exceeded its maximum time budget.',
+    );
+  }
+  try {
+    if (shouldUseContainer) {
+      const containerPlan = mainPlan.containerPlan;
+      if (!containerPlan) {
+        throw new Error(
+          'Main container execution is not configured for this agent',
+        );
+      }
+      const containerEffectiveTools = promotedRun
+        ? containerPlan.effectiveTools.filter(
+            (tool) =>
+              tool.toolFamily === 'web' ||
+              tool.toolFamily === 'browser' ||
+              promotedRun.requiredToolFamilies.includes(
+                tool.toolFamily as 'shell' | 'filesystem',
+              ),
+          )
+        : containerPlan.effectiveTools;
+      const result = await executeContainerAgentTurn({
+        runId: input.runId,
+        userId: input.requestedBy,
+        agent,
+        promptLabel: 'main',
+        userMessage: renderMainPromptPayload(mainContext, input.triggerContent),
+        signal: executionSignal,
+        allowedTools: getContainerAllowedTools({
+          effectiveTools: containerEffectiveTools,
+        }),
+        context: {
+          systemPrompt,
+          history: mainContext.history,
+        },
+        modelContextWindow,
+        containerCredential: containerPlan.containerCredential,
+        threadId: input.threadId,
+        projectMountHostPath,
+        enableBrowserTools: containerEffectiveTools.some(
+          (tool) => tool.toolFamily === 'browser' && tool.enabled,
+        ),
+      }).catch((error) => {
+        if (phaseTimeoutError) {
+          throw phaseTimeoutError;
         }
-        if (event.type === 'text_delta') {
-          if (!firstTokenRecorded) {
-            firstTokenRecorded = true;
-            updateRunTiming(input.runId, {
-              firstTokenAt: new Date().toISOString(),
-            });
-          }
-          emitEvent({
-            type: 'main_response_delta',
-            runId: input.runId,
-            threadId: input.threadId,
-            text: event.text,
-          });
-        } else if (event.type === 'usage') {
-          emitEvent({
-            type: 'main_response_usage',
-            runId: input.runId,
-            threadId: input.threadId,
-            usage: {
-              inputTokens: event.inputTokens,
-              outputTokens: event.outputTokens,
-              estimatedCostUsd: event.estimatedCostUsd,
-            },
-          });
-        }
-      },
-      executeToolCall: buildMainToolExecutor({
-        signal,
-        input,
-        mainPlan,
-        onProgressRequested: (message) => {
+        throw error;
+      });
+
+      clearBudgetTimer(totalBudgetTimer);
+      updateRunTiming(input.runId, {
+        completedAt: new Date().toISOString(),
+      });
+      return {
+        content: result.content,
+        agentId: agent.id,
+        agentName: agent.name,
+        providerId: agent.provider_id,
+        modelId: agent.model_id,
+        threadId: input.threadId,
+        latencyMs: Date.now() - startTime,
+        promotionRequest: null,
+      };
+    }
+
+    if (useHostCodex) {
+      const hostCodexPlan = mainPlan.hostCodexPlan;
+      if (!hostCodexPlan) {
+        throw new Error(
+          'Main Codex host execution is not configured for this agent',
+        );
+      }
+      const result = await executeCodexAgentTurn({
+        runId: input.runId,
+        userId: input.requestedBy,
+        agent,
+        promptLabel: 'main',
+        userMessage: renderMainPromptPayload(mainContext, input.triggerContent),
+        signal: executionSignal,
+        context: {
+          systemPrompt,
+          history: mainContext.history,
+        },
+        modelContextWindow,
+        threadId: input.threadId,
+        projectMountHostPath,
+        enableWebTools: hostCodexPlan.effectiveTools.some(
+          (tool) => tool.toolFamily === 'web' && tool.enabled,
+        ),
+        enableBrowserTools: hostCodexPlan.effectiveTools.some(
+          (tool) => tool.toolFamily === 'browser' && tool.enabled,
+        ),
+        onProgressUpdate: (message) => {
+          markMeaningfulProgress();
           emitEvent({
             type: 'main_progress_update',
             runId: input.runId,
@@ -723,42 +910,231 @@ export async function executeMainChannel(
             message,
           });
         },
-        onPromotionRequested: (request) => {
-          promotionRequest = request;
-          updateTalkRunMetadata(input.runId, (current) => ({
-            ...current,
-            promotionRequested: true,
-            promotionState: 'pending',
-            promotionChildRunId: null,
-            requestedToolFamilies: request.requiredToolFamilies,
-            userVisibleSummary: request.userVisibleSummary,
-          }));
-          emitEvent({
-            type: 'main_promotion_pending',
-            runId: input.runId,
-            threadId: input.threadId,
-            requestedToolFamilies: request.requiredToolFamilies,
-            userVisibleSummary: request.userVisibleSummary,
-          });
-        },
-      }),
-    },
-  );
+      }).catch((error) => {
+        if (phaseTimeoutError) {
+          throw phaseTimeoutError;
+        }
+        throw error;
+      });
 
-  updateRunTiming(input.runId, {
-    completedAt: new Date().toISOString(),
-  });
-  return {
-    content: result.content,
-    agentId: agent.id,
-    agentName: agent.name,
-    providerId: agent.provider_id,
-    modelId: agent.model_id,
-    threadId: input.threadId,
-    latencyMs: Date.now() - startTime,
-    promotionRequest,
-    usage: result.usage,
-  };
+      clearBudgetTimer(firstProgressTimer);
+      clearBudgetTimer(totalBudgetTimer);
+      if (
+        result.usage?.inputTokens !== undefined ||
+        result.usage?.cachedInputTokens !== undefined ||
+        result.usage?.outputTokens !== undefined
+      ) {
+        emitEvent({
+          type: 'main_response_usage',
+          runId: input.runId,
+          threadId: input.threadId,
+          usage: {
+            inputTokens: result.usage.inputTokens ?? 0,
+            cachedInputTokens: result.usage.cachedInputTokens,
+            outputTokens: result.usage.outputTokens ?? 0,
+          },
+        });
+      }
+
+      updateRunTiming(input.runId, {
+        completedAt: new Date().toISOString(),
+      });
+      return {
+        content: result.content,
+        agentId: agent.id,
+        agentName: agent.name,
+        providerId: agent.provider_id,
+        modelId: agent.model_id,
+        threadId: input.threadId,
+        latencyMs: Date.now() - startTime,
+        promotionRequest: null,
+        usage: result.usage
+          ? {
+              inputTokens: result.usage.inputTokens ?? 0,
+              cachedInputTokens: result.usage.cachedInputTokens,
+              outputTokens: result.usage.outputTokens ?? 0,
+            }
+          : undefined,
+      };
+    }
+
+    if (!mainPlan.directPlan) {
+      throw new Error('Main direct execution is not configured for this agent');
+    }
+
+    let firstProviderEventRecorded = false;
+    let firstTokenRecorded = false;
+    let promotionRequest: MainPromotionRequest | null = null;
+    const browserTools = toolFamilyEnabled(mainPlan.effectiveTools, 'browser')
+      ? BROWSER_TOOL_DEFINITIONS
+      : [];
+    const webTools = toolFamilyEnabled(mainPlan.effectiveTools, 'web')
+      ? WEB_TOOL_DEFINITIONS
+      : [];
+    const directContextTools =
+      executionStrategy === 'browser_fast_lane'
+        ? [...browserTools, ...webTools]
+        : [...webTools, ...browserTools];
+    let directSystemPrompt = buildMainSystemPrompt(mainContext.summaryText);
+    if (browserResumeSection) {
+      directSystemPrompt = appendSystemSection(
+        directSystemPrompt,
+        'Browser Resume Context',
+        browserResumeSection,
+      );
+    }
+    if (promotedRun) {
+      directSystemPrompt = appendSystemSection(
+        directSystemPrompt,
+        'Promotion Handoff',
+        buildPromotionHandoffSection(promotedRun),
+      );
+    }
+    if (executionStrategy === 'browser_fast_lane') {
+      directSystemPrompt = appendSystemSection(
+        directSystemPrompt,
+        'Browser Fast Lane',
+        buildBrowserFastLaneSection(),
+      );
+    }
+    const context: ExecutionContext = {
+      systemPrompt: directSystemPrompt,
+      contextTools:
+        mainPlan.policy === 'direct_with_promotion'
+          ? [...directContextTools, REQUEST_HEAVY_EXECUTION_TOOL]
+          : directContextTools,
+      connectorTools: [],
+      history: mainContext.history,
+    };
+    const result = await executeWithAgent(
+      agent.id,
+      context,
+      input.triggerContent,
+      {
+        runId: input.runId,
+        userId: input.requestedBy,
+        signal: executionSignal,
+        maxToolIterations:
+          executionStrategy === 'browser_fast_lane'
+            ? BROWSER_FAST_LANE_MAX_TOOL_ITERATIONS
+            : undefined,
+        toolIterationLimitFallback:
+          executionStrategy === 'browser_fast_lane'
+            ? 'I reached the browser fast-lane step limit before a fuller response was available. Based on the steps completed so far, the page state should be treated as the current result.'
+            : undefined,
+        alwaysAllowedContextToolNames:
+          mainPlan.policy === 'direct_with_promotion'
+            ? [REQUEST_HEAVY_EXECUTION_TOOL.name]
+            : undefined,
+        emit: (event: ExecutionEvent) => {
+          if (
+            !firstProviderEventRecorded &&
+            (event.type === 'text_delta' ||
+              event.type === 'tool_call' ||
+              event.type === 'tool_result' ||
+              event.type === 'usage')
+          ) {
+            firstProviderEventRecorded = true;
+            markMeaningfulProgress();
+            updateRunTiming(input.runId, {
+              firstProviderEventAt: new Date().toISOString(),
+            });
+          }
+          if (event.type === 'text_delta') {
+            if (!firstTokenRecorded) {
+              firstTokenRecorded = true;
+              updateRunTiming(input.runId, {
+                firstTokenAt: new Date().toISOString(),
+              });
+            }
+            emitEvent({
+              type: 'main_response_delta',
+              runId: input.runId,
+              threadId: input.threadId,
+              text: event.text,
+            });
+          } else if (event.type === 'usage') {
+            emitEvent({
+              type: 'main_response_usage',
+              runId: input.runId,
+              threadId: input.threadId,
+              usage: {
+                inputTokens: event.inputTokens,
+                outputTokens: event.outputTokens,
+                estimatedCostUsd: event.estimatedCostUsd,
+              },
+            });
+          }
+        },
+        executeToolCall: buildMainToolExecutor({
+          signal: executionSignal,
+          input,
+          mainPlan,
+          timeoutProfile:
+            executionStrategy === 'browser_fast_lane' ? 'fast_lane' : 'default',
+          onBrowserActivity: () => {
+            markFirstBrowserEvent();
+          },
+          onBrowserPageReady: () => {
+            markFirstPageReady('Reading page access…');
+          },
+          onProgressRequested: (message) => {
+            markMeaningfulProgress();
+            emitEvent({
+              type: 'main_progress_update',
+              runId: input.runId,
+              threadId: input.threadId,
+              message,
+            });
+          },
+          onPromotionRequested: (request) => {
+            promotionRequest = request;
+            updateTalkRunMetadata(input.runId, (current) => ({
+              ...current,
+              promotionRequested: true,
+              promotionState: 'pending',
+              promotionChildRunId: null,
+              requestedToolFamilies: request.requiredToolFamilies,
+              userVisibleSummary: request.userVisibleSummary,
+            }));
+            emitEvent({
+              type: 'main_promotion_pending',
+              runId: input.runId,
+              threadId: input.threadId,
+              requestedToolFamilies: request.requiredToolFamilies,
+              userVisibleSummary: request.userVisibleSummary,
+            });
+          },
+        }),
+      },
+    ).catch((error) => {
+      if (phaseTimeoutError) {
+        throw phaseTimeoutError;
+      }
+      throw error;
+    });
+
+    clearBudgetTimer(firstProgressTimer);
+    clearBudgetTimer(firstPageReadyTimer);
+    clearBudgetTimer(totalBudgetTimer);
+    updateRunTiming(input.runId, {
+      completedAt: new Date().toISOString(),
+    });
+    return {
+      content: result.content,
+      agentId: agent.id,
+      agentName: agent.name,
+      providerId: agent.provider_id,
+      modelId: agent.model_id,
+      threadId: input.threadId,
+      latencyMs: Date.now() - startTime,
+      promotionRequest,
+      usage: result.usage,
+    };
+  } finally {
+    clearAllBudgetTimers();
+    executionSignalControl.cleanup();
+  }
 }
 
 // ============================================================================
@@ -773,6 +1149,9 @@ function buildMainToolExecutor(input: {
   signal: AbortSignal;
   input: MainExecutorInput;
   mainPlan: MainExecutionPlan;
+  timeoutProfile: BrowserTimeoutProfile;
+  onBrowserActivity: () => void;
+  onBrowserPageReady: () => void;
   onProgressRequested: (message: string) => void;
   onPromotionRequested: (request: MainPromotionRequest) => void;
 }) {
@@ -806,6 +1185,7 @@ function buildMainToolExecutor(input: {
           isError: true,
         };
       }
+      input.onBrowserActivity();
       return executeBrowserTool({
         toolName,
         args,
@@ -814,6 +1194,8 @@ function buildMainToolExecutor(input: {
           userId: input.input.requestedBy,
           runId: input.input.runId,
           onProgress: input.onProgressRequested,
+          timeoutProfile: input.timeoutProfile,
+          onPageReady: input.onBrowserPageReady,
         },
       });
     }
