@@ -36,6 +36,7 @@ import {
   type RegisteredAgent,
 } from '../lib/api';
 import { stripInternalAssistantText } from '../lib/assistantText';
+import { isPhoneApprovalBrowserBlock } from '../lib/browser-blocks';
 import { BrowserBlockedRunCard } from '../components/BrowserBlockedRunCard';
 import { ExecutionDecisionSummary } from '../components/ExecutionDecisionSummary';
 import { InlineEditableTitle } from '../components/InlineEditableTitle';
@@ -171,7 +172,9 @@ function getBrowserBlockStatusLabel(
   }
   switch (browserBlock.kind) {
     case 'auth_required':
-      return 'Authentication required';
+      return isPhoneApprovalBrowserBlock(browserBlock)
+        ? 'Check phone approval'
+        : 'Authentication required';
     case 'confirmation_required':
       return 'Approval required';
     case 'human_step_required':
