@@ -14,6 +14,7 @@ import {
   type BrowserBlockArtifact,
   type ExecutionDecision,
 } from '../lib/api';
+import { isPhoneApprovalBrowserBlock } from '../lib/browser-blocks';
 
 type BrowserBlockedRunCardProps = {
   runId: string;
@@ -41,8 +42,12 @@ type NoticeState =
     }
   | null;
 
-function getBrowserBlockHeading(kind: BrowserBlock['kind']): string {
-  switch (kind) {
+function getBrowserBlockHeading(browserBlock: BrowserBlock): string {
+  if (isPhoneApprovalBrowserBlock(browserBlock)) {
+    return 'Approve sign-in on your phone';
+  }
+
+  switch (browserBlock.kind) {
     case 'auth_required':
       return 'Browser authentication required';
     case 'confirmation_required':
@@ -123,6 +128,10 @@ export function BrowserBlockedRunCard({
   const decisionSummary = useMemo(
     () => getDecisionSummary(executionDecision),
     [executionDecision],
+  );
+  const requiresPhoneApproval = useMemo(
+    () => isPhoneApprovalBrowserBlock(browserBlock),
+    [browserBlock],
   );
   const isDeferredResume = Boolean(
     resumeRequestedAt && browserBlock.kind !== 'session_conflict',
@@ -312,10 +321,10 @@ export function BrowserBlockedRunCard({
   ]);
 
   return (
-    <section className="browser-block-card" aria-label={getBrowserBlockHeading(browserBlock.kind)}>
+    <section className="browser-block-card" aria-label={getBrowserBlockHeading(browserBlock)}>
       <div className="browser-block-card-header">
         <div>
-          <h3>{getBrowserBlockHeading(browserBlock.kind)}</h3>
+          <h3>{getBrowserBlockHeading(browserBlock)}</h3>
           <p className="browser-block-site">
             {browserBlock.siteKey}
             {browserBlock.accountLabel ? ` · ${browserBlock.accountLabel}` : ''}
@@ -327,6 +336,12 @@ export function BrowserBlockedRunCard({
       </div>
 
       <p className="browser-block-message">{browserBlock.message}</p>
+      {requiresPhoneApproval ? (
+        <p className="browser-block-message">
+          <strong>Check your phone or LinkedIn app now.</strong> This run is
+          paused until you approve the sign-in on your trusted device.
+        </p>
+      ) : null}
       {browserBlock.kind === 'session_conflict' &&
       browserBlock.conflictingRunSummary ? (
         <p className="browser-block-message">
@@ -340,8 +355,18 @@ export function BrowserBlockedRunCard({
       ) : browserBlock.kind !== 'confirmation_required' &&
         browserBlock.kind !== 'session_conflict' ? (
         <p className="browser-block-message">
-          If you already completed the step on your phone or in another window,
-          click <strong>Resume run</strong>.
+          {requiresPhoneApproval ? (
+            <>
+              After you approve the sign-in on your phone or in the LinkedIn
+              app, this run should resume automatically. If it does not, click{' '}
+              <strong>Resume run</strong>.
+            </>
+          ) : (
+            <>
+              If you already completed the step on your phone or in another
+              window, click <strong>Resume run</strong>.
+            </>
+          )}
         </p>
       ) : null}
       {browserBlock.kind !== 'confirmation_required' &&
@@ -350,7 +375,7 @@ export function BrowserBlockedRunCard({
       browserBlock.sessionId ? (
         <p className="browser-block-message">
           This card monitors the browser session and will try to resume the run
-          automatically once the authentication step clears.
+          automatically once the {requiresPhoneApproval ? 'approval' : 'authentication'} step clears.
         </p>
       ) : null}
 

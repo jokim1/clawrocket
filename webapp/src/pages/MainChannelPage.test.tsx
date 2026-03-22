@@ -1052,6 +1052,102 @@ describe('MainChannelPage', () => {
     expect(screen.getByText('Browser setup session opened.')).toBeTruthy();
   });
 
+  it('tells the user to check their phone when LinkedIn is waiting for app approval', async () => {
+    listMainThreadsMock.mockResolvedValue([
+      {
+        threadId: 'thread-main-phone-approval',
+        title: 'LinkedIn Messaging',
+        isPinned: false,
+        lastMessageAt: '2026-03-20T20:20:00.000Z',
+        messageCount: 1,
+        hasActiveRun: true,
+      },
+    ]);
+    getMainThreadMock.mockResolvedValue([
+      {
+        id: 'msg-main-phone-1',
+        threadId: 'thread-main-phone-approval',
+        role: 'user',
+        content: 'Check my LinkedIn inbox',
+        agentId: null,
+        createdBy: 'user-1',
+        createdAt: '2026-03-20T20:20:00.000Z',
+      },
+    ]);
+    listMainRunsMock.mockResolvedValue([
+      {
+        id: 'run-main-phone-approval',
+        threadId: 'thread-main-phone-approval',
+        status: 'awaiting_confirmation',
+        createdAt: '2026-03-20T20:20:01.000Z',
+        startedAt: '2026-03-20T20:20:03.000Z',
+        endedAt: null,
+        triggerMessageId: 'msg-main-phone-1',
+        targetAgentId: null,
+        cancelReason: null,
+        kind: null,
+        parentRunId: null,
+        promotionState: null,
+        promotionChildRunId: null,
+        requestedToolFamilies: ['browser'],
+        userVisibleSummary: 'LinkedIn is waiting for phone approval.',
+        browserBlock: {
+          kind: 'auth_required',
+          sessionId: 'session-phone-1',
+          siteKey: 'linkedin',
+          accountLabel: null,
+          url: 'https://www.linkedin.com/checkpoint/challenge',
+          title: 'LinkedIn Security Check',
+          message:
+            'LinkedIn is waiting for phone or app approval on a trusted device.',
+          riskReason: null,
+          setupCommand: null,
+          artifacts: [],
+          confirmationId: null,
+          pendingToolCall: {
+            toolName: 'browser_open',
+            args: {},
+          },
+          createdAt: '2026-03-20T20:20:04.000Z',
+          updatedAt: '2026-03-20T20:20:04.000Z',
+        },
+        browserResume: null,
+        carriedBrowserSessions: [],
+        executionDecision: {
+          backend: 'container',
+          authPath: 'subscription',
+          credentialSource: 'oauth_token',
+          plannerReason: 'Browser uses the container-backed Main path.',
+          providerId: 'provider.anthropic',
+          modelId: 'claude-sonnet-4-6',
+        },
+      },
+    ]);
+
+    render(
+      <MemoryRouter initialEntries={['/app/main/thread-main-phone-approval']}>
+        <Routes>
+          <Route
+            path="/app/main"
+            element={<MainChannelPage onUnauthorized={vi.fn()} />}
+          />
+          <Route
+            path="/app/main/:threadId"
+            element={<MainChannelPage onUnauthorized={vi.fn()} />}
+          />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    await screen.findByText('Approve sign-in on your phone');
+    expect(
+      screen.getByText('Check your phone or LinkedIn app now.', {
+        exact: false,
+      }),
+    ).toBeTruthy();
+    expect(screen.getByText('Check phone approval')).toBeTruthy();
+  });
+
   it('replaces a live thinking response with a blocked browser card when Main receives a browser_blocked event', async () => {
     listMainThreadsMock.mockResolvedValue([
       {
@@ -1186,7 +1282,7 @@ describe('MainChannelPage', () => {
     });
 
     expect(
-      await screen.findByText('Browser authentication required'),
+      await screen.findByText('Approve sign-in on your phone'),
     ).toBeTruthy();
     expect(
       screen.getByText('Check your phone and approve sign in to continue.'),
@@ -1291,7 +1387,7 @@ describe('MainChannelPage', () => {
     });
 
     expect(screen.getByText('Check my LinkedIn inbox')).toBeTruthy();
-    expect(screen.getByText('Browser authentication required')).toBeTruthy();
+    expect(screen.getByText('Approve sign-in on your phone')).toBeTruthy();
     expect(
       screen.getByText('Check your phone and approve sign in to continue.'),
     ).toBeTruthy();
@@ -1393,7 +1489,7 @@ describe('MainChannelPage', () => {
     );
 
     expect(
-      await screen.findByText('Browser authentication required'),
+      await screen.findByText('Approve sign-in on your phone'),
     ).toBeTruthy();
 
     await waitFor(() =>
