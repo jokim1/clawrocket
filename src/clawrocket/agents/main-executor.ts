@@ -715,6 +715,14 @@ export async function executeMainChannel(
         signal,
         input,
         mainPlan,
+        onProgressRequested: (message) => {
+          emitEvent({
+            type: 'main_progress_update',
+            runId: input.runId,
+            threadId: input.threadId,
+            message,
+          });
+        },
         onPromotionRequested: (request) => {
           promotionRequest = request;
           updateTalkRunMetadata(input.runId, (current) => ({
@@ -765,6 +773,7 @@ function buildMainToolExecutor(input: {
   signal: AbortSignal;
   input: MainExecutorInput;
   mainPlan: MainExecutionPlan;
+  onProgressRequested: (message: string) => void;
   onPromotionRequested: (request: MainPromotionRequest) => void;
 }) {
   let promotionRequested = false;
@@ -804,6 +813,7 @@ function buildMainToolExecutor(input: {
           signal: input.signal,
           userId: input.input.requestedBy,
           runId: input.input.runId,
+          onProgress: input.onProgressRequested,
         },
       });
     }

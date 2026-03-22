@@ -237,7 +237,10 @@ export interface BrowserToolExecutionContext {
   runId: string;
   userId: string;
   talkId?: string | null;
+  onProgress?: ((message: string) => void) | undefined;
 }
+
+const BROWSER_TOOL_PROGRESS_HEARTBEAT_MS = 10_000;
 
 function jsonResult(
   result: unknown,
@@ -299,6 +302,81 @@ async function runAbortable<T>(
       },
     );
   });
+}
+
+function emitBrowserToolProgress(
+  context: BrowserToolExecutionContext,
+  message: string,
+): void {
+  if (!context.onProgress) {
+    return;
+  }
+  try {
+    context.onProgress(message);
+  } catch {
+    // Ignore progress listener failures so tool execution can continue.
+  }
+}
+
+function getBrowserToolProgressMessage(
+  toolName: BrowserToolName,
+  args: Record<string, unknown>,
+): string | null {
+  switch (toolName) {
+    case 'browser_open': {
+      const siteKey =
+        typeof args.siteKey === 'string' && args.siteKey.trim().length > 0
+          ? args.siteKey.trim()
+          : 'browser';
+      return `Opening ${siteKey}…`;
+    }
+    case 'browser_snapshot':
+      return 'Refreshing browser snapshot…';
+    case 'browser_act': {
+      const action =
+        typeof args.action === 'string' && args.action.trim().length > 0
+          ? args.action.trim()
+          : 'action';
+      return `Running browser ${action}…`;
+    }
+    case 'browser_wait':
+      return 'Waiting for browser condition…';
+    case 'browser_screenshot':
+      return 'Capturing browser screenshot…';
+    case 'browser_close':
+      return 'Closing browser session…';
+  }
+}
+
+async function runBrowserToolWithProgress<T>(input: {
+  toolName: BrowserToolName;
+  args: Record<string, unknown>;
+  context: BrowserToolExecutionContext;
+  operation: () => Promise<T>;
+}): Promise<T> {
+  const progressMessage = getBrowserToolProgressMessage(
+    input.toolName,
+    input.args,
+  );
+  if (!progressMessage) {
+    return runAbortable(input.context.signal, input.operation);
+  }
+
+  emitBrowserToolProgress(input.context, progressMessage);
+  let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+  if (input.context.onProgress) {
+    heartbeatTimer = setInterval(() => {
+      emitBrowserToolProgress(input.context, progressMessage);
+    }, BROWSER_TOOL_PROGRESS_HEARTBEAT_MS);
+  }
+
+  try {
+    return await runAbortable(input.context.signal, input.operation);
+  } finally {
+    if (heartbeatTimer) {
+      clearInterval(heartbeatTimer);
+    }
+  }
 }
 
 function browserSetupCommand(input: {
@@ -774,15 +852,19 @@ export async function executeBrowserTool(input: {
           }
         }
 
-        const result = await runAbortable(input.context.signal, () =>
-          service.open({
-            siteKey,
-            url,
-            accountLabel,
-            headed,
-            reuseSession,
-          }),
-        );
+        const result = await runBrowserToolWithProgress({
+          toolName: 'browser_open',
+          args: input.args,
+          context: input.context,
+          operation: () =>
+            service.open({
+              siteKey,
+              url,
+              accountLabel,
+              headed,
+              reuseSession,
+            }),
+        });
         if (result.sessionId) {
           service.recordRunSessionTouch(input.context.runId, result.sessionId);
         }
@@ -857,16 +939,22 @@ export async function executeBrowserTool(input: {
             true,
           );
         }
-        const result = await runAbortable(input.context.signal, () =>
-          service.snapshot({
-            sessionId,
-            interactiveOnly: input.args.interactiveOnly as boolean | undefined,
-            maxElements:
-              typeof input.args.maxElements === 'number'
-                ? input.args.maxElements
-                : undefined,
-          }),
-        );
+        const result = await runBrowserToolWithProgress({
+          toolName: 'browser_snapshot',
+          args: input.args,
+          context: input.context,
+          operation: () =>
+            service.snapshot({
+              sessionId,
+              interactiveOnly: input.args.interactiveOnly as
+                | boolean
+                | undefined,
+              maxElements:
+                typeof input.args.maxElements === 'number'
+                  ? input.args.maxElements
+                  : undefined,
+            }),
+        });
         service.recordRunSessionTouch(input.context.runId, sessionId);
         updateBrowserLastState({
           talkId: input.context.talkId,
@@ -895,36 +983,40 @@ export async function executeBrowserTool(input: {
             true,
           );
         }
-        const result = await runAbortable(input.context.signal, () =>
-          service.act(
-            {
-              sessionId,
-              action,
-              target:
-                typeof input.args.target === 'string'
-                  ? input.args.target
+        const result = await runBrowserToolWithProgress({
+          toolName: 'browser_act',
+          args: input.args,
+          context: input.context,
+          operation: () =>
+            service.act(
+              {
+                sessionId,
+                action,
+                target:
+                  typeof input.args.target === 'string'
+                    ? input.args.target
+                    : undefined,
+                value:
+                  typeof input.args.value === 'string'
+                    ? input.args.value
+                    : undefined,
+                files: Array.isArray(input.args.files)
+                  ? input.args.files.filter(
+                      (file): file is string => typeof file === 'string',
+                    )
                   : undefined,
-              value:
-                typeof input.args.value === 'string'
-                  ? input.args.value
-                  : undefined,
-              files: Array.isArray(input.args.files)
-                ? input.args.files.filter(
-                    (file): file is string => typeof file === 'string',
-                  )
-                : undefined,
-              confirm: input.args.confirm === true,
-              timeoutMs:
-                typeof input.args.timeoutMs === 'number'
-                  ? input.args.timeoutMs
-                  : undefined,
-            },
-            {
-              talkId: input.context.talkId,
-              runId: input.context.runId,
-            },
-          ),
-        );
+                confirm: input.args.confirm === true,
+                timeoutMs:
+                  typeof input.args.timeoutMs === 'number'
+                    ? input.args.timeoutMs
+                    : undefined,
+              },
+              {
+                talkId: input.context.talkId,
+                runId: input.context.runId,
+              },
+            ),
+        });
         service.recordRunSessionTouch(input.context.runId, sessionId);
 
         updateBrowserLastState({
@@ -1003,20 +1095,24 @@ export async function executeBrowserTool(input: {
             true,
           );
         }
-        const result = await runAbortable(input.context.signal, () =>
-          service.wait({
-            sessionId,
-            conditionType,
-            value:
-              typeof input.args.value === 'string'
-                ? input.args.value
-                : undefined,
-            timeoutMs:
-              typeof input.args.timeoutMs === 'number'
-                ? input.args.timeoutMs
-                : undefined,
-          }),
-        );
+        const result = await runBrowserToolWithProgress({
+          toolName: 'browser_wait',
+          args: input.args,
+          context: input.context,
+          operation: () =>
+            service.wait({
+              sessionId,
+              conditionType,
+              value:
+                typeof input.args.value === 'string'
+                  ? input.args.value
+                  : undefined,
+              timeoutMs:
+                typeof input.args.timeoutMs === 'number'
+                  ? input.args.timeoutMs
+                  : undefined,
+            }),
+        });
         service.recordRunSessionTouch(input.context.runId, sessionId);
         updateBrowserLastState({
           talkId: input.context.talkId,
@@ -1076,16 +1172,20 @@ export async function executeBrowserTool(input: {
             true,
           );
         }
-        const result = await runAbortable(input.context.signal, () =>
-          service.screenshot({
-            sessionId,
-            fullPage: input.args.fullPage === true,
-            label:
-              typeof input.args.label === 'string'
-                ? input.args.label
-                : undefined,
-          }),
-        );
+        const result = await runBrowserToolWithProgress({
+          toolName: 'browser_screenshot',
+          args: input.args,
+          context: input.context,
+          operation: () =>
+            service.screenshot({
+              sessionId,
+              fullPage: input.args.fullPage === true,
+              label:
+                typeof input.args.label === 'string'
+                  ? input.args.label
+                  : undefined,
+            }),
+        });
         service.recordRunSessionTouch(input.context.runId, sessionId);
         updateBrowserLastState({
           talkId: input.context.talkId,
@@ -1160,12 +1260,16 @@ export async function executeBrowserTool(input: {
             true,
           );
         }
-        const result = await runAbortable(input.context.signal, () =>
-          service.close({
-            sessionId,
-            keepProfile: input.args.keepProfile !== false,
-          }),
-        );
+        const result = await runBrowserToolWithProgress({
+          toolName: 'browser_close',
+          args: input.args,
+          context: input.context,
+          operation: () =>
+            service.close({
+              sessionId,
+              keepProfile: input.args.keepProfile !== false,
+            }),
+        });
         service.recordRunSessionTouch(input.context.runId, sessionId);
         return jsonResult(result);
       }
