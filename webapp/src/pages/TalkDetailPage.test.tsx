@@ -1714,7 +1714,7 @@ describe('TalkDetailPage', () => {
     ).toBeNull();
   });
 
-  it('shows approved destinations as a browsable list and lets users bind one without searching first', async () => {
+  it('shows synced Slack channels as a browsable list and lets users bind one without searching first', async () => {
     const user = userEvent.setup();
 
     installTalkDetailFetch({
@@ -1726,11 +1726,6 @@ describe('TalkDetailPage', () => {
           displayName: 'KimFamily',
           config: { teamId: 'T123', teamName: 'KimFamily' },
         }),
-        buildChannelConnection({
-          id: 'channel-conn:telegram:system',
-          platform: 'telegram',
-          displayName: 'Telegram (System Managed)',
-        }),
       ],
       channelTargets: [
         buildChannelTarget({
@@ -1738,12 +1733,14 @@ describe('TalkDetailPage', () => {
           targetKind: 'channel',
           targetId: 'slack:C123',
           displayName: '#family-ops',
+          approved: false,
         }),
         buildChannelTarget({
-          connectionId: 'channel-conn:telegram:system',
-          targetKind: 'chat',
-          targetId: 'tg:chat:123',
-          displayName: 'Kim Family Telegram',
+          connectionId: 'channel-conn:slack:kimfamily',
+          targetKind: 'channel',
+          targetId: 'slack:C124',
+          displayName: '#parents-council',
+          approved: false,
         }),
       ],
       talkChannels: [],
@@ -1757,10 +1754,10 @@ describe('TalkDetailPage', () => {
     const familyOpsButton = await screen.findByRole('button', {
       name: /#family-ops/i,
     });
-    expect(screen.getByText('2 approved destinations')).toBeTruthy();
+    expect(screen.getByText('2 Slack channels')).toBeTruthy();
     expect(familyOpsButton).toBeTruthy();
     expect(
-      screen.getByRole('button', { name: /Kim Family Telegram/i }),
+      screen.getByRole('button', { name: /#parents-council/i }),
     ).toBeTruthy();
 
     await user.click(familyOpsButton);
@@ -1771,6 +1768,97 @@ describe('TalkDetailPage', () => {
     expect(
       await screen.findByRole('heading', { name: /#family-ops/i }),
     ).toBeTruthy();
+  });
+
+  it('shows a Slack workspace selector when multiple workspaces are connected', async () => {
+    const user = userEvent.setup();
+
+    installTalkDetailFetch({
+      channelConnections: [
+        buildChannelConnection({
+          id: 'channel-conn:slack:family',
+          platform: 'slack',
+          accountKey: 'slack:T123',
+          displayName: 'KimFamily',
+          config: { teamId: 'T123', teamName: 'KimFamily' },
+        }),
+        buildChannelConnection({
+          id: 'channel-conn:slack:gamemakers',
+          platform: 'slack',
+          accountKey: 'slack:T456',
+          displayName: 'GameMakers',
+          config: { teamId: 'T456', teamName: 'GameMakers' },
+        }),
+      ],
+      channelTargets: [
+        buildChannelTarget({
+          connectionId: 'channel-conn:slack:family',
+          targetKind: 'channel',
+          targetId: 'slack:C123',
+          displayName: '#family-ops',
+          approved: false,
+        }),
+        buildChannelTarget({
+          connectionId: 'channel-conn:slack:gamemakers',
+          targetKind: 'channel',
+          targetId: 'slack:C456',
+          displayName: '#launch-room',
+          approved: false,
+        }),
+      ],
+      talkChannels: [],
+    });
+
+    renderDetailPage('/app/talks/talk-1/channels');
+    await screen.findByRole('heading', { name: 'Connected Channels' });
+
+    expect(screen.getByLabelText('Workspace')).toBeTruthy();
+    expect(screen.getByRole('button', { name: /#family-ops/i })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /#launch-room/i })).toBeNull();
+
+    await user.selectOptions(screen.getByLabelText('Workspace'), 'channel-conn:slack:gamemakers');
+
+    expect(await screen.findByRole('button', { name: /#launch-room/i })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /#family-ops/i })).toBeNull();
+  });
+
+  it('shows Slack occupancy status and blocks channels already bound to another talk', async () => {
+    installTalkDetailFetch({
+      channelConnections: [
+        buildChannelConnection({
+          id: 'channel-conn:slack:kimfamily',
+          platform: 'slack',
+          accountKey: 'slack:T123',
+          displayName: 'KimFamily',
+          config: { teamId: 'T123', teamName: 'KimFamily' },
+        }),
+      ],
+      channelTargets: [
+        buildChannelTarget({
+          connectionId: 'channel-conn:slack:kimfamily',
+          targetKind: 'channel',
+          targetId: 'slack:C123',
+          displayName: '#family-ops',
+          approved: false,
+          activeBindingId: 'binding-existing',
+          activeBindingTalkId: 'talk-2',
+          activeBindingTalkTitle: 'Family Announcements',
+          activeBindingTalkAccessible: true,
+        }),
+      ],
+      talkChannels: [],
+    });
+
+    renderDetailPage('/app/talks/talk-1/channels');
+    await screen.findByRole('heading', { name: 'Connected Channels' });
+
+    expect(screen.getByText('Bound to Family Announcements')).toBeTruthy();
+    const openTalkLink = screen.getByRole('link', { name: 'Open Talk' });
+    expect(openTalkLink).toHaveAttribute(
+      'href',
+      '/app/talks/talk-2/channels',
+    );
+    expect(screen.getByRole('button', { name: 'Create Binding' })).toBeDisabled();
   });
 
   it('updates nicknames in auto and custom modes and saves talk agents from the Agents tab', async () => {
@@ -3990,6 +4078,10 @@ function buildChannelTarget(input: Partial<ChannelTarget> = {}): ChannelTarget {
     lastSeenAt: input.lastSeenAt ?? '2026-03-06T00:00:00.000Z',
     createdAt: input.createdAt ?? '2026-03-06T00:00:00.000Z',
     updatedAt: input.updatedAt ?? '2026-03-06T00:00:00.000Z',
+    activeBindingId: input.activeBindingId ?? null,
+    activeBindingTalkId: input.activeBindingTalkId ?? null,
+    activeBindingTalkTitle: input.activeBindingTalkTitle ?? null,
+    activeBindingTalkAccessible: input.activeBindingTalkAccessible ?? false,
   };
 }
 
@@ -4026,6 +4118,10 @@ function buildChannelTargetApiRecord(target: ChannelTarget) {
     last_seen_at: target.lastSeenAt,
     created_at: target.createdAt,
     updated_at: target.updatedAt,
+    active_binding_id: target.activeBindingId ?? null,
+    active_binding_talk_id: target.activeBindingTalkId ?? null,
+    active_binding_talk_title: target.activeBindingTalkTitle ?? null,
+    active_binding_talk_accessible: target.activeBindingTalkAccessible ? 1 : 0,
   };
 }
 
@@ -5508,15 +5604,45 @@ function installTalkDetailFetch(input?: {
         url.includes('/targets') &&
         method === 'GET'
       ) {
+        const parsed = new URL(url, 'http://localhost');
         const connectionId = decodeURIComponent(
           url.split('/api/v1/channel-connections/')[1].split('/targets')[0],
         );
+        const approval = parsed.searchParams.get('approval');
+        const query = (parsed.searchParams.get('query') || '').trim().toLowerCase();
+        const limit = Number(parsed.searchParams.get('limit') || '100');
+        const offset = Number(parsed.searchParams.get('offset') || '0');
+        let filtered = channelTargets.filter(
+          (target) => target.connectionId === connectionId,
+        );
+        if (approval === 'approved') {
+          filtered = filtered.filter((target) => target.approved);
+        } else if (approval === 'discovered') {
+          filtered = filtered.filter((target) => !target.approved);
+        }
+        if (query) {
+          filtered = filtered.filter((target) => {
+            const haystack = [
+              target.displayName,
+              target.targetId,
+              target.connectionId,
+            ]
+              .join(' ')
+              .toLowerCase();
+            return haystack.includes(query);
+          });
+        }
+        const pageTargets = filtered.slice(offset, offset + limit);
         return jsonResponse(200, {
           ok: true,
           data: {
-            targets: channelTargets
-              .filter((target) => target.connectionId === connectionId)
-              .map(buildChannelTargetApiRecord),
+            targets: pageTargets.map(buildChannelTargetApiRecord),
+            totalCount: filtered.length,
+            hasMore: offset + pageTargets.length < filtered.length,
+            nextOffset:
+              offset + pageTargets.length < filtered.length
+                ? offset + pageTargets.length
+                : null,
           },
         });
       }
@@ -5524,7 +5650,10 @@ function installTalkDetailFetch(input?: {
       if (path === '/api/v1/talks/talk-1/channels' && method === 'GET') {
         return jsonResponse(200, {
           ok: true,
-          data: { talkId: 'talk-1', bindings: talkChannels },
+          data: {
+            talkId: 'talk-1',
+            bindings: talkChannels.filter((binding) => binding.talkId === 'talk-1'),
+          },
         });
       }
 
@@ -5533,17 +5662,51 @@ function installTalkDetailFetch(input?: {
           string,
           unknown
         >;
+        const connectionId = String(
+          body.connectionId || 'channel-conn:telegram:system',
+        );
+        const targetKind = String(body.targetKind || 'chat');
+        const targetId = String(
+          body.targetId || `tg:group:${talkChannels.length + 100}`,
+        );
+        const existingBinding = talkChannels.find(
+          (binding) =>
+            binding.connectionId === connectionId &&
+            binding.targetKind === targetKind &&
+            binding.targetId === targetId &&
+            binding.active,
+        );
+        if (existingBinding) {
+          return jsonResponse(409, {
+            ok: false,
+            error: {
+              code: 'target_already_bound',
+              message: `${existingBinding.displayName} is already bound.`,
+            },
+          });
+        }
+        const matchingConnection = channelConnections.find(
+          (connection) => connection.id === connectionId,
+        );
         const created = buildTalkChannelBinding({
           id: `binding-${talkChannels.length + 1}`,
           talkId: 'talk-1',
-          connectionId: String(
-            body.connectionId || 'channel-conn:telegram:system',
+          connectionId,
+          platform: matchingConnection?.platform ?? 'telegram',
+          connectionDisplayName:
+            matchingConnection?.displayName ?? 'Telegram (System Managed)',
+          targetKind,
+          targetId,
+          displayName: String(
+            body.displayName ||
+              channelTargets.find(
+                (target) =>
+                  target.connectionId === connectionId &&
+                  target.targetKind === targetKind &&
+                  target.targetId === targetId,
+              )?.displayName ||
+              'New Channel Binding',
           ),
-          targetKind: String(body.targetKind || 'chat'),
-          targetId: String(
-            body.targetId || `tg:group:${talkChannels.length + 100}`,
-          ),
-          displayName: String(body.displayName || 'New Telegram Binding'),
           responseMode:
             (body.responseMode as TalkChannelBinding['responseMode']) ??
             'mentions',

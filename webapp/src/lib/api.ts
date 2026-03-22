@@ -125,6 +125,17 @@ export type ChannelTarget = {
   lastSeenAt: string;
   createdAt: string;
   updatedAt: string;
+  activeBindingId?: string | null;
+  activeBindingTalkId?: string | null;
+  activeBindingTalkTitle?: string | null;
+  activeBindingTalkAccessible?: boolean;
+};
+
+export type ChannelTargetListPage = {
+  targets: ChannelTarget[];
+  totalCount: number;
+  hasMore: boolean;
+  nextOffset: number | null;
 };
 
 export type TelegramConnectorBot = {
@@ -2119,6 +2130,10 @@ type ChannelTargetApiRecord = {
   last_seen_at: string;
   created_at: string;
   updated_at: string;
+  active_binding_id?: string | null;
+  active_binding_talk_id?: string | null;
+  active_binding_talk_title?: string | null;
+  active_binding_talk_accessible?: number;
 };
 
 type ChannelQueueFailureApiRecord = {
@@ -2192,6 +2207,11 @@ function mapChannelTarget(record: ChannelTargetApiRecord): ChannelTarget {
     lastSeenAt: record.last_seen_at,
     createdAt: record.created_at,
     updatedAt: record.updated_at,
+    activeBindingId: record.active_binding_id ?? null,
+    activeBindingTalkId: record.active_binding_talk_id ?? null,
+    activeBindingTalkTitle: record.active_binding_talk_title ?? null,
+    activeBindingTalkAccessible:
+      record.active_binding_talk_accessible === 1,
   };
 }
 
@@ -2458,8 +2478,9 @@ export async function listChannelTargets(input: {
   connectionId: string;
   query?: string;
   limit?: number;
+  offset?: number;
   approval?: 'all' | 'approved' | 'discovered';
-}): Promise<ChannelTarget[]> {
+}): Promise<ChannelTargetListPage> {
   const params = new URLSearchParams();
   if (input.query?.trim()) {
     params.set('query', input.query.trim());
@@ -2467,16 +2488,27 @@ export async function listChannelTargets(input: {
   if (typeof input.limit === 'number') {
     params.set('limit', String(input.limit));
   }
+  if (typeof input.offset === 'number') {
+    params.set('offset', String(input.offset));
+  }
   if (input.approval && input.approval !== 'all') {
     params.set('approval', input.approval);
   }
   const suffix = params.toString() ? `?${params.toString()}` : '';
   const envelope = await apiRequest<{
     targets: ChannelTargetApiRecord[];
+    totalCount?: number;
+    hasMore?: boolean;
+    nextOffset?: number | null;
   }>(
     `/api/v1/channel-connections/${encodeURIComponent(input.connectionId)}/targets${suffix}`,
   );
-  return envelope.targets.map(mapChannelTarget);
+  return {
+    targets: envelope.targets.map(mapChannelTarget),
+    totalCount: envelope.totalCount ?? envelope.targets.length,
+    hasMore: envelope.hasMore === true,
+    nextOffset: envelope.nextOffset ?? null,
+  };
 }
 
 export async function approveChannelTarget(input: {

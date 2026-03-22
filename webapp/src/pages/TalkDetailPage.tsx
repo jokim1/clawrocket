@@ -32,6 +32,7 @@ import {
   ChannelConnection,
   ChannelQueueFailure,
   ChannelTarget,
+  ChannelTargetListPage,
   connectUserGoogleAccount,
   ContextGoal,
   ContextRule,
@@ -710,6 +711,7 @@ type ChannelBindingDraft = {
 };
 
 type ChannelCreateDraft = {
+  platform: ChannelConnection['platform'] | '';
   connectionId: string;
   targetKey: string;
   displayName: string;
@@ -723,6 +725,8 @@ type ChannelCreateDraft = {
   overflowPolicy: TalkChannelBinding['overflowPolicy'];
   maxDeferredAgeMinutes: string;
 };
+
+type ChannelTargetInventoryState = ChannelTargetListPage;
 
 type TalkAgentSourceOption = {
   id: string;
@@ -1531,6 +1535,16 @@ function buildChannelTargetOptionMetaLabel(
   return `${platformLabel} · ${connectionLabel}`;
 }
 
+function buildChannelTargetOccupancyLabel(
+  target: ChannelTarget,
+  talkId: string,
+): string {
+  if (!target.activeBindingTalkId) return 'Available';
+  return target.activeBindingTalkId === talkId
+    ? 'Already bound'
+    : `Bound to ${target.activeBindingTalkTitle || 'another Talk'}`;
+}
+
 function formatChannelReasonCode(value: string | null): string {
   if (!value) return 'None';
   switch (value) {
@@ -1866,6 +1880,7 @@ function buildChannelBindingDraft(
 
 function buildDefaultChannelCreateDraft(): ChannelCreateDraft {
   return {
+    platform: '',
     connectionId: '',
     targetKey: '',
     displayName: '',
@@ -1878,6 +1893,15 @@ function buildDefaultChannelCreateDraft(): ChannelCreateDraft {
     maxPendingEvents: '20',
     overflowPolicy: 'drop_oldest',
     maxDeferredAgeMinutes: '10',
+  };
+}
+
+function buildEmptyChannelTargetInventory(): ChannelTargetInventoryState {
+  return {
+    targets: [],
+    totalCount: 0,
+    hasMore: false,
+    nextOffset: null,
   };
 }
 
@@ -2390,7 +2414,8 @@ export function TalkDetailPage({
   const [channelConnections, setChannelConnections] = useState<
     ChannelConnection[]
   >([]);
-  const [channelTargets, setChannelTargets] = useState<ChannelTarget[]>([]);
+  const [channelTargetInventory, setChannelTargetInventory] =
+    useState<ChannelTargetInventoryState>(buildEmptyChannelTargetInventory());
   const [channelDrafts, setChannelDrafts] = useState<
     Record<string, ChannelBindingDraft>
   >({});
@@ -2842,7 +2867,7 @@ export function TalkDetailPage({
     setAddSourceText('');
     setChannelBindings([]);
     setChannelConnections([]);
-    setChannelTargets([]);
+    setChannelTargetInventory(buildEmptyChannelTargetInventory());
     setChannelDrafts({});
     setChannelFailuresByBindingId({});
     setChannelCreateDraft(buildDefaultChannelCreateDraft());
@@ -3825,40 +3850,77 @@ export function TalkDetailPage({
       ),
     [orgConnectors, talkConnectors],
   );
+  const availableChannelPlatforms = useMemo(
+    () =>
+      Array.from(
+        new Set(channelConnections.map((connection) => connection.platform)),
+      ),
+    [channelConnections],
+  );
+  const selectedChannelPlatform = useMemo(
+    () =>
+      channelCreateDraft.platform &&
+      availableChannelPlatforms.includes(channelCreateDraft.platform)
+        ? channelCreateDraft.platform
+        : availableChannelPlatforms[0] || '',
+    [availableChannelPlatforms, channelCreateDraft.platform],
+  );
+  const selectedPlatformConnections = useMemo(
+    () =>
+      selectedChannelPlatform
+        ? channelConnections.filter(
+            (connection) => connection.platform === selectedChannelPlatform,
+          )
+        : ([] as ChannelConnection[]),
+    [channelConnections, selectedChannelPlatform],
+  );
+  const selectedChannelConnection = useMemo(
+    () =>
+      selectedPlatformConnections.find(
+        (connection) => connection.id === channelCreateDraft.connectionId,
+      ) ||
+      selectedPlatformConnections[0] ||
+      null,
+    [channelCreateDraft.connectionId, selectedPlatformConnections],
+  );
   const selectedChannelTarget = useMemo(
     () =>
-      channelTargets.find(
+      channelTargetInventory.targets.find(
         (target) =>
           buildChannelTargetKey(target) === channelCreateDraft.targetKey,
       ) || null,
-    [channelCreateDraft.targetKey, channelTargets],
+    [channelCreateDraft.targetKey, channelTargetInventory.targets],
   );
   const channelTargetOptions = useMemo(
     () =>
-      channelTargets.map((target) => {
+      channelTargetInventory.targets.map((target) => {
         const key = buildChannelTargetKey(target);
         const label = buildChannelTargetOptionLabel(target, channelConnections);
         const metaLabel = buildChannelTargetOptionMetaLabel(
           target,
           channelConnections,
         );
+        const occupiedByThisTalk = target.activeBindingTalkId === talkId;
+        const occupiedByOtherTalk =
+          Boolean(target.activeBindingTalkId) && !occupiedByThisTalk;
         return {
           key,
           label,
           metaLabel,
-          searchLabel: label.toLowerCase(),
+          occupancyLabel: buildChannelTargetOccupancyLabel(target, talkId),
+          occupiedByThisTalk,
+          occupiedByOtherTalk,
+          openTalkHref:
+            occupiedByOtherTalk &&
+            target.activeBindingTalkAccessible &&
+            target.activeBindingTalkId
+              ? `/app/talks/${encodeURIComponent(target.activeBindingTalkId)}/channels`
+              : null,
           target,
         };
       }).sort((left, right) => left.label.localeCompare(right.label)),
-    [channelConnections, channelTargets],
+    [channelConnections, channelTargetInventory.targets, talkId],
   );
-  const filteredChannelTargets = useMemo(() => {
-    const normalized = channelTargetQuery.trim().toLowerCase();
-    if (!normalized) return channelTargetOptions;
-    return channelTargetOptions.filter((option) =>
-      option.searchLabel.includes(normalized),
-    );
-  }, [channelTargetOptions, channelTargetQuery]);
   const missingGoogleScopes = useMemo(() => {
     if (!talkTools) return [] as string[];
     const currentScopes = new Set(talkTools.googleAccount.scopes);
@@ -4078,15 +4140,36 @@ export function TalkDetailPage({
         setChannelFailuresByBindingId(Object.fromEntries(failureEntries));
         setChannelConnections(connections);
         setChannelCreateDraft((current) => {
+          const availablePlatforms = Array.from(
+            new Set(connections.map((connection) => connection.platform)),
+          );
+          const nextPlatform =
+            current.platform &&
+            availablePlatforms.includes(current.platform)
+              ? current.platform
+              : availablePlatforms[0] || '';
+          const platformConnections = nextPlatform
+            ? connections.filter(
+                (connection) => connection.platform === nextPlatform,
+              )
+            : [];
           const nextConnectionId =
-            connections.find(
+            platformConnections.find(
               (connection) => connection.id === current.connectionId,
             )?.id ||
-            connections[0]?.id ||
-            current.connectionId;
+            platformConnections[0]?.id ||
+            '';
+          const parsedTarget = current.targetKey
+            ? parseChannelTargetKey(current.targetKey)
+            : null;
           return {
             ...current,
+            platform: nextPlatform,
             connectionId: nextConnectionId,
+            targetKey:
+              parsedTarget?.connectionId === nextConnectionId
+                ? current.targetKey
+                : '',
           };
         });
         if (!options?.quiet) {
@@ -4116,8 +4199,8 @@ export function TalkDetailPage({
 
   useEffect(() => {
     if (state.kind !== 'ready' || currentTab !== 'channels') return;
-    if (!canBrowseChannelConnections || channelConnections.length === 0) {
-      setChannelTargets([]);
+    if (!canBrowseChannelConnections || !selectedChannelConnection) {
+      setChannelTargetInventory(buildEmptyChannelTargetInventory());
       return;
     }
 
@@ -4126,31 +4209,24 @@ export function TalkDetailPage({
 
     const loadTargets = async () => {
       try {
-        const targetGroups = await Promise.all(
-          channelConnections.map((connection) =>
-            listChannelTargets({
-              connectionId: connection.id,
-              limit: 100,
-              approval: 'approved',
-            }),
-          ),
-        );
-        const targets = targetGroups.flat();
+        const inventory = await listChannelTargets({
+          connectionId: selectedChannelConnection.id,
+          query: channelTargetQuery.trim() || undefined,
+          limit: selectedChannelPlatform === 'slack' ? 50 : 100,
+          offset: 0,
+          approval: selectedChannelPlatform === 'slack' ? 'all' : 'approved',
+        });
         if (cancelled) return;
-        setChannelTargets(targets);
+        setChannelTargetInventory(inventory);
         setChannelCreateDraft((current) => {
-          const existingTarget = targets.find(
+          const existingTarget = inventory.targets.find(
             (target) => buildChannelTargetKey(target) === current.targetKey,
           );
-          const nextTarget = existingTarget || targets[0] || null;
           return {
             ...current,
-            connectionId: nextTarget?.connectionId || current.connectionId,
-            targetKey: nextTarget ? buildChannelTargetKey(nextTarget) : '',
-            displayName:
-              current.displayName || !nextTarget
-                ? current.displayName
-                : nextTarget.displayName,
+            platform: selectedChannelPlatform,
+            connectionId: selectedChannelConnection.id,
+            targetKey: existingTarget ? current.targetKey : '',
           };
         });
       } catch (err) {
@@ -4180,9 +4256,11 @@ export function TalkDetailPage({
     };
   }, [
     canBrowseChannelConnections,
-    channelConnections,
+    channelTargetQuery,
     currentTab,
     handleUnauthorized,
+    selectedChannelConnection,
+    selectedChannelPlatform,
     state.kind,
   ]);
 
@@ -5108,14 +5186,56 @@ export function TalkDetailPage({
     [],
   );
 
+  const handleLoadMoreChannelTargets = useCallback(async () => {
+    if (!selectedChannelConnection || channelTargetInventory.nextOffset == null) {
+      return;
+    }
+    setChannelTargetsLoading(true);
+    try {
+      const nextPage = await listChannelTargets({
+        connectionId: selectedChannelConnection.id,
+        query: channelTargetQuery.trim() || undefined,
+        limit: selectedChannelPlatform === 'slack' ? 50 : 100,
+        offset: channelTargetInventory.nextOffset,
+        approval: selectedChannelPlatform === 'slack' ? 'all' : 'approved',
+      });
+      setChannelTargetInventory((current) => ({
+        targets: [...current.targets, ...nextPage.targets],
+        totalCount: nextPage.totalCount,
+        hasMore: nextPage.hasMore,
+        nextOffset: nextPage.nextOffset,
+      }));
+      setChannelStatus({ status: 'idle' });
+    } catch (err) {
+      if (err instanceof UnauthorizedError) {
+        handleUnauthorized();
+        return;
+      }
+      setChannelStatus({
+        status: 'error',
+        message:
+          err instanceof Error
+            ? err.message
+            : 'Failed to load more channel targets.',
+      });
+    } finally {
+      setChannelTargetsLoading(false);
+    }
+  }, [
+    channelTargetInventory.nextOffset,
+    channelTargetQuery,
+    handleUnauthorized,
+    selectedChannelConnection,
+    selectedChannelPlatform,
+  ]);
+
   const handleCreateChannel = useCallback(async () => {
     if (!canEditChannels) return;
     const parsedTarget = parseChannelTargetKey(channelCreateDraft.targetKey);
     if (!parsedTarget) {
       setChannelStatus({
         status: 'error',
-        message:
-          'Select an approved destination before creating a channel binding.',
+        message: 'Select a channel destination before creating a channel binding.',
       });
       return;
     }
@@ -5151,6 +5271,7 @@ export function TalkDetailPage({
       await reloadTalkChannels({ quiet: true });
       setChannelCreateDraft((current) => ({
         ...buildDefaultChannelCreateDraft(),
+        platform: current.platform,
         connectionId: parsedTarget.connectionId,
       }));
       setChannelStatus({
@@ -9380,9 +9501,9 @@ export function TalkDetailPage({
               <p className="policy-muted">
                 Bind this talk to external channels so inbound platform
                 messages can create Talk turns and completed replies can be
-                delivered back out. Connector setup and destination approval
-                are managed in Connectors; this page only binds the talk to
-                already approved destinations.
+                delivered back out. Slack workspaces and sync live in
+                Connectors, but Slack channel selection happens here. Telegram
+                still uses approved destinations from Connectors.
               </p>
 
               {channelStatus.status === 'error' ? (
@@ -9405,8 +9526,9 @@ export function TalkDetailPage({
                     <div>
                       <h3>Add Channel Binding</h3>
                       <p className="talk-llm-meta">
-                        Browse approved channel destinations from Connectors,
-                        then configure how this talk should respond.
+                        Slack channels are chosen here after sync. Telegram
+                        destinations still use the approved list from
+                        Connectors.
                       </p>
                     </div>
                   </div>
@@ -9414,20 +9536,73 @@ export function TalkDetailPage({
                     <p className="page-state">
                       No channel connections are available in this runtime.
                     </p>
-                  ) : channelTargets.length === 0 && !channelTargetsLoading ? (
-                    <div className="inline-banner inline-banner-warning" role="status">
-                      No approved channel destinations are available yet.{' '}
-                      <Link to="/app/connectors?tab=channel-connectors">
-                        Manage Connectors
-                      </Link>
-                      .
-                    </div>
                   ) : (
                     <>
+                      {availableChannelPlatforms.length > 1 ? (
+                        <div className="connector-attach-row">
+                          <label>
+                            <span className="settings-label">Platform</span>
+                            <select
+                              value={selectedChannelPlatform}
+                              onChange={(event) =>
+                                setChannelCreateDraft((current) => ({
+                                  ...current,
+                                  platform: event.target
+                                    .value as ChannelConnection['platform'],
+                                  connectionId: '',
+                                  targetKey: '',
+                                  displayName: '',
+                                }))
+                              }
+                              disabled={
+                                channelStatus.status === 'saving' ||
+                                channelTargetsLoading
+                              }
+                            >
+                              {availableChannelPlatforms.map((platform) => (
+                                <option key={platform} value={platform}>
+                                  {formatChannelPlatform(platform)}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                        </div>
+                      ) : null}
+                      {selectedChannelPlatform === 'slack' &&
+                      selectedPlatformConnections.length > 1 ? (
+                        <div className="connector-attach-row">
+                          <label style={{ flex: 1 }}>
+                            <span className="settings-label">Workspace</span>
+                            <select
+                              value={selectedChannelConnection?.id || ''}
+                              onChange={(event) =>
+                                setChannelCreateDraft((current) => ({
+                                  ...current,
+                                  connectionId: event.target.value,
+                                  targetKey: '',
+                                  displayName: '',
+                                }))
+                              }
+                              disabled={
+                                channelStatus.status === 'saving' ||
+                                channelTargetsLoading
+                              }
+                            >
+                              {selectedPlatformConnections.map((connection) => (
+                                <option key={connection.id} value={connection.id}>
+                                  {connection.displayName}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                        </div>
+                      ) : null}
                       <div className="connector-attach-row">
                         <label style={{ flex: 1 }}>
                           <span className="settings-label">
-                            Browse approved destinations
+                            {selectedChannelPlatform === 'slack'
+                              ? 'Browse synced Slack channels'
+                              : 'Browse approved Telegram destinations'}
                           </span>
                           <input
                             type="text"
@@ -9435,7 +9610,11 @@ export function TalkDetailPage({
                             onChange={(event) =>
                               setChannelTargetQuery(event.target.value)
                             }
-                            placeholder="Filter by platform, workspace, or channel"
+                            placeholder={
+                              selectedChannelPlatform === 'slack'
+                                ? 'Filter by workspace, channel, or ID'
+                                : 'Filter approved Telegram destinations'
+                            }
                             style={{ width: '100%' }}
                             disabled={
                               channelStatus.status === 'saving' ||
@@ -9450,34 +9629,66 @@ export function TalkDetailPage({
                           aria-live="polite"
                         >
                           {channelTargetsLoading
-                            ? 'Loading approved destinations…'
-                            : filteredChannelTargets.length ===
-                                channelTargetOptions.length
-                              ? `${channelTargetOptions.length} approved destination${channelTargetOptions.length === 1 ? '' : 's'}`
-                              : `Showing ${filteredChannelTargets.length} of ${channelTargetOptions.length} approved destinations`}
+                            ? selectedChannelPlatform === 'slack'
+                              ? 'Loading synced Slack channels…'
+                              : 'Loading approved Telegram destinations…'
+                            : channelTargetInventory.totalCount === 0
+                              ? selectedChannelPlatform === 'slack'
+                                ? 'No synced Slack channels yet.'
+                                : 'No approved Telegram destinations yet.'
+                              : channelTargetInventory.hasMore
+                                ? `Showing ${channelTargetOptions.length} of ${channelTargetInventory.totalCount} ${selectedChannelPlatform === 'slack' ? 'Slack channels' : 'Telegram destinations'}`
+                                : `${channelTargetInventory.totalCount} ${selectedChannelPlatform === 'slack' ? 'Slack channel' : 'Telegram destination'}${channelTargetInventory.totalCount === 1 ? '' : 's'}`}
                         </div>
                         <div className="channel-target-picker-results">
                           {channelTargetsLoading ? (
                             <div className="channel-target-picker-empty">
-                              Loading approved destinations…
+                              {selectedChannelPlatform === 'slack'
+                                ? 'Loading synced Slack channels…'
+                                : 'Loading approved Telegram destinations…'}
                             </div>
-                          ) : filteredChannelTargets.length === 0 ? (
-                            <div className="channel-target-picker-empty">
-                              No approved destinations match this filter.
-                            </div>
+                          ) : channelTargetOptions.length === 0 ? (
+                            selectedChannelPlatform === 'slack' ? (
+                              <div className="channel-target-picker-empty">
+                                No synced Slack channels match this filter.{' '}
+                                <Link to="/app/connectors?tab=channel-connectors">
+                                  Manage Connectors
+                                </Link>{' '}
+                                to sync channels or diagnose a missing private
+                                channel.
+                              </div>
+                            ) : (
+                              <div className="channel-target-picker-empty">
+                                No approved Telegram destinations match this
+                                filter.{' '}
+                                <Link to="/app/connectors?tab=channel-connectors">
+                                  Manage Connectors
+                                </Link>
+                                .
+                              </div>
+                            )
                           ) : (
-                            filteredChannelTargets.map((option) => {
+                            channelTargetOptions.map((option) => {
                               const selected =
                                 channelCreateDraft.targetKey === option.key;
+                              const disabled =
+                                option.occupiedByThisTalk ||
+                                option.occupiedByOtherTalk;
                               return (
-                                <button
+                                <div
                                   key={option.key}
-                                  type="button"
-                                  className={`channel-target-picker-option${selected ? ' channel-target-picker-option-selected' : ''}`}
+                                  className={`channel-target-picker-option${selected ? ' channel-target-picker-option-selected' : ''}${disabled ? ' channel-target-picker-option-disabled' : ''}`}
+                                  role="button"
+                                  tabIndex={disabled ? -1 : 0}
                                   aria-pressed={selected}
-                                  onClick={() =>
+                                  aria-disabled={disabled}
+                                  onClick={() => {
+                                    if (disabled || channelStatus.status === 'saving') {
+                                      return;
+                                    }
                                     setChannelCreateDraft((current) => ({
                                       ...current,
+                                      platform: selectedChannelPlatform,
                                       connectionId: option.target.connectionId,
                                       targetKey: option.key,
                                       displayName:
@@ -9485,9 +9696,8 @@ export function TalkDetailPage({
                                         !option.target.displayName
                                           ? current.displayName
                                           : option.target.displayName,
-                                    }))
-                                  }
-                                  disabled={channelStatus.status === 'saving'}
+                                    }));
+                                  }}
                                 >
                                   <span className="channel-target-picker-option-title">
                                     {option.target.displayName}
@@ -9495,11 +9705,47 @@ export function TalkDetailPage({
                                   <span className="channel-target-picker-option-meta">
                                     {option.metaLabel}
                                   </span>
-                                </button>
+                                  <div className="channel-target-picker-option-footer">
+                                    <span
+                                      className={`channel-target-picker-option-status${disabled ? ' channel-target-picker-option-status-disabled' : ''}`}
+                                    >
+                                      {option.occupancyLabel}
+                                    </span>
+                                    {option.openTalkHref ? (
+                                      <Link
+                                        className="channel-target-picker-option-link"
+                                        to={option.openTalkHref}
+                                        onClick={(event) =>
+                                          event.stopPropagation()
+                                        }
+                                      >
+                                        Open Talk
+                                      </Link>
+                                    ) : null}
+                                  </div>
+                                </div>
                               );
                             })
                           )}
                         </div>
+                        {channelTargetInventory.hasMore ? (
+                          <div
+                            className="settings-button-row"
+                            style={{ marginTop: '0.75rem' }}
+                          >
+                            <button
+                              type="button"
+                              className="secondary-btn"
+                              onClick={() => void handleLoadMoreChannelTargets()}
+                              disabled={
+                                channelStatus.status === 'saving' ||
+                                channelTargetsLoading
+                              }
+                            >
+                              Load More
+                            </button>
+                          </div>
+                        ) : null}
                       </div>
                       <div className="connector-attach-row">
                         <label style={{ flex: 1 }}>
@@ -9701,7 +9947,8 @@ export function TalkDetailPage({
                           onClick={() => void handleCreateChannel()}
                           disabled={
                             channelStatus.status === 'saving' ||
-                            !channelCreateDraft.targetKey
+                            !channelCreateDraft.targetKey ||
+                            Boolean(selectedChannelTarget?.activeBindingTalkId)
                           }
                         >
                           {channelStatus.status === 'saving'

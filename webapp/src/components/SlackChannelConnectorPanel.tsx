@@ -2,9 +2,9 @@ import { useEffect, useMemo, useState } from 'react';
 
 import {
   ApiError,
-  approveChannelTarget,
   ChannelConnection,
   ChannelTarget,
+  ChannelTargetListPage,
   clearSlackChannelConnectorConfig,
   diagnoseSlackWorkspaceTarget,
   disconnectSlackWorkspace,
@@ -15,13 +15,26 @@ import {
   startSlackChannelConnectorInstall,
   syncSlackWorkspace,
   UnauthorizedError,
-  unapproveChannelTarget,
 } from '../lib/api';
 import { launchSlackInstallPopup } from '../lib/slackInstallPopup';
 
 type Props = {
   onUnauthorized: () => void;
 };
+
+type WorkspaceTargetListState = ChannelTargetListPage & {
+  loading: boolean;
+};
+
+function emptyWorkspaceTargetListState(): WorkspaceTargetListState {
+  return {
+    targets: [],
+    totalCount: 0,
+    hasMore: false,
+    nextOffset: null,
+    loading: false,
+  };
+}
 
 function formatDateTime(value: string | null): string {
   if (!value) return 'Never';
@@ -43,12 +56,32 @@ function statusChipClass(status: ChannelConnection['healthStatus']): string {
   }
 }
 
+function targetStatusChipClass(target: ChannelTarget): string {
+  return target.activeBindingTalkId
+    ? 'talk-agent-chip talk-agent-chip-warning'
+    : 'talk-agent-chip talk-agent-chip-success';
+}
+
+function targetStatusLabel(target: ChannelTarget): string {
+  return target.activeBindingTalkTitle
+    ? `Bound to ${target.activeBindingTalkTitle}`
+    : 'Available';
+}
+
 function readConfigString(
   connection: ChannelConnection,
   key: string,
 ): string | null {
   const value = connection.config?.[key];
   return typeof value === 'string' && value.trim() ? value : null;
+}
+
+function readConfigNumber(
+  connection: ChannelConnection,
+  key: string,
+): number | null {
+  const value = connection.config?.[key];
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
 }
 
 function formatWorkspaceMeta(connection: ChannelConnection): string {
@@ -64,32 +97,34 @@ function formatChannelType(target: ChannelTarget): string {
   return target.metadata?.isPrivate === true ? 'Private channel' : 'Channel';
 }
 
-function filterTargets(
-  targets: ChannelTarget[],
-  query: string,
-): ChannelTarget[] {
-  const normalized = query.trim().toLowerCase();
-  if (!normalized) return targets;
-  return targets.filter((target) => {
-    const haystack = [
-      target.displayName,
-      target.targetId,
-      typeof target.metadata?.channelName === 'string'
-        ? target.metadata.channelName
-        : '',
-    ]
-      .join(' ')
-      .toLowerCase();
-    return haystack.includes(normalized);
-  });
+function buildWorkspaceSyncSummary(
+  connection: ChannelConnection,
+  targetPage: WorkspaceTargetListState,
+): string {
+  const publicCount = readConfigNumber(connection, 'lastSyncPublicCount');
+  const privateCount = readConfigNumber(connection, 'lastSyncPrivateCount');
+  const totalCount = readConfigNumber(connection, 'lastSyncTotalCount');
+  const lastSyncedAt = readConfigString(connection, 'lastSyncedAt');
+  const countLabel =
+    totalCount != null
+      ? `${totalCount} synced channel${totalCount === 1 ? '' : 's'}`
+      : `${targetPage.totalCount} channel${targetPage.totalCount === 1 ? '' : 's'} in this result set`;
+  const splitLabel =
+    publicCount != null && privateCount != null
+      ? ` (${publicCount} public, ${privateCount} private)`
+      : '';
+  const freshnessLabel = lastSyncedAt
+    ? ` · Last synced ${formatDateTime(lastSyncedAt)}`
+    : '';
+  return `${countLabel}${splitLabel}${freshnessLabel}`;
 }
 
 export function SlackChannelConnectorPanel({
   onUnauthorized,
 }: Props): JSX.Element {
   const [connector, setConnector] = useState<SlackChannelConnector | null>(null);
-  const [targetsByConnection, setTargetsByConnection] = useState<
-    Record<string, ChannelTarget[]>
+  const [targetPagesByConnection, setTargetPagesByConnection] = useState<
+    Record<string, WorkspaceTargetListState>
   >({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -113,19 +148,6 @@ export function SlackChannelConnectorPanel({
       if (!configDraftTouched) {
         setClientIdDraft(next.config.clientId || '');
       }
-      const targets = await Promise.all(
-        next.workspaces.map(async (workspace) => [
-          workspace.id,
-          await listChannelTargets({
-            connectionId: workspace.id,
-            approval: 'all',
-            limit: 200,
-          }),
-        ]),
-      );
-      setTargetsByConnection(
-        Object.fromEntries(targets) as Record<string, ChannelTarget[]>,
-      );
       setError(null);
     } catch (err) {
       if (err instanceof UnauthorizedError) {
@@ -156,19 +178,89 @@ export function SlackChannelConnectorPanel({
     };
   }, [configDraftTouched, onUnauthorized]);
 
+  useEffect(() => {
+    if (!connector) return;
+    if (connector.workspaces.length === 0) {
+      setTargetPagesByConnection({});
+      return;
+    }
+
+    let cancelled = false;
+    const timeoutId = window.setTimeout(() => {
+      setTargetPagesByConnection((current) =>
+        Object.fromEntries(
+          connector.workspaces.map((workspace) => [
+            workspace.id,
+            {
+              ...(current[workspace.id] || emptyWorkspaceTargetListState()),
+              loading: true,
+            },
+          ]),
+        ),
+      );
+
+      void Promise.all(
+        connector.workspaces.map(async (workspace) => {
+          const page = await listChannelTargets({
+            connectionId: workspace.id,
+            query: searchByConnection[workspace.id] || '',
+            approval: 'all',
+            limit: 50,
+            offset: 0,
+          });
+          return [workspace.id, page] as const;
+        }),
+      )
+        .then((pages) => {
+          if (cancelled) return;
+          setTargetPagesByConnection(
+            Object.fromEntries(
+              pages.map(([workspaceId, page]) => [
+                workspaceId,
+                { ...page, loading: false },
+              ]),
+            ),
+          );
+        })
+        .catch((err) => {
+          if (cancelled) return;
+          if (err instanceof UnauthorizedError) {
+            onUnauthorized();
+            return;
+          }
+          setError(
+            err instanceof ApiError
+              ? err.message
+              : 'Failed to load synced Slack channels.',
+          );
+          setTargetPagesByConnection((current) =>
+            Object.fromEntries(
+              connector.workspaces.map((workspace) => [
+                workspace.id,
+                {
+                  ...(current[workspace.id] || emptyWorkspaceTargetListState()),
+                  loading: false,
+                },
+              ]),
+            ),
+          );
+        });
+    }, 150);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timeoutId);
+    };
+  }, [connector, onUnauthorized, searchByConnection]);
+
   const workspaceEntries = useMemo(
     () =>
-      (connector?.workspaces || []).map((workspace) => {
-        const query = searchByConnection[workspace.id] || '';
-        const targets = filterTargets(targetsByConnection[workspace.id] || [], query);
-        return {
-          workspace,
-          targets,
-          approved: targets.filter((target) => target.approved),
-          discovered: targets.filter((target) => !target.approved),
-        };
-      }),
-    [connector?.workspaces, searchByConnection, targetsByConnection],
+      (connector?.workspaces || []).map((workspace) => ({
+        workspace,
+        targetPage:
+          targetPagesByConnection[workspace.id] || emptyWorkspaceTargetListState(),
+      })),
+    [connector?.workspaces, targetPagesByConnection],
   );
 
   const handleSaveConfig = async () => {
@@ -242,9 +334,7 @@ export function SlackChannelConnectorPanel({
         onUnauthorized();
         return;
       }
-      setError(
-        err instanceof ApiError ? err.message : (err as Error).message,
-      );
+      setError(err instanceof ApiError ? err.message : (err as Error).message);
     } finally {
       setBusyKey(null);
     }
@@ -254,15 +344,18 @@ export function SlackChannelConnectorPanel({
     setBusyKey(`sync:${connectionId}`);
     try {
       const result = await syncSlackWorkspace(connectionId);
-      const targets = await listChannelTargets({
+      const page = await listChannelTargets({
         connectionId,
+        query: searchByConnection[connectionId] || '',
         approval: 'all',
-        limit: 200,
+        limit: 50,
+        offset: 0,
       });
-      setTargetsByConnection((current) => ({
+      setTargetPagesByConnection((current) => ({
         ...current,
-        [connectionId]: targets,
+        [connectionId]: { ...page, loading: false },
       }));
+      await refresh();
       setNotice(
         `Synced ${result.syncedCount} Slack channels (${result.publicCount} public, ${result.privateCount} private).`,
       );
@@ -302,70 +395,38 @@ export function SlackChannelConnectorPanel({
     }
   };
 
-  const handleApproveTarget = async (
-    connectionId: string,
-    target: ChannelTarget,
-  ) => {
-    setBusyKey(`approve:${connectionId}:${target.targetId}`);
-    try {
-      await approveChannelTarget({
-        connectionId,
-        targetKind: target.targetKind,
-        targetId: target.targetId,
-        displayName: target.displayName,
-        metadata: target.metadata,
-      });
-      const targets = await listChannelTargets({
-        connectionId,
-        approval: 'all',
-        limit: 200,
-      });
-      setTargetsByConnection((current) => ({
-        ...current,
-        [connectionId]: targets,
-      }));
-      setNotice(`${target.displayName} approved for Talk bindings.`);
-      setError(null);
-    } catch (err) {
-      if (err instanceof UnauthorizedError) {
-        onUnauthorized();
-        return;
-      }
-      setError(
-        err instanceof ApiError
-          ? err.message
-          : 'Failed to approve Slack channel.',
-      );
-    } finally {
-      setBusyKey(null);
+  const handleLoadMoreChannels = async (connectionId: string) => {
+    const currentPage = targetPagesByConnection[connectionId];
+    if (!currentPage?.hasMore || currentPage.nextOffset == null) {
+      return;
     }
-  };
 
-  const handleUnapproveTarget = async (
-    connectionId: string,
-    target: ChannelTarget,
-  ) => {
-    setBusyKey(`unapprove:${connectionId}:${target.targetId}`);
+    setTargetPagesByConnection((current) => ({
+      ...current,
+      [connectionId]: {
+        ...(current[connectionId] || emptyWorkspaceTargetListState()),
+        loading: true,
+      },
+    }));
+
     try {
-      const result = await unapproveChannelTarget({
+      const page = await listChannelTargets({
         connectionId,
-        targetKind: target.targetKind,
-        targetId: target.targetId,
-      });
-      const targets = await listChannelTargets({
-        connectionId,
+        query: searchByConnection[connectionId] || '',
         approval: 'all',
-        limit: 200,
+        limit: 50,
+        offset: currentPage.nextOffset,
       });
-      setTargetsByConnection((current) => ({
+      setTargetPagesByConnection((current) => ({
         ...current,
-        [connectionId]: targets,
+        [connectionId]: {
+          targets: [...(current[connectionId]?.targets || []), ...page.targets],
+          totalCount: page.totalCount,
+          hasMore: page.hasMore,
+          nextOffset: page.nextOffset,
+          loading: false,
+        },
       }));
-      setNotice(
-        result.deactivatedBindingCount && result.deactivatedBindingCount > 0
-          ? `${target.displayName} unapproved and ${result.deactivatedBindingCount} Talk binding(s) were deactivated.`
-          : `${target.displayName} removed from approved channels.`,
-      );
       setError(null);
     } catch (err) {
       if (err instanceof UnauthorizedError) {
@@ -375,10 +436,15 @@ export function SlackChannelConnectorPanel({
       setError(
         err instanceof ApiError
           ? err.message
-          : 'Failed to unapprove Slack channel.',
+          : 'Failed to load more Slack channels.',
       );
-    } finally {
-      setBusyKey(null);
+      setTargetPagesByConnection((current) => ({
+        ...current,
+        [connectionId]: {
+          ...(current[connectionId] || emptyWorkspaceTargetListState()),
+          loading: false,
+        },
+      }));
     }
   };
 
@@ -391,24 +457,19 @@ export function SlackChannelConnectorPanel({
         connectionId: workspaceId,
         rawInput,
       });
-      await approveChannelTarget({
+      const page = await listChannelTargets({
         connectionId: workspaceId,
-        targetKind: diagnostic.target.targetKind,
-        targetId: diagnostic.target.targetId,
-        displayName: diagnostic.target.displayName,
-        metadata: diagnostic.target.metadata,
-      });
-      const targets = await listChannelTargets({
-        connectionId: workspaceId,
+        query: searchByConnection[workspaceId] || '',
         approval: 'all',
-        limit: 200,
+        limit: 50,
+        offset: 0,
       });
-      setTargetsByConnection((current) => ({
+      setTargetPagesByConnection((current) => ({
         ...current,
-        [workspaceId]: targets,
+        [workspaceId]: { ...page, loading: false },
       }));
       setDiagnosticDrafts((current) => ({ ...current, [workspaceId]: '' }));
-      setNotice(`${diagnostic.target.displayName} approved for Talk bindings.`);
+      setNotice(`${diagnostic.target.displayName} added to synced channels.`);
       setError(null);
     } catch (err) {
       if (err instanceof UnauthorizedError) {
@@ -450,7 +511,10 @@ export function SlackChannelConnectorPanel({
         ) : connector ? (
           <>
             {!connector.config.available ? (
-              <div className="settings-banner settings-banner-warning" role="status">
+              <div
+                className="settings-banner settings-banner-warning"
+                role="status"
+              >
                 {connector.config.availabilityReason}
               </div>
             ) : null}
@@ -509,11 +573,16 @@ export function SlackChannelConnectorPanel({
                 <ol style={{ margin: '0.5rem 0 0', paddingLeft: '1.25rem' }}>
                   <li>Save the Slack app credentials here.</li>
                   <li>Paste the Redirect URL into Slack.</li>
-                  <li>Paste the Events API URL into Slack and complete verification.</li>
+                  <li>
+                    Paste the Events API URL into Slack and complete
+                    verification.
+                  </li>
                   <li>Enable bot scopes and event subscriptions.</li>
                   <li>Install the app to a workspace.</li>
-                  <li>Invite the app to any private channels you want to bind.</li>
-                  <li>Sync channels here, then approve the ones Talks may use.</li>
+                  <li>
+                    Invite the app to any private channels you want to bind.
+                  </li>
+                  <li>Sync channels here, then bind them from a Talk.</li>
                 </ol>
               </div>
               <div className="talk-llm-card" style={{ margin: 0 }}>
@@ -523,7 +592,8 @@ export function SlackChannelConnectorPanel({
                 </p>
                 <p className="talk-llm-meta">
                   Events API URL:{' '}
-                  {connector.config.eventsApiUrl || 'Not ready until the signing secret is saved'}
+                  {connector.config.eventsApiUrl ||
+                    'Not ready until the signing secret is saved'}
                 </p>
                 <p className="talk-llm-meta">
                   Events API status:{' '}
@@ -569,8 +639,8 @@ export function SlackChannelConnectorPanel({
         <h2>Connected Workspaces</h2>
         <p className="settings-copy">
           Each installed Slack workspace becomes its own live channel
-          connection. Sync channels after install, then approve the ones Talks
-          may bind to.
+          connection. Sync channels here; Talks choose from the synced channel
+          inventory when you bind them.
         </p>
         {loading ? (
           <p className="page-state">Loading workspaces…</p>
@@ -580,8 +650,11 @@ export function SlackChannelConnectorPanel({
           </div>
         ) : (
           <div className="connector-card-list">
-            {workspaceEntries.map(({ workspace, approved, discovered }) => (
-              <article key={workspace.id} className="talk-llm-card connector-card">
+            {workspaceEntries.map(({ workspace, targetPage }) => (
+              <article
+                key={workspace.id}
+                className="talk-llm-card connector-card"
+              >
                 <div className="connector-card-header">
                   <div>
                     <h3>{workspace.displayName}</h3>
@@ -595,11 +668,17 @@ export function SlackChannelConnectorPanel({
                   Last checked: {formatDateTime(workspace.lastHealthCheckAt)}
                 </p>
                 {workspace.lastHealthError ? (
-                  <div className="settings-banner settings-banner-warning" role="status">
+                  <div
+                    className="settings-banner settings-banner-warning"
+                    role="status"
+                  >
                     {workspace.lastHealthError}
                   </div>
                 ) : null}
-                <div className="settings-button-row" style={{ marginTop: '0.75rem' }}>
+                <div
+                  className="settings-button-row"
+                  style={{ marginTop: '0.75rem' }}
+                >
                   <button
                     type="button"
                     className="secondary-btn"
@@ -619,7 +698,7 @@ export function SlackChannelConnectorPanel({
                 </div>
 
                 <label style={{ display: 'block', marginTop: '1rem' }}>
-                  <span className="settings-label">Search channels</span>
+                  <span className="settings-label">Search synced channels</span>
                   <input
                     type="text"
                     value={searchByConnection[workspace.id] || ''}
@@ -629,59 +708,39 @@ export function SlackChannelConnectorPanel({
                         [workspace.id]: event.target.value,
                       }))
                     }
-                    placeholder="Search approved or discovered channels"
+                    placeholder="Filter by channel name or ID"
                     style={{ width: '100%' }}
                   />
                 </label>
 
-                <label style={{ display: 'block', marginTop: '0.75rem' }}>
-                  <span className="settings-label">Check channel by URL or ID</span>
-                  <div className="connector-attach-row">
-                    <input
-                      type="text"
-                      value={diagnosticDrafts[workspace.id] || ''}
-                      onChange={(event) =>
-                        setDiagnosticDrafts((current) => ({
-                          ...current,
-                          [workspace.id]: event.target.value,
-                        }))
-                      }
-                      placeholder="https://app.slack.com/.../C123 or C12345678"
-                      style={{ flex: 1 }}
-                    />
-                    <button
-                      type="button"
-                      className="secondary-btn"
-                      onClick={() => void handleCheckChannel(workspace.id)}
-                      disabled={busyKey !== null}
-                    >
-                      Add Channel
-                    </button>
-                  </div>
-                </label>
-                <p className="talk-llm-meta" style={{ marginTop: '0.5rem' }}>
-                  Private channels require the Slack app to be invited first.
-                  In Slack, open the channel and run <code>/invite @YourAppName</code>,
-                  then sync channels again.
-                </p>
-
-                <div className="connector-card-list" style={{ marginTop: '1rem' }}>
-                  <div className="talk-llm-card" style={{ margin: 0 }}>
-                    <h3>Approved Channels</h3>
-                    {approved.length === 0 ? (
-                      <p className="page-state">
-                        No approved channels yet.
+                <div className="talk-llm-card" style={{ margin: '1rem 0 0' }}>
+                  <div className="connector-card-header">
+                    <div>
+                      <h3>Synced Channels</h3>
+                      <p className="talk-llm-meta">
+                        {buildWorkspaceSyncSummary(workspace, targetPage)}
                       </p>
-                    ) : (
-                      <ul style={{ listStyle: 'none', padding: 0, margin: '0.5rem 0 0' }}>
-                        {approved.map((target) => (
+                    </div>
+                  </div>
+                  {targetPage.loading ? (
+                    <p className="page-state">Loading synced channels…</p>
+                  ) : targetPage.targets.length === 0 ? (
+                    <p className="page-state">
+                      No synced channels match this filter. Sync the workspace
+                      after install, and invite the app to any private channel
+                      you want to bind.
+                    </p>
+                  ) : (
+                    <>
+                      <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
+                        {targetPage.targets.map((target) => (
                           <li
                             key={target.targetId}
                             style={{
                               display: 'flex',
                               alignItems: 'center',
                               gap: '0.75rem',
-                              padding: '0.5rem 0',
+                              padding: '0.55rem 0',
                               borderBottom: '1px solid var(--border, #e6e9ef)',
                             }}
                           >
@@ -691,63 +750,68 @@ export function SlackChannelConnectorPanel({
                                 {formatChannelType(target)} · {target.targetId}
                               </div>
                             </div>
-                            <button
-                              type="button"
-                              className="secondary-btn"
-                              onClick={() =>
-                                void handleUnapproveTarget(workspace.id, target)
-                              }
-                              disabled={busyKey !== null}
-                            >
-                              Remove
-                            </button>
+                            <span className={targetStatusChipClass(target)}>
+                              {targetStatusLabel(target)}
+                            </span>
                           </li>
                         ))}
                       </ul>
-                    )}
-                  </div>
-
-                  <div className="talk-llm-card" style={{ margin: 0 }}>
-                    <h3>Discovered Channels</h3>
-                    {discovered.length === 0 ? (
-                      <p className="page-state">
-                        Nothing new discovered. Sync channels after installing
-                        the app or inviting it to private channels.
-                      </p>
-                    ) : (
-                      <ul style={{ listStyle: 'none', padding: 0, margin: '0.5rem 0 0' }}>
-                        {discovered.map((target) => (
-                          <li
-                            key={target.targetId}
-                            style={{
-                              display: 'flex',
-                              alignItems: 'center',
-                              gap: '0.75rem',
-                              padding: '0.5rem 0',
-                              borderBottom: '1px solid var(--border, #e6e9ef)',
-                            }}
+                      {targetPage.hasMore ? (
+                        <div
+                          className="settings-button-row"
+                          style={{ marginTop: '0.75rem' }}
+                        >
+                          <button
+                            type="button"
+                            className="secondary-btn"
+                            onClick={() => void handleLoadMoreChannels(workspace.id)}
+                            disabled={busyKey !== null || targetPage.loading}
                           >
-                            <div style={{ flex: 1 }}>
-                              <strong>{target.displayName}</strong>
-                              <div className="talk-llm-meta">
-                                {formatChannelType(target)} · {target.targetId}
-                              </div>
-                            </div>
-                            <button
-                              type="button"
-                              className="secondary-btn"
-                              onClick={() =>
-                                void handleApproveTarget(workspace.id, target)
-                              }
-                              disabled={busyKey !== null}
-                            >
-                              Approve
-                            </button>
-                          </li>
-                        ))}
-                      </ul>
-                    )}
-                  </div>
+                            Load More Channels
+                          </button>
+                        </div>
+                      ) : null}
+                    </>
+                  )}
+                </div>
+
+                <div className="talk-llm-card" style={{ margin: '1rem 0 0' }}>
+                  <h3>Advanced Lookup</h3>
+                  <p className="talk-llm-meta">
+                    Use this only when a specific channel is missing from the
+                    synced list and you want to verify whether the app can see
+                    it yet.
+                  </p>
+                  <label style={{ display: 'block', marginTop: '0.75rem' }}>
+                    <span className="settings-label">Check channel by URL or ID</span>
+                    <div className="connector-attach-row">
+                      <input
+                        type="text"
+                        value={diagnosticDrafts[workspace.id] || ''}
+                        onChange={(event) =>
+                          setDiagnosticDrafts((current) => ({
+                            ...current,
+                            [workspace.id]: event.target.value,
+                          }))
+                        }
+                        placeholder="https://app.slack.com/.../C123 or C12345678"
+                        style={{ flex: 1 }}
+                      />
+                      <button
+                        type="button"
+                        className="secondary-btn"
+                        onClick={() => void handleCheckChannel(workspace.id)}
+                        disabled={busyKey !== null}
+                      >
+                        Discover Channel
+                      </button>
+                    </div>
+                  </label>
+                  <p className="talk-llm-meta" style={{ marginTop: '0.5rem' }}>
+                    Private channels require the Slack app to be invited first.
+                    In Slack, open the channel and run{' '}
+                    <code>/invite @YourAppName</code>, then sync channels again.
+                  </p>
                 </div>
               </article>
             ))}

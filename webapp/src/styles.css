@@ -3014,6 +3014,16 @@ a {
   background: #eaf1ff;
 }
 
+.channel-target-picker-option-disabled {
+  cursor: default;
+  background: #fbfcff;
+}
+
+.channel-target-picker-option-disabled:hover,
+.channel-target-picker-option-disabled:focus-visible {
+  background: #fbfcff;
+}
+
 .channel-target-picker-option-title {
   color: #1b2232;
   font-weight: 700;
@@ -3022,6 +3032,35 @@ a {
 .channel-target-picker-option-meta {
   color: #52617f;
   font-size: 0.9rem;
+}
+
+.channel-target-picker-option-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-top: 0.3rem;
+}
+
+.channel-target-picker-option-status {
+  color: #19623c;
+  font-size: 0.88rem;
+  font-weight: 600;
+}
+
+.channel-target-picker-option-status-disabled {
+  color: #6a7692;
+}
+
+.channel-target-picker-option-link {
+  color: #2455c3;
+  font-size: 0.88rem;
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.channel-target-picker-option-link:hover {
+  text-decoration: underline;
 }
 
 @media (max-width: 960px) {
