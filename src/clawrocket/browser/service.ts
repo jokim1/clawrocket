@@ -20,6 +20,12 @@ const HUMAN_ONLY_CHECKPOINT_REGEX =
   /\b(captcha|not a robot|verify you are human|security check|complete the challenge|press and hold)\b/i;
 const INTERACTIVE_AUTH_CHECKPOINT_REGEX =
   /\b(sign in|log in|login|verify your identity|approve sign[- ]?in|check your phone|check your device|open (the )?(linkedin )?app|authentication app|verification code|enter the code|two-step verification|2-step verification|two factor authentication|two-factor authentication|2fa|confirm (that )?it'?s you|use your passkey)\b/i;
+const LINKEDIN_PHONE_APPROVAL_REGEX =
+  /\b(check your phone|approve sign[- ]?in|approve the sign in|open (the )?linkedin app|linkedin app|approve on your phone|approve from your phone|approve from another device|check your device)\b/i;
+const LINKEDIN_CODE_REGEX =
+  /\b(verification code|security code|enter the code|enter code|use the code|we sent .*code|6-digit code|six-digit code)\b/i;
+const LINKEDIN_DEVICE_TRUST_REGEX =
+  /\b(verify your identity|confirm (that )?it'?s you|trust this device|remember this device|device verification|new device|approve this sign in)\b/i;
 
 export type BrowserResultStatus =
   | 'ok'
@@ -174,6 +180,194 @@ function buildProfileMapKey(
   return accountLabel ? `${siteKey}::${accountLabel}` : siteKey;
 }
 
+function humanizeSiteKey(siteKey: string): string {
+  if (siteKey.toLowerCase() === 'linkedin') {
+    return 'LinkedIn';
+  }
+  if (siteKey.length <= 3) {
+    return siteKey.toUpperCase();
+  }
+  return siteKey
+    .split(/[-_.]+/g)
+    .filter(Boolean)
+    .map((segment) => segment.charAt(0).toUpperCase() + segment.slice(1))
+    .join(' ');
+}
+
+function isLinkedInSurface(url: string, bodyText?: string | null): boolean {
+  return /linkedin\.com/i.test(url) || /\blinkedin\b/i.test(bodyText || '');
+}
+
+function buildLinkedInBlockedReason(input: {
+  url: string;
+  bodyText?: string | null;
+  passwordFieldCount?: number;
+  urlSuggestsAuth?: boolean;
+}): { kind: BrowserBlockedKind; reason: string } | null {
+  if (!isLinkedInSurface(input.url, input.bodyText)) {
+    return null;
+  }
+  const bodyText = input.bodyText || '';
+  if (HUMAN_ONLY_CHECKPOINT_REGEX.test(bodyText)) {
+    return {
+      kind: 'human_step_required',
+      reason:
+        'LinkedIn is showing a human-only security check that must be completed in the browser.',
+    };
+  }
+  if ((input.passwordFieldCount || 0) > 0) {
+    return {
+      kind: 'auth_required',
+      reason: 'LinkedIn needs interactive sign-in for this browser profile.',
+    };
+  }
+  if (LINKEDIN_PHONE_APPROVAL_REGEX.test(bodyText)) {
+    return {
+      kind: 'auth_required',
+      reason:
+        'LinkedIn is waiting for phone or app approval on a trusted device.',
+    };
+  }
+  if (LINKEDIN_CODE_REGEX.test(bodyText)) {
+    return {
+      kind: 'auth_required',
+      reason: 'LinkedIn requires a verification code to continue.',
+    };
+  }
+  if (LINKEDIN_DEVICE_TRUST_REGEX.test(bodyText)) {
+    return {
+      kind: 'auth_required',
+      reason:
+        'LinkedIn is asking you to verify this sign-in or device before the agent can continue.',
+    };
+  }
+  if (INTERACTIVE_AUTH_CHECKPOINT_REGEX.test(bodyText)) {
+    return {
+      kind: 'auth_required',
+      reason:
+        'LinkedIn needs interactive sign-in or device approval before the agent can continue.',
+    };
+  }
+  if (
+    input.urlSuggestsAuth &&
+    /(checkpoint|challenge|login|signin|sign-in|verify)/i.test(input.url)
+  ) {
+    return {
+      kind: 'auth_required',
+      reason:
+        'LinkedIn is in a checkpoint or sign-in flow and needs interactive approval before the agent can continue.',
+    };
+  }
+  return null;
+}
+
+function buildReusePrefix(siteKey: string): string {
+  return `Reusing the existing trusted ${humanizeSiteKey(siteKey)} browser session.`;
+}
+
+function buildOpenResultFromExistingSessionSnapshot(input: {
+  snapshot: BrowserSessionStatusSnapshot;
+  createdProfile: boolean;
+}): BrowserOpenResult | null {
+  const { snapshot, createdProfile } = input;
+  const prefix = buildReusePrefix(snapshot.siteKey);
+
+  if (snapshot.state === 'takeover' || snapshot.owner === 'user') {
+    return {
+      status: 'human_step_required',
+      siteKey: snapshot.siteKey,
+      accountLabel: snapshot.accountLabel,
+      sessionId: snapshot.sessionId,
+      url: snapshot.currentUrl,
+      title: snapshot.currentTitle,
+      reusedSession: true,
+      createdProfile,
+      message: `${prefix} Finish the manual sign-in or verification step in that browser window and the agent will continue from there.`,
+    };
+  }
+
+  if (snapshot.state !== 'blocked') {
+    return null;
+  }
+
+  if (snapshot.blockedKind === 'confirmation_required') {
+    return {
+      status: 'awaiting_confirmation',
+      siteKey: snapshot.siteKey,
+      accountLabel: snapshot.accountLabel,
+      sessionId: snapshot.sessionId,
+      url: snapshot.currentUrl,
+      title: snapshot.currentTitle,
+      reusedSession: true,
+      createdProfile,
+      message:
+        snapshot.blockedMessage ||
+        `${prefix} Resolve the pending confirmation in the existing browser session before continuing.`,
+    };
+  }
+
+  if (snapshot.blockedKind === 'human_step_required') {
+    return {
+      status: 'human_step_required',
+      siteKey: snapshot.siteKey,
+      accountLabel: snapshot.accountLabel,
+      sessionId: snapshot.sessionId,
+      url: snapshot.currentUrl,
+      title: snapshot.currentTitle,
+      reusedSession: true,
+      createdProfile,
+      message:
+        snapshot.blockedMessage ||
+        `${prefix} Complete the manual browser step in the existing session and the agent will reuse it.`,
+    };
+  }
+
+  return {
+    status: 'needs_auth',
+    siteKey: snapshot.siteKey,
+    accountLabel: snapshot.accountLabel,
+    sessionId: snapshot.sessionId,
+    url: snapshot.currentUrl,
+    title: snapshot.currentTitle,
+    reusedSession: true,
+    createdProfile,
+    message:
+      snapshot.blockedMessage ||
+      `${prefix} Finish the interactive sign-in or device approval step in the existing session and the agent will reuse it.`,
+  };
+}
+
+function buildSetupSessionReuseMessage(
+  snapshot: BrowserSessionStatusSnapshot,
+): string {
+  const siteLabel = humanizeSiteKey(snapshot.siteKey);
+  if (snapshot.state === 'takeover' || snapshot.owner === 'user') {
+    return `${siteLabel} setup session is already open. Continue the existing manual sign-in or verification step in that browser window.`;
+  }
+  if (snapshot.blockedKind === 'human_step_required') {
+    return `Continue the existing ${siteLabel} human-only verification step in the opened browser window.`;
+  }
+  if (snapshot.blockedKind === 'confirmation_required') {
+    return `Resolve the existing ${siteLabel} confirmation step in the opened browser window.`;
+  }
+  return `Continue the existing ${siteLabel} sign-in or device approval step in the opened browser window.`;
+}
+
+function urlsEquivalent(left: string, right: string): boolean {
+  try {
+    const leftUrl = new URL(left);
+    const rightUrl = new URL(right);
+    return (
+      leftUrl.protocol === rightUrl.protocol &&
+      leftUrl.host === rightUrl.host &&
+      leftUrl.pathname === rightUrl.pathname &&
+      leftUrl.search === rightUrl.search
+    );
+  } catch {
+    return left.replace(/#.*$/, '') === right.replace(/#.*$/, '');
+  }
+}
+
 function resolveViewport(profile: BrowserProfileSnapshot): {
   width: number;
   height: number;
@@ -213,7 +407,9 @@ async function detectBlockedState(page: Page): Promise<{
   reason?: string;
 }> {
   const url = page.url();
-  if (/(login|signin|sign-in|auth|checkpoint|challenge|verify)/i.test(url)) {
+  const urlSuggestsAuth =
+    /(login|signin|sign-in|auth|checkpoint|challenge|verify)/i.test(url);
+  if (urlSuggestsAuth && !isLinkedInSurface(url)) {
     return {
       kind: 'auth_required',
       reason: `Current page URL suggests an authentication flow: ${url}`,
@@ -225,6 +421,14 @@ async function detectBlockedState(page: Page): Promise<{
       .locator('input[type="password"]')
       .count();
     if (passwordFieldCount > 0) {
+      const passwordLinkedInBlocked = buildLinkedInBlockedReason({
+        url,
+        passwordFieldCount,
+        urlSuggestsAuth,
+      });
+      if (passwordLinkedInBlocked) {
+        return passwordLinkedInBlocked;
+      }
       return {
         kind: 'auth_required',
         reason: 'Page contains a password field.',
@@ -232,6 +436,14 @@ async function detectBlockedState(page: Page): Promise<{
     }
 
     const bodyText = await page.locator('body').innerText();
+    const linkedInBlocked = buildLinkedInBlockedReason({
+      url,
+      bodyText,
+      urlSuggestsAuth,
+    });
+    if (linkedInBlocked) {
+      return linkedInBlocked;
+    }
     if (HUMAN_ONLY_CHECKPOINT_REGEX.test(bodyText)) {
       return {
         kind: 'human_step_required',
@@ -247,6 +459,20 @@ async function detectBlockedState(page: Page): Promise<{
     }
   } catch {
     // Ignore auth detection failures and fall back to the page state we have.
+  }
+
+  if (urlSuggestsAuth) {
+    const linkedInBlocked = buildLinkedInBlockedReason({
+      url,
+      urlSuggestsAuth,
+    });
+    if (linkedInBlocked) {
+      return linkedInBlocked;
+    }
+    return {
+      kind: 'auth_required',
+      reason: `Current page URL suggests an authentication flow: ${url}`,
+    };
   }
 
   return { kind: null };
@@ -739,6 +965,38 @@ export class BrowserService {
           };
         }
 
+        const existingSnapshot = await this.getSessionStatus(
+          liveSession.sessionId,
+        );
+        if (existingSnapshot) {
+          const blockedResult = buildOpenResultFromExistingSessionSnapshot({
+            snapshot: existingSnapshot,
+            createdProfile: created,
+          });
+          if (blockedResult) {
+            touchBrowserProfileLastUsed(profile.id);
+            return blockedResult;
+          }
+          if (
+            existingSnapshot.state === 'active' &&
+            urlsEquivalent(existingSnapshot.currentUrl, input.url)
+          ) {
+            touchBrowserProfileLastUsed(profile.id);
+            return {
+              status: 'ok',
+              siteKey: profile.siteKey,
+              accountLabel: profile.accountLabel,
+              sessionId: liveSession.sessionId,
+              url: existingSnapshot.currentUrl,
+              title: existingSnapshot.currentTitle,
+              reusedSession: true,
+              createdProfile: created,
+              message:
+                'Reused the existing trusted browser session without reloading the page.',
+            };
+          }
+        }
+
         session =
           liveSession.headed === headed
             ? liveSession
@@ -817,6 +1075,9 @@ export class BrowserService {
     const existingSession = existingSessionId
       ? this.sessionsById.get(existingSessionId) || null
       : null;
+    const existingSnapshot = existingSession
+      ? await this.getSessionStatus(existingSession.sessionId)
+      : null;
 
     const session =
       existingSession && existingSession.headed
@@ -824,6 +1085,30 @@ export class BrowserService {
         : existingSession
           ? await this.relaunchSession(existingSession, true)
           : await this.createSession({ profile, headed: true });
+
+    if (
+      existingSnapshot &&
+      (existingSnapshot.state !== 'active' || existingSnapshot.owner === 'user')
+    ) {
+      await this.refreshSessionLocation(session);
+      touchBrowserProfileLastUsed(profile.id);
+      session.state = 'takeover';
+      session.owner = 'user';
+      session.blockedKind = null;
+      session.blockedMessage = null;
+      session.lastUpdatedAt = nowIso();
+      return {
+        status: 'ok',
+        siteKey: profile.siteKey,
+        accountLabel: profile.accountLabel,
+        sessionId: session.sessionId,
+        url: session.page.url(),
+        title: await session.page.title(),
+        reusedSession: true,
+        createdProfile: created,
+        message: buildSetupSessionReuseMessage(existingSnapshot),
+      };
+    }
 
     if (input.url) {
       await session.page.goto(input.url, {
@@ -1293,4 +1578,6 @@ export function _resetBrowserServiceForTests(): void {
 export const _testOnly = {
   detectBlockedState,
   classifyRisk,
+  buildLinkedInBlockedReason,
+  buildOpenResultFromExistingSessionSnapshot,
 };

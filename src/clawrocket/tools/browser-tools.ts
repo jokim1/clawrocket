@@ -577,6 +577,7 @@ async function throwBrowserRunPaused(input: {
     message: string;
     riskReason?: string;
     sessionId?: string;
+    reusedSession?: boolean;
   };
 }): Promise<never> {
   const now = new Date().toISOString();
@@ -638,10 +639,12 @@ async function throwBrowserRunPaused(input: {
     setupCommand:
       input.result.status === 'needs_auth' ||
       input.result.status === 'human_step_required'
-        ? browserSetupCommand({
-            siteKey: input.result.siteKey,
-            accountLabel: input.result.accountLabel,
-          })
+        ? input.result.reusedSession
+          ? null
+          : browserSetupCommand({
+              siteKey: input.result.siteKey,
+              accountLabel: input.result.accountLabel,
+            })
         : null,
     artifacts,
     confirmationId,
@@ -740,10 +743,12 @@ export async function executeBrowserTool(input: {
             url: result.url,
             actionSummary: `Open ${result.url}`,
             message: result.message,
-            setupCommand: browserSetupCommand({
-              siteKey: result.siteKey,
-              accountLabel: result.accountLabel,
-            }),
+            setupCommand: result.reusedSession
+              ? undefined
+              : browserSetupCommand({
+                  siteKey: result.siteKey,
+                  accountLabel: result.accountLabel,
+                }),
           });
         }
 
