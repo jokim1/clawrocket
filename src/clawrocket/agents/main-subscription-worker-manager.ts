@@ -23,10 +23,7 @@ import {
   type ExecuteContainerTurnOutput,
 } from './container-turn-executor.js';
 
-type WarmWorkerLeaseState =
-  | 'cold_boot'
-  | 'warm_reuse'
-  | 'recovered_cold_boot';
+type WarmWorkerLeaseState = 'cold_boot' | 'warm_reuse' | 'recovered_cold_boot';
 
 interface WarmWorkerTaskCallbacks {
   onQueueWaitStart?: (at: string) => void;
@@ -49,8 +46,7 @@ interface ExecuteWarmMainSubscriptionTurnInput {
   callbacks?: WarmWorkerTaskCallbacks;
 }
 
-export interface ExecuteWarmMainSubscriptionTurnOutput
-  extends ExecuteContainerTurnOutput {
+export interface ExecuteWarmMainSubscriptionTurnOutput extends ExecuteContainerTurnOutput {
   leaseState: WarmWorkerLeaseState;
   timing: {
     leaseRequestedAt: string;
@@ -163,7 +159,8 @@ export class MainSubscriptionWorkerManager {
   }) {
     this.idleTtlMs =
       options?.idleTtlMs ?? MAIN_SUBSCRIPTION_WARM_WORKER_IDLE_TTL_MS;
-    this.maxCount = options?.maxCount ?? MAIN_SUBSCRIPTION_WARM_WORKER_MAX_COUNT;
+    this.maxCount =
+      options?.maxCount ?? MAIN_SUBSCRIPTION_WARM_WORKER_MAX_COUNT;
     this.bootTimeoutMs =
       options?.bootTimeoutMs ?? MAIN_SUBSCRIPTION_WARM_WORKER_BOOT_TIMEOUT_MS;
   }
@@ -368,7 +365,9 @@ export class MainSubscriptionWorkerManager {
           ? output.result
           : streamedContentRef.current;
       if (!finalContent || !finalContent.trim()) {
-        throw new Error('Container execution completed without a final response.');
+        throw new Error(
+          'Container execution completed without a final response.',
+        );
       }
 
       return {

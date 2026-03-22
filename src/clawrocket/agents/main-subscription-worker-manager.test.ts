@@ -4,7 +4,9 @@ const ensureBrowserBridgeServerMock = vi.hoisted(() =>
   vi.fn(async () => '/tmp/browser.sock'),
 );
 const materializeContainerTurnContextMock = vi.hoisted(() => vi.fn());
-const getTalkRunByIdMock = vi.hoisted(() => vi.fn(() => ({ status: 'running' })));
+const getTalkRunByIdMock = vi.hoisted(() =>
+  vi.fn(() => ({ status: 'running' })),
+);
 const getBrowserBlockForRunMock = vi.hoisted(() => vi.fn(() => null));
 const workerHarness = vi.hoisted(() => {
   class FakePersistentContainerAgentWorkerError extends Error {
@@ -32,7 +34,10 @@ const workerHarness = vi.hoisted(() => {
         input: unknown,
         callbacks?:
           | {
-              onOutput?: (output: { status: 'success' | 'error'; result: string | null }) => Promise<void> | void;
+              onOutput?: (output: {
+                status: 'success' | 'error';
+                result: string | null;
+              }) => Promise<void> | void;
               onEvent?: (event: { type: string; requestId: string }) => void;
             }
           | undefined,
@@ -59,7 +64,10 @@ const workerHarness = vi.hoisted(() => {
       input: unknown,
       callbacks?:
         | {
-            onOutput?: (output: { status: 'success' | 'error'; result: string | null }) => Promise<void> | void;
+            onOutput?: (output: {
+              status: 'success' | 'error';
+              result: string | null;
+            }) => Promise<void> | void;
             onEvent?: (event: { type: string; requestId: string }) => void;
           }
         | undefined,
@@ -101,8 +109,14 @@ const workerHarness = vi.hoisted(() => {
             input: unknown,
             callbacks?:
               | {
-                  onOutput?: (output: { status: 'success' | 'error'; result: string | null }) => Promise<void> | void;
-                  onEvent?: (event: { type: string; requestId: string }) => void;
+                  onOutput?: (output: {
+                    status: 'success' | 'error';
+                    result: string | null;
+                  }) => Promise<void> | void;
+                  onEvent?: (event: {
+                    type: string;
+                    requestId: string;
+                  }) => void;
                 }
               | undefined,
           ) => Promise<{ status: 'success' | 'error'; result: string | null }>)
@@ -114,7 +128,8 @@ const workerHarness = vi.hoisted(() => {
 });
 
 vi.mock('../../container-runner.js', () => ({
-  PersistentContainerAgentWorker: workerHarness.FakePersistentContainerAgentWorker,
+  PersistentContainerAgentWorker:
+    workerHarness.FakePersistentContainerAgentWorker,
   PersistentContainerAgentWorkerError:
     workerHarness.FakePersistentContainerAgentWorkerError,
 }));

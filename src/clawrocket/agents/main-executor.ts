@@ -1039,7 +1039,10 @@ export async function executeMainChannel(
                       ? 'Recovered warm subscription worker.'
                       : 'Warm subscription worker ready.',
                 );
-                const elapsedMs = Math.max(0, Date.parse(at) - leaseRequestedAtMs);
+                const elapsedMs = Math.max(
+                  0,
+                  Date.parse(at) - leaseRequestedAtMs,
+                );
                 const totalBudgetMs =
                   leaseState === 'warm_reuse'
                     ? MAIN_RUN_WARM_SUBSCRIPTION_TOTAL_BUDGET_MS
