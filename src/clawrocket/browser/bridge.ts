@@ -11,6 +11,10 @@ const BRIDGE_DIR = path.join(DATA_DIR, 'browser-bridge');
 export const BROWSER_BRIDGE_SOCKET_PATH = path.join(BRIDGE_DIR, 'browser.sock');
 const MAX_REQUEST_BYTES = 2 * 1024 * 1024;
 const runAborters = new Map<string, () => void>();
+const runEventListeners = new Map<
+  string,
+  Set<(event: BrowserBridgeRunEvent) => void>
+>();
 
 export interface BrowserBridgeRequest {
   requestId: string;
@@ -20,6 +24,7 @@ export interface BrowserBridgeRequest {
     runId: string;
     userId: string;
     talkId?: string | null;
+    timeoutProfile?: 'default' | 'fast_lane';
   };
 }
 
@@ -28,6 +33,18 @@ export interface BrowserBridgeResponse {
   result: string;
   isError?: boolean;
 }
+
+export type BrowserBridgeRunEvent =
+  | {
+      type: 'activity';
+      runId: string;
+      toolName: string;
+    }
+  | {
+      type: 'page_ready';
+      runId: string;
+      currentStep: string;
+    };
 
 function serializeResponse(response: BrowserBridgeResponse): string {
   return JSON.stringify(response);
@@ -50,11 +67,58 @@ function abortBrowserBridgeRun(runId: string): boolean {
   }
 }
 
+function emitBrowserBridgeRunEvent(event: BrowserBridgeRunEvent): void {
+  const listeners = runEventListeners.get(event.runId);
+  if (!listeners) {
+    return;
+  }
+  for (const listener of listeners) {
+    try {
+      listener(event);
+    } catch (error) {
+      logger.warn(
+        { err: error, runId: event.runId, eventType: event.type },
+        'Browser bridge run event listener threw unexpectedly',
+      );
+    }
+  }
+}
+
+function maybeEmitPageReadyEvent(
+  request: BrowserBridgeRequest,
+  result: string,
+): void {
+  let parsed: { status?: unknown } | null = null;
+  try {
+    parsed = JSON.parse(result) as { status?: unknown };
+  } catch {
+    return;
+  }
+  if (!parsed || parsed.status !== 'ok') {
+    return;
+  }
+  if (
+    request.toolName === 'browser_open' ||
+    request.toolName === 'browser_snapshot'
+  ) {
+    emitBrowserBridgeRunEvent({
+      type: 'page_ready',
+      runId: request.context.runId,
+      currentStep: 'Reading page access…',
+    });
+  }
+}
+
 export async function executeBrowserBridgeRequest(input: {
   request: BrowserBridgeRequest;
   signal: AbortSignal;
 }): Promise<BrowserBridgeResponse | null> {
   try {
+    emitBrowserBridgeRunEvent({
+      type: 'activity',
+      runId: input.request.context.runId,
+      toolName: input.request.toolName,
+    });
     const result = await executeBrowserTool({
       toolName: input.request.toolName,
       args: input.request.args,
@@ -63,8 +127,10 @@ export async function executeBrowserBridgeRequest(input: {
         runId: input.request.context.runId,
         userId: input.request.context.userId,
         talkId: input.request.context.talkId ?? null,
+        timeoutProfile: input.request.context.timeoutProfile ?? 'default',
       },
     });
+    maybeEmitPageReadyEvent(input.request, result.result);
     return {
       requestId: input.request.requestId,
       result: result.result,
@@ -247,6 +313,25 @@ export function registerBrowserBridgeRunAbort(
 
 export function unregisterBrowserBridgeRunAbort(runId: string): void {
   runAborters.delete(runId);
+}
+
+export function subscribeBrowserBridgeRunEvents(
+  runId: string,
+  listener: (event: BrowserBridgeRunEvent) => void,
+): () => void {
+  const listeners = runEventListeners.get(runId) || new Set();
+  listeners.add(listener);
+  runEventListeners.set(runId, listeners);
+  return () => {
+    const current = runEventListeners.get(runId);
+    if (!current) {
+      return;
+    }
+    current.delete(listener);
+    if (current.size === 0) {
+      runEventListeners.delete(runId);
+    }
+  };
 }
 export async function ensureBrowserBridgeServer(): Promise<string> {
   if (!bridgeServer) {

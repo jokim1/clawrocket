@@ -7,6 +7,7 @@ import { getDb } from '../../db.js';
 import { logger } from '../../logger.js';
 import { createWebRuntimeExecutionTarget } from '../../container-execution-target.js';
 import {
+  PersistentContainerAgentWorkerError,
   runContainerAgent,
   type ContainerWebTalkConnectorBundle,
 } from '../../container-runner.js';
@@ -37,7 +38,9 @@ import {
 import { BrowserRunPausedError } from '../browser/run-paused-error.js';
 import { getBrowserBlockForRun, getTalkRunById } from '../db/index.js';
 
-interface ExecuteContainerTurnInput {
+export type ContainerBrowserTimeoutProfile = 'default' | 'fast_lane';
+
+export interface ExecuteContainerTurnInput {
   runId: string;
   userId: string;
   agent: RegisteredAgentRecord;
@@ -55,9 +58,10 @@ interface ExecuteContainerTurnInput {
   projectMountHostPath?: string | null;
   jobPolicy?: TalkJobExecutionPolicy | null;
   enableBrowserTools?: boolean;
+  timeoutProfile?: ContainerBrowserTimeoutProfile;
 }
 
-interface ExecuteContainerTurnOutput {
+export interface ExecuteContainerTurnOutput {
   content: string;
 }
 
@@ -94,6 +98,13 @@ const CHARS_TO_TOKENS = 0.25;
 const SMALL_SOURCE_THRESHOLD = 250;
 const WEB_TALK_OUTPUT_BRIDGE_DIRNAME = '.nanoclaw-web-talk-output-bridge';
 const WEB_TALK_OUTPUT_BRIDGE_POLL_MS = 50;
+const REUSABLE_CONTEXT_DIR_CLEANUP_ENTRIES = [
+  'CLAUDE.md',
+  'HISTORY.md',
+  'sources',
+  'attachments',
+  WEB_TALK_OUTPUT_BRIDGE_DIRNAME,
+];
 
 function estimateTokens(text: string): number {
   return Math.ceil(text.length * CHARS_TO_TOKENS);
@@ -500,67 +511,86 @@ function getAllowedOutputToolNames(
   return ['list_outputs', 'read_output'];
 }
 
-function createContextDirectory(input: ExecuteContainerTurnInput): {
+function resetReusableContextDirectory(baseDir: string): void {
+  fs.mkdirSync(baseDir, { recursive: true });
+  for (const entry of REUSABLE_CONTEXT_DIR_CLEANUP_ENTRIES) {
+    fs.rmSync(path.join(baseDir, entry), { recursive: true, force: true });
+  }
+}
+
+export function materializeContainerTurnContext(input: {
+  input: ExecuteContainerTurnInput;
+  baseDir?: string;
+}): {
   path: string;
   connectorBundle?: ContainerWebTalkConnectorBundle;
   outputBridgeDir?: string;
   outputToolNames: WebTalkOutputToolName[];
 } {
-  const baseDir = fs.mkdtempSync(
-    path.join(DATA_DIR, `${input.promptLabel}-container-turn-${input.runId}-`),
-  );
-  const sourceFiles = input.talkId
-    ? materializeTalkSourceFiles(baseDir, input.talkId)
+  const baseDir =
+    input.baseDir ||
+    fs.mkdtempSync(
+      path.join(
+        DATA_DIR,
+        `${input.input.promptLabel}-container-turn-${input.input.runId}-`,
+      ),
+    );
+  if (input.baseDir) {
+    resetReusableContextDirectory(baseDir);
+  }
+
+  const sourceFiles = input.input.talkId
+    ? materializeTalkSourceFiles(baseDir, input.input.talkId)
     : [];
-  const attachmentFiles = input.talkId
+  const attachmentFiles = input.input.talkId
     ? materializeTalkAttachmentFiles(
         baseDir,
-        input.talkId,
+        input.input.talkId,
         listScopedAttachmentIds({
-          triggerMessageId: input.triggerMessageId,
-          historyMessageIds: input.historyMessageIds,
+          triggerMessageId: input.input.triggerMessageId,
+          historyMessageIds: input.input.historyMessageIds,
         }),
       )
     : [];
 
   const claudeMdContent = buildClaudeMd({
-    promptLabel: input.promptLabel,
-    systemPrompt: input.context.systemPrompt,
+    promptLabel: input.input.promptLabel,
+    systemPrompt: input.input.context.systemPrompt,
     sourceFiles,
     attachmentFiles,
-    hasProjectMount: Boolean(input.projectMountHostPath),
+    hasProjectMount: Boolean(input.input.projectMountHostPath),
   });
   const claudeMdTokens = estimateTokens(claudeMdContent);
   const historyBudgetTokens = Math.max(
     0,
-    input.modelContextWindow -
+    input.input.modelContextWindow -
       OUTPUT_RESERVE -
       TOOL_SCHEMA_RESERVE -
       claudeMdTokens,
   );
   const boundedHistory = shrinkHistoryToBudget(
-    input.context.history,
+    input.input.context.history,
     historyBudgetTokens,
   );
 
   writeFile(path.join(baseDir, 'CLAUDE.md'), claudeMdContent);
-  if (input.promptLabel === 'talk') {
+  if (input.input.promptLabel === 'talk') {
     writeFile(
       path.join(baseDir, 'HISTORY.md'),
       renderHistoryMarkdown(boundedHistory),
     );
   }
-  const outputBridgeDir = input.talkId
+  const outputBridgeDir = input.input.talkId
     ? ensureOutputBridgeDirectories(baseDir)
     : undefined;
 
   return {
     path: baseDir,
-    connectorBundle: input.talkId
-      ? buildConnectorBundle(input.talkId, input.jobPolicy)
+    connectorBundle: input.input.talkId
+      ? buildConnectorBundle(input.input.talkId, input.input.jobPolicy)
       : undefined,
     outputBridgeDir,
-    outputToolNames: getAllowedOutputToolNames(input.jobPolicy),
+    outputToolNames: getAllowedOutputToolNames(input.input.jobPolicy),
   };
 }
 
@@ -568,7 +598,7 @@ export async function executeContainerAgentTurn(
   input: ExecuteContainerTurnInput,
 ): Promise<ExecuteContainerTurnOutput> {
   const target = createWebRuntimeExecutionTarget();
-  const contextDir = createContextDirectory(input);
+  const contextDir = materializeContainerTurnContext({ input });
   const browserBridgeHostSocketPath = input.enableBrowserTools
     ? await ensureBrowserBridgeServer()
     : null;
@@ -616,6 +646,7 @@ export async function executeContainerAgentTurn(
         browserRunId: input.runId,
         browserUserId: input.userId,
         browserTalkId: input.talkId ?? null,
+        timeoutProfile: input.timeoutProfile ?? 'default',
         secrets: input.containerCredential.secrets,
       },
       (proc) => {

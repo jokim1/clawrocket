@@ -18,12 +18,14 @@ import fs from 'fs';
 import path from 'path';
 import { query, HookCallback, PreCompactHookInput, PreToolUseHookInput } from '@anthropic-ai/claude-agent-sdk';
 import { fileURLToPath } from 'url';
+import readline from 'readline';
 
 interface ContainerInput {
   prompt: string;
   sessionId?: string;
   model?: string;
   toolProfile?: 'default' | 'web_talk' | 'talk_main';
+  timeoutProfile?: 'default' | 'fast_lane';
   allowedTools?: string[];
   groupFolder: string;
   chatJid: string;
@@ -81,6 +83,30 @@ interface ContainerOutput {
   newSessionId?: string;
   error?: string;
 }
+
+interface PersistentWorkerTaskEnvelope {
+  requestId: string;
+  input: ContainerInput;
+}
+
+type PersistentWorkerStdoutMessage =
+  | {
+      type: 'worker_ready';
+    }
+  | {
+      type: 'task_started';
+      requestId: string;
+    }
+  | {
+      type: 'task_output';
+      requestId: string;
+      output: ContainerOutput;
+    }
+  | {
+      type: 'task_completed';
+      requestId: string;
+      output: ContainerOutput;
+    };
 
 interface SessionEntry {
   sessionId: string;
@@ -157,6 +183,10 @@ function writeOutput(output: ContainerOutput): void {
   console.log(OUTPUT_START_MARKER);
   console.log(JSON.stringify(output));
   console.log(OUTPUT_END_MARKER);
+}
+
+function writeWorkerMessage(message: PersistentWorkerStdoutMessage): void {
+  process.stdout.write(`${JSON.stringify(message)}\n`);
 }
 
 function log(message: string): void {
@@ -409,6 +439,7 @@ async function runQuery(
   mcpServerPath: string,
   containerInput: ContainerInput,
   sdkEnv: Record<string, string | undefined>,
+  emitOutput: (output: ContainerOutput) => void,
   resumeAt?: string,
 ): Promise<{ newSessionId?: string; lastAssistantUuid?: string; closedDuringQuery: boolean }> {
   const stream = new MessageStream();
@@ -571,6 +602,8 @@ async function runQuery(
                           containerInput.browserRunId || '',
                         NANOCLAW_BROWSER_USER_ID:
                           containerInput.browserUserId || '',
+                        NANOCLAW_BROWSER_TIMEOUT_PROFILE:
+                          containerInput.timeoutProfile || 'default',
                         ...(containerInput.browserTalkId
                           ? {
                               NANOCLAW_BROWSER_TALK_ID:
@@ -612,7 +645,7 @@ async function runQuery(
       resultCount++;
       const textResult = 'result' in message ? (message as { result?: string }).result : null;
       log(`Result #${resultCount}: subtype=${message.subtype}${textResult ? ` text=${textResult.slice(0, 200)}` : ''}`);
-      writeOutput({
+      emitOutput({
         status: 'success',
         result: textResult || null,
         newSessionId
@@ -623,6 +656,89 @@ async function runQuery(
   ipcPolling = false;
   log(`Query done. Messages: ${messageCount}, results: ${resultCount}, lastAssistantUuid: ${lastAssistantUuid || 'none'}, closedDuringQuery: ${closedDuringQuery}`);
   return { newSessionId, lastAssistantUuid, closedDuringQuery };
+}
+
+function buildSdkEnv(
+  containerInput: ContainerInput,
+): Record<string, string | undefined> {
+  const sdkEnv: Record<string, string | undefined> = { ...process.env };
+  for (const [key, value] of Object.entries(containerInput.secrets || {})) {
+    sdkEnv[key] = value;
+  }
+  return sdkEnv;
+}
+
+function buildInitialPrompt(containerInput: ContainerInput): string {
+  let prompt = containerInput.prompt;
+  if (containerInput.isScheduledTask) {
+    prompt = `[SCHEDULED TASK - The following message was sent automatically and is not coming directly from the user or group.]\n\n${prompt}`;
+  }
+  const pending = drainIpcInput();
+  if (pending.length > 0) {
+    log(`Draining ${pending.length} pending IPC messages into initial prompt`);
+    prompt += '\n' + pending.join('\n');
+  }
+  return prompt;
+}
+
+function resetPersistentTaskInputState(): void {
+  fs.mkdirSync(IPC_INPUT_DIR, { recursive: true });
+  try { fs.unlinkSync(IPC_INPUT_CLOSE_SENTINEL); } catch { /* ignore */ }
+  try {
+    const files = fs.readdirSync(IPC_INPUT_DIR).filter(file => file.endsWith('.json'));
+    for (const file of files) {
+      try { fs.unlinkSync(path.join(IPC_INPUT_DIR, file)); } catch { /* ignore */ }
+    }
+  } catch {
+    // ignore
+  }
+}
+
+async function executeSingleTurnTask(
+  containerInput: ContainerInput,
+  mcpServerPath: string,
+  emitOutput: (output: ContainerOutput) => void,
+): Promise<ContainerOutput> {
+  const sdkEnv = buildSdkEnv(containerInput);
+  resetPersistentTaskInputState();
+  const prompt = buildInitialPrompt(containerInput);
+
+  let finalOutput: ContainerOutput | null = null;
+  const captureOutput = (output: ContainerOutput) => {
+    finalOutput = output;
+    emitOutput(output);
+  };
+
+  try {
+    const queryResult = await runQuery(
+      prompt,
+      containerInput.sessionId,
+      mcpServerPath,
+      containerInput,
+      sdkEnv,
+      captureOutput,
+    );
+    if (finalOutput) {
+      return {
+        ...finalOutput,
+        newSessionId: finalOutput.newSessionId || queryResult.newSessionId,
+      };
+    }
+    return {
+      status: 'error',
+      result: null,
+      newSessionId: queryResult.newSessionId,
+      error: 'Container execution completed without a final response.',
+    };
+  } catch (err) {
+    const errorMessage = err instanceof Error ? err.message : String(err);
+    log(`Agent error: ${errorMessage}`);
+    return {
+      status: 'error',
+      result: null,
+      error: errorMessage,
+    };
+  }
 }
 
 async function main(): Promise<void> {
@@ -643,12 +759,7 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  // Build SDK env: merge secrets into process.env for the SDK only.
-  // Secrets never touch process.env itself, so Bash subprocesses can't see them.
-  const sdkEnv: Record<string, string | undefined> = { ...process.env };
-  for (const [key, value] of Object.entries(containerInput.secrets || {})) {
-    sdkEnv[key] = value;
-  }
+  const sdkEnv = buildSdkEnv(containerInput);
 
   const __dirname = path.dirname(fileURLToPath(import.meta.url));
   const mcpServerPath = path.join(__dirname, 'ipc-mcp-stdio.js');
@@ -663,15 +774,7 @@ async function main(): Promise<void> {
   try { fs.unlinkSync(IPC_INPUT_CLOSE_SENTINEL); } catch { /* ignore */ }
 
   // Build initial prompt (drain any pending IPC messages too)
-  let prompt = containerInput.prompt;
-  if (containerInput.isScheduledTask) {
-    prompt = `[SCHEDULED TASK - The following message was sent automatically and is not coming directly from the user or group.]\n\n${prompt}`;
-  }
-  const pending = drainIpcInput();
-  if (pending.length > 0) {
-    log(`Draining ${pending.length} pending IPC messages into initial prompt`);
-    prompt += '\n' + pending.join('\n');
-  }
+  let prompt = buildInitialPrompt(containerInput);
 
   // Query loop: run query → wait for IPC message → run new query → repeat
   let resumeAt: string | undefined;
@@ -679,7 +782,15 @@ async function main(): Promise<void> {
     while (true) {
       log(`Starting query (session: ${sessionId || 'new'}, resumeAt: ${resumeAt || 'latest'})...`);
 
-      const queryResult = await runQuery(prompt, sessionId, mcpServerPath, containerInput, sdkEnv, resumeAt);
+      const queryResult = await runQuery(
+        prompt,
+        sessionId,
+        mcpServerPath,
+        containerInput,
+        sdkEnv,
+        writeOutput,
+        resumeAt,
+      );
       if (queryResult.newSessionId) {
         sessionId = queryResult.newSessionId;
       }
@@ -730,4 +841,65 @@ async function main(): Promise<void> {
   }
 }
 
-main();
+async function runPersistentWorker(): Promise<void> {
+  const __dirname = path.dirname(fileURLToPath(import.meta.url));
+  const mcpServerPath = path.join(__dirname, 'ipc-mcp-stdio.js');
+  const rl = readline.createInterface({
+    input: process.stdin,
+    crlfDelay: Infinity,
+  });
+
+  writeWorkerMessage({ type: 'worker_ready' });
+
+  for await (const line of rl) {
+    const trimmed = line.trim();
+    if (!trimmed) {
+      continue;
+    }
+
+    let envelope: PersistentWorkerTaskEnvelope;
+    try {
+      envelope = JSON.parse(trimmed) as PersistentWorkerTaskEnvelope;
+    } catch (err) {
+      log(`Invalid worker envelope: ${err instanceof Error ? err.message : String(err)}`);
+      continue;
+    }
+
+    writeWorkerMessage({
+      type: 'task_started',
+      requestId: envelope.requestId,
+    });
+
+    const output = await executeSingleTurnTask(
+      envelope.input,
+      mcpServerPath,
+      (taskOutput) => {
+        writeWorkerMessage({
+          type: 'task_output',
+          requestId: envelope.requestId,
+          output: taskOutput,
+        });
+      },
+    );
+
+    writeWorkerMessage({
+      type: 'task_completed',
+      requestId: envelope.requestId,
+      output,
+    });
+  }
+}
+
+if (process.argv.includes('--persistent-worker')) {
+  runPersistentWorker().catch((err) => {
+    log(
+      `Persistent worker fatal error: ${err instanceof Error ? err.message : String(err)}`,
+    );
+    process.exit(1);
+  });
+} else {
+  main().catch((err) => {
+    log(`Fatal error: ${err instanceof Error ? err.message : String(err)}`);
+    process.exit(1);
+  });
+}

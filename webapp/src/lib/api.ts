@@ -233,6 +233,9 @@ export type TalkChannelBinding = {
   deferredIngressCount: number;
   deadLetterCount: number;
   unresolvedIngressCount: number;
+  suppressedReplyCount: number;
+  lastSuppressedAt: string | null;
+  lastSuppressionReason: string | null;
   lastIngressAt: string | null;
   lastDeliveryAt: string | null;
   lastIngressReasonCode: string | null;
@@ -540,6 +543,9 @@ export type ExecutionDecision = {
 export type MainRunTiming = {
   queueStartedAt?: string | null;
   executorStartedAt?: string | null;
+  leaseRequestedAt?: string | null;
+  leaseReadyAt?: string | null;
+  taskDispatchedAt?: string | null;
   firstProviderEventAt?: string | null;
   firstTokenAt?: string | null;
   firstBrowserEventAt?: string | null;
@@ -3332,6 +3338,12 @@ export type MainRun = {
   routeReason?: 'browser_fast_lane' | 'subscription_fallback' | 'normal' | null;
   currentStep?: string | null;
   timeoutPhase?: string | null;
+  leaseState?:
+    | 'cold_boot'
+    | 'warm_reuse'
+    | 'recovered_cold_boot'
+    | 'one_shot_fallback'
+    | null;
   timing?: MainRunTiming | null;
   streamedTextPreview?: string | null;
   lastProgressMessage?: string | null;

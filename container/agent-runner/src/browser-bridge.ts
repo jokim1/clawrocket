@@ -9,6 +9,7 @@ interface BrowserBridgeRequest {
     runId: string;
     userId: string;
     talkId?: string | null;
+    timeoutProfile?: 'default' | 'fast_lane';
   };
 }
 
@@ -27,6 +28,7 @@ export async function executeBrowserBridgeTool(input: {
   runId: string;
   userId: string;
   talkId?: string | null;
+  timeoutProfile?: 'default' | 'fast_lane';
   timeoutMs?: number;
 }): Promise<BrowserBridgeResponse> {
   const request: BrowserBridgeRequest = {
@@ -37,6 +39,7 @@ export async function executeBrowserBridgeTool(input: {
       runId: input.runId,
       userId: input.userId,
       talkId: input.talkId ?? null,
+      timeoutProfile: input.timeoutProfile ?? 'default',
     },
   };
 

@@ -3,6 +3,7 @@
  * Spawns agent execution in containers and handles IPC
  */
 import { ChildProcess, exec, spawn } from 'child_process';
+import { randomUUID } from 'crypto';
 import fs from 'fs';
 import path from 'path';
 
@@ -89,6 +90,7 @@ export interface ContainerInput {
   sessionId?: string;
   model?: string;
   toolProfile?: 'default' | 'web_talk' | 'talk_main';
+  timeoutProfile?: 'default' | 'fast_lane';
   allowedTools?: string[];
   groupFolder: string;
   chatJid: string;
@@ -115,6 +117,44 @@ export interface ContainerOutput {
   result: string | null;
   newSessionId?: string;
   error?: string;
+}
+
+export interface PersistentContainerTaskEnvelope {
+  requestId: string;
+  input: ContainerInput;
+}
+
+export type PersistentContainerWorkerStdoutMessage =
+  | {
+      type: 'worker_ready';
+    }
+  | {
+      type: 'task_started';
+      requestId: string;
+    }
+  | {
+      type: 'task_output';
+      requestId: string;
+      output: ContainerOutput;
+    }
+  | {
+      type: 'task_completed';
+      requestId: string;
+      output: ContainerOutput;
+    };
+
+export class PersistentContainerAgentWorkerError extends Error {
+  constructor(
+    message: string,
+    public readonly code:
+      | 'worker_start_failed'
+      | 'worker_closed'
+      | 'worker_protocol_error'
+      | 'worker_busy',
+  ) {
+    super(message);
+    this.name = 'PersistentContainerAgentWorkerError';
+  }
 }
 
 interface ParsedContainerOutput {
@@ -465,6 +505,7 @@ function readSecrets(): Record<string, string> {
 function buildContainerArgs(
   mounts: VolumeMount[],
   containerName: string,
+  extraEnv?: Record<string, string>,
 ): string[] {
   const args: string[] = ['run', '-i', '--rm', '--name', containerName];
 
@@ -481,6 +522,10 @@ function buildContainerArgs(
     args.push('-e', 'HOME=/home/node');
   }
 
+  for (const [key, value] of Object.entries(extraEnv || {})) {
+    args.push('-e', `${key}=${value}`);
+  }
+
   for (const mount of mounts) {
     if (mount.readonly) {
       args.push(...readonlyMountArgs(mount.hostPath, mount.containerPath));
@@ -492,6 +537,309 @@ function buildContainerArgs(
   args.push(CONTAINER_IMAGE);
 
   return args;
+}
+
+interface PersistentTaskState {
+  requestId: string;
+  onOutput?: (output: ContainerOutput) => Promise<void> | void;
+  onEvent?: (
+    event: Extract<
+      PersistentContainerWorkerStdoutMessage,
+      { requestId: string }
+    >,
+  ) => void;
+  resolve: (output: ContainerOutput) => void;
+  reject: (error: Error) => void;
+}
+
+export class PersistentContainerAgentWorker {
+  private readonly targetFolder: string;
+  private readonly targetName: string;
+  private readonly logsDir: string;
+  private readonly mounts: VolumeMount[];
+  private readonly containerArgs: string[];
+  private readonly containerName: string;
+
+  private container: ChildProcess | null = null;
+  private stdoutBuffer = '';
+  private stderrBuffer = '';
+  private started = false;
+  private startPromise: Promise<void> | null = null;
+  private startResolve: (() => void) | null = null;
+  private startReject: ((error: Error) => void) | null = null;
+  private currentTask: PersistentTaskState | null = null;
+  private closedError: PersistentContainerAgentWorkerError | null = null;
+
+  constructor(
+    private readonly target: ContainerExecutionTarget,
+    input: ContainerInput,
+  ) {
+    this.targetFolder = getExecutionTargetFolder(target);
+    this.targetName = getExecutionTargetName(target);
+    this.logsDir =
+      target.kind === 'legacy_group'
+        ? path.join(resolveGroupFolderPath(target.group.folder), 'logs')
+        : target.logsDir;
+    this.mounts = buildVolumeMounts(
+      target,
+      input.isMain,
+      CONTAINER_SYNC_AGENT_RUNNER_SOURCE,
+      input.toolProfile,
+      input.ephemeralContextDir,
+      input.projectMountHostPath,
+      input.browserBridgeHostSocketPath,
+    );
+    const safeName = this.targetFolder.replace(/[^a-zA-Z0-9-]/g, '-');
+    this.containerName = `nanoclaw-${safeName}-worker-${Date.now()}`;
+    this.containerArgs = buildContainerArgs(this.mounts, this.containerName, {
+      NANOCLAW_PERSISTENT_WORKER: '1',
+    });
+  }
+
+  async start(): Promise<void> {
+    if (this.started) {
+      return;
+    }
+    if (this.startPromise) {
+      return this.startPromise;
+    }
+
+    fs.mkdirSync(this.logsDir, { recursive: true });
+    this.startPromise = new Promise<void>((resolve, reject) => {
+      this.startResolve = resolve;
+      this.startReject = reject;
+      const container = spawn(CONTAINER_RUNTIME_BIN, this.containerArgs, {
+        stdio: ['pipe', 'pipe', 'pipe'],
+      });
+      this.container = container;
+
+      container.stdout.setEncoding('utf8');
+      container.stderr.setEncoding('utf8');
+
+      container.stdout.on('data', (chunk) => {
+        this.handleStdoutChunk(String(chunk));
+      });
+      container.stderr.on('data', (chunk) => {
+        const text = String(chunk);
+        this.stderrBuffer += text;
+        const lines = text.trim().split('\n');
+        for (const line of lines) {
+          if (line) {
+            logger.debug({ container: this.targetFolder }, line);
+          }
+        }
+      });
+      container.on('error', (error) => {
+        this.closeWithError(
+          new PersistentContainerAgentWorkerError(
+            error instanceof Error ? error.message : String(error),
+            'worker_start_failed',
+          ),
+        );
+      });
+      container.on('close', (code) => {
+        const message =
+          code === 0
+            ? 'Persistent container worker exited unexpectedly.'
+            : `Persistent container worker exited with code ${code}.`;
+        this.closeWithError(
+          new PersistentContainerAgentWorkerError(message, 'worker_closed'),
+        );
+      });
+    });
+
+    logger.info(
+      {
+        group: this.targetName,
+        containerName: this.containerName,
+        mountCount: this.mounts.length,
+      },
+      'Spawning persistent container worker',
+    );
+
+    return this.startPromise;
+  }
+
+  isBusy(): boolean {
+    return this.currentTask !== null;
+  }
+
+  async runTask(
+    input: ContainerInput,
+    callbacks?: {
+      onOutput?: (output: ContainerOutput) => Promise<void> | void;
+      onEvent?: (
+        event: Extract<
+          PersistentContainerWorkerStdoutMessage,
+          { requestId: string }
+        >,
+      ) => void;
+    },
+  ): Promise<ContainerOutput> {
+    await this.start();
+    if (this.closedError) {
+      throw this.closedError;
+    }
+    const container = this.container;
+    const stdin = container?.stdin;
+    if (!stdin || !stdin.writable) {
+      throw new PersistentContainerAgentWorkerError(
+        'Persistent container worker stdin is not writable.',
+        'worker_closed',
+      );
+    }
+    if (this.currentTask) {
+      throw new PersistentContainerAgentWorkerError(
+        'Persistent container worker is already executing a task.',
+        'worker_busy',
+      );
+    }
+
+    const requestId = `worker_${randomUUID()}`;
+    return new Promise<ContainerOutput>((resolve, reject) => {
+      this.currentTask = {
+        requestId,
+        onOutput: callbacks?.onOutput,
+        onEvent: callbacks?.onEvent,
+        resolve: (output) => {
+          this.currentTask = null;
+          resolve(output);
+        },
+        reject: (error) => {
+          this.currentTask = null;
+          reject(error);
+        },
+      };
+
+      const envelope: PersistentContainerTaskEnvelope = {
+        requestId,
+        input: {
+          ...input,
+          secrets: input.secrets ?? readSecrets(),
+          ...(input.browserBridgeHostSocketPath
+            ? {
+                browserBridgeSocketPath: path.posix.join(
+                  BROWSER_BRIDGE_CONTAINER_DIR,
+                  path.basename(input.browserBridgeHostSocketPath),
+                ),
+              }
+            : {}),
+        },
+      };
+
+      stdin.write(
+        `${JSON.stringify(envelope)}\n`,
+        (error: Error | null | undefined) => {
+          if (!error) {
+            return;
+          }
+          const activeTask = this.currentTask;
+          if (activeTask?.requestId === requestId) {
+            activeTask.reject(
+              new PersistentContainerAgentWorkerError(
+                error.message,
+                'worker_closed',
+              ),
+            );
+          }
+        },
+      );
+    });
+  }
+
+  async dispose(): Promise<void> {
+    if (!this.container) {
+      return;
+    }
+    const container = this.container;
+    this.container = null;
+    this.startResolve = null;
+    this.startReject = null;
+    this.startPromise = null;
+    if (!container.killed) {
+      container.kill('SIGKILL');
+    }
+    await new Promise<void>((resolve) => {
+      container.once('close', () => resolve());
+      setTimeout(resolve, 250);
+    });
+  }
+
+  private handleStdoutChunk(chunk: string): void {
+    this.stdoutBuffer += chunk;
+    let newlineIndex = this.stdoutBuffer.indexOf('\n');
+    while (newlineIndex >= 0) {
+      const line = this.stdoutBuffer.slice(0, newlineIndex).trim();
+      this.stdoutBuffer = this.stdoutBuffer.slice(newlineIndex + 1);
+      if (line) {
+        this.handleStdoutLine(line);
+      }
+      newlineIndex = this.stdoutBuffer.indexOf('\n');
+    }
+  }
+
+  private handleStdoutLine(line: string): void {
+    let message: PersistentContainerWorkerStdoutMessage;
+    try {
+      message = JSON.parse(line) as PersistentContainerWorkerStdoutMessage;
+    } catch {
+      logger.debug(
+        { container: this.targetFolder, line },
+        'Ignoring non-JSON stdout line from persistent worker',
+      );
+      return;
+    }
+
+    if (message.type === 'worker_ready') {
+      this.started = true;
+      this.startResolve?.();
+      this.startResolve = null;
+      this.startReject = null;
+      this.startPromise = null;
+      return;
+    }
+
+    if (!('requestId' in message)) {
+      return;
+    }
+
+    if (!this.currentTask || this.currentTask.requestId !== message.requestId) {
+      logger.warn(
+        {
+          container: this.targetFolder,
+          requestId: message.requestId,
+          currentRequestId: this.currentTask?.requestId ?? null,
+        },
+        'Received persistent worker event for an unexpected request',
+      );
+      return;
+    }
+
+    this.currentTask.onEvent?.(message);
+
+    if (message.type === 'task_output') {
+      void this.currentTask.onOutput?.(message.output);
+      return;
+    }
+
+    if (message.type === 'task_completed') {
+      this.currentTask.resolve(message.output);
+    }
+  }
+
+  private closeWithError(error: PersistentContainerAgentWorkerError): void {
+    if (this.closedError) {
+      return;
+    }
+    this.closedError = error;
+    this.startReject?.(error);
+    this.startResolve = null;
+    this.startReject = null;
+    this.startPromise = null;
+    const activeTask = this.currentTask;
+    this.currentTask = null;
+    activeTask?.reject(error);
+  }
 }
 
 export async function runContainerAgent(

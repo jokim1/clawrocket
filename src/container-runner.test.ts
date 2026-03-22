@@ -95,7 +95,11 @@ vi.mock('child_process', async () => {
   };
 });
 
-import { runContainerAgent, ContainerOutput } from './container-runner.js';
+import {
+  runContainerAgent,
+  ContainerOutput,
+  PersistentContainerAgentWorker,
+} from './container-runner.js';
 import {
   createLegacyGroupExecutionTarget,
   createWebRuntimeExecutionTarget,
@@ -385,5 +389,131 @@ describe('container-runner timeout behavior', () => {
       '/tmp/nanoclaw-test-data/container-runs/web-executor/logs',
       { recursive: true },
     );
+  });
+
+  it('persistent worker streams NDJSON task lifecycle events', async () => {
+    vi.useRealTimers();
+    vi.mocked(fs.existsSync).mockImplementation((targetPath) => {
+      const normalized =
+        typeof targetPath === 'string' ? targetPath : String(targetPath);
+      return (
+        normalized === '/tmp/talk-main-run' ||
+        normalized.endsWith('/container/agent-runner/src')
+      );
+    });
+
+    const worker = new PersistentContainerAgentWorker(
+      createWebRuntimeExecutionTarget(),
+      {
+        prompt: 'Bootstrap worker',
+        model: 'claude-sonnet-4-6',
+        toolProfile: 'talk_main',
+        timeoutProfile: 'fast_lane',
+        groupFolder: 'web-executor',
+        chatJid: 'internal:web-executor',
+        isMain: true,
+        ephemeralContextDir: '/tmp/talk-main-run',
+      },
+    );
+
+    let stdinBuffer = '';
+    fakeProc.stdin.on('data', (chunk) => {
+      stdinBuffer += chunk.toString();
+    });
+
+    const taskEvents: Array<{ type: string; requestId: string }> = [];
+    const taskOutputs: ContainerOutput[] = [];
+    const taskPromise = worker.runTask(
+      {
+        prompt: 'Open LinkedIn',
+        model: 'claude-sonnet-4-6',
+        toolProfile: 'talk_main',
+        timeoutProfile: 'fast_lane',
+        groupFolder: 'web-executor',
+        chatJid: 'internal:web-executor',
+        isMain: true,
+        ephemeralContextDir: '/tmp/talk-main-run',
+        browserBridgeHostSocketPath: '/tmp/browser.sock',
+      },
+      {
+        onEvent: (event) => {
+          taskEvents.push({
+            type: event.type,
+            requestId: event.requestId,
+          });
+        },
+        onOutput: async (output) => {
+          taskOutputs.push(output);
+        },
+      },
+    );
+
+    fakeProc.stdout.push('{"type":"worker_ready"}\n');
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const envelopeLine = stdinBuffer.trim().split('\n').filter(Boolean)[0];
+    expect(envelopeLine).toBeTruthy();
+    const envelope = JSON.parse(envelopeLine) as {
+      requestId: string;
+      input: { browserBridgeSocketPath?: string };
+    };
+    expect(envelope.input.browserBridgeSocketPath).toBe(
+      '/workspace/browser-bridge/browser.sock',
+    );
+
+    fakeProc.stdout.push(
+      `${JSON.stringify({
+        type: 'task_started',
+        requestId: envelope.requestId,
+      })}\n`,
+    );
+    fakeProc.stdout.push(
+      `${JSON.stringify({
+        type: 'task_output',
+        requestId: envelope.requestId,
+        output: {
+          status: 'success',
+          result: 'Partial progress',
+        },
+      })}\n`,
+    );
+    fakeProc.stdout.push(
+      `${JSON.stringify({
+        type: 'task_completed',
+        requestId: envelope.requestId,
+        output: {
+          status: 'success',
+          result: 'Final response',
+        },
+      })}\n`,
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    await expect(taskPromise).resolves.toEqual({
+      status: 'success',
+      result: 'Final response',
+    });
+    expect(taskEvents).toEqual([
+      {
+        type: 'task_started',
+        requestId: envelope.requestId,
+      },
+      {
+        type: 'task_output',
+        requestId: envelope.requestId,
+      },
+      {
+        type: 'task_completed',
+        requestId: envelope.requestId,
+      },
+    ]);
+    expect(taskOutputs).toEqual([
+      {
+        status: 'success',
+        result: 'Partial progress',
+      },
+    ]);
+
+    await worker.dispose();
   });
 });
