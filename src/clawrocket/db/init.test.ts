@@ -398,13 +398,15 @@ describe('clawrocket schema init', () => {
       .get() as { tool_permissions_json: string } | undefined;
 
     expect(toolPermissionsRow).toBeTruthy();
-    expect(JSON.parse(toolPermissionsRow!.tool_permissions_json)).toMatchObject({
-      shell: true,
-      filesystem: true,
-      web: true,
-      browser: true,
-      connectors: true,
-    });
+    expect(JSON.parse(toolPermissionsRow!.tool_permissions_json)).toMatchObject(
+      {
+        shell: true,
+        filesystem: true,
+        web: true,
+        browser: true,
+        connectors: true,
+      },
+    );
   });
 
   it('defines main_thread_summaries coverage with ON DELETE SET NULL', () => {
