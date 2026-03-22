@@ -147,6 +147,60 @@ describe('browser-tools', () => {
     );
   });
 
+  it('reuses an existing trusted session without suggesting setup again when browser_open is still blocked', async () => {
+    createRun('run-browser-open-reuse');
+    browserServiceMocks.service.open.mockResolvedValue({
+      status: 'needs_auth',
+      siteKey: 'linkedin',
+      accountLabel: null,
+      sessionId: 'bs_linkedin',
+      url: 'https://www.linkedin.com/checkpoint/challenge',
+      title: 'Approve sign in',
+      reusedSession: true,
+      createdProfile: false,
+      message:
+        'LinkedIn is waiting for phone or app approval on a trusted device.',
+    });
+    browserServiceMocks.service.screenshot.mockResolvedValue({
+      status: 'ok',
+      siteKey: 'linkedin',
+      accountLabel: null,
+      url: 'https://www.linkedin.com/checkpoint/challenge',
+      title: 'Approve sign in',
+      path: '/tmp/browser-blocked-open-reuse.png',
+      contentType: 'image/png',
+      content: Buffer.from('png'),
+    });
+
+    await expect(
+      executeBrowserTool({
+        toolName: 'browser_open',
+        args: {
+          siteKey: 'linkedin',
+          url: 'https://www.linkedin.com/messaging/',
+        },
+        context: {
+          signal: new AbortController().signal,
+          runId: 'run-browser-open-reuse',
+          userId: 'owner-1',
+          talkId: TALK_ID,
+        },
+      }),
+    ).rejects.toBeInstanceOf(BrowserRunPausedError);
+
+    expect(getTalkStateEntry(TALK_ID, 'browser.pending')?.value).toMatchObject({
+      reason: 'auth_required',
+      siteKey: 'linkedin',
+      url: 'https://www.linkedin.com/checkpoint/challenge',
+      setupCommand: null,
+      message:
+        'LinkedIn is waiting for phone or app approval on a trusted device.',
+    });
+    expect(getTalkRunById('run-browser-open-reuse')?.status).toBe(
+      'awaiting_confirmation',
+    );
+  });
+
   it('pauses the Talk run and records confirmation-required browser_act state', async () => {
     createRun('run-browser-act');
     browserServiceMocks.service.act.mockResolvedValue({
