@@ -7,6 +7,7 @@ import {
   upsertUser,
 } from './index.js';
 import { getDb } from '../../db.js';
+import { _initClawrocketTestSchema } from './init.js';
 
 describe('clawrocket schema init', () => {
   it('creates all core tables on a fresh database', () => {
@@ -365,6 +366,46 @@ describe('clawrocket schema init', () => {
         'idx_browser_profiles_site_account',
         'idx_browser_profiles_site_last_used',
       ]),
+    );
+  });
+
+  it('preserves explicit browser enablement on the main agent across init reruns', () => {
+    _initTestDatabase();
+    const db = getDb();
+
+    db.prepare(
+      `UPDATE registered_agents
+       SET tool_permissions_json = ?,
+           updated_at = ?
+       WHERE id = 'agent.main'`,
+    ).run(
+      JSON.stringify({
+        shell: true,
+        filesystem: true,
+        web: true,
+        browser: true,
+        connectors: true,
+      }),
+      new Date().toISOString(),
+    );
+
+    _initClawrocketTestSchema();
+
+    const toolPermissionsRow = db
+      .prepare(
+        `SELECT tool_permissions_json FROM registered_agents WHERE id = 'agent.main'`,
+      )
+      .get() as { tool_permissions_json: string } | undefined;
+
+    expect(toolPermissionsRow).toBeTruthy();
+    expect(JSON.parse(toolPermissionsRow!.tool_permissions_json)).toMatchObject(
+      {
+        shell: true,
+        filesystem: true,
+        web: true,
+        browser: true,
+        connectors: true,
+      },
     );
   });
 
