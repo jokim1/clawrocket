@@ -378,6 +378,33 @@ describe('Main channel DB accessors', () => {
       ).toThrow(MainThreadBusyError);
     });
 
+    it('allows enqueue when the only existing run is awaiting confirmation', () => {
+      const threadId = randomUUID();
+      const pausedRunId = `run_${randomUUID()}`;
+      enqueueMainTurnAtomic({
+        threadId,
+        userId: USER_A,
+        content: 'first',
+        messageId: `msg_${randomUUID()}`,
+        runId: pausedRunId,
+      });
+      getDb()
+        .prepare(
+          `UPDATE talk_runs SET status = 'awaiting_confirmation' WHERE id = ?`,
+        )
+        .run(pausedRunId);
+
+      expect(() =>
+        enqueueMainTurnAtomic({
+          threadId,
+          userId: USER_A,
+          content: 'second',
+          messageId: `msg_${randomUUID()}`,
+          runId: `run_${randomUUID()}`,
+        }),
+      ).not.toThrow();
+    });
+
     it('allows enqueue after previous run completes', () => {
       const threadId = randomUUID();
       const runId1 = `run_${randomUUID()}`;

@@ -16,7 +16,9 @@ import {
   createMessageAttachment,
   createRunConfirmation,
   createTalkOutput,
+  getPausedMainBrowserOwnerForProfile,
   getTalkStateEntry,
+  getTalkRunById,
   pauseRunForBrowserBlock,
   updateAttachmentExtraction,
   upsertTalkStateEntry,
@@ -661,6 +663,63 @@ async function throwBrowserRunPaused(input: {
   throw new BrowserRunPausedError(input.context.runId, browserBlock);
 }
 
+async function throwSessionConflictPausedRun(input: {
+  toolName: BrowserToolName;
+  args: Record<string, unknown>;
+  context: BrowserToolExecutionContext;
+  service: ReturnType<typeof getBrowserService>;
+  owner: {
+    runId: string;
+    sessionId: string;
+    siteKey: string;
+    accountLabel: string | null;
+    url: string;
+    title: string;
+    summary: string | null;
+  };
+}): Promise<never> {
+  const now = new Date().toISOString();
+  const pendingToolCall = buildPendingToolCall({
+    toolName: input.toolName,
+    args: input.args,
+  });
+  const artifacts = await captureBlockedArtifact({
+    sessionId: input.owner.sessionId,
+    runId: input.context.runId,
+    talkId: input.context.talkId,
+    userId: input.context.userId,
+    signal: input.context.signal,
+    service: input.service,
+    label: 'browser-session-conflict',
+  });
+  const browserBlock: BrowserBlockMetadata = {
+    kind: 'session_conflict',
+    sessionId: input.owner.sessionId,
+    siteKey: input.owner.siteKey,
+    accountLabel: input.owner.accountLabel,
+    conflictingRunId: input.owner.runId,
+    conflictingSessionId: input.owner.sessionId,
+    conflictingRunSummary: input.owner.summary,
+    url: input.owner.url,
+    title: input.owner.title,
+    message: `Another paused browser task already owns the ${input.owner.siteKey} session. Resolve that task before this run can continue.`,
+    riskReason: 'session_conflict',
+    setupCommand: null,
+    artifacts,
+    confirmationId: null,
+    pendingToolCall,
+    createdAt: now,
+    updatedAt: now,
+  };
+
+  pauseRunForBrowserBlock({
+    runId: input.context.runId,
+    browserBlock,
+  });
+
+  throw new BrowserRunPausedError(input.context.runId, browserBlock);
+}
+
 export async function executeBrowserTool(input: {
   toolName: string;
   args: Record<string, unknown>;
@@ -695,6 +754,24 @@ export async function executeBrowserTool(input: {
             },
             true,
           );
+        }
+        const currentRun = getTalkRunById(input.context.runId);
+        if (currentRun && currentRun.talk_id == null && currentRun.thread_id) {
+          const owner = getPausedMainBrowserOwnerForProfile({
+            threadId: currentRun.thread_id,
+            siteKey,
+            accountLabel,
+            excludeRunId: currentRun.id,
+          });
+          if (owner) {
+            await throwSessionConflictPausedRun({
+              toolName: 'browser_open',
+              args: input.args,
+              context: input.context,
+              service,
+              owner,
+            });
+          }
         }
 
         const result = await runAbortable(input.context.signal, () =>

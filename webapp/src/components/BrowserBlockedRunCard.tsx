@@ -4,6 +4,7 @@ import {
   ApiError,
   UnauthorizedError,
   approveBrowserConfirmation,
+  cancelConflictingBrowserRun,
   getBrowserSessionStatus,
   rejectBrowserConfirmation,
   resumeBrowserBlockedRun,
@@ -17,6 +18,7 @@ import {
 type BrowserBlockedRunCardProps = {
   runId: string;
   browserBlock: BrowserBlock;
+  resumeRequestedAt?: string | null;
   executionDecision?: ExecutionDecision | null;
   talkId?: string | null;
   onUnauthorized: () => void;
@@ -29,7 +31,8 @@ type ActionState =
   | 'takeover'
   | 'resume'
   | 'approve'
-  | 'reject';
+  | 'reject'
+  | 'cancel_conflict';
 
 type NoticeState =
   | {
@@ -46,6 +49,8 @@ function getBrowserBlockHeading(kind: BrowserBlock['kind']): string {
       return 'Browser approval required';
     case 'human_step_required':
       return 'Browser needs a manual step';
+    case 'session_conflict':
+      return 'Browser session already in use';
   }
 }
 
@@ -106,6 +111,7 @@ function normalizeMutationError(error: unknown): string {
 export function BrowserBlockedRunCard({
   runId,
   browserBlock,
+  resumeRequestedAt,
   executionDecision,
   talkId,
   onUnauthorized,
@@ -117,6 +123,9 @@ export function BrowserBlockedRunCard({
   const decisionSummary = useMemo(
     () => getDecisionSummary(executionDecision),
     [executionDecision],
+  );
+  const isDeferredResume = Boolean(
+    resumeRequestedAt && browserBlock.kind !== 'session_conflict',
   );
 
   const runAction = async (
@@ -160,27 +169,50 @@ export function BrowserBlockedRunCard({
   };
 
   const handleTakeover = () => {
-    if (!browserBlock.sessionId) return;
+    const sessionId =
+      browserBlock.kind === 'session_conflict'
+        ? browserBlock.conflictingSessionId || browserBlock.sessionId
+        : browserBlock.sessionId;
+    if (!sessionId) return;
     void runAction('takeover', async () => {
-      await startBrowserTakeover(browserBlock.sessionId!);
-      return 'Browser opened for local takeover. Finish the step, then resume the run.';
+      await startBrowserTakeover(sessionId);
+      return browserBlock.kind === 'session_conflict'
+        ? 'Browser opened for takeover. Resolve the existing browser task and this run will continue once the session is free.'
+        : 'Browser opened for local takeover. Finish the step, then resume the run.';
     });
   };
 
   const handleResumeRun = () => {
     void runAction('resume', async () => {
-      await resumeBrowserBlockedRun({ runId });
-      return 'Run resumed.';
+      const result = await resumeBrowserBlockedRun({ runId });
+      return result.queueState === 'deferred'
+        ? 'Run will resume when the current task finishes.'
+        : 'Run resumed.';
+    });
+  };
+
+  const handleResumeExistingRun = () => {
+    if (!browserBlock.conflictingRunId) return;
+    void runAction('resume', async () => {
+      const result = await resumeBrowserBlockedRun({
+        runId: browserBlock.conflictingRunId!,
+        note: 'resume_existing_run_from_session_conflict',
+      });
+      return result.queueState === 'deferred'
+        ? 'The conflicting browser task will resume when the current task finishes.'
+        : 'The conflicting browser task resumed.';
     });
   };
 
   const handleApprove = () => {
     if (!browserBlock.confirmationId) return;
     void runAction('approve', async () => {
-      await approveBrowserConfirmation({
+      const result = await approveBrowserConfirmation({
         confirmationId: browserBlock.confirmationId!,
       });
-      return 'Browser action approved.';
+      return result.queueState === 'deferred'
+        ? 'Browser action approved. The run will resume when the current task finishes.'
+        : 'Browser action approved.';
     });
   };
 
@@ -200,6 +232,15 @@ export function BrowserBlockedRunCard({
     });
   };
 
+  const handleCancelConflict = () => {
+    void runAction('cancel_conflict', async () => {
+      const result = await cancelConflictingBrowserRun({ runId });
+      return result.queuedCurrentRun
+        ? 'The conflicting browser task was cancelled and this run is queued.'
+        : 'The conflicting browser task was cancelled. This run will start when the current task finishes.';
+    });
+  };
+
   useEffect(() => {
     autoResumeAttemptedRef.current = false;
   }, [browserBlock.updatedAt, browserBlock.sessionId, browserBlock.kind, runId]);
@@ -207,6 +248,8 @@ export function BrowserBlockedRunCard({
   useEffect(() => {
     if (
       browserBlock.kind === 'confirmation_required' ||
+      browserBlock.kind === 'session_conflict' ||
+      isDeferredResume ||
       !browserBlock.sessionId ||
       actionState !== 'idle'
     ) {
@@ -262,6 +305,7 @@ export function BrowserBlockedRunCard({
     actionState,
     browserBlock.kind,
     browserBlock.sessionId,
+    isDeferredResume,
     onStateChanged,
     onUnauthorized,
     runId,
@@ -283,13 +327,27 @@ export function BrowserBlockedRunCard({
       </div>
 
       <p className="browser-block-message">{browserBlock.message}</p>
-      {browserBlock.kind !== 'confirmation_required' ? (
+      {browserBlock.kind === 'session_conflict' &&
+      browserBlock.conflictingRunSummary ? (
+        <p className="browser-block-message">
+          Existing task: <strong>{browserBlock.conflictingRunSummary}</strong>
+        </p>
+      ) : null}
+      {isDeferredResume ? (
+        <p className="browser-block-message">
+          Resume requested. This run will continue automatically when the current task finishes.
+        </p>
+      ) : browserBlock.kind !== 'confirmation_required' &&
+        browserBlock.kind !== 'session_conflict' ? (
         <p className="browser-block-message">
           If you already completed the step on your phone or in another window,
           click <strong>Resume run</strong>.
         </p>
       ) : null}
-      {browserBlock.kind !== 'confirmation_required' && browserBlock.sessionId ? (
+      {browserBlock.kind !== 'confirmation_required' &&
+      browserBlock.kind !== 'session_conflict' &&
+      !isDeferredResume &&
+      browserBlock.sessionId ? (
         <p className="browser-block-message">
           This card monitors the browser session and will try to resume the run
           automatically once the authentication step clears.
@@ -315,6 +373,13 @@ export function BrowserBlockedRunCard({
           <div>
             <dt>Reason</dt>
             <dd>{browserBlock.riskReason}</dd>
+          </div>
+        ) : null}
+        {browserBlock.kind === 'session_conflict' &&
+        browserBlock.conflictingRunId ? (
+          <div>
+            <dt>Conflicting run</dt>
+            <dd>{browserBlock.conflictingRunId}</dd>
           </div>
         ) : null}
         {decisionSummary ? (
@@ -364,7 +429,30 @@ export function BrowserBlockedRunCard({
       ) : null}
 
       <div className="browser-block-actions">
-        {browserBlock.kind === 'confirmation_required' ? (
+        {browserBlock.kind === 'session_conflict' ? (
+          <>
+            <button
+              type="button"
+              className="primary-btn"
+              onClick={handleResumeExistingRun}
+              disabled={actionState !== 'idle' || !browserBlock.conflictingRunId}
+            >
+              {actionState === 'resume'
+                ? 'Resuming…'
+                : 'Resume existing browser task'}
+            </button>
+            <button
+              type="button"
+              className="secondary-btn"
+              onClick={handleCancelConflict}
+              disabled={actionState !== 'idle' || !browserBlock.conflictingRunId}
+            >
+              {actionState === 'cancel_conflict'
+                ? 'Cancelling…'
+                : 'Cancel existing task and retry this run'}
+            </button>
+          </>
+        ) : browserBlock.kind === 'confirmation_required' ? (
           <>
             <button
               type="button"
@@ -393,15 +481,19 @@ export function BrowserBlockedRunCard({
               type="button"
               className="primary-btn"
               onClick={handleResumeRun}
-              disabled={actionState !== 'idle'}
+              disabled={actionState !== 'idle' || isDeferredResume}
             >
-              {actionState === 'resume' ? 'Resuming…' : 'Resume run'}
+              {isDeferredResume
+                ? 'Resume requested'
+                : actionState === 'resume'
+                  ? 'Resuming…'
+                  : 'Resume run'}
             </button>
             <button
               type="button"
               className="secondary-btn"
               onClick={handleSetupSession}
-              disabled={actionState !== 'idle'}
+              disabled={actionState !== 'idle' || isDeferredResume}
             >
               {actionState === 'setup'
                 ? 'Opening browser…'
@@ -411,7 +503,9 @@ export function BrowserBlockedRunCard({
             </button>
           </>
         )}
-        {browserBlock.sessionId ? (
+        {(browserBlock.kind === 'session_conflict'
+          ? browserBlock.conflictingSessionId || browserBlock.sessionId
+          : browserBlock.sessionId) ? (
           <button
             type="button"
             className="secondary-btn"

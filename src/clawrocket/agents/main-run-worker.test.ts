@@ -11,6 +11,7 @@ import {
   enqueueMainTurnAtomic,
   getOutboxEventsForTopics,
   getTalkRunById,
+  updateTalkRunMetadata,
   upsertUser,
 } from '../db/index.js';
 import { createRegisteredAgent } from '../db/agent-accessors.js';
@@ -406,5 +407,159 @@ describe('MainRunWorker integration', () => {
     const run = getTalkRunById(runId)!;
     expect(run.status).toBe('failed');
     expect(run.cancel_reason).toContain('interrupted_by_restart');
+  });
+
+  it('auto-queues a deferred paused run after the active runnable run completes', async () => {
+    const threadId = randomUUID();
+    const pausedRunId = `run_${randomUUID()}`;
+    enqueueMainTurnAtomic({
+      threadId,
+      userId: USER_A,
+      content: 'Needs auth first',
+      messageId: `msg_${randomUUID()}`,
+      runId: pausedRunId,
+    });
+    updateTalkRunMetadata(pausedRunId, (current) => ({
+      ...current,
+      browserBlock: {
+        kind: 'auth_required',
+        sessionId: 'session-1',
+        siteKey: 'linkedin',
+        accountLabel: null,
+        url: 'https://www.linkedin.com/login',
+        title: 'LinkedIn Login',
+        message: 'Authenticate to continue.',
+        riskReason: null,
+        setupCommand: null,
+        artifacts: [],
+        confirmationId: null,
+        pendingToolCall: null,
+        createdAt: '2026-03-21T20:00:00.000Z',
+        updatedAt: '2026-03-21T20:00:00.000Z',
+      },
+      resumeRequestedAt: '2026-03-21T20:01:00.000Z',
+      resumeRequestedBy: USER_A,
+    }));
+    getDb()
+      .prepare(
+        `UPDATE talk_runs SET status = 'awaiting_confirmation' WHERE id = ?`,
+      )
+      .run(pausedRunId);
+
+    const activeRunId = `run_${randomUUID()}`;
+    enqueueMainTurnAtomic({
+      threadId,
+      userId: USER_A,
+      content: 'Current runnable task',
+      messageId: `msg_${randomUUID()}`,
+      runId: activeRunId,
+    });
+
+    const worker = new MainRunWorker({
+      pollMs: 10,
+      maxConcurrency: 1,
+      executor: async (
+        input: MainExecutorInput,
+        _signal: AbortSignal,
+        emit?: (event: MainExecutionEvent) => void,
+      ): Promise<MainExecutorOutput> => {
+        emit?.({
+          type: 'main_response_started',
+          runId: input.runId,
+          threadId: input.threadId,
+          agentId: AGENT_ID,
+          agentName: 'Test Agent',
+        });
+        return {
+          content: `done ${input.runId}`,
+          agentId: AGENT_ID,
+          agentName: 'Test Agent',
+          providerId: PROVIDER_ID,
+          modelId: MODEL_ID,
+          threadId: input.threadId,
+          latencyMs: 42,
+          usage: { inputTokens: 10, outputTokens: 20, estimatedCostUsd: 0.001 },
+        };
+      },
+    });
+    await worker.start();
+
+    await waitForRunTerminal(activeRunId);
+    await waitForRunTerminal(pausedRunId);
+    await worker.stop();
+
+    expect(getTalkRunById(activeRunId)?.status).toBe('completed');
+    expect(getTalkRunById(pausedRunId)?.status).toBe('completed');
+  });
+
+  it('pauses a browser-tagged run on session conflict before executing the model', async () => {
+    const threadId = randomUUID();
+    const ownerRunId = `run_${randomUUID()}`;
+    enqueueMainTurnAtomic({
+      threadId,
+      userId: USER_A,
+      content: 'Open LinkedIn',
+      messageId: `msg_${randomUUID()}`,
+      runId: ownerRunId,
+    });
+    updateTalkRunMetadata(ownerRunId, (current) => ({
+      ...current,
+      browserBlock: {
+        kind: 'auth_required',
+        sessionId: 'session-1',
+        siteKey: 'linkedin',
+        accountLabel: null,
+        url: 'https://www.linkedin.com/login',
+        title: 'LinkedIn Login',
+        message: 'Authenticate to continue.',
+        riskReason: null,
+        setupCommand: null,
+        artifacts: [],
+        confirmationId: null,
+        pendingToolCall: null,
+        createdAt: '2026-03-21T20:00:00.000Z',
+        updatedAt: '2026-03-21T20:00:00.000Z',
+      },
+    }));
+    getDb()
+      .prepare(
+        `UPDATE talk_runs SET status = 'awaiting_confirmation' WHERE id = ?`,
+      )
+      .run(ownerRunId);
+
+    const waitingRunId = `run_${randomUUID()}`;
+    enqueueMainTurnAtomic({
+      threadId,
+      userId: USER_A,
+      content: 'Try LinkedIn again',
+      messageId: `msg_${randomUUID()}`,
+      runId: waitingRunId,
+    });
+    updateTalkRunMetadata(waitingRunId, (current) => ({
+      ...current,
+      requestedToolFamilies: ['browser'],
+    }));
+
+    let executed = false;
+    const worker = new MainRunWorker({
+      pollMs: 10,
+      maxConcurrency: 1,
+      executor: async (): Promise<MainExecutorOutput> => {
+        executed = true;
+        throw new Error('executor should not have been called');
+      },
+    });
+    await worker.start();
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    await worker.stop();
+
+    expect(executed).toBe(false);
+    const run = getTalkRunById(waitingRunId);
+    expect(run?.status).toBe('awaiting_confirmation');
+    const metadata = JSON.parse(run?.metadata_json || '{}') as {
+      browserBlock?: { kind?: string; conflictingRunId?: string };
+    };
+    expect(metadata.browserBlock?.kind).toBe('session_conflict');
+    expect(metadata.browserBlock?.conflictingRunId).toBe(ownerRunId);
   });
 });

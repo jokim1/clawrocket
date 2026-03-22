@@ -456,7 +456,8 @@ export type TalkMessageSearchResult = {
 export type BrowserBlockedKind =
   | 'auth_required'
   | 'confirmation_required'
-  | 'human_step_required';
+  | 'human_step_required'
+  | 'session_conflict';
 
 export type BrowserBlockArtifact = {
   attachmentId?: string | null;
@@ -476,6 +477,9 @@ export type BrowserBlock = {
   sessionId: string | null;
   siteKey: string;
   accountLabel: string | null;
+  conflictingRunId?: string | null;
+  conflictingSessionId?: string | null;
+  conflictingRunSummary?: string | null;
   url: string;
   title: string;
   message: string;
@@ -1754,15 +1758,37 @@ export async function resumeBrowserBlockedRun(input: {
   runId: string;
   resumed: boolean;
   browserResume: BrowserResume;
+  queueState: 'queued' | 'deferred' | null;
 }> {
   return apiMutationRequest<{
     runId: string;
     resumed: boolean;
     browserResume: BrowserResume;
+    queueState: 'queued' | 'deferred' | null;
   }>(`/api/v1/browser/runs/${encodeURIComponent(input.runId)}/resume`, {
     method: 'POST',
     includeJson: true,
     body: JSON.stringify({ note: input.note ?? null }),
+  });
+}
+
+export async function cancelConflictingBrowserRun(input: {
+  runId: string;
+}): Promise<{
+  runId: string;
+  conflictingRunId: string;
+  queuedCurrentRun: boolean;
+  currentRunStatus: string | null;
+}> {
+  return apiMutationRequest<{
+    runId: string;
+    conflictingRunId: string;
+    queuedCurrentRun: boolean;
+    currentRunStatus: string | null;
+  }>(`/api/v1/browser/runs/${encodeURIComponent(input.runId)}/cancel-conflict`, {
+    method: 'POST',
+    includeJson: true,
+    body: '{}',
   });
 }
 
@@ -1774,12 +1800,14 @@ export async function approveBrowserConfirmation(input: {
   runId: string;
   approved: boolean;
   browserResume: BrowserResume;
+  queueState: 'queued' | 'deferred' | null;
 }> {
   return apiMutationRequest<{
     confirmationId: string;
     runId: string;
     approved: boolean;
     browserResume: BrowserResume;
+    queueState: 'queued' | 'deferred' | null;
   }>(
     `/api/v1/browser/confirmations/${encodeURIComponent(input.confirmationId)}/approve`,
     {
@@ -3256,6 +3284,8 @@ export type MainRun = {
   lastProgressMessage?: string | null;
   lastHeartbeatAt?: string | null;
   terminalSummary?: MainRunTerminalSummary | null;
+  resumeRequestedAt?: string | null;
+  resumeRequestedBy?: string | null;
 };
 
 export async function listMainThreads(): Promise<MainThreadSummary[]> {

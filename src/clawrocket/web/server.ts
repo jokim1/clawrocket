@@ -143,6 +143,7 @@ import {
 } from './routes/main-channel.js';
 import {
   approveBrowserConfirmationRoute,
+  cancelConflictingBrowserRunRoute,
   getBrowserSessionStatusRoute,
   rejectBrowserConfirmationRoute,
   resumeBrowserBlockedRunRoute,
@@ -1853,6 +1854,39 @@ function buildApp(opts: WebServerOptions): Hono {
       auth,
       runId: c.req.param('runId'),
       note: typeof payload.data.note === 'string' ? payload.data.note : null,
+    });
+    if (result.wakeTalk) opts.runWorker.wake();
+    if (result.wakeMain) opts.mainRunWorker.wake();
+    return new Response(JSON.stringify(result.body), {
+      status: result.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
+  });
+
+  app.post('/api/v1/browser/runs/:runId/cancel-conflict', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+    const rateResult = checkRateLimit({
+      principalId: auth.userId,
+      bucket: 'write',
+    });
+    if (!rateResult.allowed) return rateLimitedResponse(c, rateResult);
+    const csrf = validateCsrfToken({
+      method: c.req.method,
+      authType: auth.authType,
+      cookieHeader: c.req.header('cookie'),
+      csrfHeader: c.req.header('x-csrf-token'),
+    });
+    if (!csrf.ok) {
+      return c.json(
+        { ok: false, error: { code: 'csrf_failed', message: csrf.reason } },
+        403,
+      );
+    }
+
+    const result = await cancelConflictingBrowserRunRoute({
+      auth,
+      runId: c.req.param('runId'),
     });
     if (result.wakeTalk) opts.runWorker.wake();
     if (result.wakeMain) opts.mainRunWorker.wake();

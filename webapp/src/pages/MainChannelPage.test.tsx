@@ -47,6 +47,7 @@ const {
   startBrowserSetupSessionMock,
   startBrowserTakeoverMock,
   resumeBrowserBlockedRunMock,
+  cancelConflictingBrowserRunMock,
   approveBrowserConfirmationMock,
   rejectBrowserConfirmationMock,
   updateMainThreadMock,
@@ -64,6 +65,7 @@ const {
   startBrowserSetupSessionMock: vi.fn(),
   startBrowserTakeoverMock: vi.fn(),
   resumeBrowserBlockedRunMock: vi.fn(),
+  cancelConflictingBrowserRunMock: vi.fn(),
   approveBrowserConfirmationMock: vi.fn(),
   rejectBrowserConfirmationMock: vi.fn(),
   updateMainThreadMock: vi.fn(),
@@ -87,6 +89,7 @@ vi.mock('../lib/api', async () => {
     startBrowserSetupSession: startBrowserSetupSessionMock,
     startBrowserTakeover: startBrowserTakeoverMock,
     resumeBrowserBlockedRun: resumeBrowserBlockedRunMock,
+    cancelConflictingBrowserRun: cancelConflictingBrowserRunMock,
     approveBrowserConfirmation: approveBrowserConfirmationMock,
     rejectBrowserConfirmation: rejectBrowserConfirmationMock,
     updateMainThread: updateMainThreadMock,
@@ -191,6 +194,7 @@ describe('MainChannelPage', () => {
     resumeBrowserBlockedRunMock.mockResolvedValue({
       runId: 'run-main-browser',
       resumed: true,
+      queueState: 'queued',
       browserResume: {
         kind: 'auth_completed',
         resumedAt: '2026-03-20T20:25:00.000Z',
@@ -205,6 +209,7 @@ describe('MainChannelPage', () => {
       confirmationId: 'confirmation-1',
       runId: 'run-main-browser',
       approved: true,
+      queueState: 'queued',
       browserResume: {
         kind: 'confirmation_approved',
         resumedAt: '2026-03-20T20:25:00.000Z',
@@ -219,6 +224,12 @@ describe('MainChannelPage', () => {
       confirmationId: 'confirmation-1',
       runId: 'run-main-browser',
       rejected: true,
+    });
+    cancelConflictingBrowserRunMock.mockResolvedValue({
+      runId: 'run-main-browser',
+      conflictingRunId: 'run-owner',
+      queuedCurrentRun: true,
+      currentRunStatus: 'queued',
     });
   });
 
@@ -1275,6 +1286,210 @@ describe('MainChannelPage', () => {
       }),
     );
     expect(getBrowserSessionStatusMock).toHaveBeenCalledWith('session-1');
+  });
+
+  it('renders deferred resume state for paused runs that are waiting on another task', async () => {
+    getMainRegisteredAgentMock.mockResolvedValue(
+      buildMainAgentSnapshot({ browserEnabled: true }),
+    );
+    listMainThreadsMock.mockResolvedValue([
+      {
+        threadId: 'thread-main-browser',
+        title: 'LinkedIn Messaging',
+        isPinned: false,
+        lastMessageAt: isoOffset(-10_000),
+        messageCount: 1,
+        hasActiveRun: true,
+      },
+    ]);
+    getMainThreadMock.mockResolvedValue([
+      {
+        id: 'msg-main-1',
+        threadId: 'thread-main-browser',
+        role: 'user',
+        content: 'Check my LinkedIn inbox',
+        agentId: null,
+        createdBy: 'user-1',
+        createdAt: isoOffset(-10_000),
+      },
+    ]);
+    listMainRunsMock.mockResolvedValue([
+      {
+        id: 'run-main-browser',
+        threadId: 'thread-main-browser',
+        status: 'awaiting_confirmation',
+        createdAt: isoOffset(-9_000),
+        startedAt: isoOffset(-8_000),
+        endedAt: null,
+        triggerMessageId: 'msg-main-1',
+        targetAgentId: null,
+        cancelReason: null,
+        kind: null,
+        parentRunId: null,
+        promotionState: null,
+        promotionChildRunId: null,
+        requestedToolFamilies: ['browser'],
+        userVisibleSummary: 'LinkedIn needs you to sign in.',
+        browserBlock: {
+          kind: 'auth_required',
+          sessionId: 'session-1',
+          siteKey: 'linkedin',
+          accountLabel: null,
+          url: 'https://www.linkedin.com/checkpoint/challenge',
+          title: 'Approve sign in',
+          message: 'Check your phone and approve sign in to continue.',
+          riskReason: null,
+          setupCommand: null,
+          artifacts: [],
+          confirmationId: null,
+          pendingToolCall: null,
+          createdAt: isoOffset(-7_000),
+          updatedAt: isoOffset(-7_000),
+        },
+        browserResume: {
+          kind: 'auth_completed',
+          resumedAt: isoOffset(-2_000),
+          resumedBy: 'user-1',
+          sessionId: 'session-1',
+          confirmationId: null,
+          note: null,
+          pendingToolCall: null,
+        },
+        carriedBrowserSessions: [],
+        executionDecision: null,
+        lastHeartbeatAt: isoOffset(-1_000),
+        resumeRequestedAt: isoOffset(-2_000),
+        resumeRequestedBy: 'user-1',
+      },
+    ]);
+
+    render(
+      <MemoryRouter initialEntries={['/app/main/thread-main-browser']}>
+        <Routes>
+          <Route
+            path="/app/main"
+            element={<MainChannelPage onUnauthorized={vi.fn()} />}
+          />
+          <Route
+            path="/app/main/:threadId"
+            element={<MainChannelPage onUnauthorized={vi.fn()} />}
+          />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    expect(
+      await screen.findByText('Resume requested. This run will continue automatically when the current task finishes.'),
+    ).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Resume requested' })).toBeDisabled();
+    expect(screen.getAllByText('Resume requested').length).toBeGreaterThan(0);
+  });
+
+  it('renders session-conflict actions and cancels the conflicting run from the card', async () => {
+    const user = userEvent.setup();
+    getMainRegisteredAgentMock.mockResolvedValue(
+      buildMainAgentSnapshot({ browserEnabled: true }),
+    );
+    listMainThreadsMock.mockResolvedValue([
+      {
+        threadId: 'thread-main-browser',
+        title: 'LinkedIn Messaging',
+        isPinned: false,
+        lastMessageAt: isoOffset(-10_000),
+        messageCount: 1,
+        hasActiveRun: true,
+      },
+    ]);
+    getMainThreadMock.mockResolvedValue([
+      {
+        id: 'msg-main-1',
+        threadId: 'thread-main-browser',
+        role: 'user',
+        content: 'Check my LinkedIn inbox',
+        agentId: null,
+        createdBy: 'user-1',
+        createdAt: isoOffset(-10_000),
+      },
+    ]);
+    listMainRunsMock.mockResolvedValue([
+      {
+        id: 'run-main-browser',
+        threadId: 'thread-main-browser',
+        status: 'awaiting_confirmation',
+        createdAt: isoOffset(-9_000),
+        startedAt: isoOffset(-8_000),
+        endedAt: null,
+        triggerMessageId: 'msg-main-1',
+        targetAgentId: null,
+        cancelReason: null,
+        kind: null,
+        parentRunId: null,
+        promotionState: null,
+        promotionChildRunId: null,
+        requestedToolFamilies: ['browser'],
+        userVisibleSummary: 'Check my LinkedIn inbox',
+        browserBlock: {
+          kind: 'session_conflict',
+          sessionId: 'session-1',
+          siteKey: 'linkedin',
+          accountLabel: null,
+          conflictingRunId: 'run-owner',
+          conflictingSessionId: 'session-1',
+          conflictingRunSummary: 'Existing LinkedIn auth task',
+          url: 'https://www.linkedin.com/checkpoint/challenge',
+          title: 'Approve sign in',
+          message: 'Another paused browser task already owns the linkedin session. Resolve that task before this run can continue.',
+          riskReason: 'session_conflict',
+          setupCommand: null,
+          artifacts: [],
+          confirmationId: null,
+          pendingToolCall: null,
+          createdAt: isoOffset(-7_000),
+          updatedAt: isoOffset(-7_000),
+        },
+        browserResume: null,
+        carriedBrowserSessions: [],
+        executionDecision: null,
+        lastHeartbeatAt: isoOffset(-1_000),
+      },
+    ]);
+
+    render(
+      <MemoryRouter initialEntries={['/app/main/thread-main-browser']}>
+        <Routes>
+          <Route
+            path="/app/main"
+            element={<MainChannelPage onUnauthorized={vi.fn()} />}
+          />
+          <Route
+            path="/app/main/:threadId"
+            element={<MainChannelPage onUnauthorized={vi.fn()} />}
+          />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    expect(
+      await screen.findByText('Browser session already in use'),
+    ).toBeTruthy();
+    expect(screen.getByText('Existing LinkedIn auth task')).toBeTruthy();
+
+    await user.click(
+      screen.getByRole('button', {
+        name: 'Cancel existing task and retry this run',
+      }),
+    );
+
+    await waitFor(() =>
+      expect(cancelConflictingBrowserRunMock).toHaveBeenCalledWith({
+        runId: 'run-main-browser',
+      }),
+    );
+    expect(
+      screen.getByText(
+        'The conflicting browser task was cancelled and this run is queued.',
+      ),
+    ).toBeTruthy();
   });
 
   it('renders persisted failed Main runs when the live response bubble is no longer present', async () => {

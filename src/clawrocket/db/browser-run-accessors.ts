@@ -8,7 +8,9 @@ import type {
 } from '../browser/metadata.js';
 import {
   appendOutboxEvent,
+  countRunnableMainRuns,
   getTalkRunById,
+  queueNextDeferredMainRunIfIdle,
   type TalkRunRecord,
 } from './accessors.js';
 
@@ -134,6 +136,14 @@ export function pauseRunForBrowserBlock(input: {
       const metadataJson = serializeMetadata(run, (current) => ({
         ...current,
         browserBlock: txInput.browserBlock,
+        streamedTextPreview:
+          txInput.browserBlock.kind === 'session_conflict'
+            ? null
+            : (current.streamedTextPreview ?? null),
+        lastProgressMessage:
+          txInput.browserBlock.kind === 'session_conflict'
+            ? null
+            : (current.lastProgressMessage ?? null),
         lastHeartbeatAt: txInput.browserBlock.updatedAt,
       }));
 
@@ -160,6 +170,13 @@ export function pauseRunForBrowserBlock(input: {
         }),
       });
 
+      if (run.thread_id && run.talk_id == null) {
+        queueNextDeferredMainRunIfIdle(
+          run.thread_id,
+          txInput.browserBlock.updatedAt,
+        );
+      }
+
       return {
         applied: true,
         run: {
@@ -178,22 +195,50 @@ export function resumeBrowserBlockedRun(input: {
   runId: string;
   resumedBy: string;
   browserResume: BrowserResumeMetadata;
-}): { applied: boolean; run: TalkRunRecord | null } {
+}): {
+  applied: boolean;
+  run: TalkRunRecord | null;
+  queueState: 'queued' | 'deferred' | null;
+} {
   const tx = getDb().transaction(
     (
       txInput: typeof input,
-    ): { applied: boolean; run: TalkRunRecord | null } => {
+    ): {
+      applied: boolean;
+      run: TalkRunRecord | null;
+      queueState: 'queued' | 'deferred' | null;
+    } => {
       const run = getTalkRunById(txInput.runId);
       if (!run || run.status !== 'awaiting_confirmation') {
-        return { applied: false, run: run || null };
+        return { applied: false, run: run || null, queueState: null };
       }
+
+      const queueState: 'queued' | 'deferred' =
+        run.talk_id == null &&
+        run.thread_id &&
+        countRunnableMainRuns({
+          threadId: run.thread_id,
+          excludeRunId: run.id,
+        }) > 0
+          ? 'deferred'
+          : 'queued';
 
       const metadataJson = serializeMetadata(run, (current) => {
         const next = { ...current };
-        delete next.browserBlock;
+        if (queueState === 'queued') {
+          delete next.browserBlock;
+          delete next.resumeRequestedAt;
+          delete next.resumeRequestedBy;
+        }
         return {
           ...next,
           browserResume: txInput.browserResume,
+          ...(queueState === 'deferred'
+            ? {
+                resumeRequestedAt: txInput.browserResume.resumedAt,
+                resumeRequestedBy: txInput.resumedBy,
+              }
+            : {}),
           lastHeartbeatAt: txInput.browserResume.resumedAt,
         };
       });
@@ -202,14 +247,18 @@ export function resumeBrowserBlockedRun(input: {
         .prepare(
           `
           UPDATE talk_runs
-          SET status = 'queued',
+          SET status = ?,
               cancel_reason = NULL,
               ended_at = NULL,
               metadata_json = ?
           WHERE id = ? AND status = 'awaiting_confirmation'
         `,
         )
-        .run(metadataJson, run.id);
+        .run(
+          queueState === 'queued' ? 'queued' : 'awaiting_confirmation',
+          metadataJson,
+          run.id,
+        );
 
       appendOutboxEvent({
         topic: runTopic(run),
@@ -221,26 +270,29 @@ export function resumeBrowserBlockedRun(input: {
           browserResume: txInput.browserResume,
         }),
       });
-      appendOutboxEvent({
-        topic: runTopic(run),
-        eventType: run.talk_id ? 'talk_run_queued' : 'main_run_queued',
-        payload: JSON.stringify({
-          runId: run.id,
-          talkId: run.talk_id,
-          threadId: run.thread_id,
-          status: 'queued',
-        }),
-      });
+      if (queueState === 'queued') {
+        appendOutboxEvent({
+          topic: runTopic(run),
+          eventType: run.talk_id ? 'talk_run_queued' : 'main_run_queued',
+          payload: JSON.stringify({
+            runId: run.id,
+            talkId: run.talk_id,
+            threadId: run.thread_id,
+            status: 'queued',
+          }),
+        });
+      }
 
       return {
         applied: true,
         run: {
           ...run,
-          status: 'queued',
+          status: queueState === 'queued' ? 'queued' : 'awaiting_confirmation',
           metadata_json: metadataJson,
           cancel_reason: null,
           ended_at: null,
         },
+        queueState,
       };
     },
   );
@@ -311,6 +363,10 @@ export function rejectBrowserBlockedRun(input: {
         }),
       });
 
+      if (run.thread_id && run.talk_id == null) {
+        queueNextDeferredMainRunIfIdle(run.thread_id, now);
+      }
+
       return {
         applied: true,
         run: {
@@ -319,6 +375,85 @@ export function rejectBrowserBlockedRun(input: {
           ended_at: now,
           cancel_reason:
             txInput.cancelReason || 'browser_confirmation_rejected',
+          metadata_json: metadataJson,
+        },
+      };
+    },
+  );
+  return tx(input);
+}
+
+export function cancelBrowserBlockedRun(input: {
+  runId: string;
+  cancelledBy: string;
+  cancelReason: string;
+}): { applied: boolean; run: TalkRunRecord | null } {
+  const tx = getDb().transaction(
+    (
+      txInput: typeof input,
+    ): { applied: boolean; run: TalkRunRecord | null } => {
+      const run = getTalkRunById(txInput.runId);
+      if (!run || run.status !== 'awaiting_confirmation') {
+        return { applied: false, run: run || null };
+      }
+
+      const metadataJson = serializeMetadata(run, (current) => {
+        const next = { ...current };
+        delete next.browserBlock;
+        delete next.resumeRequestedAt;
+        delete next.resumeRequestedBy;
+        return {
+          ...next,
+          lastHeartbeatAt: new Date().toISOString(),
+        };
+      });
+      const now = new Date().toISOString();
+
+      getDb()
+        .prepare(
+          `
+          UPDATE talk_runs
+          SET status = 'cancelled',
+              ended_at = ?,
+              cancel_reason = ?,
+              metadata_json = ?
+          WHERE id = ? AND status = 'awaiting_confirmation'
+        `,
+        )
+        .run(now, txInput.cancelReason, metadataJson, run.id);
+
+      appendOutboxEvent({
+        topic: runTopic(run),
+        eventType: 'browser_unblocked',
+        payload: JSON.stringify({
+          runId: run.id,
+          talkId: run.talk_id,
+          threadId: run.thread_id,
+          cancelReason: txInput.cancelReason,
+        }),
+      });
+      appendOutboxEvent({
+        topic: runTopic(run),
+        eventType: run.talk_id ? 'talk_run_cancelled' : 'main_run_cancelled',
+        payload: JSON.stringify({
+          runId: run.id,
+          talkId: run.talk_id,
+          threadId: run.thread_id,
+          cancelReason: txInput.cancelReason,
+        }),
+      });
+
+      if (run.thread_id && run.talk_id == null) {
+        queueNextDeferredMainRunIfIdle(run.thread_id, now);
+      }
+
+      return {
+        applied: true,
+        run: {
+          ...run,
+          status: 'cancelled',
+          ended_at: now,
+          cancel_reason: txInput.cancelReason,
           metadata_json: metadataJson,
         },
       };
