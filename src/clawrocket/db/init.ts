@@ -1271,7 +1271,6 @@ function createClawrocketSchema(database: Database.Database): void {
   seedDefaultTalkAgent(database);
   seedSystemUsers(database);
   seedDefaultSettings(database);
-  migrateMainAgentBrowserConflict(database);
 }
 
 /**
@@ -3139,40 +3138,6 @@ function migrateOAuthStateRequesterColumns(database: Database.Database): void {
       ALTER TABLE oauth_state
       ADD COLUMN requested_by_session_id TEXT REFERENCES web_sessions(id);
     `);
-  }
-}
-
-function migrateMainAgentBrowserConflict(database: Database.Database): void {
-  const row = database
-    .prepare(
-      `SELECT tool_permissions_json FROM registered_agents WHERE id = 'agent.main'`,
-    )
-    .get() as { tool_permissions_json: string | null } | undefined;
-  if (!row?.tool_permissions_json) return;
-
-  let parsed: Record<string, boolean> | null = null;
-  try {
-    parsed = JSON.parse(row.tool_permissions_json);
-  } catch {
-    parsed = null;
-  }
-  if (!parsed) return;
-
-  if (
-    parsed.browser === true &&
-    (parsed.shell === true || parsed.filesystem === true)
-  ) {
-    parsed.browser = false;
-    database
-      .prepare(
-        `
-        UPDATE registered_agents
-        SET tool_permissions_json = ?,
-            updated_at = ?
-        WHERE id = 'agent.main'
-      `,
-      )
-      .run(JSON.stringify(parsed), new Date().toISOString());
   }
 }
 
