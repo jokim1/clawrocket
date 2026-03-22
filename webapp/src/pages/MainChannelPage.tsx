@@ -160,6 +160,93 @@ const MAIN_MESSAGE_MAX_CHARS = 20_000;
 const MAIN_RUN_STALLED_AFTER_MS = 30_000;
 const STREAMED_TEXT_PREVIEW_MAX_CHARS = 4_000;
 
+function humanizeExecutionStrategy(
+  value: MainRun['executionStrategy'],
+): string | null {
+  if (value === 'browser_fast_lane') return 'Browser fast lane';
+  if (value === 'generic_agent_loop') return 'Generic agent loop';
+  return null;
+}
+
+function humanizeRouteReason(value: MainRun['routeReason']): string | null {
+  if (value === 'browser_fast_lane') return 'Direct API fast lane';
+  if (value === 'subscription_fallback') return 'Subscription fallback';
+  if (value === 'normal') return 'Normal route';
+  return null;
+}
+
+function formatDurationMs(ms: number): string {
+  if (ms < 1000) {
+    return `${Math.round(ms)}ms`;
+  }
+  return `${(ms / 1000).toFixed(ms >= 10_000 ? 0 : 1)}s`;
+}
+
+function diffTimingMs(
+  startIso: string | null | undefined,
+  endIso: string | null | undefined,
+): number | null {
+  if (!startIso || !endIso) return null;
+  const start = Date.parse(startIso);
+  const end = Date.parse(endIso);
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end < start) {
+    return null;
+  }
+  return end - start;
+}
+
+function summarizeTimeoutPhase(
+  timeoutPhase: MainRun['timeoutPhase'],
+  fallback: string | null,
+): string | null {
+  switch (timeoutPhase) {
+    case 'queue_to_executor_start':
+      return 'The run timed out before execution could start.';
+    case 'first_progress':
+      return 'The run timed out before the model or browser produced visible progress.';
+    case 'first_page_ready':
+      return 'The browser timed out before it reached a usable page state.';
+    case 'total_run':
+      return 'The run exceeded its total time budget.';
+    default:
+      return fallback;
+  }
+}
+
+function formatMainRunMetaLine(run: MainRun): string | null {
+  const parts: string[] = [];
+  const strategy = humanizeExecutionStrategy(run.executionStrategy);
+  const routeReason = humanizeRouteReason(run.routeReason);
+  if (strategy) {
+    parts.push(strategy);
+  }
+  if (routeReason) {
+    parts.push(routeReason);
+  }
+  const queueMs = diffTimingMs(
+    run.timing?.queueStartedAt || run.createdAt,
+    run.timing?.executorStartedAt,
+  );
+  const providerMs = diffTimingMs(
+    run.timing?.executorStartedAt,
+    run.timing?.firstProviderEventAt,
+  );
+  const pageMs = diffTimingMs(
+    run.timing?.executorStartedAt,
+    run.timing?.firstPageReadyAt,
+  );
+  if (queueMs != null) {
+    parts.push(`Queue ${formatDurationMs(queueMs)}`);
+  }
+  if (providerMs != null) {
+    parts.push(`Provider ${formatDurationMs(providerMs)}`);
+  }
+  if (pageMs != null) {
+    parts.push(`Page ${formatDurationMs(pageMs)}`);
+  }
+  return parts.length > 0 ? parts.join(' · ') : null;
+}
+
 function getBrowserBlockStatusLabel(
   browserBlock: MainRun['browserBlock'],
   resumeRequestedAt?: string | null,
@@ -225,6 +312,7 @@ function summarizeTerminalMainRun(run: MainRun): {
   statusLabel: 'Failed' | 'Cancelled';
   body: string;
 } | null {
+  const timeoutSummary = summarizeTimeoutPhase(run.timeoutPhase, null);
   if (run.terminalSummary) {
     return run.terminalSummary;
   }
@@ -253,7 +341,8 @@ function summarizeTerminalMainRun(run: MainRun): {
   if (!run.cancelReason) {
     return {
       statusLabel: 'Failed',
-      body: 'The run failed before a response could be recorded.',
+      body:
+        timeoutSummary || 'The run failed before a response could be recorded.',
     };
   }
 
@@ -261,9 +350,10 @@ function summarizeTerminalMainRun(run: MainRun): {
   return {
     statusLabel: 'Failed',
     body:
-      separator >= 0
+      timeoutSummary ||
+      (separator >= 0
         ? run.cancelReason.slice(separator + 2)
-        : run.cancelReason,
+        : run.cancelReason),
   };
 }
 
@@ -723,6 +813,8 @@ function mainReducer(state: MainState, action: MainAction): MainState {
         cancelReason: null,
         lastHeartbeatAt: nowIso,
         lastProgressMessage: null,
+        currentStep: run.currentStep || 'Starting model…',
+        timeoutPhase: null,
         terminalSummary: null,
       }));
       return {
@@ -738,6 +830,7 @@ function mainReducer(state: MainState, action: MainAction): MainState {
       const runsById = patchRun(state.runsById, action.event.runId, (run) => ({
         ...run,
         lastProgressMessage: action.event.message,
+        currentStep: action.event.message,
         lastHeartbeatAt: nowIso,
       }));
       return {
@@ -781,6 +874,7 @@ function mainReducer(state: MainState, action: MainAction): MainState {
       const runsById = patchRun(state.runsById, action.runId, (run) => ({
         ...run,
         lastHeartbeatAt: new Date().toISOString(),
+        currentStep: null,
       }));
       return {
         ...state,
@@ -807,6 +901,7 @@ function mainReducer(state: MainState, action: MainAction): MainState {
         endedAt: nowIso,
         cancelReason: action.event.errorMessage,
         lastHeartbeatAt: nowIso,
+        currentStep: null,
         terminalSummary: {
           statusLabel: 'Failed',
           body: action.event.errorMessage,
@@ -1797,7 +1892,7 @@ export function MainChannelPage({
       if (activeRun) {
         return (
           <span className="main-thread-item-meta main-thread-item-meta-responding">
-            * Working…
+            * {activeRun.currentStep || 'Working…'}
           </span>
         );
       }
@@ -2010,6 +2105,7 @@ export function MainChannelPage({
               if (entry.kind === 'run') {
                 const { run } = entry;
                 const isStalled = isMainRunStalled(run, runClockMs);
+                const runMetaLine = formatMainRunMetaLine(run);
                 const statusLabel =
                   run.promotionState === 'pending'
                     ? 'Starting background task…'
@@ -2027,6 +2123,7 @@ export function MainChannelPage({
                   (run.resumeRequestedAt
                     ? 'Will resume when current task finishes.'
                     : null) ||
+                  run.currentStep ||
                   run.streamedTextPreview ||
                   run.lastProgressMessage ||
                   run.userVisibleSummary ||
@@ -2061,6 +2158,9 @@ export function MainChannelPage({
                         <em>* {runBodyCopy}</em>
                       </p>
                     )}
+                    {runMetaLine ? (
+                      <p className="policy-muted">{runMetaLine}</p>
+                    ) : null}
                   </article>
                 );
               }
@@ -2085,6 +2185,11 @@ export function MainChannelPage({
                     <p>{terminalSummary.body}</p>
                     {run.streamedTextPreview ? (
                       <p>{run.streamedTextPreview}</p>
+                    ) : null}
+                    {formatMainRunMetaLine(run) ? (
+                      <p className="policy-muted">
+                        {formatMainRunMetaLine(run)}
+                      </p>
                     ) : null}
                     <ExecutionDecisionSummary
                       executionDecision={run.executionDecision}

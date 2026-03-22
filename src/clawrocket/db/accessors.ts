@@ -5221,6 +5221,7 @@ export function enqueueMainTurnAtomic(input: {
           now,
           JSON.stringify({
             timing: {
+              queueStartedAt: now,
               enqueuedAt: now,
             },
             lastHeartbeatAt: now,
@@ -5280,6 +5281,7 @@ export function enqueueMainTurnAtomic(input: {
         cancel_reason: null,
         metadata_json: JSON.stringify({
           timing: {
+            queueStartedAt: now,
             enqueuedAt: now,
           },
           lastHeartbeatAt: now,
@@ -5433,6 +5435,8 @@ export function completeMainRunAtomic(input: {
           },
           lastHeartbeatAt: now,
           lastProgressMessage: null,
+          currentStep: null,
+          timeoutPhase: null,
           terminalSummary: null,
         };
       });
@@ -5540,6 +5544,7 @@ export function failMainRunAtomic(input: {
   requestedBy: string;
   errorCode: string;
   errorMessage: string;
+  timeoutPhase?: string | null;
 }): { applied: boolean } {
   const tx = getDb().transaction(
     (txInput: typeof input): { applied: boolean } => {
@@ -5575,6 +5580,9 @@ export function failMainRunAtomic(input: {
             completedAt: now,
           },
           lastHeartbeatAt: now,
+          currentStep: null,
+          timeoutPhase: txInput.timeoutPhase ?? null,
+          lastProgressMessage: null,
           terminalSummary: {
             statusLabel: 'Failed',
             body:

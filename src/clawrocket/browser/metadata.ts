@@ -2,6 +2,7 @@ import type { BrowserBlockedKind, BrowserSessionState } from './service.js';
 import type {
   ExecutionBackend,
   ExecutionCredentialSource,
+  ExecutionRouteReason,
 } from '../agents/execution-planner.js';
 
 export interface BrowserBlockArtifact {
@@ -55,9 +56,21 @@ export interface ExecutionDecisionMetadata {
   backend: ExecutionBackend;
   authPath: 'api_key' | 'subscription' | 'host_login' | 'none';
   credentialSource: ExecutionCredentialSource;
+  routeReason: ExecutionRouteReason;
   plannerReason: string;
   providerId: string;
   modelId: string;
+}
+
+export interface MainRunTimingMetadata {
+  queueStartedAt?: string | null;
+  executorStartedAt?: string | null;
+  firstProviderEventAt?: string | null;
+  firstTokenAt?: string | null;
+  firstBrowserEventAt?: string | null;
+  firstPageReadyAt?: string | null;
+  blockedAt?: string | null;
+  completedAt?: string | null;
 }
 
 export interface CarriedBrowserSessionMetadata {

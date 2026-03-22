@@ -12,6 +12,7 @@ export interface AgentExecutionPreview {
   authPath: 'api_key' | 'subscription' | 'host_login' | null;
   routeReason:
     | 'normal'
+    | 'browser_fast_lane'
     | 'subscription_fallback'
     | 'host_only'
     | 'direct_with_promotion'
@@ -25,6 +26,9 @@ function buildReadyMessage(
   plan: ExecutionPlan,
 ): string {
   if (plan.backend === 'direct_http') {
+    if (plan.routeReason === 'browser_fast_lane') {
+      return 'Main will use the browser fast lane over direct Anthropic HTTP.';
+    }
     if (
       plan.authPath === 'api_key' &&
       agent.provider_id === 'provider.anthropic'

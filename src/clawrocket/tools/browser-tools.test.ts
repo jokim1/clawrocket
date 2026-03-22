@@ -250,6 +250,113 @@ describe('browser-tools', () => {
     vi.useRealTimers();
   });
 
+  it('uses fast-lane browser_open defaults and marks the page ready callback', async () => {
+    createRun('run-browser-fast-open');
+    const onPageReady = vi.fn();
+    browserServiceMocks.service.open.mockResolvedValue({
+      status: 'ok',
+      siteKey: 'linkedin',
+      accountLabel: null,
+      sessionId: 'bs_linkedin_fast',
+      url: 'https://www.linkedin.com/messaging/',
+      title: 'LinkedIn Messaging',
+      reusedSession: true,
+      createdProfile: false,
+      message: 'Browser session ready.',
+    });
+
+    await expect(
+      executeBrowserTool({
+        toolName: 'browser_open',
+        args: {
+          siteKey: 'linkedin',
+          url: 'https://www.linkedin.com/messaging/',
+        },
+        context: {
+          signal: new AbortController().signal,
+          runId: 'run-browser-fast-open',
+          userId: 'owner-1',
+          talkId: TALK_ID,
+          timeoutProfile: 'fast_lane',
+          onPageReady,
+        },
+      }),
+    ).resolves.toEqual({
+      result: expect.stringContaining('"status":"ok"'),
+    });
+
+    expect(browserServiceMocks.service.open).toHaveBeenCalledWith({
+      siteKey: 'linkedin',
+      url: 'https://www.linkedin.com/messaging/',
+      accountLabel: null,
+      headed: false,
+      reuseSession: true,
+      navigationTimeoutMs: 8000,
+      retryOnInitialTimeout: true,
+    });
+    expect(onPageReady).toHaveBeenCalledTimes(1);
+  });
+
+  it('uses fast-lane action and wait timeouts when none are supplied', async () => {
+    createRun('run-browser-fast-actions');
+    browserServiceMocks.service.act.mockResolvedValue({
+      status: 'ok',
+      siteKey: 'linkedin',
+      accountLabel: null,
+      url: 'https://www.linkedin.com/feed/',
+      title: 'LinkedIn',
+      message: 'Browser action completed.',
+    });
+    browserServiceMocks.service.wait.mockResolvedValue({
+      status: 'ok',
+      siteKey: 'linkedin',
+      accountLabel: null,
+      url: 'https://www.linkedin.com/feed/',
+      title: 'LinkedIn',
+      message: 'Wait completed.',
+    });
+
+    await executeBrowserTool({
+      toolName: 'browser_act',
+      args: {
+        sessionId: 'bs_linkedin_fast',
+        action: 'click',
+        target: 'button-1',
+      },
+      context: {
+        signal: new AbortController().signal,
+        runId: 'run-browser-fast-actions',
+        userId: 'owner-1',
+        timeoutProfile: 'fast_lane',
+      },
+    });
+    await executeBrowserTool({
+      toolName: 'browser_wait',
+      args: {
+        sessionId: 'bs_linkedin_fast',
+        conditionType: 'load',
+      },
+      context: {
+        signal: new AbortController().signal,
+        runId: 'run-browser-fast-actions',
+        userId: 'owner-1',
+        timeoutProfile: 'fast_lane',
+      },
+    });
+
+    expect(browserServiceMocks.service.act).toHaveBeenCalledWith(
+      expect.objectContaining({
+        timeoutMs: 5000,
+      }),
+      expect.anything(),
+    );
+    expect(browserServiceMocks.service.wait).toHaveBeenCalledWith(
+      expect.objectContaining({
+        timeoutMs: 5000,
+      }),
+    );
+  });
+
   it('pauses the Talk run and records confirmation-required browser_act state', async () => {
     createRun('run-browser-act');
     browserServiceMocks.service.act.mockResolvedValue({

@@ -21,7 +21,10 @@ import {
 export const EXECUTOR_MAIN_PROJECT_PATH_KEY = 'executor.mainProjectPath';
 
 export type ExecutionBackend = 'direct_http' | 'container' | 'host_codex';
-export type ExecutionRouteReason = 'normal' | 'subscription_fallback';
+export type ExecutionRouteReason =
+  | 'normal'
+  | 'subscription_fallback'
+  | 'browser_fast_lane';
 export type ExecutionCredentialSource =
   | 'db_secret'
   | 'env'
@@ -38,7 +41,7 @@ export interface ContainerCredentialConfig {
 
 export interface DirectHttpExecutionPlan {
   backend: 'direct_http';
-  routeReason: 'normal';
+  routeReason: ExecutionRouteReason;
   authPath: 'api_key';
   credentialSource: ExecutionCredentialSource;
   effectiveTools: EffectiveToolAccess[];
@@ -411,10 +414,12 @@ function tryResolveDirectExecutionPlan(input: {
   effectiveTools: EffectiveToolAccess[];
   provider: LlmProviderRecord | undefined;
   configuredAuthMode: ReturnType<typeof getConfiguredExecutorAuthMode>;
+  allowAnthropicDirectWhenSubscriptionMode?: boolean;
 }): DirectHttpExecutionPlan | null {
   if (
     input.agent.provider_id === 'provider.anthropic' &&
-    input.configuredAuthMode === 'subscription'
+    input.configuredAuthMode === 'subscription' &&
+    input.allowAnthropicDirectWhenSubscriptionMode !== true
   ) {
     return null;
   }
@@ -680,6 +685,7 @@ export function planMainExecution(
       effectiveTools,
       provider,
       configuredAuthMode,
+      allowAnthropicDirectWhenSubscriptionMode: browserEnabled,
     });
   } catch (error) {
     if (
@@ -697,31 +703,7 @@ export function planMainExecution(
     configuredAuthMode,
   });
 
-  const shouldPreferSubscriptionContainer =
-    browserEnabled &&
-    agent.provider_id === 'provider.anthropic' &&
-    configuredAuthMode === 'subscription';
-
   if (browserEnabled && heavyToolFamilies.length === 0) {
-    if (shouldPreferSubscriptionContainer && containerPlan) {
-      return {
-        policy: 'container_only',
-        effectiveTools,
-        heavyToolFamilies,
-        directPlan,
-        containerPlan: {
-          ...containerPlan,
-          routeReason: 'normal',
-        },
-        hostCodexPlan: null,
-      };
-    }
-    if (shouldPreferSubscriptionContainer && !containerPlan) {
-      throw new ExecutionPlannerError(
-        'No valid Main execution path is currently configured for this agent.',
-        'DIRECT_EXECUTION_UNAVAILABLE',
-      );
-    }
     if (directPlan) {
       return {
         policy: 'direct_only',
@@ -773,32 +755,6 @@ export function planMainExecution(
       'No valid Main execution path is currently configured for this agent.',
       'DIRECT_EXECUTION_UNAVAILABLE',
     );
-  }
-
-  if (browserEnabled && shouldPreferSubscriptionContainer) {
-    if (containerPlan) {
-      return {
-        policy: 'container_only',
-        effectiveTools,
-        heavyToolFamilies,
-        directPlan,
-        containerPlan: {
-          ...containerPlan,
-          routeReason: 'normal',
-        },
-        hostCodexPlan: null,
-      };
-    }
-    if (directPlan) {
-      return {
-        policy: 'direct_only',
-        effectiveTools,
-        heavyToolFamilies,
-        directPlan,
-        containerPlan: null,
-        hostCodexPlan: null,
-      };
-    }
   }
 
   if (directPlan && containerPlan) {

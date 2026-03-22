@@ -356,6 +356,106 @@ describe('MainChannelPage', () => {
     ).toBeTruthy();
   });
 
+  it('renders persisted current step and fast-lane route timing for active runs', async () => {
+    const queuedAt = isoOffset(-5_000);
+    const executorStartedAt = isoOffset(-4_000);
+    const providerStartedAt = isoOffset(-3_000);
+    const pageReadyAt = isoOffset(-1_000);
+    listMainThreadsMock.mockResolvedValue([
+      {
+        threadId: 'thread-main-fast-lane',
+        title: 'LinkedIn Messaging',
+        isPinned: false,
+        lastMessageAt: queuedAt,
+        messageCount: 1,
+        hasActiveRun: true,
+      },
+    ]);
+    getMainThreadMock.mockResolvedValue([
+      {
+        id: 'msg-fast-lane-1',
+        threadId: 'thread-main-fast-lane',
+        role: 'user',
+        content: 'Open LinkedIn and tell me what you can access.',
+        agentId: null,
+        createdBy: 'user-1',
+        createdAt: queuedAt,
+      },
+    ]);
+    getMainRegisteredAgentMock.mockResolvedValue(
+      buildMainAgentSnapshot({ browserEnabled: true }),
+    );
+    listMainRunsMock.mockResolvedValue([
+      {
+        id: 'run-main-fast-lane',
+        threadId: 'thread-main-fast-lane',
+        status: 'running',
+        createdAt: queuedAt,
+        startedAt: executorStartedAt,
+        endedAt: null,
+        triggerMessageId: 'msg-fast-lane-1',
+        targetAgentId: null,
+        cancelReason: null,
+        kind: null,
+        parentRunId: null,
+        promotionState: null,
+        promotionChildRunId: null,
+        requestedToolFamilies: ['browser'],
+        userVisibleSummary: null,
+        browserBlock: null,
+        browserResume: null,
+        carriedBrowserSessions: [],
+        executionDecision: {
+          backend: 'direct_http',
+          authPath: 'api_key',
+          credentialSource: 'env',
+          routeReason: 'browser_fast_lane',
+          plannerReason: 'direct_only',
+          providerId: 'provider.anthropic',
+          modelId: 'claude-sonnet-4-6',
+        },
+        executionStrategy: 'browser_fast_lane',
+        routeReason: 'browser_fast_lane',
+        currentStep: 'Opening LinkedIn…',
+        timeoutPhase: null,
+        timing: {
+          queueStartedAt: queuedAt,
+          executorStartedAt,
+          firstProviderEventAt: providerStartedAt,
+          firstPageReadyAt: pageReadyAt,
+        },
+        streamedTextPreview: null,
+        lastProgressMessage: 'Opening LinkedIn…',
+        lastHeartbeatAt: pageReadyAt,
+        terminalSummary: null,
+        resumeRequestedAt: null,
+        resumeRequestedBy: null,
+      },
+    ]);
+
+    render(
+      <MemoryRouter initialEntries={['/app/main/thread-main-fast-lane']}>
+        <Routes>
+          <Route
+            path="/app/main"
+            element={<MainChannelPage onUnauthorized={vi.fn()} />}
+          />
+          <Route
+            path="/app/main/:threadId"
+            element={<MainChannelPage onUnauthorized={vi.fn()} />}
+          />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findAllByText('* Opening LinkedIn…')).toHaveLength(2);
+    expect(
+      screen.getByText(
+        'Browser fast lane · Direct API fast lane · Queue 1.0s · Provider 1.0s · Page 3.0s',
+      ),
+    ).toBeTruthy();
+  });
+
   it('navigates away from a Main thread that now returns 404', async () => {
     listMainThreadsMock.mockResolvedValue([
       {

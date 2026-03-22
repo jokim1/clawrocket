@@ -20,6 +20,7 @@ import type {
   MainExecutorInput,
   MainExecutorOutput,
 } from './main-executor.js';
+import { MainRunPhaseTimeoutError } from './main-executor.js';
 import { MainRunWorker, type MainExecutorFn } from './main-run-worker.js';
 
 const USER_A = 'user-a';
@@ -446,6 +447,37 @@ describe('MainRunWorker integration', () => {
     const payload = JSON.parse(failure!.payload);
     expect(payload.errorCode).toBe('execution_failed');
     expect(payload.errorMessage).toContain('LLM provider unreachable');
+  });
+
+  it('persists timeout phase metadata when execution exceeds a phase budget', async () => {
+    const { runId } = enqueueTurn();
+
+    const worker = new MainRunWorker({
+      pollMs: 10,
+      maxConcurrency: 1,
+      executor: async (): Promise<MainExecutorOutput> => {
+        throw new MainRunPhaseTimeoutError(
+          'first_page_ready',
+          'The browser did not reach a usable page state quickly enough.',
+        );
+      },
+    });
+    await worker.start();
+
+    await waitForRunTerminal(runId);
+    await worker.stop();
+
+    const run = getTalkRunById(runId)!;
+    expect(run.status).toBe('failed');
+    expect(run.cancel_reason).toContain('execution_timeout');
+    const metadata = JSON.parse(run.metadata_json || '{}') as {
+      timeoutPhase?: string | null;
+      terminalSummary?: { body?: string } | null;
+    };
+    expect(metadata.timeoutPhase).toBe('first_page_ready');
+    expect(metadata.terminalSummary?.body).toBe(
+      'The browser did not reach a usable page state quickly enough.',
+    );
   });
 
   it('recovers interrupted runs on startup', async () => {

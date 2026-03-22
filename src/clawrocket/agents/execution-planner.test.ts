@@ -247,6 +247,34 @@ describe('execution-planner', () => {
     expect(plan.containerPlan).toBeNull();
   });
 
+  it('prefers direct Main execution for browser-enabled Anthropic agents when an API key exists even if subscription mode is configured globally', () => {
+    seedAnthropicSecret();
+    upsertSettingValue({
+      key: 'executor.authMode',
+      value: 'subscription',
+      updatedBy: 'owner-1',
+    });
+    upsertSettingValue({
+      key: 'executor.claudeOauthToken',
+      value: 'oauth-token-123',
+      updatedBy: 'owner-1',
+    });
+    const agent = createRegisteredAgent({
+      name: 'Claude Browser',
+      providerId: 'provider.anthropic',
+      modelId: 'claude-sonnet-4-6',
+      toolPermissionsJson: JSON.stringify({ browser: true }),
+    });
+
+    const plan = planMainExecution(agent, 'owner-1');
+    expect(plan.policy).toBe('direct_only');
+    expect(plan.directPlan?.backend).toBe('direct_http');
+    expect(plan.directPlan?.credentialSource).toBe('db_secret');
+    expect(plan.containerPlan?.containerCredential.authMode).toBe(
+      'subscription',
+    );
+  });
+
   it('keeps browser in the direct Main parent and promotes only heavy tools', () => {
     seedAnthropicSecret();
     const agent = createRegisteredAgent({
@@ -266,7 +294,7 @@ describe('execution-planner', () => {
     expect(plan.containerPlan?.backend).toBe('container');
   });
 
-  it('keeps explicit Claude subscription Main routes on the container runtime even when an API key exists', () => {
+  it('keeps subscription as the fallback path for heavy-tool Main runs while preferring a direct parent when an API key exists', () => {
     seedAnthropicSecret('sk-ant-stale');
     upsertSettingValue({
       key: 'executor.authMode',
@@ -290,8 +318,8 @@ describe('execution-planner', () => {
     });
 
     const plan = planMainExecution(agent, 'owner-1');
-    expect(plan.policy).toBe('container_only');
-    expect(plan.directPlan).toBeNull();
+    expect(plan.policy).toBe('direct_with_promotion');
+    expect(plan.directPlan?.backend).toBe('direct_http');
     expect(plan.containerPlan?.backend).toBe('container');
     expect(plan.containerPlan?.containerCredential.authMode).toBe(
       'subscription',

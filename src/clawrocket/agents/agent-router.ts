@@ -155,6 +155,8 @@ export async function executeWithAgent(
       args: Record<string, unknown>,
     ) => Promise<{ result: string; isError?: boolean }>;
     alwaysAllowedContextToolNames?: string[];
+    maxToolIterations?: number;
+    toolIterationLimitFallback?: string;
   },
 ): Promise<AgentExecutionResult> {
   const emit = options.emit || (() => {});
@@ -319,10 +321,10 @@ export async function executeWithAgent(
     estimatedCostUsd: 0,
   };
 
-  const MAX_TOOL_ITERATIONS = 10;
+  const maxToolIterations = Math.max(1, options.maxToolIterations ?? 10);
 
   try {
-    for (let iteration = 0; iteration < MAX_TOOL_ITERATIONS; iteration++) {
+    for (let iteration = 0; iteration < maxToolIterations; iteration++) {
       const stream = streamLlmResponse(
         providerConfig,
         secret,
@@ -345,8 +347,12 @@ export async function executeWithAgent(
       for await (const event of stream) {
         if (options.signal?.aborted) {
           emit({ type: 'cancelled' });
-          const abortErr = new Error('Agent execution was cancelled');
-          abortErr.name = 'AbortError';
+          const abortErr =
+            options.signal.reason instanceof Error
+              ? options.signal.reason
+              : Object.assign(new Error('Agent execution was cancelled'), {
+                  name: 'AbortError',
+                });
           throw abortErr;
         }
 
@@ -392,6 +398,7 @@ export async function executeWithAgent(
       }
 
       finalContent += turnTextContent;
+      const reachedToolIterationLimit = iteration === maxToolIterations - 1;
 
       // If no tool calls or no executeToolCall callback, we're done.
       // Anthropic stop reason: 'tool_use', OpenAI finish reason: 'tool_calls'
@@ -520,6 +527,13 @@ export async function executeWithAgent(
           isError: tr.isError,
         }));
         messages.push({ role: 'tool', content: toolResultBlocks });
+      }
+
+      if (reachedToolIterationLimit) {
+        if (options.toolIterationLimitFallback) {
+          finalContent = options.toolIterationLimitFallback;
+        }
+        break;
       }
 
       // Reset turn text for next iteration — the LLM will produce new content

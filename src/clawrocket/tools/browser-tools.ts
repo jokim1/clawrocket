@@ -238,9 +238,13 @@ export interface BrowserToolExecutionContext {
   userId: string;
   talkId?: string | null;
   onProgress?: ((message: string) => void) | undefined;
+  timeoutProfile?: 'default' | 'fast_lane';
+  onPageReady?: (() => void) | undefined;
 }
 
 const BROWSER_TOOL_PROGRESS_HEARTBEAT_MS = 10_000;
+const FAST_LANE_BROWSER_OPEN_TIMEOUT_MS = 8_000;
+const FAST_LANE_BROWSER_ACTION_TIMEOUT_MS = 5_000;
 
 function jsonResult(
   result: unknown,
@@ -863,8 +867,15 @@ export async function executeBrowserTool(input: {
               accountLabel,
               headed,
               reuseSession,
+              navigationTimeoutMs:
+                input.context.timeoutProfile === 'fast_lane'
+                  ? FAST_LANE_BROWSER_OPEN_TIMEOUT_MS
+                  : undefined,
+              retryOnInitialTimeout:
+                input.context.timeoutProfile === 'fast_lane',
             }),
         });
+        input.context.onPageReady?.();
         if (result.sessionId) {
           service.recordRunSessionTouch(input.context.runId, result.sessionId);
         }
@@ -1009,7 +1020,9 @@ export async function executeBrowserTool(input: {
                 timeoutMs:
                   typeof input.args.timeoutMs === 'number'
                     ? input.args.timeoutMs
-                    : undefined,
+                    : input.context.timeoutProfile === 'fast_lane'
+                      ? FAST_LANE_BROWSER_ACTION_TIMEOUT_MS
+                      : undefined,
               },
               {
                 talkId: input.context.talkId,
@@ -1110,7 +1123,9 @@ export async function executeBrowserTool(input: {
               timeoutMs:
                 typeof input.args.timeoutMs === 'number'
                   ? input.args.timeoutMs
-                  : undefined,
+                  : input.context.timeoutProfile === 'fast_lane'
+                    ? FAST_LANE_BROWSER_ACTION_TIMEOUT_MS
+                    : undefined,
             }),
         });
         service.recordRunSessionTouch(input.context.runId, sessionId);
