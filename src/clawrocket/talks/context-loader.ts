@@ -315,6 +315,7 @@ export async function loadTalkContext(
     retrievalQuery?: string | null;
     jobPolicy?: TalkJobExecutionPolicy | null;
     effectiveTools?: EffectiveToolAccess[];
+    channelContextSection?: string | null;
   },
 ): Promise<ContextPackage> {
   const db = getDb();
@@ -365,6 +366,7 @@ export async function loadTalkContext(
     summary,
     rules,
     roleHint,
+    options?.channelContextSection ?? null,
     stateSnapshot.promptText,
     outputManifest.promptText,
     retrievedContext.promptText,
@@ -655,6 +657,7 @@ function assembleSystemPrompt(
   summary: string | null,
   rules: string[],
   roleHint: string | null,
+  channelContextSection: string | null,
   stateSnapshot: string | null,
   outputManifest: string | null,
   retrievedContext: string | null,
@@ -686,6 +689,10 @@ function assembleSystemPrompt(
 
   if (roleHint) {
     parts.push(`**Role Context Hint:**\n${roleHint}`);
+  }
+
+  if (channelContextSection) {
+    parts.push(`**Channel Context:**\n${channelContextSection}`);
   }
 
   if (stateSnapshot) {
@@ -731,7 +738,7 @@ function buildOmissionNote(
   const keyList = shownKeys.join(', ') + (extra > 0 ? `, +${extra} more` : '');
   return `- ${omittedCount} state entr${
     omittedCount === 1 ? 'y' : 'ies'
-  } omitted (keys: ${keyList}). Use read_state(key) to fetch them.`;
+  } omitted (keys: ${keyList}). Use list_state(prefix) to discover keys or read_state(key) to fetch one directly.`;
 }
 
 function buildStateSnapshot(
@@ -790,7 +797,7 @@ function buildStateSnapshot(
         ? omissionNote
         : `- ${entries.length} state entr${
             entries.length === 1 ? 'y' : 'ies'
-          } omitted. Use read_state(key) to fetch them.`;
+          } omitted. Use list_state(prefix) to discover keys or read_state(key) to fetch one directly.`;
     return {
       promptText: `**State Snapshot:**\n${noteToUse}`,
       includedEntries: [],
@@ -807,7 +814,7 @@ function buildStateSnapshot(
       lines.push(
         `- ${omittedKeys.length} additional state entr${
           omittedKeys.length === 1 ? 'y' : 'ies'
-        } omitted. Use read_state(key) to fetch them.`,
+        } omitted. Use list_state(prefix) to discover keys or read_state(key) to fetch one directly.`,
       );
     }
   }
@@ -864,6 +871,22 @@ function buildContextTools(
     },
     ...buildGoogleDriveContextTools({ talkId, userId }),
   ];
+
+  tools.push({
+    name: 'list_state',
+    description:
+      'List Talk state entries, optionally filtered by a key prefix. Returns matching keys, values, versions, and update timestamps.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        prefix: {
+          type: 'string',
+          description:
+            'Optional key prefix filter. Use this to discover entries inside a namespace.',
+        },
+      },
+    },
+  });
 
   tools.push({
     name: 'read_state',

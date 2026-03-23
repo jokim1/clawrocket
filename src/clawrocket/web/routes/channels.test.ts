@@ -598,6 +598,99 @@ describe('talk channel routes', () => {
     );
   });
 
+  it('creates Slack bindings with instructions and a derived state namespace', async () => {
+    const slackConnection = upsertChannelConnection({
+      platform: 'slack',
+      connectionMode: 'oauth_workspace',
+      accountKey: 'slack:T123',
+      displayName: 'KimFamily',
+      enabled: true,
+      healthStatus: 'healthy',
+      config: {
+        teamId: 'T123',
+        teamName: 'KimFamily',
+      },
+    });
+    upsertChannelTarget({
+      connectionId: slackConnection.id,
+      targetKind: 'channel',
+      targetId: 'slack:C123',
+      displayName: '#general',
+      metadataJson: JSON.stringify({ isMember: true }),
+    });
+
+    const res = await server.request('/api/v1/talks/talk-1/channels', {
+      method: 'POST',
+      headers: {
+        ...authHeaders('owner-token'),
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        connectionId: slackConnection.id,
+        targetKind: 'channel',
+        targetId: 'slack:C123',
+        displayName: '#general',
+        responseMode: 'mentions',
+        timezone: 'America/New_York',
+        instructions:
+          'Reply briefly when mentioned. Keep binding-owned state under the provided namespace.',
+      }),
+    });
+
+    expect(res.status).toBe(201);
+    const body = (await res.json()) as any;
+    expect(body.ok).toBe(true);
+    expect(body.data.binding).toEqual(
+      expect.objectContaining({
+        responseMode: 'mentions',
+        timezone: 'America/New_York',
+        instructions:
+          'Reply briefly when mentioned. Keep binding-owned state under the provided namespace.',
+      }),
+    );
+    expect(body.data.binding.stateNamespace).toMatch(
+      /^channel\.binding_[^.]+\.$/,
+    );
+  });
+
+  it('accepts instructions on Telegram bindings without special behavior modes', async () => {
+    upsertChannelTarget({
+      connectionId: 'channel-conn:telegram:system',
+      targetKind: 'chat',
+      targetId: 'tg:chat:123',
+      displayName: 'Gamemakers Chat',
+      approved: true,
+      metadataJson: null,
+    });
+
+    const res = await server.request('/api/v1/talks/talk-1/channels', {
+      method: 'POST',
+      headers: {
+        ...authHeaders('owner-token'),
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        connectionId: 'channel-conn:telegram:system',
+        targetKind: 'chat',
+        targetId: 'tg:chat:123',
+        displayName: 'Gamemakers Chat',
+        timezone: 'America/Los_Angeles',
+        instructions: 'Reply only on direct asks.',
+      }),
+    });
+
+    expect(res.status).toBe(201);
+    const body = (await res.json()) as any;
+    expect(body.ok).toBe(true);
+    expect(body.data.binding).toEqual(
+      expect.objectContaining({
+        platform: 'telegram',
+        timezone: 'America/Los_Angeles',
+        instructions: 'Reply only on direct asks.',
+      }),
+    );
+  });
+
   it('returns a conflict when a Slack channel is already bound to another talk', async () => {
     const registeredAgent = createRegisteredAgent({
       name: 'Slack Agent',

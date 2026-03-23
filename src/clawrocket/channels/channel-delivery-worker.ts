@@ -114,6 +114,7 @@ export class ChannelDeliveryWorker {
 
     const payload = JSON.parse(row.payload_json) as {
       content: string;
+      deliveryMode?: 'reply' | 'channel';
       sourceThreadKey?: string | null;
       sourceExternalMessageId?: string | null;
       metadata?: Record<string, unknown> | null;
@@ -123,6 +124,7 @@ export class ChannelDeliveryWorker {
         connectionId: bindingState.connection_id,
         targetId: row.target_id,
         content: payload.content,
+        deliveryMode: payload.deliveryMode,
         sourceThreadKey: payload.sourceThreadKey || null,
         sourceExternalMessageId: payload.sourceExternalMessageId || null,
         metadata: payload.metadata || null,

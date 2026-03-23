@@ -19,6 +19,7 @@ export interface QueuedInboundPayload {
   targetDisplayName: string | null;
   senderId: string | null;
   senderName: string | null;
+  isMentioned: boolean;
   sourceThreadKey: string | null;
   externalMessageId: string | null;
   metadata: Record<string, unknown> | null;
@@ -125,6 +126,7 @@ export class TalkChannelRouter {
       targetDisplayName: event.target_display_name,
       senderId: event.sender_id,
       senderName: event.sender_name,
+      isMentioned: event.is_mentioned,
       sourceThreadKey:
         typeof event.metadata?.sourceThreadKey === 'string'
           ? event.metadata.sourceThreadKey

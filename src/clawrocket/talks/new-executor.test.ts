@@ -17,15 +17,20 @@ vi.mock('../tools/browser-tools.js', () => ({
   BROWSER_TOOL_DEFINITIONS: [],
   executeBrowserTool: vi.fn(),
 }));
+vi.mock('../channels/slack-connector.js', () => ({
+  fetchSlackRecentConversationContext: vi.fn(),
+}));
 
 import { getDb } from '../../db.js';
 import {
   _initTestDatabase,
   createMessageAttachment,
+  createTalkChannelBinding,
   createTalkMessage,
   createTalkOutput,
   createTalkRun,
   linkAttachmentToMessage,
+  upsertChannelConnection,
   upsertTalk,
   updateAttachmentExtraction,
   upsertUser,
@@ -34,6 +39,9 @@ import { executeWithAgent } from '../agents/agent-router.js';
 import { planExecution } from '../agents/execution-planner.js';
 import { executeContainerAgentTurn } from '../agents/container-turn-executor.js';
 import { resolveValidatedProjectMountPath } from '../agents/project-mounts.js';
+import { fetchSlackRecentConversationContext } from '../channels/slack-connector.js';
+import { createRegisteredAgent } from '../db/agent-accessors.js';
+import { upsertTalkStateEntry } from '../db/context-accessors.js';
 import { buildToolExecutor, CleanTalkExecutor } from './new-executor.js';
 import * as attachmentStorage from './attachment-storage.js';
 import { saveAttachmentFile } from './attachment-storage.js';
@@ -91,6 +99,12 @@ describe('CleanTalkExecutor', () => {
     vi.mocked(resolveValidatedProjectMountPath).mockImplementation((path) =>
       path ? String(path) : null,
     );
+    vi.mocked(fetchSlackRecentConversationContext).mockReset();
+    vi.mocked(fetchSlackRecentConversationContext).mockResolvedValue({
+      mode: 'skipped',
+      lines: [],
+      unavailableReason: null,
+    });
     vi.mocked(planExecution).mockReturnValue({
       backend: 'direct_http',
       routeReason: 'normal',
@@ -291,6 +305,161 @@ describe('CleanTalkExecutor', () => {
       )
       .get('run-talk-1') as { count: number };
     expect(llmAttempts.count).toBe(0);
+  });
+
+  it('injects channel context and recent Slack history for channel-triggered runs', async () => {
+    const now = new Date().toISOString();
+    const agent = createRegisteredAgent({
+      name: 'Slack Channel Agent',
+      providerId: 'provider.anthropic',
+      modelId: 'claude-sonnet-4-6',
+      toolPermissionsJson: '{}',
+    });
+    getDb()
+      .prepare(
+        `
+      INSERT INTO talk_agents (id, talk_id, registered_agent_id, nickname, is_primary, sort_order, created_at, updated_at)
+      VALUES (?, ?, ?, ?, 1, 0, datetime('now'), datetime('now'))
+    `,
+      )
+      .run('agent.main', TALK_ID, agent.id, agent.name);
+    const connection = upsertChannelConnection({
+      platform: 'slack',
+      connectionMode: 'oauth_workspace',
+      accountKey: 'slack:T-kim',
+      displayName: 'Slack (KimFamily)',
+      config: {
+        teamId: 'T-kim',
+        teamName: 'KimFamily',
+      },
+      createdBy: 'owner-1',
+      updatedBy: 'owner-1',
+      healthStatus: 'healthy',
+      lastHealthCheckAt: now,
+      lastHealthError: null,
+    });
+    const binding = createTalkChannelBinding({
+      talkId: TALK_ID,
+      connectionId: connection.id,
+      targetKind: 'channel',
+      targetId: 'slack:C-general',
+      displayName: '#general',
+      createdBy: 'owner-1',
+      responseMode: 'all',
+      deliveryMode: 'reply',
+      timezone: 'Pacific/Honolulu',
+      instructions:
+        'Reply briefly when directly mentioned. Keep all binding state inside the provided namespace.',
+      now,
+    });
+    createTalkMessage({
+      id: 'msg-channel-trigger-1',
+      talkId: TALK_ID,
+      threadId: THREAD_ID,
+      role: 'user',
+      content: 'Hey @Clawd can you help here?',
+      createdBy: 'owner-1',
+      createdAt: now,
+      metadataJson: JSON.stringify({
+        kind: 'channel_inbound',
+        bindingId: binding.id,
+        platform: 'slack',
+        connectionId: connection.id,
+        targetKind: 'channel',
+        targetId: 'slack:C-general',
+        targetDisplayName: '#general',
+        senderId: 'U-big-daddy',
+        senderName: 'Big Bad Daddy',
+        isMentioned: true,
+        timestamp: now,
+        externalMessageId: '1710000000.000100',
+        metadata: {
+          sourceThreadKey: '1710000000.000100',
+        },
+      }),
+    });
+    createTalkRun({
+      id: 'run-channel-context-1',
+      talk_id: TALK_ID,
+      thread_id: THREAD_ID,
+      requested_by: 'owner-1',
+      status: 'running',
+      trigger_message_id: 'msg-channel-trigger-1',
+      target_agent_id: 'agent.main',
+      idempotency_key: null,
+      response_group_id: null,
+      sequence_index: null,
+      executor_alias: null,
+      executor_model: null,
+      source_binding_id: binding.id,
+      source_external_message_id: '1710000000.000100',
+      source_thread_key: '1710000000.000100',
+      created_at: now,
+      started_at: now,
+      ended_at: null,
+      cancel_reason: null,
+    });
+    vi.mocked(fetchSlackRecentConversationContext).mockResolvedValue({
+      mode: 'channel',
+      lines: ['- Asher: 60 min math', '- Jaxon: 3 hrs vibecoding'],
+      unavailableReason: null,
+    });
+    vi.mocked(executeWithAgent).mockImplementation(
+      async (_agentId, context, userMessage) => {
+        expect(userMessage).toBe('Hey @Clawd can you help here?');
+        expect(context?.systemPrompt).toContain('**Channel Context:**');
+        expect(context?.systemPrompt).toContain('Platform: Slack');
+        expect(context?.systemPrompt).toContain(
+          'Connection: Slack (KimFamily)',
+        );
+        expect(context?.systemPrompt).toContain(
+          'Binding instructions:\nReply briefly when directly mentioned. Keep all binding state inside the provided namespace.',
+        );
+        expect(context?.systemPrompt).toContain('State namespace: channel.');
+        expect(context?.systemPrompt).toContain('Local day-of-week:');
+        expect(context?.systemPrompt).toContain('Timezone: Pacific/Honolulu');
+        expect(context?.systemPrompt).toContain('Recent Slack context:');
+        expect(context?.systemPrompt).toContain('- Asher: 60 min math');
+        expect(context?.systemPrompt).toContain(
+          'This message directly mentioned the assistant.',
+        );
+        return {
+          content: 'Happy to help.',
+          agentId: 'agent.main',
+          providerId: 'provider.anthropic',
+          modelId: 'claude-sonnet-4-6',
+          usage: {
+            inputTokens: 10,
+            outputTokens: 6,
+            estimatedCostUsd: 0,
+          },
+        };
+      },
+    );
+
+    const executor = new CleanTalkExecutor();
+    const result = await executor.execute(
+      {
+        runId: 'run-channel-context-1',
+        talkId: TALK_ID,
+        threadId: THREAD_ID,
+        requestedBy: 'owner-1',
+        triggerMessageId: 'msg-channel-trigger-1',
+        triggerContent: 'Hey @Clawd can you help here?',
+      },
+      new AbortController().signal,
+    );
+
+    expect(result.content).toBe('Happy to help.');
+    expect(fetchSlackRecentConversationContext).toHaveBeenCalledWith(
+      expect.objectContaining({
+        connectionId: connection.id,
+        targetId: 'slack:C-general',
+        directMention: true,
+        externalMessageId: '1710000000.000100',
+        sourceThreadKey: '1710000000.000100',
+      }),
+    );
   });
 
   it('passes current-message attachments to direct agents as multimodal content', async () => {

@@ -534,7 +534,7 @@ describe('context-loader', () => {
 
       expect(ctx.systemPrompt).toContain('**State Snapshot:**');
       expect(ctx.systemPrompt).toMatch(
-        /omitted.*Use read_state\(key\) to fetch them/i,
+        /omitted.*Use list_state\(prefix\).*read_state\(key\)/i,
       );
     });
 
@@ -1444,6 +1444,17 @@ describe('context-loader', () => {
       const omissionMatch = ctx.systemPrompt.match(/\+(\d+) more/);
       expect(omissionMatch).not.toBeNull();
       expect(Number(omissionMatch![1])).toBeGreaterThan(0);
+    });
+
+    it('includes a channel context section when provided', async () => {
+      const ctx = await loadTalkContext(TALK_ID, 128000, null, null, null, {
+        channelContextSection:
+          'Platform: Slack\nBinding note:\nKeep replies concise.',
+      });
+
+      expect(ctx.systemPrompt).toContain('**Channel Context:**');
+      expect(ctx.systemPrompt).toContain('Platform: Slack');
+      expect(ctx.systemPrompt).toContain('Keep replies concise.');
     });
   });
 });

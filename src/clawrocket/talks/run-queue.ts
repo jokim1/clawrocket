@@ -29,6 +29,7 @@ export class TalkRunQueue {
       thread_id: input.threadId,
       requested_by: input.requestedBy,
       status,
+      run_kind: 'conversation',
       trigger_message_id: null,
       idempotency_key: input.idempotencyKey || null,
       executor_alias: null,
@@ -48,6 +49,7 @@ export class TalkRunQueue {
         talkId: input.talkId,
         threadId: input.threadId,
         runId: input.runId,
+        runKind: record.run_kind,
         status,
         executorAlias: record.executor_alias,
         executorModel: record.executor_model,
@@ -70,6 +72,7 @@ export class TalkRunQueue {
       payload: JSON.stringify({
         talkId: run.talk_id!,
         runId,
+        runKind: run.run_kind ?? 'conversation',
         executorAlias: run.executor_alias,
         executorModel: run.executor_model,
       }),
@@ -85,6 +88,7 @@ export class TalkRunQueue {
       payload: JSON.stringify({
         talkId: run.talk_id,
         runId: nextQueued.id,
+        runKind: nextQueued.run_kind ?? 'conversation',
         status: 'running',
         executorAlias: nextQueued.executor_alias,
         executorModel: nextQueued.executor_model,

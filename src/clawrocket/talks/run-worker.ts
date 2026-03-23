@@ -25,6 +25,7 @@ import {
 } from './executor.js';
 import {
   createTalkResponseStreamSanitizer,
+  extractChannelReplyControl,
   stripInternalTalkResponseText,
   type TalkResponseStreamSanitizer,
 } from './internal-tags.js';
@@ -52,6 +53,28 @@ function errorMessage(error: unknown): string {
 
 function isAbortError(error: unknown): boolean {
   return error instanceof Error && error.name === 'AbortError';
+}
+
+function parseChannelInboundMetadata(metadataJson: string | null | undefined): {
+  isMentioned: boolean;
+} | null {
+  if (!metadataJson) return null;
+  try {
+    const parsed = JSON.parse(metadataJson) as Record<string, unknown>;
+    if (
+      !parsed ||
+      typeof parsed !== 'object' ||
+      Array.isArray(parsed) ||
+      parsed.kind !== 'channel_inbound'
+    ) {
+      return null;
+    }
+    return {
+      isMentioned: parsed.isMentioned === true,
+    };
+  } catch {
+    return null;
+  }
 }
 
 interface ActiveRun {
@@ -232,6 +255,9 @@ export class TalkRunWorker implements TalkRunWorkerControl {
 
     try {
       const executionStartedAt = Date.now();
+      const triggerChannelMetadata = parseChannelInboundMetadata(
+        triggerMessage.metadata_json,
+      );
       const output = await this.executor.execute(
         {
           runId: run.id,
@@ -249,6 +275,12 @@ export class TalkRunWorker implements TalkRunWorkerControl {
         (event) => this.emitExecutionEvent(event),
       );
       const latencyMs = Date.now() - executionStartedAt;
+      const replyControl = extractChannelReplyControl(output.content);
+      const directMention = triggerChannelMetadata?.isMentioned === true;
+      const deliverySuppressed =
+        run.source_binding_id != null &&
+        replyControl.suppressDelivery &&
+        !directMention;
       const responseContent = stripInternalTalkResponseText(output.content);
 
       const completed = completeRunAndPromoteNextAtomic({
@@ -256,6 +288,8 @@ export class TalkRunWorker implements TalkRunWorkerControl {
         responseMessageId: `msg_${randomUUID()}`,
         responseContent,
         responseMetadataJson: output.metadataJson,
+        deliverySuppressed,
+        suppressionReason: deliverySuppressed ? replyControl.rationale : null,
         agentId: output.agentId,
         agentNickname: output.agentNickname,
         providerId: output.providerId,

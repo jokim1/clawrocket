@@ -3,13 +3,16 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import {
   _initTestDatabase,
   cancelTalkRunsAtomic,
+  createTalkChannelBinding,
   createTalk,
   createJobTriggerRun,
   createTalkMessage,
   createTalkJob,
   createTalkOutput,
   createTalkRun,
+  enqueueChannelTurnAtomic,
   enqueueTalkTurnAtomic as enqueueTalkTurnAtomicRaw,
+  ensureSystemManagedTelegramConnection,
   getTalkOutput,
   getOutboxEventsForTopics,
   getTalkRunById,
@@ -111,6 +114,17 @@ class InternalTagExecutor implements TalkExecutor {
 
     return {
       content: '<internal>thinking harder</internal>Hello world',
+      agentNickname: 'Claude Sonnet 4.6',
+    };
+  }
+}
+
+class SuppressingChannelExecutor implements TalkExecutor {
+  constructor(private readonly content: string) {}
+
+  async execute(): Promise<TalkExecutorOutput> {
+    return {
+      content: this.content,
       agentNickname: 'Claude Sonnet 4.6',
     };
   }
@@ -639,6 +653,212 @@ describe('TalkRunWorker', () => {
       (message) => message.run_id === 'run-8' && message.role === 'assistant',
     );
     expect(assistantMessage?.content).toBe('Hello world');
+
+    await worker.stop();
+  });
+
+  it('suppresses outbound delivery for channel runs that explicitly stay silent', async () => {
+    const agent = createRegisteredAgent({
+      name: 'Channel Agent',
+      providerId: 'provider.anthropic',
+      modelId: 'claude-sonnet-4-6',
+      toolPermissionsJson: '{}',
+    });
+    getDb()
+      .prepare(
+        `
+        INSERT INTO talk_agents (
+          id, talk_id, registered_agent_id, nickname, is_primary, sort_order, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, 1, 0, datetime('now'), datetime('now'))
+      `,
+      )
+      .run('agent.main', 'talk-1', agent.id, agent.name);
+    const connection = ensureSystemManagedTelegramConnection(
+      '2024-01-01T00:00:08.000Z',
+    );
+    const binding = createTalkChannelBinding({
+      talkId: 'talk-1',
+      connectionId: connection.id,
+      targetKind: 'chat',
+      targetId: 'tg:chat:silent',
+      displayName: 'Telegram Chat',
+      createdBy: 'owner-1',
+      now: '2024-01-01T00:00:08.100Z',
+    });
+    const worker = new TalkRunWorker({
+      executor: new SuppressingChannelExecutor(
+        '[[NO_CHANNEL_REPLY]] Not useful to answer here.',
+      ),
+      pollMs: 10_000,
+      maxConcurrency: 1,
+    });
+    await worker.start();
+
+    enqueueChannelTurnAtomic({
+      talkId: 'talk-1',
+      messageId: 'msg-channel-silent',
+      runId: 'run-channel-silent',
+      targetAgentId: binding.responder_agent_id!,
+      content: 'ambient message',
+      metadataJson: JSON.stringify({
+        kind: 'channel_inbound',
+        bindingId: binding.id,
+        platform: 'telegram',
+        connectionId: connection.id,
+        targetKind: 'chat',
+        targetId: 'tg:chat:silent',
+        targetDisplayName: 'Telegram Chat',
+        senderId: 'sender-1',
+        senderName: 'Alice',
+        isMentioned: false,
+        timestamp: '2024-01-01T00:00:08.200Z',
+        externalMessageId: 'tg-msg-silent',
+        metadata: null,
+      }),
+      externalCreatedAt: '2024-01-01T00:00:08.200Z',
+      sourceBindingId: binding.id,
+      sourceExternalMessageId: 'tg-msg-silent',
+      now: '2024-01-01T00:00:08.300Z',
+    });
+
+    worker.wake();
+    await waitFor(
+      () => getTalkRunById('run-channel-silent')?.status === 'completed',
+    );
+
+    const run = getTalkRunById('run-channel-silent');
+    expect(run?.status).toBe('completed');
+    expect(JSON.parse(run?.metadata_json || '{}')).toMatchObject({
+      channelDelivery: {
+        suppressed: true,
+        suppressionReason: 'Not useful to answer here.',
+      },
+    });
+
+    const assistantMessage = listTalkMessages({
+      talkId: 'talk-1',
+      limit: 20,
+    }).find(
+      (message) =>
+        message.run_id === 'run-channel-silent' && message.role === 'assistant',
+    );
+    expect(assistantMessage).toBeUndefined();
+
+    const outboxCount = (
+      getDb()
+        .prepare(
+          `
+          SELECT COUNT(*) AS count
+          FROM channel_delivery_outbox
+          WHERE binding_id = ?
+        `,
+        )
+        .get(binding.id) as { count: number }
+    ).count;
+    expect(outboxCount).toBe(0);
+
+    await worker.stop();
+  });
+
+  it('still delivers a brief reply for direct mentions even if the model emits a suppression directive', async () => {
+    const agent = createRegisteredAgent({
+      name: 'Channel Agent',
+      providerId: 'provider.anthropic',
+      modelId: 'claude-sonnet-4-6',
+      toolPermissionsJson: '{}',
+    });
+    getDb()
+      .prepare(
+        `
+        INSERT INTO talk_agents (
+          id, talk_id, registered_agent_id, nickname, is_primary, sort_order, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, 1, 0, datetime('now'), datetime('now'))
+      `,
+      )
+      .run('agent.main', 'talk-1', agent.id, agent.name);
+    const connection = ensureSystemManagedTelegramConnection(
+      '2024-01-01T00:00:09.000Z',
+    );
+    const binding = createTalkChannelBinding({
+      talkId: 'talk-1',
+      connectionId: connection.id,
+      targetKind: 'chat',
+      targetId: 'tg:chat:mention',
+      displayName: 'Telegram Chat',
+      createdBy: 'owner-1',
+      now: '2024-01-01T00:00:09.100Z',
+    });
+    const worker = new TalkRunWorker({
+      executor: new SuppressingChannelExecutor(
+        '[[NO_CHANNEL_REPLY]] Brief answer anyway.',
+      ),
+      pollMs: 10_000,
+      maxConcurrency: 1,
+    });
+    await worker.start();
+
+    enqueueChannelTurnAtomic({
+      talkId: 'talk-1',
+      messageId: 'msg-channel-mention',
+      runId: 'run-channel-mention',
+      targetAgentId: binding.responder_agent_id!,
+      content: '@bot can you help?',
+      metadataJson: JSON.stringify({
+        kind: 'channel_inbound',
+        bindingId: binding.id,
+        platform: 'telegram',
+        connectionId: connection.id,
+        targetKind: 'chat',
+        targetId: 'tg:chat:mention',
+        targetDisplayName: 'Telegram Chat',
+        senderId: 'sender-2',
+        senderName: 'Bob',
+        isMentioned: true,
+        timestamp: '2024-01-01T00:00:09.200Z',
+        externalMessageId: 'tg-msg-mention',
+        metadata: null,
+      }),
+      externalCreatedAt: '2024-01-01T00:00:09.200Z',
+      sourceBindingId: binding.id,
+      sourceExternalMessageId: 'tg-msg-mention',
+      now: '2024-01-01T00:00:09.300Z',
+    });
+
+    worker.wake();
+    await waitFor(
+      () => getTalkRunById('run-channel-mention')?.status === 'completed',
+    );
+
+    const run = getTalkRunById('run-channel-mention');
+    expect(run?.status).toBe('completed');
+    expect(JSON.parse(run?.metadata_json || '{}')).toMatchObject({
+      channelDelivery: {
+        suppressed: false,
+        suppressionReason: null,
+      },
+    });
+
+    const assistantMessage = listTalkMessages({
+      talkId: 'talk-1',
+      limit: 20,
+    }).find(
+      (message) =>
+        message.run_id === 'run-channel-mention' &&
+        message.role === 'assistant',
+    );
+    expect(assistantMessage?.content).toBe('Brief answer anyway.');
+
+    const outboxRow = getDb()
+      .prepare(
+        `
+        SELECT payload_json
+        FROM channel_delivery_outbox
+        WHERE binding_id = ?
+        LIMIT 1
+      `,
+      )
+      .get(binding.id) as { payload_json: string } | undefined;
+    expect(outboxRow?.payload_json).toContain('Brief answer anyway.');
 
     await worker.stop();
   });

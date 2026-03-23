@@ -14,6 +14,7 @@ import {
   KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent as ReactMouseEvent,
   type ReactNode,
+  type TextareaHTMLAttributes,
   useCallback,
   useEffect,
   useMemo,
@@ -30,6 +31,7 @@ import {
   ApiError,
   cancelTalkRuns,
   ChannelConnection,
+  ChannelInstructionReview,
   ChannelQueueFailure,
   ChannelTarget,
   ChannelTargetListPage,
@@ -48,6 +50,7 @@ import {
   clearTalkProjectMount,
   deleteTalkResource,
   deleteTalkChannel,
+  deleteTalkChannelBindingState,
   deleteTalkChannelDeliveryFailure,
   deleteTalkChannelIngressFailure,
   deleteTalkMessages,
@@ -81,6 +84,7 @@ import {
   listTalkChannelDeliveryFailures,
   listTalkChannelIngressFailures,
   listTalkChannels,
+  listTalkChannelBindingState,
   syncSlackWorkspace,
   listTalkMessages,
   searchTalkMessages,
@@ -92,6 +96,7 @@ import {
   retryTalkChannelDeliveryFailure,
   retryTalkChannelIngressFailure,
   retryTalkContextSource,
+  reviewTalkChannelInstructions,
   sendTalkMessage,
   setTalkGoal,
   Talk,
@@ -103,6 +108,7 @@ import {
   TalkJobWeekday,
   TalkTools,
   TalkChannelBinding,
+  TalkChannelBindingStateEntry,
   TalkDataConnector,
   TalkMessage,
   TalkMessageSearchResult,
@@ -119,6 +125,7 @@ import {
   unquarantineTalkChannelBinding,
   retryTalkChannelDeliveryFailuresCapped,
   updateTalkProjectMount,
+  upsertTalkChannelBindingState,
   updateTalkTools,
   updateTalkAgents,
   updateTalkThread,
@@ -512,7 +519,7 @@ type DetailAction =
       runId: string;
       threadId?: string | null;
       triggerMessageId: string | null;
-      responseMessageId: string;
+      responseMessageId: string | null;
       executorAlias?: string | null;
       executorModel?: string | null;
       responseGroupId?: string | null;
@@ -559,6 +566,7 @@ const TALK_MESSAGE_MAX_CHARS = 20_000;
 const MAX_EVENT_RUN_CACHE = 500;
 const COMPOSER_TEXTAREA_MIN_HEIGHT_PX = 48;
 const COMPOSER_TEXTAREA_MAX_HEIGHT_PX = 240;
+const BINDING_INSTRUCTIONS_TEXTAREA_MAX_HEIGHT_PX = 360;
 
 const TALK_AGENT_ROLE_OPTIONS: TalkAgent['role'][] = [
   'assistant',
@@ -697,6 +705,35 @@ type AgentCreationDraft = {
   role: TalkAgent['role'];
 };
 
+type InstructionTemplateKey = 'blank' | 'study_tracker';
+
+type InstructionLintStatus =
+  | 'ready'
+  | 'needs_more_specifics'
+  | 'potential_conflicts';
+
+type InstructionLintResult = {
+  status: InstructionLintStatus;
+  messages: string[];
+};
+
+type ChannelInstructionReviewState = {
+  status: 'idle' | 'reviewing' | 'error' | 'ready';
+  review: ChannelInstructionReview | null;
+  message?: string;
+};
+
+type BindingMemoryPanelState = {
+  status: 'idle' | 'loading' | 'saving' | 'ready' | 'error';
+  stateNamespace: string;
+  entries: TalkChannelBindingStateEntry[];
+  newKeySuffix: string;
+  newValueJson: string;
+  errorMessage?: string;
+};
+
+const CREATE_CHANNEL_INSTRUCTION_REVIEW_KEY = '__create__';
+
 type ChannelBindingDraft = {
   displayName: string;
   active: boolean;
@@ -704,7 +741,9 @@ type ChannelBindingDraft = {
   responderMode: TalkChannelBinding['responderMode'];
   responderAgentId: string;
   deliveryMode: TalkChannelBinding['deliveryMode'];
-  channelContextNote: string;
+  timezone: string;
+  instructions: string;
+  template: InstructionTemplateKey;
   inboundRateLimitPerMinute: string;
   maxPendingEvents: string;
   overflowPolicy: TalkChannelBinding['overflowPolicy'];
@@ -720,7 +759,9 @@ type ChannelCreateDraft = {
   responderMode: TalkChannelBinding['responderMode'];
   responderAgentId: string;
   deliveryMode: TalkChannelBinding['deliveryMode'];
-  channelContextNote: string;
+  timezone: string;
+  instructions: string;
+  template: InstructionTemplateKey;
   inboundRateLimitPerMinute: string;
   maxPendingEvents: string;
   overflowPolicy: TalkChannelBinding['overflowPolicy'];
@@ -1596,6 +1637,55 @@ function buildSlackWorkspaceSyncMessage(
   return `Synced ${countLabel} for ${workspaceLabel} (${result.publicCount} public, ${result.privateCount} private).`;
 }
 
+function buildBindingWorkspaceSummary(
+  binding: TalkChannelBinding,
+  connection: ChannelConnection | null,
+): string | null {
+  if (!connection || binding.platform !== 'slack') return null;
+  return `${connection.displayName} is ${formatChannelConnectionHealthStatus(connection.healthStatus)}. ${buildSlackWorkspaceSyncSummary(connection)}`;
+}
+
+function buildBindingActivitySummary(binding: TalkChannelBinding): string[] {
+  const summaries: string[] = [];
+  const platformLabel = binding.platform === 'slack' ? 'Slack' : 'Telegram';
+  if (binding.deferredIngressCount > 0) {
+    summaries.push(
+      `${binding.deferredIngressCount} ${platformLabel} message${binding.deferredIngressCount === 1 ? '' : 's'} waiting because another conversation is still running.`,
+    );
+  }
+  if (binding.pendingIngressCount > 0) {
+    summaries.push(
+      `${binding.pendingIngressCount} inbound message${binding.pendingIngressCount === 1 ? '' : 's'} queued and ready to process.`,
+    );
+  }
+  const unresolvedInboundOnly = Math.max(
+    0,
+    binding.unresolvedIngressCount - binding.deferredIngressCount,
+  );
+  if (unresolvedInboundOnly > 0) {
+    summaries.push(
+      `${unresolvedInboundOnly} inbound message${unresolvedInboundOnly === 1 ? '' : 's'} could not be resolved automatically and may need manual retry.`,
+    );
+  }
+  if (binding.deadLetterCount > 0) {
+    summaries.push(
+      `${binding.deadLetterCount} outbound deliver${binding.deadLetterCount === 1 ? 'y has' : 'ies have'} failed and can be retried below.`,
+    );
+  }
+  if (binding.suppressedReplyCount > 0) {
+    const lastSuppressedLabel = binding.lastSuppressedAt
+      ? ` Last suppressed ${formatDateTime(binding.lastSuppressedAt)}.`
+      : '';
+    const reasonLabel = binding.lastSuppressionReason
+      ? ` ${binding.lastSuppressionReason}`
+      : '';
+    summaries.push(
+      `${binding.suppressedReplyCount} reply${binding.suppressedReplyCount === 1 ? ' was' : 'ies were'} intentionally suppressed by channel instructions.${lastSuppressedLabel}${reasonLabel}`.trim(),
+    );
+  }
+  return summaries;
+}
+
 function buildChannelTargetOptionLabel(
   target: ChannelTarget,
   connections: ChannelConnection[],
@@ -1967,7 +2057,9 @@ function buildChannelBindingDraft(
     responderMode: binding.responderMode,
     responderAgentId: binding.responderAgentId || '',
     deliveryMode: binding.deliveryMode,
-    channelContextNote: binding.channelContextNote || '',
+    timezone: binding.timezone,
+    instructions: binding.instructions || '',
+    template: 'blank',
     inboundRateLimitPerMinute: String(binding.inboundRateLimitPerMinute),
     maxPendingEvents: String(binding.maxPendingEvents),
     overflowPolicy: binding.overflowPolicy,
@@ -1985,7 +2077,9 @@ function buildDefaultChannelCreateDraft(): ChannelCreateDraft {
     responderMode: 'primary',
     responderAgentId: '',
     deliveryMode: 'reply',
-    channelContextNote: '',
+    timezone: getDefaultJobTimezone(),
+    instructions: '',
+    template: 'blank',
     inboundRateLimitPerMinute: '10',
     maxPendingEvents: '20',
     overflowPolicy: 'drop_oldest',
@@ -2264,6 +2358,250 @@ function buildTalkAgentExecutionGuardrail(
   };
 }
 
+const BINDING_INSTRUCTIONS_PLACEHOLDER = `Describe what this channel assistant should do, when it should reply, and what state it should keep.
+
+Example:
+- Reply only when directly asked or when a weekly milestone is reached.
+- For routine logs, begin with [[NO_CHANNEL_REPLY]] and update binding-owned state.
+- Keep all binding state under the provided binding state namespace.
+- Use one narrow state key per tracked person instead of one shared totals blob.
+- Weekly reset happens on Monday in the binding timezone.`;
+
+function buildInstructionTemplate(
+  template: InstructionTemplateKey,
+  stateNamespace?: string | null,
+): string {
+  if (template === 'blank') {
+    return '';
+  }
+  const namespaceHint = stateNamespace || '<binding state namespace>';
+  return [
+    'You are a study tracker for this Slack channel.',
+    'Reply only when someone directly asks for progress, asks for advice, or a tracked participant reaches the weekly goal.',
+    'For routine study logs, begin your response with [[NO_CHANNEL_REPLY]] so nothing is posted back to Slack.',
+    `Keep binding-owned state under ${namespaceHint}. Use one narrow key per participant, for example ${namespaceHint}tracker.asher.`,
+    'Use list_state with the binding namespace to inspect existing tracker entries before creating or summarizing state.',
+    'Store each participant entry as JSON with weekStartLocal, timezone, weeklyTargetMinutes, totalMinutes, carryoverMinutes, and lastLogAt.',
+    'Prefer stable Slack sender IDs over names whenever possible.',
+    'Use the binding timezone shown in channel settings when applying weekly reset logic.',
+    'Treat Monday as the weekly reset boundary in the binding timezone and carry over only minutes above 300.',
+    'If update_state reports a version conflict, read the latest state and retry.',
+    'When formatting a progress reply, include each participant total and how far they are from 300 minutes.',
+  ].join('\n');
+}
+
+type AutoGrowingTextareaProps = TextareaHTMLAttributes<HTMLTextAreaElement> & {
+  maxHeightPx?: number;
+};
+
+function AutoGrowingTextarea({
+  maxHeightPx = BINDING_INSTRUCTIONS_TEXTAREA_MAX_HEIGHT_PX,
+  style,
+  value,
+  ...props
+}: AutoGrowingTextareaProps): JSX.Element {
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const minHeightRef = useRef<number | null>(null);
+
+  const resizeTextarea = useCallback(() => {
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+
+    textarea.style.height = 'auto';
+    const measuredMinHeight = textarea.offsetHeight;
+    if (!minHeightRef.current && measuredMinHeight > 0) {
+      minHeightRef.current = measuredMinHeight;
+    }
+    const minHeight = minHeightRef.current ?? measuredMinHeight;
+    const scrollHeight = Math.max(textarea.scrollHeight, minHeight);
+    const nextHeight = Math.min(scrollHeight, maxHeightPx);
+    textarea.style.height = `${nextHeight}px`;
+    textarea.style.overflowY = scrollHeight > maxHeightPx ? 'auto' : 'hidden';
+  }, [maxHeightPx]);
+
+  useEffect(() => {
+    resizeTextarea();
+  }, [resizeTextarea, value]);
+
+  return (
+    <textarea
+      {...props}
+      ref={textareaRef}
+      value={value}
+      style={{
+        ...style,
+        overflowY: 'hidden',
+      }}
+    />
+  );
+}
+
+function lintChannelInstructions(input: {
+  instructions: string;
+  stateNamespace?: string | null;
+  timezone?: string | null;
+}): InstructionLintResult {
+  const trimmed = input.instructions.trim();
+  if (trimmed.length === 0) {
+    return {
+      status: 'needs_more_specifics',
+      messages: ['Add instructions that explain what this binding should do.'],
+    };
+  }
+
+  const lower = trimmed.toLowerCase();
+  const messages: string[] = [];
+  let hasConflict = false;
+
+  const mentionsSilenceRule =
+    lower.includes('[[no_channel_reply]]') ||
+    lower.includes('stay silent') ||
+    lower.includes('do not reply') ||
+    lower.includes('reply only');
+  if (!mentionsSilenceRule) {
+    messages.push(
+      'Explain when the assistant should reply versus stay silent.',
+    );
+  }
+
+  const seemsStateful =
+    /(track|state|log|weekly|minutes|total|ledger|memory)/i.test(trimmed);
+  const mentionsStateStrategy =
+    /(state namespace|list_state|read_state|update_state|key|json schema|json)/i.test(
+      trimmed,
+    );
+  if (seemsStateful && !mentionsStateStrategy) {
+    messages.push(
+      'Stateful instructions should describe the state keys or JSON schema to use.',
+    );
+  }
+
+  if (
+    /(week|weekly|daily|monday|timezone|reset|schedule)/i.test(trimmed) &&
+    !(
+      /(timezone|america\/|utc|local day-of-week|binding timezone)/i.test(
+        trimmed,
+      ) || Boolean(input.timezone?.trim())
+    )
+  ) {
+    messages.push(
+      'Time-based behavior should name a timezone or reset rule explicitly.',
+    );
+  }
+
+  if (
+    /(participant|sender|kid|child|member|person|student)/i.test(trimmed) &&
+    !/(sender id|slack id|stable id|user id)/i.test(trimmed)
+  ) {
+    messages.push(
+      'Entity-tracking instructions work better when they mention stable sender IDs.',
+    );
+  }
+
+  if (
+    /(every message|always reply)/i.test(trimmed) &&
+    /(\[\[no_channel_reply\]\]|stay silent|reply only)/i.test(trimmed)
+  ) {
+    hasConflict = true;
+    messages.push('The instructions describe conflicting reply behavior.');
+  }
+
+  if (trimmed.length < 120) {
+    messages.push(
+      'Add more specifics so the assistant knows the trigger rules, reply policy, and state strategy.',
+    );
+  }
+
+  if (trimmed.length > 4000) {
+    messages.push(
+      'Remove repetitive detail. Shorter, sharper instructions usually work better.',
+    );
+  }
+
+  if (/(study_tracker\.|tracker\.[a-z0-9_-]+)/i.test(trimmed)) {
+    hasConflict = true;
+    messages.push(
+      'Use the binding state namespace instead of hard-coded global state keys.',
+    );
+  }
+
+  if (
+    input.stateNamespace &&
+    trimmed.includes('channel.') &&
+    !trimmed.includes(input.stateNamespace)
+  ) {
+    messages.push(
+      'If you reference explicit state keys, keep them inside this binding namespace.',
+    );
+  }
+
+  if (hasConflict) {
+    return { status: 'potential_conflicts', messages };
+  }
+  if (messages.length > 0) {
+    return { status: 'needs_more_specifics', messages };
+  }
+  return {
+    status: 'ready',
+    messages: [
+      'The instructions define a clear reply policy and state strategy.',
+    ],
+  };
+}
+
+function getInstructionTemplateOptions(
+  platform: ChannelConnection['platform'] | '' | null | undefined,
+): Array<{ value: InstructionTemplateKey; label: string }> {
+  return platform === 'slack'
+    ? [
+        { value: 'blank', label: 'Blank' },
+        { value: 'study_tracker', label: 'Study Tracker' },
+      ]
+    : [{ value: 'blank', label: 'Blank' }];
+}
+
+function buildEmptyBindingMemoryPanelState(
+  stateNamespace: string,
+): BindingMemoryPanelState {
+  return {
+    status: 'idle',
+    stateNamespace,
+    entries: [],
+    newKeySuffix: '',
+    newValueJson: '{\n  \n}',
+  };
+}
+
+function formatInstructionLintTitle(status: InstructionLintStatus): string {
+  switch (status) {
+    case 'ready':
+      return 'Ready';
+    case 'potential_conflicts':
+      return 'Potential conflicts';
+    default:
+      return 'Needs more specifics';
+  }
+}
+
+function formatInstructionLintClassName(status: InstructionLintStatus): string {
+  switch (status) {
+    case 'ready':
+      return 'inline-banner inline-banner-success';
+    case 'potential_conflicts':
+      return 'inline-banner inline-banner-warning';
+    default:
+      return 'inline-banner';
+  }
+}
+
+function formatJsonForStateEditor(value: unknown): string {
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return 'null';
+  }
+}
+
 function serializeTalkAgentForDraftCompare(agent: TalkAgent): string {
   return JSON.stringify({
     id: agent.id,
@@ -2521,6 +2859,12 @@ export function TalkDetailPage({
       string,
       { ingress: ChannelQueueFailure[]; delivery: ChannelQueueFailure[] }
     >
+  >({});
+  const [channelBindingMemoryById, setChannelBindingMemoryById] = useState<
+    Record<string, BindingMemoryPanelState>
+  >({});
+  const [channelInstructionReviews, setChannelInstructionReviews] = useState<
+    Record<string, ChannelInstructionReviewState>
   >({});
   const [channelCreateDraft, setChannelCreateDraft] =
     useState<ChannelCreateDraft>(buildDefaultChannelCreateDraft());
@@ -3994,6 +4338,19 @@ export function TalkDetailPage({
       ) || null,
     [channelCreateDraft.targetKey, channelTargetInventory.targets],
   );
+  const createInstructionTemplateOptions = useMemo(
+    () => getInstructionTemplateOptions(selectedChannelPlatform),
+    [selectedChannelPlatform],
+  );
+  const createInstructionLint = useMemo(
+    () =>
+      lintChannelInstructions({
+        instructions: channelCreateDraft.instructions,
+        stateNamespace: null,
+        timezone: channelCreateDraft.timezone,
+      }),
+    [channelCreateDraft.instructions, channelCreateDraft.timezone],
+  );
   const channelTargetOptions = useMemo(
     () =>
       channelTargetInventory.targets
@@ -4255,6 +4612,29 @@ export function TalkDetailPage({
             {},
           ),
         );
+        setChannelBindingMemoryById((current) =>
+          Object.fromEntries(
+            bindings.map((binding) => [
+              binding.id,
+              current[binding.id] ??
+                buildEmptyBindingMemoryPanelState(binding.stateNamespace),
+            ]),
+          ),
+        );
+        setChannelInstructionReviews((current) => ({
+          [CREATE_CHANNEL_INSTRUCTION_REVIEW_KEY]: current[
+            CREATE_CHANNEL_INSTRUCTION_REVIEW_KEY
+          ] ?? {
+            status: 'idle',
+            review: null,
+          },
+          ...Object.fromEntries(
+            bindings.map((binding) => [
+              binding.id,
+              current[binding.id] ?? { status: 'idle', review: null },
+            ]),
+          ),
+        }));
         setChannelFailuresByBindingId(Object.fromEntries(failureEntries));
         setChannelConnections(connections);
         setChannelCreateDraft((current) => {
@@ -4283,6 +4663,10 @@ export function TalkDetailPage({
             ...current,
             platform: nextPlatform,
             connectionId: nextConnectionId,
+            template:
+              nextPlatform === 'slack' || current.template === 'blank'
+                ? current.template
+                : 'blank',
             targetKey:
               parsedTarget?.connectionId === nextConnectionId
                 ? current.targetKey
@@ -5299,6 +5683,68 @@ export function TalkDetailPage({
           ...patch,
         },
       }));
+      if (patch.instructions !== undefined) {
+        setChannelInstructionReviews((current) => ({
+          ...current,
+          [bindingId]: {
+            status: 'idle',
+            review: null,
+          },
+        }));
+      }
+    },
+    [],
+  );
+
+  const handleApplyChannelTemplate = useCallback(
+    (binding: TalkChannelBinding, template: InstructionTemplateKey) => {
+      const nextInstructions = buildInstructionTemplate(
+        template,
+        binding.stateNamespace,
+      );
+      const currentInstructions =
+        channelDrafts[binding.id]?.instructions || binding.instructions || '';
+      if (
+        currentInstructions.trim().length > 0 &&
+        currentInstructions.trim() !== nextInstructions.trim() &&
+        !window.confirm(
+          `Replace the current instructions for ${binding.displayName}?`,
+        )
+      ) {
+        return;
+      }
+      handleChannelDraftChange(binding.id, {
+        template,
+        instructions: nextInstructions,
+      });
+    },
+    [channelDrafts, handleChannelDraftChange],
+  );
+
+  const handleApplyCreateTemplate = useCallback(
+    (template: InstructionTemplateKey) => {
+      const nextInstructions = buildInstructionTemplate(template, null);
+      setChannelCreateDraft((current) => {
+        if (
+          current.instructions.trim().length > 0 &&
+          current.instructions.trim() !== nextInstructions.trim() &&
+          !window.confirm('Replace the current draft instructions?')
+        ) {
+          return current;
+        }
+        return {
+          ...current,
+          template,
+          instructions: nextInstructions,
+        };
+      });
+      setChannelInstructionReviews((current) => ({
+        ...current,
+        [CREATE_CHANNEL_INSTRUCTION_REVIEW_KEY]: {
+          status: 'idle',
+          review: null,
+        },
+      }));
     },
     [],
   );
@@ -5434,8 +5880,8 @@ export function TalkDetailPage({
             ? channelCreateDraft.responderAgentId || null
             : null,
         deliveryMode: channelCreateDraft.deliveryMode,
-        channelContextNote:
-          channelCreateDraft.channelContextNote.trim() || null,
+        timezone: channelCreateDraft.timezone.trim() || null,
+        instructions: channelCreateDraft.instructions.trim() || null,
         inboundRateLimitPerMinute:
           Number.parseInt(channelCreateDraft.inboundRateLimitPerMinute, 10) ||
           10,
@@ -5496,7 +5942,8 @@ export function TalkDetailPage({
               ? draft.responderAgentId || null
               : null,
           deliveryMode: draft.deliveryMode,
-          channelContextNote: draft.channelContextNote.trim() || null,
+          timezone: draft.timezone.trim() || null,
+          instructions: draft.instructions.trim() || null,
           inboundRateLimitPerMinute:
             Number.parseInt(draft.inboundRateLimitPerMinute, 10) ||
             binding.inboundRateLimitPerMinute,
@@ -5534,6 +5981,377 @@ export function TalkDetailPage({
       reloadTalkChannels,
       talkId,
     ],
+  );
+
+  const handleLoadChannelBindingMemory = useCallback(
+    async (binding: TalkChannelBinding, force = false) => {
+      const current = channelBindingMemoryById[binding.id];
+      if (
+        !force &&
+        current &&
+        (current.status === 'loading' || current.status === 'ready')
+      ) {
+        return;
+      }
+      setChannelBindingMemoryById((state) => ({
+        ...state,
+        [binding.id]: {
+          ...(state[binding.id] ??
+            buildEmptyBindingMemoryPanelState(binding.stateNamespace)),
+          status: 'loading',
+          errorMessage: undefined,
+          stateNamespace: binding.stateNamespace,
+        },
+      }));
+      try {
+        const result = await listTalkChannelBindingState({
+          talkId,
+          bindingId: binding.id,
+        });
+        setChannelBindingMemoryById((state) => ({
+          ...state,
+          [binding.id]: {
+            ...(state[binding.id] ??
+              buildEmptyBindingMemoryPanelState(result.stateNamespace)),
+            status: 'ready',
+            stateNamespace: result.stateNamespace,
+            entries: result.entries,
+            errorMessage: undefined,
+          },
+        }));
+      } catch (err) {
+        if (err instanceof UnauthorizedError) {
+          handleUnauthorized();
+          return;
+        }
+        setChannelBindingMemoryById((state) => ({
+          ...state,
+          [binding.id]: {
+            ...(state[binding.id] ??
+              buildEmptyBindingMemoryPanelState(binding.stateNamespace)),
+            status: 'error',
+            errorMessage:
+              err instanceof Error
+                ? err.message
+                : 'Failed to load binding memory.',
+          },
+        }));
+      }
+    },
+    [channelBindingMemoryById, handleUnauthorized, talkId],
+  );
+
+  const handleChannelBindingMemoryDraftChange = useCallback(
+    (
+      bindingId: string,
+      patch: Partial<
+        Pick<BindingMemoryPanelState, 'newKeySuffix' | 'newValueJson'>
+      >,
+    ) => {
+      setChannelBindingMemoryById((state) => ({
+        ...state,
+        [bindingId]: {
+          ...state[bindingId],
+          ...patch,
+        },
+      }));
+    },
+    [],
+  );
+
+  const handleCreateChannelBindingMemoryEntry = useCallback(
+    async (binding: TalkChannelBinding) => {
+      if (!canEditChannels) return;
+      const panel =
+        channelBindingMemoryById[binding.id] ??
+        buildEmptyBindingMemoryPanelState(binding.stateNamespace);
+      const keySuffix = panel.newKeySuffix.trim();
+      if (!keySuffix) {
+        setChannelStatus({
+          status: 'error',
+          message: 'Enter a key suffix before saving binding memory.',
+        });
+        return;
+      }
+      let value: unknown;
+      try {
+        value = JSON.parse(panel.newValueJson);
+      } catch {
+        setChannelStatus({
+          status: 'error',
+          message: 'Binding memory values must be valid JSON.',
+        });
+        return;
+      }
+
+      setChannelBindingMemoryById((state) => ({
+        ...state,
+        [binding.id]: {
+          ...panel,
+          status: 'saving',
+          errorMessage: undefined,
+        },
+      }));
+      try {
+        await upsertTalkChannelBindingState({
+          talkId,
+          bindingId: binding.id,
+          keySuffix,
+          value,
+          expectedVersion: 0,
+        });
+        await handleLoadChannelBindingMemory(binding, true);
+        setChannelBindingMemoryById((state) => ({
+          ...state,
+          [binding.id]: {
+            ...(state[binding.id] ??
+              buildEmptyBindingMemoryPanelState(binding.stateNamespace)),
+            status: 'ready',
+            stateNamespace: binding.stateNamespace,
+            newKeySuffix: '',
+            newValueJson: '{\n  \n}',
+            entries: state[binding.id]?.entries ?? [],
+          },
+        }));
+        setChannelStatus({
+          status: 'success',
+          message: `Added binding memory entry for ${binding.displayName}.`,
+        });
+      } catch (err) {
+        if (err instanceof UnauthorizedError) {
+          handleUnauthorized();
+          return;
+        }
+        setChannelBindingMemoryById((state) => ({
+          ...state,
+          [binding.id]: {
+            ...(state[binding.id] ??
+              buildEmptyBindingMemoryPanelState(binding.stateNamespace)),
+            status: 'error',
+            errorMessage:
+              err instanceof Error
+                ? err.message
+                : 'Failed to save binding memory.',
+          },
+        }));
+        setChannelStatus({
+          status: 'error',
+          message:
+            err instanceof Error
+              ? err.message
+              : 'Failed to save binding memory.',
+        });
+      }
+    },
+    [
+      canEditChannels,
+      channelBindingMemoryById,
+      handleLoadChannelBindingMemory,
+      handleUnauthorized,
+      talkId,
+    ],
+  );
+
+  const handleEditChannelBindingMemoryEntry = useCallback(
+    async (
+      binding: TalkChannelBinding,
+      entry: TalkChannelBindingStateEntry,
+    ) => {
+      if (!canEditChannels) return;
+      const nextValueJson = window.prompt(
+        `Edit JSON for ${entry.keySuffix}:`,
+        formatJsonForStateEditor(entry.value),
+      );
+      if (nextValueJson == null) return;
+      let value: unknown;
+      try {
+        value = JSON.parse(nextValueJson);
+      } catch {
+        setChannelStatus({
+          status: 'error',
+          message: 'Binding memory values must be valid JSON.',
+        });
+        return;
+      }
+      setChannelBindingMemoryById((state) => ({
+        ...state,
+        [binding.id]: {
+          ...(state[binding.id] ??
+            buildEmptyBindingMemoryPanelState(binding.stateNamespace)),
+          status: 'saving',
+          stateNamespace: binding.stateNamespace,
+          entries: state[binding.id]?.entries ?? [],
+        },
+      }));
+      try {
+        await upsertTalkChannelBindingState({
+          talkId,
+          bindingId: binding.id,
+          keySuffix: entry.keySuffix,
+          value,
+          expectedVersion: entry.version,
+        });
+        await handleLoadChannelBindingMemory(binding, true);
+        setChannelStatus({
+          status: 'success',
+          message: `Updated ${entry.keySuffix}.`,
+        });
+      } catch (err) {
+        if (err instanceof UnauthorizedError) {
+          handleUnauthorized();
+          return;
+        }
+        setChannelStatus({
+          status: 'error',
+          message:
+            err instanceof Error
+              ? err.message
+              : 'Failed to update binding memory.',
+        });
+        setChannelBindingMemoryById((state) => ({
+          ...state,
+          [binding.id]: {
+            ...(state[binding.id] ??
+              buildEmptyBindingMemoryPanelState(binding.stateNamespace)),
+            status: 'error',
+            errorMessage:
+              err instanceof Error
+                ? err.message
+                : 'Failed to update binding memory.',
+          },
+        }));
+      }
+    },
+    [
+      canEditChannels,
+      handleLoadChannelBindingMemory,
+      handleUnauthorized,
+      talkId,
+    ],
+  );
+
+  const handleDeleteChannelBindingMemoryEntry = useCallback(
+    async (
+      binding: TalkChannelBinding,
+      entry: TalkChannelBindingStateEntry,
+    ) => {
+      if (!canEditChannels) return;
+      const confirmed = window.confirm(
+        `Delete binding memory entry ${entry.keySuffix}?`,
+      );
+      if (!confirmed) return;
+      setChannelBindingMemoryById((state) => ({
+        ...state,
+        [binding.id]: {
+          ...(state[binding.id] ??
+            buildEmptyBindingMemoryPanelState(binding.stateNamespace)),
+          status: 'saving',
+          stateNamespace: binding.stateNamespace,
+          entries: state[binding.id]?.entries ?? [],
+        },
+      }));
+      try {
+        await deleteTalkChannelBindingState({
+          talkId,
+          bindingId: binding.id,
+          keySuffix: entry.keySuffix,
+          expectedVersion: entry.version,
+        });
+        await handleLoadChannelBindingMemory(binding, true);
+        setChannelStatus({
+          status: 'success',
+          message: `Deleted ${entry.keySuffix}.`,
+        });
+      } catch (err) {
+        if (err instanceof UnauthorizedError) {
+          handleUnauthorized();
+          return;
+        }
+        setChannelStatus({
+          status: 'error',
+          message:
+            err instanceof Error
+              ? err.message
+              : 'Failed to delete binding memory.',
+        });
+        setChannelBindingMemoryById((state) => ({
+          ...state,
+          [binding.id]: {
+            ...(state[binding.id] ??
+              buildEmptyBindingMemoryPanelState(binding.stateNamespace)),
+            status: 'error',
+            errorMessage:
+              err instanceof Error
+                ? err.message
+                : 'Failed to delete binding memory.',
+          },
+        }));
+      }
+    },
+    [
+      canEditChannels,
+      handleLoadChannelBindingMemory,
+      handleUnauthorized,
+      talkId,
+    ],
+  );
+
+  const handleReviewBindingInstructions = useCallback(
+    async (input: {
+      reviewKey: string;
+      platform: 'slack' | 'telegram';
+      instructions: string;
+      bindingId?: string | null;
+      bindingLabel?: string | null;
+      timezone?: string | null;
+    }) => {
+      if (!canEditChannels) return;
+      if (input.instructions.trim().length === 0) {
+        setChannelStatus({
+          status: 'error',
+          message: 'Enter instructions before requesting a review.',
+        });
+        return;
+      }
+      setChannelInstructionReviews((current) => ({
+        ...current,
+        [input.reviewKey]: { status: 'reviewing', review: null },
+      }));
+      try {
+        const review = await reviewTalkChannelInstructions({
+          talkId,
+          platform: input.platform,
+          instructions: input.instructions,
+          bindingId: input.bindingId ?? null,
+          bindingLabel: input.bindingLabel ?? null,
+          timezone: input.timezone ?? null,
+        });
+        setChannelInstructionReviews((current) => ({
+          ...current,
+          [input.reviewKey]: {
+            status: 'ready',
+            review,
+          },
+        }));
+      } catch (err) {
+        if (err instanceof UnauthorizedError) {
+          handleUnauthorized();
+          return;
+        }
+        setChannelInstructionReviews((current) => ({
+          ...current,
+          [input.reviewKey]: {
+            status: 'error',
+            review: null,
+            message:
+              err instanceof Error
+                ? err.message
+                : 'Failed to review channel instructions.',
+          },
+        }));
+      }
+    },
+    [canEditChannels, handleUnauthorized, talkId],
   );
 
   const handleDeleteChannelBinding = useCallback(
@@ -9748,6 +10566,10 @@ export function TalkDetailPage({
                                   ...current,
                                   platform: event.target
                                     .value as ChannelConnection['platform'],
+                                  template:
+                                    event.target.value === 'slack'
+                                      ? current.template
+                                      : 'blank',
                                   connectionId: '',
                                   targetKey: '',
                                   displayName: '',
@@ -10032,7 +10854,9 @@ export function TalkDetailPage({
                           />
                         </label>
                         <label>
-                          <span className="settings-label">Response Mode</span>
+                          <span className="settings-label">
+                            When to respond
+                          </span>
                           <select
                             value={
                               channelCreateDraft.responseMode ?? 'mentions'
@@ -10052,7 +10876,9 @@ export function TalkDetailPage({
                           </select>
                         </label>
                         <label>
-                          <span className="settings-label">Delivery</span>
+                          <span className="settings-label">
+                            Where to post reply
+                          </span>
                           <select
                             value={channelCreateDraft.deliveryMode ?? 'reply'}
                             onChange={(event) =>
@@ -10184,24 +11010,272 @@ export function TalkDetailPage({
                           />
                         </label>
                       </div>
-                      <label style={{ display: 'block', marginTop: '0.75rem' }}>
-                        <span className="settings-label">
-                          Channel Context Note
-                        </span>
-                        <textarea
-                          value={channelCreateDraft.channelContextNote ?? ''}
-                          onChange={(event) =>
-                            setChannelCreateDraft((current) => ({
-                              ...current,
-                              channelContextNote: event.target.value,
-                            }))
-                          }
-                          placeholder="Optional note appended to the Talk prompt for this channel."
-                          rows={3}
-                          style={{ width: '100%', resize: 'vertical' }}
-                          disabled={channelStatus.status === 'saving'}
-                        />
-                      </label>
+                      <div
+                        className="talk-llm-card"
+                        style={{ marginTop: '0.75rem' }}
+                      >
+                        <div className="connector-card-header">
+                          <div>
+                            <h4>Binding Instructions</h4>
+                            <p className="talk-llm-meta">
+                              Tell this binding what to do, when to reply, and
+                              what state to keep.
+                            </p>
+                          </div>
+                        </div>
+                        <div className="connector-attach-row">
+                          <label>
+                            <span className="settings-label">Template</span>
+                            <select
+                              value={channelCreateDraft.template}
+                              onChange={(event) =>
+                                handleApplyCreateTemplate(
+                                  event.target.value as InstructionTemplateKey,
+                                )
+                              }
+                              disabled={channelStatus.status === 'saving'}
+                            >
+                              {createInstructionTemplateOptions.map(
+                                (option) => (
+                                  <option
+                                    key={option.value}
+                                    value={option.value}
+                                  >
+                                    {option.label}
+                                  </option>
+                                ),
+                              )}
+                            </select>
+                          </label>
+                          <label>
+                            <span className="settings-label">Timezone</span>
+                            <input
+                              type="text"
+                              value={channelCreateDraft.timezone}
+                              onChange={(event) =>
+                                setChannelCreateDraft((current) => ({
+                                  ...current,
+                                  timezone: event.target.value,
+                                }))
+                              }
+                              placeholder="America/Los_Angeles"
+                              disabled={channelStatus.status === 'saving'}
+                            />
+                          </label>
+                          <label style={{ flex: 1 }}>
+                            <span className="settings-label">
+                              State namespace
+                            </span>
+                            <input
+                              type="text"
+                              value="Generated after the binding is created."
+                              disabled
+                            />
+                          </label>
+                        </div>
+                        <label
+                          style={{ display: 'block', marginTop: '0.75rem' }}
+                        >
+                          <span className="settings-label">Instructions</span>
+                          <AutoGrowingTextarea
+                            value={channelCreateDraft.instructions}
+                            onChange={(event) => {
+                              const nextValue = event.target.value;
+                              setChannelCreateDraft((current) => ({
+                                ...current,
+                                instructions: nextValue,
+                              }));
+                              setChannelInstructionReviews((current) => ({
+                                ...current,
+                                [CREATE_CHANNEL_INSTRUCTION_REVIEW_KEY]: {
+                                  status: 'idle',
+                                  review: null,
+                                },
+                              }));
+                            }}
+                            placeholder={BINDING_INSTRUCTIONS_PLACEHOLDER}
+                            rows={10}
+                            style={{
+                              width: '100%',
+                              resize: 'vertical',
+                              fontStyle:
+                                channelCreateDraft.instructions.length === 0
+                                  ? 'italic'
+                                  : 'normal',
+                            }}
+                            disabled={channelStatus.status === 'saving'}
+                          />
+                        </label>
+                        <div
+                          className={formatInstructionLintClassName(
+                            createInstructionLint.status,
+                          )}
+                          role="status"
+                          style={{ marginTop: '0.75rem' }}
+                        >
+                          <strong>
+                            {formatInstructionLintTitle(
+                              createInstructionLint.status,
+                            )}
+                          </strong>
+                          <ul style={{ margin: '0.5rem 0 0 1rem' }}>
+                            {createInstructionLint.messages.map((message) => (
+                              <li key={message}>{message}</li>
+                            ))}
+                          </ul>
+                        </div>
+                        <div
+                          className="settings-button-row"
+                          style={{ marginTop: '0.75rem' }}
+                        >
+                          <button
+                            type="button"
+                            className="secondary-btn"
+                            onClick={() =>
+                              void handleReviewBindingInstructions({
+                                reviewKey:
+                                  CREATE_CHANNEL_INSTRUCTION_REVIEW_KEY,
+                                platform:
+                                  selectedChannelPlatform === 'telegram'
+                                    ? 'telegram'
+                                    : 'slack',
+                                instructions: channelCreateDraft.instructions,
+                                timezone: channelCreateDraft.timezone,
+                                bindingLabel:
+                                  channelCreateDraft.displayName.trim() ||
+                                  selectedChannelTarget?.displayName ||
+                                  null,
+                              })
+                            }
+                            disabled={
+                              channelStatus.status === 'saving' ||
+                              channelInstructionReviews[
+                                CREATE_CHANNEL_INSTRUCTION_REVIEW_KEY
+                              ]?.status === 'reviewing'
+                            }
+                          >
+                            {channelInstructionReviews[
+                              CREATE_CHANNEL_INSTRUCTION_REVIEW_KEY
+                            ]?.status === 'reviewing'
+                              ? 'Reviewing…'
+                              : 'Review Instructions'}
+                          </button>
+                        </div>
+                        {channelInstructionReviews[
+                          CREATE_CHANNEL_INSTRUCTION_REVIEW_KEY
+                        ]?.status === 'error' ? (
+                          <div
+                            className="inline-banner inline-banner-error"
+                            role="alert"
+                            style={{ marginTop: '0.75rem' }}
+                          >
+                            {
+                              channelInstructionReviews[
+                                CREATE_CHANNEL_INSTRUCTION_REVIEW_KEY
+                              ]?.message
+                            }
+                          </div>
+                        ) : null}
+                        {channelInstructionReviews[
+                          CREATE_CHANNEL_INSTRUCTION_REVIEW_KEY
+                        ]?.status === 'ready' &&
+                        channelInstructionReviews[
+                          CREATE_CHANNEL_INSTRUCTION_REVIEW_KEY
+                        ]?.review ? (
+                          <div
+                            className="talk-llm-card"
+                            style={{ marginTop: '0.75rem' }}
+                          >
+                            <strong>AI Review</strong>
+                            {(
+                              [
+                                [
+                                  'What is clear',
+                                  channelInstructionReviews[
+                                    CREATE_CHANNEL_INSTRUCTION_REVIEW_KEY
+                                  ]?.review?.strengths ?? [],
+                                ],
+                                [
+                                  'What is missing',
+                                  channelInstructionReviews[
+                                    CREATE_CHANNEL_INSTRUCTION_REVIEW_KEY
+                                  ]?.review?.missing ?? [],
+                                ],
+                                [
+                                  'What to remove or simplify',
+                                  channelInstructionReviews[
+                                    CREATE_CHANNEL_INSTRUCTION_REVIEW_KEY
+                                  ]?.review?.removeOrSimplify ?? [],
+                                ],
+                              ] as const
+                            ).map(([heading, items]) =>
+                              items.length > 0 ? (
+                                <div
+                                  key={heading}
+                                  style={{ marginTop: '0.75rem' }}
+                                >
+                                  <strong>{heading}</strong>
+                                  <ul style={{ margin: '0.35rem 0 0 1rem' }}>
+                                    {items.map((item) => (
+                                      <li key={item}>{item}</li>
+                                    ))}
+                                  </ul>
+                                </div>
+                              ) : null,
+                            )}
+                            {channelInstructionReviews[
+                              CREATE_CHANNEL_INSTRUCTION_REVIEW_KEY
+                            ]?.review?.rewrittenInstructions ? (
+                              <>
+                                <label
+                                  style={{
+                                    display: 'block',
+                                    marginTop: '0.75rem',
+                                  }}
+                                >
+                                  <span className="settings-label">
+                                    Suggested rewrite
+                                  </span>
+                                  <AutoGrowingTextarea
+                                    readOnly
+                                    value={
+                                      channelInstructionReviews[
+                                        CREATE_CHANNEL_INSTRUCTION_REVIEW_KEY
+                                      ]?.review?.rewrittenInstructions || ''
+                                    }
+                                    rows={10}
+                                    style={{
+                                      width: '100%',
+                                      resize: 'vertical',
+                                    }}
+                                  />
+                                </label>
+                                <div
+                                  className="settings-button-row"
+                                  style={{ marginTop: '0.75rem' }}
+                                >
+                                  <button
+                                    type="button"
+                                    className="secondary-btn"
+                                    onClick={() =>
+                                      setChannelCreateDraft((current) => ({
+                                        ...current,
+                                        instructions:
+                                          channelInstructionReviews[
+                                            CREATE_CHANNEL_INSTRUCTION_REVIEW_KEY
+                                          ]?.review?.rewrittenInstructions ||
+                                          current.instructions,
+                                      }))
+                                    }
+                                  >
+                                    Apply Rewrite
+                                  </button>
+                                </div>
+                              </>
+                            ) : null}
+                          </div>
+                        ) : null}
+                      </div>
                       <div
                         className="settings-button-row"
                         style={{ marginTop: '0.75rem' }}
@@ -10243,9 +11317,36 @@ export function TalkDetailPage({
               ) : (
                 <div className="connector-card-list">
                   {channelBindings.map((binding) => {
+                    const connection =
+                      channelConnections.find(
+                        (candidate) => candidate.id === binding.connectionId,
+                      ) || null;
+                    const workspaceSummary = buildBindingWorkspaceSummary(
+                      binding,
+                      connection,
+                    );
+                    const activitySummary =
+                      buildBindingActivitySummary(binding);
                     const draft =
                       channelDrafts[binding.id] ||
                       buildChannelBindingDraft(binding);
+                    const instructionLint = lintChannelInstructions({
+                      instructions: draft.instructions,
+                      stateNamespace: binding.stateNamespace,
+                      timezone: draft.timezone,
+                    });
+                    const instructionReview = channelInstructionReviews[
+                      binding.id
+                    ] ?? {
+                      status: 'idle',
+                      review: null,
+                    };
+                    const templateOptions = getInstructionTemplateOptions(
+                      binding.platform,
+                    );
+                    const bindingMemory =
+                      channelBindingMemoryById[binding.id] ??
+                      buildEmptyBindingMemoryPanelState(binding.stateNamespace);
                     const failures = channelFailuresByBindingId[binding.id] || {
                       ingress: [],
                       delivery: [],
@@ -10297,6 +11398,26 @@ export function TalkDetailPage({
                           >
                             {binding.diagnosis.detail}
                           </p>
+                        ) : null}
+                        {workspaceSummary ? (
+                          <p
+                            className="policy-muted"
+                            style={{ margin: '0 0 8px' }}
+                          >
+                            {workspaceSummary}
+                          </p>
+                        ) : null}
+                        {activitySummary.length > 0 ? (
+                          <div
+                            className="policy-muted"
+                            style={{ margin: '0 0 8px' }}
+                          >
+                            {activitySummary.map((summary) => (
+                              <p key={summary} style={{ margin: '0 0 4px' }}>
+                                {summary}
+                              </p>
+                            ))}
+                          </div>
                         ) : null}
                         {binding.diagnosis.action ? (
                           <div style={{ marginBottom: 8 }}>
@@ -10406,6 +11527,242 @@ export function TalkDetailPage({
                             <p>{binding.unresolvedIngressCount}</p>
                           </div>
                         </div>
+                        <div className="talk-llm-card">
+                          <div className="connector-card-header">
+                            <div>
+                              <h4>Binding Instructions</h4>
+                              <p className="talk-llm-meta">
+                                State namespace:{' '}
+                                <code>{binding.stateNamespace}</code>
+                              </p>
+                            </div>
+                          </div>
+                          <div className="connector-attach-row">
+                            <label>
+                              <span className="settings-label">Template</span>
+                              <select
+                                value={draft.template}
+                                onChange={(event) =>
+                                  handleApplyChannelTemplate(
+                                    binding,
+                                    event.target
+                                      .value as InstructionTemplateKey,
+                                  )
+                                }
+                                disabled={
+                                  !canEditChannels ||
+                                  channelStatus.status === 'saving'
+                                }
+                              >
+                                {templateOptions.map((option) => (
+                                  <option
+                                    key={option.value}
+                                    value={option.value}
+                                  >
+                                    {option.label}
+                                  </option>
+                                ))}
+                              </select>
+                            </label>
+                            <label style={{ flex: 1 }}>
+                              <span className="settings-label">Timezone</span>
+                              <input
+                                type="text"
+                                value={draft.timezone}
+                                onChange={(event) =>
+                                  handleChannelDraftChange(binding.id, {
+                                    timezone: event.target.value,
+                                  })
+                                }
+                                placeholder="America/Los_Angeles"
+                                disabled={
+                                  !canEditChannels ||
+                                  channelStatus.status === 'saving'
+                                }
+                              />
+                            </label>
+                            <label style={{ flex: 1 }}>
+                              <span className="settings-label">
+                                State namespace
+                              </span>
+                              <input
+                                type="text"
+                                value={binding.stateNamespace}
+                                disabled
+                              />
+                            </label>
+                          </div>
+                          <label
+                            style={{ display: 'block', marginTop: '0.75rem' }}
+                          >
+                            <span className="settings-label">Instructions</span>
+                            <AutoGrowingTextarea
+                              value={draft.instructions}
+                              onChange={(event) =>
+                                handleChannelDraftChange(binding.id, {
+                                  instructions: event.target.value,
+                                })
+                              }
+                              rows={10}
+                              style={{
+                                width: '100%',
+                                resize: 'vertical',
+                                fontStyle:
+                                  draft.instructions.length === 0
+                                    ? 'italic'
+                                    : 'normal',
+                              }}
+                              placeholder={BINDING_INSTRUCTIONS_PLACEHOLDER}
+                              disabled={
+                                !canEditChannels ||
+                                channelStatus.status === 'saving'
+                              }
+                            />
+                          </label>
+                          <div
+                            className={formatInstructionLintClassName(
+                              instructionLint.status,
+                            )}
+                            role="status"
+                            style={{ marginTop: '0.75rem' }}
+                          >
+                            <strong>
+                              {formatInstructionLintTitle(
+                                instructionLint.status,
+                              )}
+                            </strong>
+                            <ul style={{ margin: '0.5rem 0 0 1rem' }}>
+                              {instructionLint.messages.map((message) => (
+                                <li key={message}>{message}</li>
+                              ))}
+                            </ul>
+                          </div>
+                          <div
+                            className="settings-button-row"
+                            style={{ marginTop: '0.75rem' }}
+                          >
+                            <button
+                              type="button"
+                              className="secondary-btn"
+                              onClick={() =>
+                                void handleReviewBindingInstructions({
+                                  reviewKey: binding.id,
+                                  platform: binding.platform,
+                                  instructions: draft.instructions,
+                                  bindingId: binding.id,
+                                  bindingLabel: binding.displayName,
+                                  timezone: draft.timezone,
+                                })
+                              }
+                              disabled={
+                                !canEditChannels ||
+                                channelStatus.status === 'saving' ||
+                                instructionReview.status === 'reviewing'
+                              }
+                            >
+                              {instructionReview.status === 'reviewing'
+                                ? 'Reviewing…'
+                                : 'Review Instructions'}
+                            </button>
+                          </div>
+                          {instructionReview.status === 'error' ? (
+                            <div
+                              className="inline-banner inline-banner-error"
+                              role="alert"
+                              style={{ marginTop: '0.75rem' }}
+                            >
+                              {instructionReview.message}
+                            </div>
+                          ) : null}
+                          {instructionReview.status === 'ready' &&
+                          instructionReview.review ? (
+                            <div
+                              className="talk-llm-card"
+                              style={{ marginTop: '0.75rem' }}
+                            >
+                              <strong>AI Review</strong>
+                              {(
+                                [
+                                  [
+                                    'What is clear',
+                                    instructionReview.review.strengths,
+                                  ],
+                                  [
+                                    'What is missing',
+                                    instructionReview.review.missing,
+                                  ],
+                                  [
+                                    'What to remove or simplify',
+                                    instructionReview.review.removeOrSimplify,
+                                  ],
+                                ] as const
+                              ).map(([heading, items]) =>
+                                items.length > 0 ? (
+                                  <div
+                                    key={heading}
+                                    style={{ marginTop: '0.75rem' }}
+                                  >
+                                    <strong>{heading}</strong>
+                                    <ul style={{ margin: '0.35rem 0 0 1rem' }}>
+                                      {items.map((item) => (
+                                        <li key={item}>{item}</li>
+                                      ))}
+                                    </ul>
+                                  </div>
+                                ) : null,
+                              )}
+                              {instructionReview.review
+                                .rewrittenInstructions ? (
+                                <>
+                                  <label
+                                    style={{
+                                      display: 'block',
+                                      marginTop: '0.75rem',
+                                    }}
+                                  >
+                                    <span className="settings-label">
+                                      Suggested rewrite
+                                    </span>
+                                    <AutoGrowingTextarea
+                                      readOnly
+                                      value={
+                                        instructionReview.review
+                                          .rewrittenInstructions
+                                      }
+                                      rows={10}
+                                      style={{
+                                        width: '100%',
+                                        resize: 'vertical',
+                                      }}
+                                    />
+                                  </label>
+                                  <div
+                                    className="settings-button-row"
+                                    style={{ marginTop: '0.75rem' }}
+                                  >
+                                    <button
+                                      type="button"
+                                      className="secondary-btn"
+                                      onClick={() =>
+                                        handleChannelDraftChange(binding.id, {
+                                          instructions:
+                                            instructionReview.review
+                                              ?.rewrittenInstructions || '',
+                                        })
+                                      }
+                                      disabled={
+                                        !canEditChannels ||
+                                        channelStatus.status === 'saving'
+                                      }
+                                    >
+                                      Apply Rewrite
+                                    </button>
+                                  </div>
+                                </>
+                              ) : null}
+                            </div>
+                          ) : null}
+                        </div>
                         <div className="connector-attach-row">
                           <label style={{ flex: 1 }}>
                             <span className="settings-label">Display Name</span>
@@ -10425,7 +11782,7 @@ export function TalkDetailPage({
                           </label>
                           <label>
                             <span className="settings-label">
-                              Response Mode
+                              When to respond
                             </span>
                             <select
                               value={draft.responseMode ?? 'mentions'}
@@ -10446,7 +11803,9 @@ export function TalkDetailPage({
                             </select>
                           </label>
                           <label>
-                            <span className="settings-label">Delivery</span>
+                            <span className="settings-label">
+                              Where to post reply
+                            </span>
                             <select
                               value={draft.deliveryMode ?? 'reply'}
                               onChange={(event) =>
@@ -10602,27 +11961,231 @@ export function TalkDetailPage({
                             />
                           </label>
                         </div>
-                        <label
-                          style={{ display: 'block', marginTop: '0.75rem' }}
+                        <div
+                          className="talk-llm-card"
+                          style={{ marginTop: '0.75rem' }}
                         >
-                          <span className="settings-label">
-                            Channel Context Note
-                          </span>
-                          <textarea
-                            value={draft.channelContextNote ?? ''}
-                            onChange={(event) =>
-                              handleChannelDraftChange(binding.id, {
-                                channelContextNote: event.target.value,
-                              })
-                            }
-                            rows={3}
-                            style={{ width: '100%', resize: 'vertical' }}
-                            disabled={
-                              !canEditChannels ||
-                              channelStatus.status === 'saving'
-                            }
-                          />
-                        </label>
+                          <div className="connector-card-header">
+                            <div>
+                              <h4>Binding Memory</h4>
+                              <p className="talk-llm-meta">
+                                Inspect and correct state entries stored under{' '}
+                                <code>{bindingMemory.stateNamespace}</code>.
+                              </p>
+                            </div>
+                            <div className="settings-button-row">
+                              <button
+                                type="button"
+                                className="secondary-btn"
+                                onClick={() =>
+                                  void handleLoadChannelBindingMemory(
+                                    binding,
+                                    true,
+                                  )
+                                }
+                                disabled={
+                                  channelStatus.status === 'saving' ||
+                                  bindingMemory.status === 'loading' ||
+                                  bindingMemory.status === 'saving'
+                                }
+                              >
+                                {bindingMemory.status === 'loading'
+                                  ? 'Loading…'
+                                  : 'Refresh Memory'}
+                              </button>
+                            </div>
+                          </div>
+                          {bindingMemory.status === 'idle' ? (
+                            <p className="talk-llm-meta">
+                              Memory is loaded on demand for this binding.
+                            </p>
+                          ) : null}
+                          {bindingMemory.errorMessage ? (
+                            <div
+                              className="inline-banner inline-banner-error"
+                              role="alert"
+                              style={{ marginBottom: '0.75rem' }}
+                            >
+                              {bindingMemory.errorMessage}
+                            </div>
+                          ) : null}
+                          {bindingMemory.status !== 'idle' ? (
+                            <>
+                              {bindingMemory.entries.length > 0 ? (
+                                <div
+                                  style={{
+                                    display: 'grid',
+                                    gap: '0.75rem',
+                                  }}
+                                >
+                                  {bindingMemory.entries.map((entry) => (
+                                    <div
+                                      key={entry.id}
+                                      className="talk-llm-card"
+                                    >
+                                      <div className="connector-card-header">
+                                        <div>
+                                          <strong>{entry.keySuffix}</strong>
+                                          <p className="talk-llm-meta">
+                                            Version {entry.version} · Updated{' '}
+                                            {formatDateTime(entry.updatedAt)}
+                                          </p>
+                                        </div>
+                                      </div>
+                                      <textarea
+                                        readOnly
+                                        value={formatJsonForStateEditor(
+                                          entry.value,
+                                        )}
+                                        rows={6}
+                                        style={{
+                                          width: '100%',
+                                          resize: 'vertical',
+                                          fontFamily:
+                                            'SFMono-Regular, Consolas, monospace',
+                                        }}
+                                      />
+                                      <div
+                                        className="settings-button-row"
+                                        style={{ marginTop: '0.75rem' }}
+                                      >
+                                        <button
+                                          type="button"
+                                          className="secondary-btn"
+                                          onClick={() =>
+                                            void handleEditChannelBindingMemoryEntry(
+                                              binding,
+                                              entry,
+                                            )
+                                          }
+                                          disabled={
+                                            !canEditChannels ||
+                                            channelStatus.status === 'saving' ||
+                                            bindingMemory.status === 'saving'
+                                          }
+                                        >
+                                          Edit
+                                        </button>
+                                        <button
+                                          type="button"
+                                          className="secondary-btn"
+                                          onClick={() =>
+                                            void handleDeleteChannelBindingMemoryEntry(
+                                              binding,
+                                              entry,
+                                            )
+                                          }
+                                          disabled={
+                                            !canEditChannels ||
+                                            channelStatus.status === 'saving' ||
+                                            bindingMemory.status === 'saving'
+                                          }
+                                        >
+                                          Delete
+                                        </button>
+                                      </div>
+                                    </div>
+                                  ))}
+                                </div>
+                              ) : (
+                                <p className="talk-llm-meta">
+                                  No binding memory entries exist yet.
+                                </p>
+                              )}
+                              {canEditChannels ? (
+                                <div
+                                  className="talk-llm-card"
+                                  style={{ marginTop: '0.75rem' }}
+                                >
+                                  <strong>Add Memory Entry</strong>
+                                  <label
+                                    style={{
+                                      display: 'block',
+                                      marginTop: '0.75rem',
+                                    }}
+                                  >
+                                    <span className="settings-label">
+                                      Key suffix
+                                    </span>
+                                    <input
+                                      type="text"
+                                      value={bindingMemory.newKeySuffix}
+                                      onChange={(event) =>
+                                        handleChannelBindingMemoryDraftChange(
+                                          binding.id,
+                                          {
+                                            newKeySuffix: event.target.value,
+                                          },
+                                        )
+                                      }
+                                      placeholder="tracker.asher"
+                                      disabled={
+                                        channelStatus.status === 'saving' ||
+                                        bindingMemory.status === 'saving'
+                                      }
+                                      style={{ width: '100%' }}
+                                    />
+                                  </label>
+                                  <label
+                                    style={{
+                                      display: 'block',
+                                      marginTop: '0.75rem',
+                                    }}
+                                  >
+                                    <span className="settings-label">
+                                      JSON value
+                                    </span>
+                                    <textarea
+                                      value={bindingMemory.newValueJson}
+                                      onChange={(event) =>
+                                        handleChannelBindingMemoryDraftChange(
+                                          binding.id,
+                                          {
+                                            newValueJson: event.target.value,
+                                          },
+                                        )
+                                      }
+                                      rows={8}
+                                      style={{
+                                        width: '100%',
+                                        resize: 'vertical',
+                                        fontFamily:
+                                          'SFMono-Regular, Consolas, monospace',
+                                      }}
+                                      disabled={
+                                        channelStatus.status === 'saving' ||
+                                        bindingMemory.status === 'saving'
+                                      }
+                                    />
+                                  </label>
+                                  <div
+                                    className="settings-button-row"
+                                    style={{ marginTop: '0.75rem' }}
+                                  >
+                                    <button
+                                      type="button"
+                                      className="secondary-btn"
+                                      onClick={() =>
+                                        void handleCreateChannelBindingMemoryEntry(
+                                          binding,
+                                        )
+                                      }
+                                      disabled={
+                                        !canEditChannels ||
+                                        channelStatus.status === 'saving' ||
+                                        bindingMemory.status === 'saving'
+                                      }
+                                    >
+                                      {bindingMemory.status === 'saving'
+                                        ? 'Saving…'
+                                        : 'Add Memory Entry'}
+                                    </button>
+                                  </div>
+                                </div>
+                              ) : null}
+                            </>
+                          ) : null}
+                        </div>
                         <div
                           className="settings-button-row"
                           style={{ marginTop: '0.75rem' }}

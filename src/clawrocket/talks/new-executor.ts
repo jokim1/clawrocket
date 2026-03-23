@@ -18,7 +18,12 @@ import {
   type EffectiveToolAccess,
   type RegisteredAgentRecord,
 } from '../db/agent-accessors.js';
-import { getTalkById, getTalkRunById } from '../db/accessors.js';
+import {
+  getTalkById,
+  getTalkMessageById,
+  getTalkRunById,
+} from '../db/accessors.js';
+import { getTalkChannelBindingById } from '../db/channel-accessors.js';
 import { getTalkJobById } from '../db/job-accessors.js';
 import {
   listConnectorsForTalkRun,
@@ -32,6 +37,8 @@ import { parseConnectorToolName } from '../connectors/runtime.js';
 import {
   deleteTalkStateEntry,
   getTalkStateEntry,
+  listTalkStateEntries,
+  listTalkStateEntriesByPrefix,
   listMessageAttachmentRecords,
   type MessageAttachmentRecord,
   upsertTalkStateEntry,
@@ -62,6 +69,8 @@ import { executeWebFetch, executeWebSearch } from '../tools/web-tools.js';
 import { executeBrowserTool } from '../tools/browser-tools.js';
 import { buildBrowserResumeSection } from '../browser/run-context.js';
 import type { ExecutionDecisionMetadata } from '../browser/metadata.js';
+import { fetchSlackRecentConversationContext } from '../channels/slack-connector.js';
+import { buildTalkChannelBindingStateNamespace } from '../db/channel-accessors.js';
 import { loadTalkContext } from './context-loader.js';
 import { executeGoogleDriveTalkTool } from './google-drive-tools.js';
 import { executeTalkOutputTool } from './output-tools.js';
@@ -165,6 +174,267 @@ function parseRunMetadata(
     // ignored
   }
   return {};
+}
+
+type ChannelInboundTriggerMetadata = {
+  kind: 'channel_inbound';
+  bindingId: string;
+  platform: 'telegram' | 'slack';
+  connectionId: string;
+  targetKind: string;
+  targetId: string;
+  targetDisplayName: string | null;
+  senderId: string | null;
+  senderName: string | null;
+  isMentioned: boolean;
+  timestamp: string | null;
+  externalMessageId: string | null;
+  metadata: Record<string, unknown> | null;
+};
+
+function parseChannelInboundTriggerMetadata(
+  metadataJson: string | null | undefined,
+): ChannelInboundTriggerMetadata | null {
+  if (!metadataJson) return null;
+  try {
+    const parsed = JSON.parse(metadataJson) as unknown;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return null;
+    }
+    const record = parsed as Record<string, unknown>;
+    if (record.kind !== 'channel_inbound') {
+      return null;
+    }
+    const platform =
+      record.platform === 'slack' || record.platform === 'telegram'
+        ? record.platform
+        : null;
+    if (
+      platform === null ||
+      typeof record.bindingId !== 'string' ||
+      typeof record.connectionId !== 'string' ||
+      typeof record.targetKind !== 'string' ||
+      typeof record.targetId !== 'string'
+    ) {
+      return null;
+    }
+    return {
+      kind: 'channel_inbound',
+      bindingId: record.bindingId,
+      platform,
+      connectionId: record.connectionId,
+      targetKind: record.targetKind,
+      targetId: record.targetId,
+      targetDisplayName:
+        typeof record.targetDisplayName === 'string'
+          ? record.targetDisplayName
+          : null,
+      senderId: typeof record.senderId === 'string' ? record.senderId : null,
+      senderName:
+        typeof record.senderName === 'string' ? record.senderName : null,
+      isMentioned: record.isMentioned === true,
+      timestamp: typeof record.timestamp === 'string' ? record.timestamp : null,
+      externalMessageId:
+        typeof record.externalMessageId === 'string'
+          ? record.externalMessageId
+          : null,
+      metadata:
+        record.metadata &&
+        typeof record.metadata === 'object' &&
+        !Array.isArray(record.metadata)
+          ? (record.metadata as Record<string, unknown>)
+          : null,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function formatChannelResponseModeLabel(
+  mode: 'off' | 'mentions' | 'all',
+): string {
+  switch (mode) {
+    case 'off':
+      return 'Do not answer unless an administrator changes this binding.';
+    case 'mentions':
+      return 'Answer when directly mentioned or when the channel context clearly calls for it.';
+    case 'all':
+      return 'This binding may react to ordinary channel messages, but it can still stay silent when unhelpful.';
+  }
+}
+
+function formatChannelDeliveryModeLabel(mode: 'reply' | 'channel'): string {
+  return mode === 'reply'
+    ? 'Post the response as a threaded reply tied to the source message or thread.'
+    : 'Post the response back into the main channel timeline.';
+}
+
+function buildChannelBindingLabel(input: {
+  binding: NonNullable<ReturnType<typeof getTalkChannelBindingById>>;
+  trigger: ChannelInboundTriggerMetadata;
+}): string {
+  const platformLabel =
+    input.binding.platform === 'slack' ? 'Slack' : 'Telegram';
+  const destination =
+    input.trigger.targetDisplayName ||
+    input.binding.display_name ||
+    input.trigger.targetId;
+  return `${platformLabel} · ${input.binding.connection_display_name} · ${destination}`;
+}
+
+function buildLocalChannelClockFacts(input?: {
+  timeZone?: string | null;
+  now?: Date;
+}): {
+  localTimestamp: string;
+  localDate: string;
+  localDayOfWeek: string;
+  timeZone: string;
+} {
+  const now = input?.now ?? new Date();
+  const timeZone =
+    input?.timeZone?.trim() ||
+    Intl.DateTimeFormat().resolvedOptions().timeZone ||
+    'UTC';
+  const localDate = new Intl.DateTimeFormat('en-CA', {
+    timeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(now);
+  const localTime = new Intl.DateTimeFormat('en-US', {
+    timeZone,
+    hour: 'numeric',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: true,
+  }).format(now);
+  const localDayOfWeek = new Intl.DateTimeFormat('en-US', {
+    timeZone,
+    weekday: 'long',
+  }).format(now);
+  return {
+    localTimestamp: `${localDate} ${localTime}`,
+    localDate,
+    localDayOfWeek,
+    timeZone,
+  };
+}
+
+function buildChannelContextSection(input: {
+  binding: ReturnType<typeof getTalkChannelBindingById>;
+  trigger: ChannelInboundTriggerMetadata;
+  recentSlackLines?: string[];
+  recentSlackUnavailableReason?: string | null;
+}): string | null {
+  const binding = input.binding;
+  if (!binding) return null;
+  const stateNamespace = buildTalkChannelBindingStateNamespace(binding.id);
+  const clock = buildLocalChannelClockFacts({ timeZone: binding.timezone });
+  const lines: string[] = [
+    `Binding: ${buildChannelBindingLabel({ binding, trigger: input.trigger })}`,
+    `Platform: ${input.trigger.platform === 'slack' ? 'Slack' : 'Telegram'}`,
+    `Connection: ${binding.connection_display_name}`,
+    `Destination: ${input.trigger.targetDisplayName || binding.display_name || input.trigger.targetId}`,
+    `Sender: ${input.trigger.senderName || input.trigger.senderId || 'Unknown sender'}`,
+    `When to respond: ${formatChannelResponseModeLabel(binding.response_mode)}`,
+    `Where to post reply: ${formatChannelDeliveryModeLabel(binding.delivery_mode)}`,
+    `State namespace: ${stateNamespace}`,
+    `Keep binding-owned state under this prefix. Use list_state with prefix "${stateNamespace}" to inspect binding memory.`,
+    `Local timestamp: ${clock.localTimestamp}`,
+    `Local date: ${clock.localDate}`,
+    `Local day-of-week: ${clock.localDayOfWeek}`,
+    `Timezone: ${clock.timeZone}`,
+  ];
+
+  if (input.trigger.isMentioned) {
+    lines.push(
+      'This message directly mentioned the assistant. Reply briefly and do not suppress the outward reply.',
+    );
+  } else {
+    lines.push(
+      'If you should stay silent, begin your response with [[NO_CHANNEL_REPLY]]. You may optionally include a short internal rationale after that directive.',
+    );
+  }
+
+  const instructions = binding.instructions?.trim();
+  if (instructions) {
+    lines.push(`Binding instructions:\n${instructions}`);
+  }
+
+  if (input.recentSlackLines && input.recentSlackLines.length > 0) {
+    lines.push(`Recent Slack context:\n${input.recentSlackLines.join('\n')}`);
+  } else if (input.recentSlackUnavailableReason) {
+    lines.push(
+      `Recent Slack context unavailable: ${input.recentSlackUnavailableReason}`,
+    );
+  }
+
+  return lines.join('\n');
+}
+
+function loadChannelTriggerContext(input: { triggerMessageId: string }): {
+  trigger: ChannelInboundTriggerMetadata | null;
+  binding: ReturnType<typeof getTalkChannelBindingById>;
+} {
+  const triggerMessage = getTalkMessageById(input.triggerMessageId);
+  const trigger = parseChannelInboundTriggerMetadata(
+    triggerMessage?.metadata_json,
+  );
+  if (!trigger) {
+    return { trigger: null, binding: undefined };
+  }
+
+  return {
+    trigger,
+    binding: getTalkChannelBindingById(trigger.bindingId),
+  };
+}
+
+async function loadChannelExecutionContext(input: {
+  trigger: ChannelInboundTriggerMetadata | null;
+  binding: ReturnType<typeof getTalkChannelBindingById>;
+}): Promise<{
+  channelContextSection: string | null;
+}> {
+  const trigger = input.trigger;
+  const binding = input.binding;
+  if (!trigger || !binding) {
+    return { channelContextSection: null };
+  }
+
+  let recentSlackLines: string[] = [];
+  let recentSlackUnavailableReason: string | null = null;
+  if (binding.platform === 'slack') {
+    if (binding.connection_health_status === 'disconnected') {
+      recentSlackUnavailableReason = 'Slack workspace is disconnected.';
+    } else {
+      const sourceThreadKey =
+        typeof trigger.metadata?.sourceThreadKey === 'string'
+          ? trigger.metadata.sourceThreadKey
+          : null;
+      const recentSlackContext = await fetchSlackRecentConversationContext({
+        connectionId: binding.connection_id,
+        targetId: trigger.targetId,
+        sourceThreadKey,
+        externalMessageId: trigger.externalMessageId,
+        directMention: trigger.isMentioned,
+        maxMessages: 10,
+        maxCharsPerMessage: 300,
+      });
+      recentSlackLines = recentSlackContext.lines;
+      recentSlackUnavailableReason = recentSlackContext.unavailableReason;
+    }
+  }
+
+  return {
+    channelContextSection: buildChannelContextSection({
+      binding,
+      trigger,
+      recentSlackLines,
+      recentSlackUnavailableReason,
+    }),
+  };
 }
 
 function buildExecutionDecision(
@@ -370,6 +640,22 @@ export function buildToolExecutor(
           };
         }
         return { result: JSON.stringify(entry) };
+      } catch (error) {
+        return {
+          result: error instanceof Error ? error.message : String(error),
+          isError: true,
+        };
+      }
+    }
+
+    if (toolName === 'list_state') {
+      const rawPrefix = args.prefix as string | undefined;
+      try {
+        const entries =
+          rawPrefix && rawPrefix.trim()
+            ? listTalkStateEntriesByPrefix(talkId, rawPrefix)
+            : listTalkStateEntries(talkId);
+        return { result: JSON.stringify({ entries }) };
       } catch (error) {
         return {
           result: error instanceof Error ? error.message : String(error),
@@ -1424,15 +1710,24 @@ export class CleanTalkExecutor implements TalkExecutor {
     };
 
     try {
+      const existingRunMetadata = parseRunMetadata(
+        getTalkRunById(input.runId)?.metadata_json,
+      );
+      const runMetadata = { ...existingRunMetadata };
+      const browserResumeSection =
+        buildBrowserResumeSection(existingRunMetadata);
+      const channelTriggerContext = loadChannelTriggerContext({
+        triggerMessageId: input.triggerMessageId,
+      });
+
       resolvedAgent = resolveTalkAgent(input.talkId, input.targetAgentId);
       const modelContextWindow = getModelContextWindow(resolvedAgent);
       const jobPolicy = buildTalkJobExecutionPolicy(input.jobId);
       const plan = planExecution(resolvedAgent, input.requestedBy);
-      const existingRunMetadata = parseRunMetadata(
-        getTalkRunById(input.runId)?.metadata_json,
-      );
-      const browserResumeSection =
-        buildBrowserResumeSection(existingRunMetadata);
+      const channelExecutionContext = await loadChannelExecutionContext({
+        trigger: channelTriggerContext.trigger,
+        binding: channelTriggerContext.binding,
+      });
       const scopedEffectiveTools = filterEffectiveToolsForJob(
         plan.effectiveTools,
         jobPolicy,
@@ -1448,12 +1743,13 @@ export class CleanTalkExecutor implements TalkExecutor {
           retrievalQuery: input.triggerContent,
           jobPolicy,
           effectiveTools: scopedEffectiveTools,
+          channelContextSection: channelExecutionContext.channelContextSection,
         },
       );
       setTalkRunMetadataJson(
         input.runId,
         JSON.stringify({
-          ...existingRunMetadata,
+          ...runMetadata,
           ...contextPackage.contextSnapshot,
           executionDecision: buildExecutionDecision(resolvedAgent, plan),
         }),

@@ -113,6 +113,7 @@ export interface AgentExecutionResult {
 }
 
 export const ALWAYS_ALLOWED_CONTEXT_TOOLS = new Set([
+  'list_state',
   'read_context_source',
   'read_attachment',
   'read_state',
