@@ -290,6 +290,8 @@ describe('browser-tools', () => {
       url: 'https://www.linkedin.com/messaging/',
       accountLabel: null,
       headed: false,
+      userId: 'owner-1',
+      runId: 'run-browser-fast-open',
       reuseSession: true,
       navigationTimeoutMs: 8000,
       retryOnInitialTimeout: true,

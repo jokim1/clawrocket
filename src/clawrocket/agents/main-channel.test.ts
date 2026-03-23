@@ -357,6 +357,35 @@ describe('Main channel DB accessors', () => {
       expect(result.run.talk_id).toBeNull();
     });
 
+    it('persists typed browser run fields when enqueueing a browser task', () => {
+      const threadId = randomUUID();
+      const messageId = `msg_${randomUUID()}`;
+      const runId = `run_${randomUUID()}`;
+
+      const result = enqueueMainTurnAtomic({
+        threadId,
+        userId: USER_A,
+        content: 'Open LinkedIn and tell me what you can access.',
+        messageId,
+        runId,
+        taskType: 'browser',
+        selectedMode: 'subscription',
+        transport: 'subscription',
+      });
+
+      expect(result.run.task_type).toBe('browser');
+      expect(result.run.selected_mode).toBe('subscription');
+      expect(result.run.transport).toBe('subscription');
+
+      const persisted = getTalkRunById(runId);
+      expect(persisted?.task_type).toBe('browser');
+      expect(persisted?.selected_mode).toBe('subscription');
+      expect(persisted?.transport).toBe('subscription');
+      expect(persisted?.browser_phase).toBeNull();
+      expect(persisted?.blocked_reason).toBeNull();
+      expect(persisted?.timeout_phase).toBeNull();
+    });
+
     it('throws MainThreadBusyError when thread already has an active run', () => {
       const threadId = randomUUID();
       enqueueMainTurnAtomic({

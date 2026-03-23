@@ -43,6 +43,53 @@ export interface BrowserProfileSnapshot {
   lastUsedAt: string | null;
 }
 
+export type BrowserPersistedSessionState =
+  | 'active'
+  | 'blocked'
+  | 'takeover'
+  | 'disconnected'
+  | 'closed';
+
+export type BrowserPersistedBlockedReason =
+  | 'login_required'
+  | 'phone_approval'
+  | 'app_approval'
+  | 'code_entry'
+  | 'session_conflict'
+  | 'manual_takeover';
+
+export interface BrowserSessionRecord {
+  id: string;
+  user_id: string | null;
+  profile_id: string | null;
+  profile_key: string;
+  site_key: string;
+  account_label: string | null;
+  state: BrowserPersistedSessionState;
+  blocked_reason: BrowserPersistedBlockedReason | null;
+  owner_run_id: string | null;
+  last_seen_at: string;
+  last_live_context_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface BrowserSessionSnapshot {
+  id: string;
+  userId: string | null;
+  profileId: string | null;
+  profileKey: string;
+  siteKey: string;
+  accountLabel: string | null;
+  state: BrowserPersistedSessionState;
+  blockedReason: BrowserPersistedBlockedReason | null;
+  ownerRunId: string | null;
+  lastSeenAt: string;
+  lastLiveContextAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
 const DEFAULT_VIEWPORT: BrowserViewport = { width: 1280, height: 720 };
 const DEFAULT_CHANNEL = 'chrome';
 const DEFAULT_LOCALE = 'en-US';
@@ -77,6 +124,17 @@ function slugSegment(value: string): string {
 
 function slugForPaths(siteKey: string, accountLabel: string | null): string {
   return accountLabel ? `${siteKey}--${slugSegment(accountLabel)}` : siteKey;
+}
+
+export function buildBrowserProfileKey(
+  siteKey: string,
+  accountLabel?: string | null,
+): string {
+  const normalizedSiteKey = normalizeSiteKey(siteKey);
+  const normalizedAccountLabel = normalizeAccountLabel(accountLabel);
+  return normalizedAccountLabel
+    ? `${normalizedSiteKey}::${normalizedAccountLabel}`
+    : normalizedSiteKey;
 }
 
 function buildProfilePath(
@@ -152,6 +210,24 @@ function toSnapshot(row: BrowserProfileRecord): BrowserProfileSnapshot {
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     lastUsedAt: row.last_used_at,
+  };
+}
+
+function toSessionSnapshot(row: BrowserSessionRecord): BrowserSessionSnapshot {
+  return {
+    id: row.id,
+    userId: row.user_id,
+    profileId: row.profile_id,
+    profileKey: row.profile_key,
+    siteKey: row.site_key,
+    accountLabel: row.account_label,
+    state: row.state,
+    blockedReason: row.blocked_reason,
+    ownerRunId: row.owner_run_id,
+    lastSeenAt: row.last_seen_at,
+    lastLiveContextAt: row.last_live_context_at,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
   };
 }
 
@@ -269,4 +345,168 @@ export function touchBrowserProfileLastUsed(profileId: string): void {
     `,
     )
     .run(now, now, profileId);
+}
+
+export function getBrowserSessionById(
+  sessionId: string,
+): BrowserSessionSnapshot | null {
+  const row = getDb()
+    .prepare(
+      `
+      SELECT *
+      FROM browser_sessions
+      WHERE id = ?
+      LIMIT 1
+    `,
+    )
+    .get(sessionId) as BrowserSessionRecord | undefined;
+  return row ? toSessionSnapshot(row) : null;
+}
+
+export function listBrowserSessionsByOwnerRun(
+  ownerRunId: string,
+): BrowserSessionSnapshot[] {
+  const rows = getDb()
+    .prepare(
+      `
+      SELECT *
+      FROM browser_sessions
+      WHERE owner_run_id = ?
+      ORDER BY updated_at DESC, id DESC
+    `,
+    )
+    .all(ownerRunId) as BrowserSessionRecord[];
+  return rows.map(toSessionSnapshot);
+}
+
+export function listBrowserSessionsByProfile(input: {
+  profileId?: string | null;
+  siteKey?: string | null;
+  accountLabel?: string | null;
+}): BrowserSessionSnapshot[] {
+  if (input.profileId) {
+    const rows = getDb()
+      .prepare(
+        `
+        SELECT *
+        FROM browser_sessions
+        WHERE profile_id = ?
+        ORDER BY updated_at DESC, id DESC
+      `,
+      )
+      .all(input.profileId) as BrowserSessionRecord[];
+    return rows.map(toSessionSnapshot);
+  }
+  if (input.siteKey) {
+    const profileKey = buildBrowserProfileKey(
+      input.siteKey,
+      input.accountLabel,
+    );
+    const rows = getDb()
+      .prepare(
+        `
+        SELECT *
+        FROM browser_sessions
+        WHERE profile_key = ?
+        ORDER BY updated_at DESC, id DESC
+      `,
+      )
+      .all(profileKey) as BrowserSessionRecord[];
+    return rows.map(toSessionSnapshot);
+  }
+  return [];
+}
+
+export function upsertBrowserSessionState(input: {
+  id: string;
+  userId?: string | null;
+  profileId?: string | null;
+  siteKey: string;
+  accountLabel?: string | null;
+  state: BrowserPersistedSessionState;
+  blockedReason?: BrowserPersistedBlockedReason | null;
+  ownerRunId?: string | null;
+  lastSeenAt?: string | null;
+  lastLiveContextAt?: string | null;
+  updatedAt?: string | null;
+}): BrowserSessionSnapshot {
+  const now = input.updatedAt?.trim() || new Date().toISOString();
+  const lastSeenAt = input.lastSeenAt?.trim() || now;
+  const normalizedSiteKey = normalizeSiteKey(input.siteKey);
+  const normalizedAccountLabel = normalizeAccountLabel(input.accountLabel);
+  const profileKey = buildBrowserProfileKey(
+    normalizedSiteKey,
+    normalizedAccountLabel,
+  );
+  getDb()
+    .prepare(
+      `
+      INSERT INTO browser_sessions (
+        id,
+        user_id,
+        profile_id,
+        profile_key,
+        site_key,
+        account_label,
+        state,
+        blocked_reason,
+        owner_run_id,
+        last_seen_at,
+        last_live_context_at,
+        created_at,
+        updated_at
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        user_id = COALESCE(excluded.user_id, browser_sessions.user_id),
+        profile_id = COALESCE(excluded.profile_id, browser_sessions.profile_id),
+        profile_key = excluded.profile_key,
+        site_key = excluded.site_key,
+        account_label = excluded.account_label,
+        state = excluded.state,
+        blocked_reason = excluded.blocked_reason,
+        owner_run_id = excluded.owner_run_id,
+        last_seen_at = excluded.last_seen_at,
+        last_live_context_at = COALESCE(excluded.last_live_context_at, browser_sessions.last_live_context_at),
+        updated_at = excluded.updated_at
+    `,
+    )
+    .run(
+      input.id,
+      input.userId ?? null,
+      input.profileId ?? null,
+      profileKey,
+      normalizedSiteKey,
+      normalizedAccountLabel,
+      input.state,
+      input.blockedReason ?? null,
+      input.ownerRunId ?? null,
+      lastSeenAt,
+      input.lastLiveContextAt ?? null,
+      now,
+      now,
+    );
+
+  const snapshot = getBrowserSessionById(input.id);
+  if (!snapshot) {
+    throw new Error(`Failed to persist browser session ${input.id}`);
+  }
+  return snapshot;
+}
+
+export function reconcileBrowserSessionsOnStartup(
+  now = new Date().toISOString(),
+): number {
+  const result = getDb()
+    .prepare(
+      `
+      UPDATE browser_sessions
+      SET state = 'disconnected',
+          updated_at = ?,
+          last_seen_at = ?
+      WHERE state IN ('active', 'takeover')
+    `,
+    )
+    .run(now, now);
+  return result.changes;
 }

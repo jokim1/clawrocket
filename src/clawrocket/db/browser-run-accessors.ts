@@ -9,7 +9,10 @@ import type {
 import {
   appendOutboxEvent,
   countRunnableMainRuns,
+  getTalkRunBrowserSessionId,
+  getTalkRunBlockedReason,
   getTalkRunById,
+  inferTalkRunBlockedReasonFromBrowserBlock,
   queueNextDeferredMainRunIfIdle,
   type TalkRunRecord,
 } from './accessors.js';
@@ -152,12 +155,19 @@ export function pauseRunForBrowserBlock(input: {
           `
           UPDATE talk_runs
           SET status = 'awaiting_confirmation',
+              blocked_reason = ?,
+              browser_session_id = ?,
               metadata_json = ?,
               cancel_reason = NULL
           WHERE id = ?
         `,
         )
-        .run(metadataJson, run.id);
+        .run(
+          inferTalkRunBlockedReasonFromBrowserBlock(txInput.browserBlock),
+          txInput.browserBlock.sessionId,
+          metadataJson,
+          run.id,
+        );
 
       appendOutboxEvent({
         topic: runTopic(run),
@@ -182,6 +192,10 @@ export function pauseRunForBrowserBlock(input: {
         run: {
           ...run,
           status: 'awaiting_confirmation',
+          blocked_reason: inferTalkRunBlockedReasonFromBrowserBlock(
+            txInput.browserBlock,
+          ),
+          browser_session_id: txInput.browserBlock.sessionId,
           metadata_json: metadataJson,
         },
       };
@@ -248,6 +262,8 @@ export function resumeBrowserBlockedRun(input: {
           `
           UPDATE talk_runs
           SET status = ?,
+              blocked_reason = ?,
+              browser_session_id = ?,
               cancel_reason = NULL,
               ended_at = NULL,
               metadata_json = ?
@@ -256,6 +272,11 @@ export function resumeBrowserBlockedRun(input: {
         )
         .run(
           queueState === 'queued' ? 'queued' : 'awaiting_confirmation',
+          queueState === 'queued' ? null : getTalkRunBlockedReason(run),
+          queueState === 'queued'
+            ? (txInput.browserResume.sessionId ??
+                getTalkRunBrowserSessionId(run))
+            : getTalkRunBrowserSessionId(run),
           metadataJson,
           run.id,
         );
@@ -288,6 +309,13 @@ export function resumeBrowserBlockedRun(input: {
         run: {
           ...run,
           status: queueState === 'queued' ? 'queued' : 'awaiting_confirmation',
+          blocked_reason:
+            queueState === 'queued' ? null : getTalkRunBlockedReason(run),
+          browser_session_id:
+            queueState === 'queued'
+              ? (txInput.browserResume.sessionId ??
+                getTalkRunBrowserSessionId(run))
+              : getTalkRunBrowserSessionId(run),
           metadata_json: metadataJson,
           cancel_reason: null,
           ended_at: null,
@@ -329,6 +357,8 @@ export function rejectBrowserBlockedRun(input: {
           `
           UPDATE talk_runs
           SET status = 'cancelled',
+              blocked_reason = NULL,
+              browser_session_id = NULL,
               ended_at = ?,
               cancel_reason = ?,
               metadata_json = ?
@@ -372,6 +402,8 @@ export function rejectBrowserBlockedRun(input: {
         run: {
           ...run,
           status: 'cancelled',
+          blocked_reason: null,
+          browser_session_id: null,
           ended_at: now,
           cancel_reason:
             txInput.cancelReason || 'browser_confirmation_rejected',
@@ -414,6 +446,8 @@ export function cancelBrowserBlockedRun(input: {
           `
           UPDATE talk_runs
           SET status = 'cancelled',
+              blocked_reason = NULL,
+              browser_session_id = NULL,
               ended_at = ?,
               cancel_reason = ?,
               metadata_json = ?
@@ -452,6 +486,8 @@ export function cancelBrowserBlockedRun(input: {
         run: {
           ...run,
           status: 'cancelled',
+          blocked_reason: null,
+          browser_session_id: null,
           ended_at: now,
           cancel_reason: txInput.cancelReason,
           metadata_json: metadataJson,

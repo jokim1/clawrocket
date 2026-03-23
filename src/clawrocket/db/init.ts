@@ -1,7 +1,14 @@
 import Database from 'better-sqlite3';
 
 import { getDb } from '../../db.js';
+import { TIMEZONE } from '../../config.js';
 import { BUILTIN_ADDITIONAL_PROVIDERS } from '../agents/builtin-additional-providers.js';
+
+const DEFAULT_CHANNEL_BINDING_TIMEZONE = TIMEZONE || 'UTC';
+
+function sqlStringLiteral(value: string): string {
+  return `'${value.replace(/'/g, "''")}'`;
+}
 
 function seedBuiltinLlmProvider(database: Database.Database): void {
   const now = new Date().toISOString();
@@ -805,6 +812,29 @@ function createClawrocketSchema(database: Database.Database): void {
     CREATE UNIQUE INDEX IF NOT EXISTS idx_browser_profiles_path
       ON browser_profiles(profile_path);
 
+    CREATE TABLE IF NOT EXISTS browser_sessions (
+      id TEXT PRIMARY KEY,
+      user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+      profile_id TEXT REFERENCES browser_profiles(id) ON DELETE SET NULL,
+      profile_key TEXT NOT NULL,
+      site_key TEXT NOT NULL,
+      account_label TEXT,
+      state TEXT NOT NULL
+        CHECK(state IN ('active', 'blocked', 'takeover', 'disconnected', 'closed')),
+      blocked_reason TEXT,
+      owner_run_id TEXT REFERENCES talk_runs(id) ON DELETE SET NULL,
+      last_seen_at TEXT NOT NULL,
+      last_live_context_at TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_browser_sessions_profile_key
+      ON browser_sessions(profile_key, updated_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_browser_sessions_owner_run
+      ON browser_sessions(owner_run_id, updated_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_browser_sessions_site_state
+      ON browser_sessions(site_key, state, updated_at DESC);
+
     CREATE TABLE IF NOT EXISTS talk_context_summary (
       talk_id TEXT PRIMARY KEY REFERENCES talks(id) ON DELETE CASCADE,
       summary_text TEXT NOT NULL,
@@ -1011,7 +1041,8 @@ function createClawrocketSchema(database: Database.Database): void {
         CHECK(delivery_mode IN ('reply', 'channel')),
       thread_mode TEXT NOT NULL DEFAULT 'conversation'
         CHECK(thread_mode IN ('conversation')),
-      channel_context_note TEXT,
+      timezone TEXT NOT NULL DEFAULT ${sqlStringLiteral(DEFAULT_CHANNEL_BINDING_TIMEZONE)},
+      instructions TEXT,
       allowed_senders_json TEXT,
       inbound_rate_limit_per_minute INTEGER,
       max_pending_events INTEGER DEFAULT 20,
@@ -1021,6 +1052,17 @@ function createClawrocketSchema(database: Database.Database): void {
       updated_at TEXT NOT NULL,
       updated_by TEXT REFERENCES users(id)
     );
+
+    CREATE TABLE IF NOT EXISTS talk_channel_thread_map (
+      binding_id TEXT NOT NULL REFERENCES talk_channel_bindings(id) ON DELETE CASCADE,
+      source_thread_key TEXT NOT NULL,
+      talk_thread_id TEXT NOT NULL REFERENCES talk_threads(id) ON DELETE CASCADE,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (binding_id, source_thread_key)
+    );
+    CREATE INDEX IF NOT EXISTS idx_talk_channel_thread_map_thread
+      ON talk_channel_thread_map(talk_thread_id);
 
     CREATE TABLE IF NOT EXISTS talk_runs (
       id TEXT PRIMARY KEY,
@@ -1035,12 +1077,26 @@ function createClawrocketSchema(database: Database.Database): void {
       executor_alias TEXT,
       executor_model TEXT,
       thread_id TEXT NOT NULL,
+      run_kind TEXT NOT NULL DEFAULT 'conversation'
+        CHECK(run_kind IN ('conversation', 'instruction_review')),
       idempotency_key TEXT,
       response_group_id TEXT,
       sequence_index INTEGER,
       source_binding_id TEXT,
       source_external_message_id TEXT,
       source_thread_key TEXT,
+      task_type TEXT
+        CHECK(task_type IN ('chat', 'browser')),
+      browser_phase TEXT
+        CHECK(browser_phase IN ('starting', 'interacting', 'summarizing')),
+      blocked_reason TEXT
+        CHECK(blocked_reason IN ('login_required', 'phone_approval', 'app_approval', 'code_entry', 'session_conflict', 'manual_takeover')),
+      browser_session_id TEXT,
+      selected_mode TEXT
+        CHECK(selected_mode IN ('api', 'subscription')),
+      transport TEXT
+        CHECK(transport IN ('direct', 'subscription')),
+      timeout_phase TEXT,
       created_at TEXT NOT NULL,
       started_at TEXT,
       ended_at TEXT,
@@ -1053,6 +1109,10 @@ function createClawrocketSchema(database: Database.Database): void {
       ON talk_runs(status, created_at);
     CREATE INDEX IF NOT EXISTS idx_talk_runs_group_sequence
       ON talk_runs(response_group_id, sequence_index, created_at);
+    CREATE INDEX IF NOT EXISTS idx_talk_runs_thread_status_created
+      ON talk_runs(thread_id, status, created_at);
+    CREATE INDEX IF NOT EXISTS idx_talk_runs_browser_session
+      ON talk_runs(browser_session_id, status, created_at);
 
     CREATE TABLE IF NOT EXISTS run_confirmations (
       id TEXT PRIMARY KEY,
@@ -1260,6 +1320,7 @@ function createClawrocketSchema(database: Database.Database): void {
   migrateChannelConnectionSecretsTable(database);
   migrateChannelProviderConfigTables(database);
   migrateChannelTargetRegistryColumns(database);
+  migrateTalkChannelThreadMapTable(database);
   migrateOAuthStateRequesterColumns(database);
 
   migrateMainAgentToAnthropic(database);
@@ -1569,6 +1630,8 @@ function migrateTalkRunsTable(database: Database.Database): void {
       executor_alias TEXT,
       executor_model TEXT,
       thread_id TEXT,
+      run_kind TEXT NOT NULL DEFAULT 'conversation'
+        CHECK(run_kind IN ('conversation', 'instruction_review')),
       idempotency_key TEXT,
       response_group_id TEXT,
       sequence_index INTEGER,
@@ -1590,12 +1653,12 @@ function migrateTalkRunsTable(database: Database.Database): void {
     -- 4. Copy rows back (old table may not have all columns)
     INSERT INTO talk_runs (
       id, talk_id, requested_by, status,
-      trigger_message_id, created_at,
+      trigger_message_id, run_kind, created_at,
       started_at, ended_at, cancel_reason
     )
     SELECT
-      id, talk_id, requested_by, status,
-      trigger_message_id, created_at,
+      id, talk_id, requested_by, status, trigger_message_id, 'conversation',
+      created_at,
       started_at, ended_at, cancel_reason
     FROM talk_runs_migration_backup;
 
@@ -1670,6 +1733,12 @@ function migrateAddMissingColumns(database: Database.Database): void {
       definition: 'TEXT',
     },
     {
+      table: 'talk_runs',
+      column: 'run_kind',
+      definition:
+        "TEXT NOT NULL DEFAULT 'conversation' CHECK(run_kind IN ('conversation', 'instruction_review'))",
+    },
+    {
       table: 'talks',
       column: 'orchestration_mode',
       definition: "TEXT NOT NULL DEFAULT 'ordered'",
@@ -1702,6 +1771,43 @@ function migrateAddMissingColumns(database: Database.Database): void {
     {
       table: 'talk_runs',
       column: 'source_thread_key',
+      definition: 'TEXT',
+    },
+    {
+      table: 'talk_runs',
+      column: 'task_type',
+      definition: "TEXT CHECK(task_type IN ('chat', 'browser'))",
+    },
+    {
+      table: 'talk_runs',
+      column: 'browser_phase',
+      definition:
+        "TEXT CHECK(browser_phase IN ('starting', 'interacting', 'summarizing'))",
+    },
+    {
+      table: 'talk_runs',
+      column: 'blocked_reason',
+      definition:
+        "TEXT CHECK(blocked_reason IN ('login_required', 'phone_approval', 'app_approval', 'code_entry', 'session_conflict', 'manual_takeover'))",
+    },
+    {
+      table: 'talk_runs',
+      column: 'browser_session_id',
+      definition: 'TEXT',
+    },
+    {
+      table: 'talk_runs',
+      column: 'selected_mode',
+      definition: "TEXT CHECK(selected_mode IN ('api', 'subscription'))",
+    },
+    {
+      table: 'talk_runs',
+      column: 'transport',
+      definition: "TEXT CHECK(transport IN ('direct', 'subscription'))",
+    },
+    {
+      table: 'talk_runs',
+      column: 'timeout_phase',
       definition: 'TEXT',
     },
     // talk_agents — columns that may be missing if table was partially migrated
@@ -2404,10 +2510,6 @@ function migrateDataConnectorsTable(database: Database.Database): void {
   `);
 }
 
-/**
- * talk_channel_policies: live DB has inbound_rate_limit_per_minute NOT NULL
- * and max_deferred_age_minutes DEFAULT 10. init.ts has nullable and DEFAULT 60.
- */
 function migrateTalkChannelPoliciesTable(database: Database.Database): void {
   const columns = database
     .prepare(`PRAGMA table_info(talk_channel_policies)`)
@@ -2418,6 +2520,19 @@ function migrateTalkChannelPoliciesTable(database: Database.Database): void {
   }>;
   if (columns.length === 0) return;
 
+  const hasInstructions = columns.some(
+    (column) => column.name === 'instructions',
+  );
+  const hasLegacyInstructions = columns.some(
+    (column) => column.name === 'channel_context_note',
+  );
+  const hasBehaviorMode = columns.some(
+    (column) => column.name === 'behavior_mode',
+  );
+  const hasBehaviorConfig = columns.some(
+    (column) => column.name === 'behavior_config',
+  );
+  const hasTimezone = columns.some((column) => column.name === 'timezone');
   const rateCol = columns.find(
     (c) => c.name === 'inbound_rate_limit_per_minute',
   );
@@ -2426,7 +2541,24 @@ function migrateTalkChannelPoliciesTable(database: Database.Database): void {
   );
   const rateNeedsFix = rateCol && rateCol.notnull === 1;
   const defaultNeedsFix = deferredCol && deferredCol.dflt_value === '10';
-  if (!rateNeedsFix && !defaultNeedsFix) return;
+  const needsRebuild =
+    !hasInstructions ||
+    !hasTimezone ||
+    hasLegacyInstructions ||
+    hasBehaviorMode ||
+    hasBehaviorConfig ||
+    rateNeedsFix ||
+    defaultNeedsFix;
+  if (!needsRebuild) return;
+
+  const instructionsSelect = hasInstructions
+    ? 'instructions'
+    : hasLegacyInstructions
+      ? 'channel_context_note'
+      : 'NULL';
+  const timezoneSelect = hasTimezone
+    ? `COALESCE(timezone, ${sqlStringLiteral(DEFAULT_CHANNEL_BINDING_TIMEZONE)})`
+    : sqlStringLiteral(DEFAULT_CHANNEL_BINDING_TIMEZONE);
 
   database.exec(`
     CREATE TABLE talk_channel_policies_mig AS SELECT * FROM talk_channel_policies;
@@ -2443,7 +2575,8 @@ function migrateTalkChannelPoliciesTable(database: Database.Database): void {
         CHECK(delivery_mode IN ('reply', 'channel')),
       thread_mode TEXT NOT NULL DEFAULT 'conversation'
         CHECK(thread_mode IN ('conversation')),
-      channel_context_note TEXT,
+      timezone TEXT NOT NULL DEFAULT ${sqlStringLiteral(DEFAULT_CHANNEL_BINDING_TIMEZONE)},
+      instructions TEXT,
       allowed_senders_json TEXT,
       inbound_rate_limit_per_minute INTEGER,
       max_pending_events INTEGER DEFAULT 20,
@@ -2456,16 +2589,16 @@ function migrateTalkChannelPoliciesTable(database: Database.Database): void {
 
     INSERT INTO talk_channel_policies (
       binding_id, response_mode, responder_mode, responder_agent_id,
-      delivery_mode, thread_mode, channel_context_note, allowed_senders_json,
+      delivery_mode, thread_mode, timezone, instructions, allowed_senders_json,
       inbound_rate_limit_per_minute, max_pending_events, overflow_policy,
       max_deferred_age_minutes, updated_at, updated_by
     )
     SELECT
       binding_id, response_mode, responder_mode, responder_agent_id,
-      delivery_mode, thread_mode, channel_context_note, allowed_senders_json,
+      delivery_mode, thread_mode, ${timezoneSelect}, ${instructionsSelect}, allowed_senders_json,
       inbound_rate_limit_per_minute, max_pending_events,
       COALESCE(overflow_policy, 'drop_oldest'),
-      max_deferred_age_minutes, updated_at, updated_by
+      COALESCE(max_deferred_age_minutes, 60), updated_at, updated_by
     FROM talk_channel_policies_mig;
 
     DROP TABLE talk_channel_policies_mig;
@@ -2809,12 +2942,26 @@ function migrateEnforceThreadIdsNotNull(database: Database.Database): void {
         executor_alias TEXT,
         executor_model TEXT,
         thread_id TEXT NOT NULL,
+        run_kind TEXT NOT NULL DEFAULT 'conversation'
+          CHECK(run_kind IN ('conversation', 'instruction_review')),
         idempotency_key TEXT,
         response_group_id TEXT,
         sequence_index INTEGER,
         source_binding_id TEXT,
         source_external_message_id TEXT,
         source_thread_key TEXT,
+        task_type TEXT
+          CHECK(task_type IN ('chat', 'browser')),
+        browser_phase TEXT
+          CHECK(browser_phase IN ('starting', 'interacting', 'summarizing')),
+        blocked_reason TEXT
+          CHECK(blocked_reason IN ('login_required', 'phone_approval', 'app_approval', 'code_entry', 'session_conflict', 'manual_takeover')),
+        browser_session_id TEXT,
+        selected_mode TEXT
+          CHECK(selected_mode IN ('api', 'subscription')),
+        transport TEXT
+          CHECK(transport IN ('direct', 'subscription')),
+        timeout_phase TEXT,
         created_at TEXT NOT NULL,
         started_at TEXT,
         ended_at TEXT,
@@ -2827,19 +2974,27 @@ function migrateEnforceThreadIdsNotNull(database: Database.Database): void {
         ON talk_runs(status, created_at);
       CREATE INDEX idx_talk_runs_group_sequence
         ON talk_runs(response_group_id, sequence_index, created_at);
+      CREATE INDEX idx_talk_runs_thread_status_created
+        ON talk_runs(thread_id, status, created_at);
+      CREATE INDEX idx_talk_runs_browser_session
+        ON talk_runs(browser_session_id, status, created_at);
 
       INSERT INTO talk_runs (
         id, talk_id, requested_by, status, trigger_message_id, target_agent_id,
-        agent_id, executor_alias, executor_model, thread_id, idempotency_key,
+        agent_id, executor_alias, executor_model, thread_id, run_kind, idempotency_key,
         response_group_id, sequence_index,
         source_binding_id, source_external_message_id, source_thread_key,
+        task_type, browser_phase, blocked_reason, browser_session_id,
+        selected_mode, transport, timeout_phase,
         created_at, started_at, ended_at, cancel_reason, metadata_json
       )
       SELECT
         id, talk_id, requested_by, status, trigger_message_id, ${selectOrNull('target_agent_id')},
-        ${selectOrNull('agent_id')}, ${selectOrNull('executor_alias')}, ${selectOrNull('executor_model')}, thread_id, ${selectOrNull('idempotency_key')},
+        ${selectOrNull('agent_id')}, ${selectOrNull('executor_alias')}, ${selectOrNull('executor_model')}, thread_id, ${talkRunColumnNames.has('run_kind') ? 'run_kind' : "'conversation' AS run_kind"}, ${selectOrNull('idempotency_key')},
         ${selectOrNull('response_group_id')}, ${selectOrNull('sequence_index')},
         ${selectOrNull('source_binding_id')}, ${selectOrNull('source_external_message_id')}, ${selectOrNull('source_thread_key')},
+        ${selectOrNull('task_type')}, ${selectOrNull('browser_phase')}, ${selectOrNull('blocked_reason')}, ${selectOrNull('browser_session_id')},
+        ${selectOrNull('selected_mode')}, ${selectOrNull('transport')}, ${selectOrNull('timeout_phase')},
         created_at, started_at, ended_at, cancel_reason, ${selectOrNull('metadata_json')}
       FROM talk_runs_thread_backup;
 
@@ -3118,6 +3273,21 @@ function migrateChannelTargetRegistryColumns(
       ALTER TABLE channel_targets ADD COLUMN registered_by TEXT REFERENCES users(id);
     `);
   }
+}
+
+function migrateTalkChannelThreadMapTable(database: Database.Database): void {
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS talk_channel_thread_map (
+      binding_id TEXT NOT NULL REFERENCES talk_channel_bindings(id) ON DELETE CASCADE,
+      source_thread_key TEXT NOT NULL,
+      talk_thread_id TEXT NOT NULL REFERENCES talk_threads(id) ON DELETE CASCADE,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (binding_id, source_thread_key)
+    );
+    CREATE INDEX IF NOT EXISTS idx_talk_channel_thread_map_thread
+      ON talk_channel_thread_map(talk_thread_id);
+  `);
 }
 
 function migrateOAuthStateRequesterColumns(database: Database.Database): void {

@@ -876,7 +876,7 @@ const HYDRATED_TALK_CHANNEL_BINDING_SELECT = `
     p.responder_agent_id,
     p.delivery_mode,
     p.thread_mode,
-    p.channel_context_note,
+    p.instructions AS channel_context_note,
     p.allowed_senders_json,
     p.inbound_rate_limit_per_minute,
     p.max_pending_events,
@@ -1044,7 +1044,7 @@ export function getResolvedTalkChannelBinding(input: {
         p.responder_agent_id,
         p.delivery_mode,
         p.thread_mode,
-        p.channel_context_note,
+        p.instructions AS channel_context_note,
         p.allowed_senders_json,
         p.inbound_rate_limit_per_minute,
         p.max_pending_events,
@@ -1218,7 +1218,7 @@ export function createTalkChannelBinding(input: {
         `
         INSERT INTO talk_channel_policies (
           binding_id, response_mode, responder_mode, responder_agent_id,
-          delivery_mode, thread_mode, channel_context_note, allowed_senders_json,
+          delivery_mode, thread_mode, instructions, allowed_senders_json,
           inbound_rate_limit_per_minute, max_pending_events, overflow_policy,
           max_deferred_age_minutes, updated_at, updated_by
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -1299,7 +1299,7 @@ export function updateTalkChannelBinding(input: {
             responder_mode = ?,
             responder_agent_id = ?,
             delivery_mode = ?,
-            channel_context_note = ?,
+            instructions = ?,
             allowed_senders_json = ?,
             inbound_rate_limit_per_minute = ?,
             max_pending_events = ?,

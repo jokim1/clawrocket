@@ -33,6 +33,7 @@ describe('clawrocket schema init', () => {
     expect(tableNames).toContain('talk_runs');
     expect(tableNames).toContain('registered_agents');
     expect(tableNames).toContain('browser_profiles');
+    expect(tableNames).toContain('browser_sessions');
     expect(tableNames).toContain('talk_agents');
     expect(tableNames).toContain('talk_llm_policies');
     expect(tableNames).toContain('talk_executor_sessions');
@@ -72,6 +73,26 @@ describe('clawrocket schema init', () => {
     const colNames = columns.map((c) => c.name);
 
     expect(colNames).toContain('version');
+  });
+
+  it('talk_runs includes typed browser lifecycle columns', () => {
+    _initTestDatabase();
+    const db = getDb();
+
+    const columns = db
+      .prepare(`PRAGMA table_info('talk_runs')`)
+      .all() as Array<{
+      name: string;
+    }>;
+    const colNames = columns.map((c) => c.name);
+
+    expect(colNames).toContain('task_type');
+    expect(colNames).toContain('browser_phase');
+    expect(colNames).toContain('blocked_reason');
+    expect(colNames).toContain('browser_session_id');
+    expect(colNames).toContain('selected_mode');
+    expect(colNames).toContain('transport');
+    expect(colNames).toContain('timeout_phase');
   });
 
   it('registered_agents table has tool_permissions_json', () => {
