@@ -11,11 +11,14 @@ import {
   enqueueMainTurnAtomic,
   getOutboxEventsForTopics,
   getTalkRunById,
+  pauseRunForBrowserBlock,
   upsertSettingValue,
   updateTalkRunMetadata,
   upsertUser,
 } from '../db/index.js';
 import { createRegisteredAgent } from '../db/agent-accessors.js';
+import type { BrowserBlockMetadata } from '../browser/metadata.js';
+import { BrowserRunPausedError } from '../browser/run-paused-error.js';
 import type {
   MainExecutionEvent,
   MainExecutorInput,
@@ -115,6 +118,38 @@ function createFailingExecutor(errorMessage: string): MainExecutorFn {
   };
 }
 
+function createPausedExecutor(): MainExecutorFn {
+  return async (input: MainExecutorInput): Promise<MainExecutorOutput> => {
+    const browserBlock: BrowserBlockMetadata = {
+      kind: 'auth_required',
+      sessionId: 'bs_linkedin_auth',
+      siteKey: 'linkedin',
+      accountLabel: null,
+      url: 'https://www.linkedin.com/checkpoint/challenge',
+      title: 'LinkedIn Login',
+      message: 'LinkedIn requires interactive authentication.',
+      riskReason: null,
+      setupCommand: "npx tsx src/clawrocket/browser/setup.ts --site 'linkedin'",
+      artifacts: [],
+      confirmationId: null,
+      pendingToolCall: {
+        toolName: 'browser_open',
+        args: {
+          siteKey: 'linkedin',
+          url: 'https://www.linkedin.com/messaging/',
+        },
+      },
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    pauseRunForBrowserBlock({
+      runId: input.runId,
+      browserBlock,
+    });
+    throw new BrowserRunPausedError(input.runId, browserBlock);
+  };
+}
+
 /** Helper to enqueue a turn and return its IDs. */
 function enqueueTurn(threadId?: string) {
   const tid = threadId ?? randomUUID();
@@ -143,6 +178,24 @@ async function waitForRunTerminal(
   }
   throw new Error(
     `Run ${runId} did not reach terminal status within ${timeoutMs}ms`,
+  );
+}
+
+async function waitForRunStatus(
+  runId: string,
+  status: 'awaiting_confirmation' | 'completed' | 'failed',
+  timeoutMs = 5000,
+): Promise<void> {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    const run = getTalkRunById(runId);
+    if (run?.status === status) {
+      return;
+    }
+    await new Promise((r) => setTimeout(r, 20));
+  }
+  throw new Error(
+    `Run ${runId} did not reach status ${status} within ${timeoutMs}ms`,
   );
 }
 
@@ -634,6 +687,44 @@ describe('MainRunWorker integration', () => {
     expect(metadata.terminalSummary?.body).toBe(
       'The browser did not reach a usable page state quickly enough.',
     );
+  });
+
+  it('keeps browser auth blocks in awaiting_confirmation instead of failing the run', async () => {
+    const threadId = randomUUID();
+    const runId = `run_${randomUUID()}`;
+    enqueueMainTurnAtomic({
+      threadId,
+      userId: USER_A,
+      content: 'Open LinkedIn and tell me what you can access.',
+      messageId: `msg_${randomUUID()}`,
+      runId,
+      taskType: 'browser',
+      selectedMode: 'subscription',
+      transport: 'subscription',
+    });
+
+    const worker = new MainRunWorker({
+      pollMs: 10,
+      maxConcurrency: 1,
+      executor: createPausedExecutor(),
+    });
+    await worker.start();
+
+    await waitForRunStatus(runId, 'awaiting_confirmation');
+    await worker.stop();
+
+    const run = getTalkRunById(runId)!;
+    expect(run.status).toBe('awaiting_confirmation');
+    expect(run.cancel_reason).toBeNull();
+    const metadata = JSON.parse(run.metadata_json || '{}') as {
+      browserBlock?: { kind?: string; siteKey?: string };
+      timeoutPhase?: string | null;
+    };
+    expect(metadata.browserBlock).toMatchObject({
+      kind: 'auth_required',
+      siteKey: 'linkedin',
+    });
+    expect(metadata.timeoutPhase ?? null).toBeNull();
   });
 
   it('recovers interrupted runs on startup', async () => {
