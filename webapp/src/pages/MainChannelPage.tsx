@@ -19,6 +19,7 @@ import { useNavigate, useParams } from 'react-router-dom';
 
 import {
   ApiError,
+  cancelMainRun,
   deleteMainMessages,
   deleteMainThread,
   getMainThread,
@@ -78,6 +79,12 @@ type MainTimelineEntry =
   | { kind: 'message'; message: MainThreadMessage }
   | { kind: 'run'; run: MainRun }
   | { kind: 'terminal-run'; run: MainRun };
+
+type OpenInBrowserNotice = {
+  runId: string;
+  tone: 'success' | 'error';
+  message: string;
+};
 
 type MainAction =
   | { type: 'THREADS_LOADING' }
@@ -357,6 +364,29 @@ function describeMainBrowserCapability(agent: RegisteredAgent | null): {
     badgeTone: 'ready',
     note: null,
   };
+}
+
+function getTriggerMessageForRun(
+  run: MainRun,
+  messages: MainThreadMessage[],
+): MainThreadMessage | null {
+  if (!run.triggerMessageId) return null;
+  return (
+    messages.find(
+      (message) =>
+        message.id === run.triggerMessageId && message.role === 'user',
+    ) || null
+  );
+}
+
+function canOpenRunInBrowserInstead(
+  run: MainRun,
+  messages: MainThreadMessage[],
+  capability: ReturnType<typeof describeMainBrowserCapability>,
+): boolean {
+  if (run.taskType !== 'chat') return false;
+  if (capability.badgeTone !== 'ready') return false;
+  return Boolean(getTriggerMessageForRun(run, messages));
 }
 
 function summarizeTerminalMainRun(run: MainRun): {
@@ -1050,6 +1080,11 @@ export function MainChannelPage({
     status: 'idle' | 'saving' | 'error' | 'success';
     message?: string;
   }>({ status: 'idle' });
+  const [openInBrowserPendingRunId, setOpenInBrowserPendingRunId] = useState<
+    string | null
+  >(null);
+  const [openInBrowserState, setOpenInBrowserState] =
+    useState<OpenInBrowserNotice | null>(null);
   const [runClockMs, setRunClockMs] = useState(() => Date.now());
 
   // ── Auto-scroll ──
@@ -1196,6 +1231,8 @@ export function MainChannelPage({
 
   useEffect(() => {
     threadSnapshotVersionRef.current += 1;
+    setOpenInBrowserPendingRunId(null);
+    setOpenInBrowserState(null);
   }, [state.activeThreadId]);
 
   // ── Load messages when activeThreadId changes ──
@@ -1824,6 +1861,70 @@ export function MainChannelPage({
     [navigate, onUnauthorized, refreshActiveThread, state.activeThreadId],
   );
 
+  const handleOpenInBrowserInstead = useCallback(
+    async (run: MainRun) => {
+      const triggerMessage = getTriggerMessageForRun(run, state.messages);
+      if (!triggerMessage) {
+        setOpenInBrowserState({
+          runId: run.id,
+          tone: 'error',
+          message:
+            'The original user message is no longer available for browser retry.',
+        });
+        return;
+      }
+
+      setOpenInBrowserState(null);
+      setOpenInBrowserPendingRunId(run.id);
+      try {
+        if (isMainRunActive(run)) {
+          try {
+            await cancelMainRun({ runId: run.id });
+          } catch (error) {
+            if (
+              !(error instanceof ApiError && error.code === 'no_active_run')
+            ) {
+              throw error;
+            }
+          }
+        }
+
+        const result = await postMainMessage({
+          content: triggerMessage.content,
+          threadId: run.threadId,
+          forceBrowser: true,
+        });
+        reportRunVisible(result.run.id);
+        await refreshActiveThread({ refreshThreads: true });
+        setOpenInBrowserState({
+          runId: run.id,
+          tone: 'success',
+          message: isMainRunActive(run)
+            ? 'Cancelled the chat run and queued a browser run from the same prompt.'
+            : 'Queued a browser run from the same prompt.',
+        });
+      } catch (error) {
+        if (error instanceof UnauthorizedError) {
+          onUnauthorized();
+          return;
+        }
+        setOpenInBrowserState({
+          runId: run.id,
+          tone: 'error',
+          message:
+            error instanceof Error
+              ? error.message
+              : 'Unable to retry this prompt as a browser run.',
+        });
+      } finally {
+        setOpenInBrowserPendingRunId((current) =>
+          current === run.id ? null : current,
+        );
+      }
+    },
+    [onUnauthorized, refreshActiveThread, reportRunVisible, state.messages],
+  );
+
   // ── Send message ──
   const handleSend = useCallback(
     async (event: FormEvent) => {
@@ -2154,6 +2255,15 @@ export function MainChannelPage({
                 const { run } = entry;
                 const isStalled = isMainRunStalled(run, runClockMs);
                 const runMetaLine = formatMainRunMetaLine(run);
+                const canOpenInBrowser = canOpenRunInBrowserInstead(
+                  run,
+                  state.messages,
+                  mainBrowserCapability,
+                );
+                const openInBrowserNotice =
+                  openInBrowserState?.runId === run.id
+                    ? openInBrowserState
+                    : null;
                 const statusLabel =
                   run.promotionState === 'pending'
                     ? 'Starting background task…'
@@ -2203,6 +2313,27 @@ export function MainChannelPage({
                         <em>* {runBodyCopy}</em>
                       </p>
                     )}
+                    {canOpenInBrowser ? (
+                      <div className="browser-block-actions">
+                        <button
+                          type="button"
+                          className="secondary-btn"
+                          disabled={openInBrowserPendingRunId === run.id}
+                          onClick={() => {
+                            void handleOpenInBrowserInstead(run);
+                          }}
+                        >
+                          {openInBrowserPendingRunId === run.id
+                            ? 'Opening in browser…'
+                            : 'Open in browser instead'}
+                        </button>
+                      </div>
+                    ) : null}
+                    {openInBrowserNotice ? (
+                      <p className="browser-block-message">
+                        {openInBrowserNotice.message}
+                      </p>
+                    ) : null}
                     {runMetaLine ? (
                       <p className="policy-muted">{runMetaLine}</p>
                     ) : null}
@@ -2213,6 +2344,15 @@ export function MainChannelPage({
               if (entry.kind === 'terminal-run') {
                 const { run } = entry;
                 const terminalSummary = summarizeTerminalMainRun(run);
+                const canOpenInBrowser = canOpenRunInBrowserInstead(
+                  run,
+                  state.messages,
+                  mainBrowserCapability,
+                );
+                const openInBrowserNotice =
+                  openInBrowserState?.runId === run.id
+                    ? openInBrowserState
+                    : null;
                 if (!terminalSummary) {
                   return null;
                 }
@@ -2234,6 +2374,27 @@ export function MainChannelPage({
                     {formatMainRunMetaLine(run) ? (
                       <p className="policy-muted">
                         {formatMainRunMetaLine(run)}
+                      </p>
+                    ) : null}
+                    {canOpenInBrowser ? (
+                      <div className="browser-block-actions">
+                        <button
+                          type="button"
+                          className="secondary-btn"
+                          disabled={openInBrowserPendingRunId === run.id}
+                          onClick={() => {
+                            void handleOpenInBrowserInstead(run);
+                          }}
+                        >
+                          {openInBrowserPendingRunId === run.id
+                            ? 'Opening in browser…'
+                            : 'Open in browser instead'}
+                        </button>
+                      </div>
+                    ) : null}
+                    {openInBrowserNotice ? (
+                      <p className="browser-block-message">
+                        {openInBrowserNotice.message}
                       </p>
                     ) : null}
                     <ExecutionDecisionSummary

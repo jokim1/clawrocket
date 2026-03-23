@@ -17,6 +17,7 @@ import {
 import { getEffectiveToolsForAgent } from '../../db/agent-accessors.js';
 import {
   canUserAccessMainThread,
+  cancelMainRunAtomic,
   deleteMainMessagesAtomic,
   deleteMainThread,
   enqueueMainTurnAtomic,
@@ -321,6 +322,7 @@ export function getMainThreadRoute(
 interface PostMainMessageBody {
   content?: unknown;
   threadId?: unknown;
+  forceBrowser?: unknown;
 }
 
 interface PostMainMessageResponse {
@@ -329,6 +331,12 @@ interface PostMainMessageResponse {
   runId: string;
   title: string | null;
   run: MainRunApiRecord;
+}
+
+interface CancelMainRunResponse {
+  runId: string;
+  threadId: string;
+  cancelled: boolean;
 }
 
 interface MainRunTerminalSummaryApiRecord {
@@ -588,11 +596,42 @@ export function postMainMessageRoute(
       },
     };
   }
+  if (
+    body.forceBrowser !== undefined &&
+    body.forceBrowser !== null &&
+    typeof body.forceBrowser !== 'boolean'
+  ) {
+    return {
+      statusCode: 400,
+      body: {
+        ok: false,
+        error: {
+          code: 'invalid_input',
+          message: 'forceBrowser must be a boolean if provided',
+        },
+      },
+    };
+  }
 
   const content = body.content.trim();
+  const forceBrowser = body.forceBrowser === true;
   const browserCapable = mainAgentHasBrowserAccess(auth.userId);
+  if (forceBrowser && !browserCapable) {
+    return {
+      statusCode: 409,
+      body: {
+        ok: false,
+        error: {
+          code: 'browser_execution_not_configured',
+          message:
+            'Browser access is disabled for the selected Main agent. Enable browser in AI Agents and retry.',
+        },
+      },
+    };
+  }
   const taskType: 'chat' | 'browser' =
-    browserCapable && looksLikeHighConfidenceBrowserIntent(content)
+    forceBrowser ||
+    (browserCapable && looksLikeHighConfidenceBrowserIntent(content))
       ? 'browser'
       : 'chat';
   let selectedMode: 'api' | 'subscription' | null = null;
@@ -703,6 +742,75 @@ export function postMainMessageRoute(
       },
     };
   }
+}
+
+export function cancelMainRunRoute(
+  auth: AuthContext,
+  runId: string,
+): {
+  statusCode: number;
+  body: ApiEnvelope<CancelMainRunResponse>;
+  cancelledRunning: boolean;
+} {
+  const run = getTalkRunById(runId);
+  if (!run || run.talk_id !== null || !run.thread_id) {
+    return {
+      statusCode: 404,
+      body: {
+        ok: false,
+        error: {
+          code: 'not_found',
+          message: `Main run '${runId}' not found`,
+        },
+      },
+      cancelledRunning: false,
+    };
+  }
+
+  if (!canUserAccessMainThread(run.thread_id, auth.userId)) {
+    return {
+      statusCode: 404,
+      body: {
+        ok: false,
+        error: {
+          code: 'not_found',
+          message: `Main run '${runId}' not found`,
+        },
+      },
+      cancelledRunning: false,
+    };
+  }
+
+  const cancellation = cancelMainRunAtomic({
+    runId,
+    cancelledBy: auth.userId,
+  });
+  if (!cancellation.cancelled) {
+    return {
+      statusCode: 404,
+      body: {
+        ok: false,
+        error: {
+          code: 'no_active_run',
+          message: 'No queued, running, or blocked Main run exists for this id',
+        },
+      },
+      cancelledRunning: false,
+    };
+  }
+
+  return {
+    statusCode: 200,
+    body: {
+      ok: true,
+      data: {
+        runId,
+        threadId: run.thread_id,
+        cancelled: true,
+      },
+    },
+    cancelledRunning: cancellation.cancelledRunning,
+  };
 }
 
 export function listMainRunsRoute(

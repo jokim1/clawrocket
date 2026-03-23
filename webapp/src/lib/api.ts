@@ -3475,6 +3475,7 @@ export async function getMainThread(
 export async function postMainMessage(input: {
   content: string;
   threadId?: string;
+  forceBrowser?: boolean;
 }): Promise<{
   messageId: string;
   threadId: string;
@@ -3494,6 +3495,7 @@ export async function postMainMessage(input: {
     body: JSON.stringify({
       content: input.content,
       ...(input.threadId ? { threadId: input.threadId } : {}),
+      ...(input.forceBrowser === true ? { forceBrowser: true } : {}),
     }),
   });
 }
@@ -3544,6 +3546,24 @@ export async function postMainRunVisible(input: {
       }),
     },
   );
+}
+
+export async function cancelMainRun(input: {
+  runId: string;
+}): Promise<{
+  runId: string;
+  threadId: string;
+  cancelled: boolean;
+}> {
+  return apiMutationRequest<{
+    runId: string;
+    threadId: string;
+    cancelled: boolean;
+  }>(`/api/v1/main/runs/${encodeURIComponent(input.runId)}/cancel`, {
+    method: 'POST',
+    includeJson: true,
+    body: JSON.stringify({}),
+  });
 }
 
 export async function updateMainThread(input: {
