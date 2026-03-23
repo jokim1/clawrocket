@@ -49,10 +49,8 @@ export async function executeBrowserBridgeTool(input: {
     let responseRaw = '';
     let settled = false;
 
-    const finish = (
-      fn: (value: unknown) => void,
-      value: BrowserBridgeResponse | Error,
-    ) => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const finish = (fn: (...args: any[]) => void, value: unknown) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
