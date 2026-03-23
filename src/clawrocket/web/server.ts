@@ -132,6 +132,7 @@ import {
   getEffectiveToolsRoute,
 } from './routes/user-settings.js';
 import {
+  cancelMainRunRoute,
   deleteMainMessagesRoute,
   deleteMainThreadRoute,
   listMainThreadsRoute,
@@ -318,6 +319,9 @@ export function createWebServer(
 
   const noopMainRunWorker: MainRunWorkerControl = {
     wake: () => {
+      /* no-op */
+    },
+    cancelRun: () => {
       /* no-op */
     },
   };
@@ -1697,6 +1701,80 @@ function buildApp(opts: WebServerOptions): Hono {
       payload.data,
     );
     return new Response(JSON.stringify(result.body), {
+      status: result.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
+  });
+
+  app.post('/api/v1/main/runs/:runId/cancel', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+    const rateResult = checkRateLimit({
+      principalId: auth.userId,
+      bucket: 'write',
+    });
+    if (!rateResult.allowed) return rateLimitedResponse(c, rateResult);
+    const csrf = validateCsrfToken({
+      method: c.req.method,
+      authType: auth.authType,
+      cookieHeader: c.req.header('cookie'),
+      csrfHeader: c.req.header('x-csrf-token'),
+    });
+    if (!csrf.ok) {
+      return c.json(
+        { ok: false, error: { code: 'csrf_failed', message: csrf.reason } },
+        403,
+      );
+    }
+
+    const bodyText = await c.req.text();
+    const idempotencyKey = c.req.header('idempotency-key') || null;
+    const precheck = idempotencyPrecheck({
+      userId: auth.userId,
+      idempotencyKey,
+      method: c.req.method,
+      path: c.req.path,
+      bodyText,
+    });
+    if (precheck.error) {
+      return c.json(
+        {
+          ok: false,
+          error: { code: 'idempotency_error', message: precheck.error },
+        },
+        400,
+      );
+    }
+    if (precheck.replay && precheck.response) {
+      return new Response(precheck.response.responseBody, {
+        status: precheck.response.statusCode,
+        headers: {
+          'content-type': 'application/json; charset=utf-8',
+          'x-idempotent-replay': 'true',
+        },
+      });
+    }
+
+    const result = cancelMainRunRoute(auth, c.req.param('runId'));
+    if (result.statusCode === 200 && result.body.ok) {
+      if (result.cancelledRunning) {
+        opts.mainRunWorker.cancelRun(result.body.data.runId);
+      }
+      opts.mainRunWorker.wake();
+    }
+
+    const serialized = JSON.stringify(result.body);
+    saveIdempotencyResult({
+      userId: auth.userId,
+      idempotencyKey,
+      method: c.req.method,
+      path: c.req.path,
+      requestHash: precheck.requestHash,
+      statusCode: result.statusCode,
+      responseBody: serialized,
+    });
+
+    return new Response(serialized, {
       status: result.statusCode,
       headers: { 'content-type': 'application/json; charset=utf-8' },
     });

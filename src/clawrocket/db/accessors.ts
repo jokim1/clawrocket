@@ -5384,6 +5384,99 @@ export function supersedePendingMainPromotionRunsAtomic(input: {
   return tx(input);
 }
 
+export function cancelMainRunAtomic(input: {
+  runId: string;
+  cancelledBy: string;
+  now?: string;
+}): {
+  cancelled: boolean;
+  cancelledRunning: boolean;
+  threadId: string | null;
+} {
+  const tx = getDb().transaction(
+    (
+      txInput: typeof input,
+    ): {
+      cancelled: boolean;
+      cancelledRunning: boolean;
+      threadId: string | null;
+    } => {
+      const run = getTalkRunById(txInput.runId);
+      if (!run || run.talk_id !== null) {
+        return {
+          cancelled: false,
+          cancelledRunning: false,
+          threadId: null,
+        };
+      }
+
+      if (
+        run.status !== 'queued' &&
+        run.status !== 'running' &&
+        run.status !== 'awaiting_confirmation'
+      ) {
+        return {
+          cancelled: false,
+          cancelledRunning: false,
+          threadId: run.thread_id,
+        };
+      }
+
+      const now = txInput.now || new Date().toISOString();
+      const cancelReason = `Cancelled by ${txInput.cancelledBy}`.slice(0, 500);
+      const updated = getDb()
+        .prepare(
+          `
+          UPDATE talk_runs
+          SET status = 'cancelled',
+              ended_at = ?,
+              cancel_reason = ?
+          WHERE id = ? AND status IN ('queued', 'running', 'awaiting_confirmation')
+        `,
+        )
+        .run(now, cancelReason, run.id);
+      if (updated.changes !== 1) {
+        return {
+          cancelled: false,
+          cancelledRunning: false,
+          threadId: run.thread_id,
+        };
+      }
+
+      if (isMainPromotionChildRun(run)) {
+        const metadata = parseMainRunMetadata(run.metadata_json);
+        if (metadata.parentRunId) {
+          updateParentPromotionState(metadata.parentRunId, {
+            promotionState: 'superseded',
+          });
+        }
+      }
+
+      appendOutboxEvent({
+        topic: `user:${run.requested_by}`,
+        eventType: 'main_run_cancelled',
+        payload: JSON.stringify({
+          runId: run.id,
+          threadId: run.thread_id,
+          cancelReason,
+        }),
+      });
+
+      if (run.thread_id) {
+        queueNextDeferredMainRunIfIdle(run.thread_id, now);
+      }
+
+      return {
+        cancelled: true,
+        cancelledRunning: run.status === 'running',
+        threadId: run.thread_id,
+      };
+    },
+  );
+
+  return tx(input);
+}
+
 export function recordMainRunFirstVisibleAt(input: {
   runId: string;
   firstVisibleAt: string;

@@ -57,6 +57,7 @@ export interface MainRunWorkerOptions {
 
 export interface MainRunWorkerControl {
   wake(): void;
+  cancelRun(runId: string): void;
 }
 
 // ============================================================================
@@ -196,6 +197,12 @@ export class MainRunWorker implements MainRunWorkerControl {
     if (!resolver) return;
     this.clearSleepState();
     resolver();
+  }
+
+  cancelRun(runId: string): void {
+    const active = this.activeRunsById.get(runId);
+    if (!active) return;
+    active.controller.abort(`main_run_cancelled:${runId}`);
   }
 
   // --------------------------------------------------------------------------

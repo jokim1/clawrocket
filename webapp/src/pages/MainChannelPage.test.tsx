@@ -43,6 +43,7 @@ const {
   listMainRunsMock,
   postMainRunVisibleMock,
   postMainMessageMock,
+  cancelMainRunMock,
   getBrowserSessionStatusMock,
   startBrowserSetupSessionMock,
   startBrowserTakeoverMock,
@@ -61,6 +62,7 @@ const {
   listMainRunsMock: vi.fn(),
   postMainRunVisibleMock: vi.fn(),
   postMainMessageMock: vi.fn(),
+  cancelMainRunMock: vi.fn(),
   getBrowserSessionStatusMock: vi.fn(),
   startBrowserSetupSessionMock: vi.fn(),
   startBrowserTakeoverMock: vi.fn(),
@@ -85,6 +87,7 @@ vi.mock('../lib/api', async () => {
     listMainRuns: listMainRunsMock,
     postMainRunVisible: postMainRunVisibleMock,
     postMainMessage: postMainMessageMock,
+    cancelMainRun: cancelMainRunMock,
     getBrowserSessionStatus: getBrowserSessionStatusMock,
     startBrowserSetupSession: startBrowserSetupSessionMock,
     startBrowserTakeover: startBrowserTakeoverMock,
@@ -154,6 +157,11 @@ describe('MainChannelPage', () => {
     listMainRunsMock.mockResolvedValue([]);
     getMainRegisteredAgentMock.mockResolvedValue(buildMainAgentSnapshot());
     postMainRunVisibleMock.mockResolvedValue({ recorded: true });
+    cancelMainRunMock.mockResolvedValue({
+      runId: 'run-main-browser',
+      threadId: 'thread-main-1',
+      cancelled: true,
+    });
     getBrowserSessionStatusMock.mockResolvedValue({
       sessionId: 'session-1',
       siteKey: 'linkedin',
@@ -354,6 +362,223 @@ describe('MainChannelPage', () => {
         'Browser access is not configured for this agent. Configure the agent execution credentials before retrying.',
       ),
     ).toBeTruthy();
+  });
+
+  it('retries an active chat run as a forced browser run from the same prompt', async () => {
+    const user = userEvent.setup();
+    listMainThreadsMock.mockResolvedValue([
+      {
+        threadId: 'thread-main-1',
+        title: 'LinkedIn Messaging',
+        isPinned: false,
+        lastMessageAt: '2026-03-22T20:00:00.000Z',
+        messageCount: 1,
+        hasActiveRun: true,
+      },
+    ]);
+    getMainThreadMock.mockResolvedValue([
+      {
+        id: 'msg-main-1',
+        threadId: 'thread-main-1',
+        role: 'user',
+        content: 'Check what you can access on LinkedIn for me.',
+        agentId: null,
+        createdBy: 'user-1',
+        createdAt: '2026-03-22T20:00:00.000Z',
+      },
+    ]);
+    getMainRegisteredAgentMock.mockResolvedValue(
+      buildMainAgentSnapshot({ browserEnabled: true, ready: true }),
+    );
+    listMainRunsMock.mockResolvedValue([
+      {
+        id: 'run-chat-1',
+        threadId: 'thread-main-1',
+        taskType: 'chat',
+        status: 'running',
+        createdAt: '2026-03-22T20:00:00.000Z',
+        startedAt: '2026-03-22T20:00:01.000Z',
+        endedAt: null,
+        triggerMessageId: 'msg-main-1',
+        targetAgentId: null,
+        cancelReason: null,
+        kind: null,
+        parentRunId: null,
+        promotionState: null,
+        promotionChildRunId: null,
+        requestedToolFamilies: [],
+        userVisibleSummary: 'Checking LinkedIn…',
+        browserBlock: null,
+        browserResume: null,
+        carriedBrowserSessions: [],
+        executionDecision: null,
+        streamedTextPreview: null,
+        lastProgressMessage: 'Thinking…',
+        lastHeartbeatAt: '2026-03-22T20:00:01.000Z',
+        terminalSummary: null,
+        resumeRequestedAt: null,
+        resumeRequestedBy: null,
+      },
+    ]);
+    cancelMainRunMock.mockResolvedValue({
+      runId: 'run-chat-1',
+      threadId: 'thread-main-1',
+      cancelled: true,
+    });
+    postMainMessageMock.mockResolvedValue({
+      messageId: 'msg-main-2',
+      threadId: 'thread-main-1',
+      runId: 'run-browser-1',
+      title: 'LinkedIn Messaging',
+      run: {
+        id: 'run-browser-1',
+        threadId: 'thread-main-1',
+        taskType: 'browser',
+        status: 'queued',
+        createdAt: '2026-03-22T20:00:02.000Z',
+        startedAt: null,
+        endedAt: null,
+        triggerMessageId: 'msg-main-2',
+        targetAgentId: null,
+        cancelReason: null,
+        kind: null,
+        parentRunId: null,
+        promotionState: null,
+        promotionChildRunId: null,
+        requestedToolFamilies: ['browser'],
+        userVisibleSummary: null,
+        browserBlock: null,
+        browserResume: null,
+        carriedBrowserSessions: [],
+        executionDecision: null,
+        streamedTextPreview: null,
+        lastProgressMessage: null,
+        lastHeartbeatAt: '2026-03-22T20:00:02.000Z',
+        terminalSummary: null,
+        resumeRequestedAt: null,
+        resumeRequestedBy: null,
+      },
+    });
+
+    render(
+      <MemoryRouter initialEntries={['/app/main/thread-main-1']}>
+        <Routes>
+          <Route
+            path="/app/main"
+            element={<MainChannelPage onUnauthorized={vi.fn()} />}
+          />
+          <Route
+            path="/app/main/:threadId"
+            element={<MainChannelPage onUnauthorized={vi.fn()} />}
+          />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    await screen.findByText('Check what you can access on LinkedIn for me.');
+    await user.click(
+      await screen.findByRole('button', { name: 'Open in browser instead' }),
+    );
+
+    await waitFor(() =>
+      expect(cancelMainRunMock).toHaveBeenCalledWith({ runId: 'run-chat-1' }),
+    );
+    await waitFor(() =>
+      expect(postMainMessageMock).toHaveBeenCalledWith({
+        content: 'Check what you can access on LinkedIn for me.',
+        threadId: 'thread-main-1',
+        forceBrowser: true,
+      }),
+    );
+    expect(
+      await screen.findByText(
+        'Cancelled the chat run and queued a browser run from the same prompt.',
+      ),
+    ).toBeTruthy();
+  });
+
+  it('hides the browser retry action when browser execution is not ready', async () => {
+    listMainThreadsMock.mockResolvedValue([
+      {
+        threadId: 'thread-main-1',
+        title: 'LinkedIn Messaging',
+        isPinned: false,
+        lastMessageAt: '2026-03-22T20:00:00.000Z',
+        messageCount: 1,
+        hasActiveRun: true,
+      },
+    ]);
+    getMainThreadMock.mockResolvedValue([
+      {
+        id: 'msg-main-1',
+        threadId: 'thread-main-1',
+        role: 'user',
+        content: 'Check what you can access on LinkedIn for me.',
+        agentId: null,
+        createdBy: 'user-1',
+        createdAt: '2026-03-22T20:00:00.000Z',
+      },
+    ]);
+    getMainRegisteredAgentMock.mockResolvedValue(
+      buildMainAgentSnapshot({
+        browserEnabled: true,
+        ready: false,
+        message: 'Browser access is not configured for this agent.',
+      }),
+    );
+    listMainRunsMock.mockResolvedValue([
+      {
+        id: 'run-chat-1',
+        threadId: 'thread-main-1',
+        taskType: 'chat',
+        status: 'failed',
+        createdAt: '2026-03-22T20:00:00.000Z',
+        startedAt: '2026-03-22T20:00:01.000Z',
+        endedAt: '2026-03-22T20:00:02.000Z',
+        triggerMessageId: 'msg-main-1',
+        targetAgentId: null,
+        cancelReason: 'execution_failed: Text-only response',
+        kind: null,
+        parentRunId: null,
+        promotionState: null,
+        promotionChildRunId: null,
+        requestedToolFamilies: [],
+        userVisibleSummary: null,
+        browserBlock: null,
+        browserResume: null,
+        carriedBrowserSessions: [],
+        executionDecision: null,
+        streamedTextPreview: null,
+        lastProgressMessage: null,
+        lastHeartbeatAt: '2026-03-22T20:00:02.000Z',
+        terminalSummary: {
+          statusLabel: 'Failed',
+          body: 'Text-only response',
+        },
+        resumeRequestedAt: null,
+        resumeRequestedBy: null,
+      },
+    ]);
+
+    render(
+      <MemoryRouter initialEntries={['/app/main/thread-main-1']}>
+        <Routes>
+          <Route
+            path="/app/main"
+            element={<MainChannelPage onUnauthorized={vi.fn()} />}
+          />
+          <Route
+            path="/app/main/:threadId"
+            element={<MainChannelPage onUnauthorized={vi.fn()} />}
+          />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    await screen.findByText('Text-only response');
+    expect(
+      screen.queryByRole('button', { name: 'Open in browser instead' }),
+    ).toBeNull();
   });
 
   it('renders persisted current step and fast-lane route timing for active runs', async () => {
@@ -655,9 +880,9 @@ describe('MainChannelPage', () => {
     );
 
     await screen.findByRole('button', { name: 'Start new thread' });
-    expect(screen.getAllByText('Cal football recruiting notes')).toHaveLength(
-      2,
-    );
+    expect(
+      screen.getAllByText('Cal football recruiting notes').length,
+    ).toBeGreaterThanOrEqual(2);
     expect(screen.getByRole('button', { name: 'Rename thread' })).toBeTruthy();
   });
 

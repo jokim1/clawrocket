@@ -24,10 +24,13 @@ import {
   updateMainThreadMetadata,
   getTalkRunById,
   upsertTalk,
+  upsertSettingValue,
   upsertUser,
 } from '../db/index.js';
 import { createRegisteredAgent } from '../db/agent-accessors.js';
+import { encryptProviderSecret } from '../llm/provider-secret-store.js';
 import {
+  cancelMainRunRoute,
   deleteMainThreadRoute,
   listMainThreadsRoute,
   getMainThreadRoute,
@@ -45,6 +48,36 @@ const USER_B = 'user-b';
 let AGENT_ID: string;
 const PROVIDER_ID = 'builtin.mock';
 const MODEL_ID = 'mock-default';
+
+function seedAnthropicSecret(apiKey = 'sk-ant-test'): void {
+  const now = new Date().toISOString();
+  getDb()
+    .prepare(
+      `INSERT INTO llm_provider_secrets (provider_id, ciphertext, updated_at, updated_by)
+       VALUES ('provider.anthropic', ?, ?, ?)
+       ON CONFLICT(provider_id) DO UPDATE SET ciphertext = excluded.ciphertext,
+         updated_at = excluded.updated_at, updated_by = excluded.updated_by`,
+    )
+    .run(encryptProviderSecret({ apiKey }), now, USER_A);
+}
+
+function upsertProviderVerification(
+  providerId: string,
+  status: 'verified' | 'missing' | 'not_verified' | 'invalid' | 'unavailable',
+): void {
+  const now = new Date().toISOString();
+  getDb()
+    .prepare(
+      `INSERT INTO llm_provider_verifications (
+         provider_id, status, last_verified_at, last_error, updated_at
+       ) VALUES (?, ?, ?, NULL, ?)
+       ON CONFLICT(provider_id) DO UPDATE SET
+         status = excluded.status,
+         last_verified_at = excluded.last_verified_at,
+         updated_at = excluded.updated_at`,
+    )
+    .run(providerId, status, status === 'verified' ? now : null, now);
+}
 
 function makeAuth(userId: string): AuthContext {
   return {
@@ -916,6 +949,40 @@ describe('Main channel routes', () => {
       }
     });
 
+    it('creates a browser run when forceBrowser is true and API mode is valid', () => {
+      seedAnthropicSecret();
+      upsertProviderVerification('provider.anthropic', 'verified');
+      upsertSettingValue({
+        key: 'executor.authMode',
+        value: 'api_key',
+        updatedBy: USER_A,
+      });
+      getDb()
+        .prepare(
+          `UPDATE registered_agents
+           SET tool_permissions_json = ?
+           WHERE id = 'agent.main'`,
+        )
+        .run(JSON.stringify({ web: true, browser: true }));
+
+      const result = postMainMessageRoute(makeAuth(USER_A), {
+        content: 'Please do it again.',
+        forceBrowser: true,
+      });
+
+      expect(result.statusCode).toBe(202);
+      expect(result.body.ok).toBe(true);
+      if (result.body.ok) {
+        expect(result.body.data.run.taskType).toBe('browser');
+        expect(result.body.data.run.selectedMode).toBe('api');
+        expect(result.body.data.run.transport).toBe('direct');
+        const persisted = getTalkRunById(result.body.data.runId);
+        expect(persisted?.task_type).toBe('browser');
+        expect(persisted?.selected_mode).toBe('api');
+        expect(persisted?.transport).toBe('direct');
+      }
+    });
+
     it('returns 404 when posting to thread owned by another user', () => {
       const threadId = randomUUID();
       enqueueMainTurnAtomic({
@@ -952,6 +1019,37 @@ describe('Main channel routes', () => {
       if (!r2.body.ok) {
         expect(r2.body.error.code).toBe('thread_busy');
       }
+    });
+  });
+
+  describe('cancelMainRunRoute', () => {
+    it('cancels an active main run and reports whether it was running', () => {
+      const threadId = randomUUID();
+      const queued = enqueueMainTurnAtomic({
+        threadId,
+        userId: USER_A,
+        content: 'first',
+        messageId: `msg_${randomUUID()}`,
+        runId: `run_${randomUUID()}`,
+      });
+      const claimed = claimQueuedMainRuns(1);
+      expect(claimed).toHaveLength(1);
+      expect(claimed[0]?.id).toBe(queued.run.id);
+
+      const result = cancelMainRunRoute(makeAuth(USER_A), queued.run.id);
+      expect(result.statusCode).toBe(200);
+      expect(result.cancelledRunning).toBe(true);
+      expect(result.body.ok).toBe(true);
+      if (result.body.ok) {
+        expect(result.body.data.runId).toBe(queued.run.id);
+        expect(result.body.data.threadId).toBe(threadId);
+        expect(result.body.data.cancelled).toBe(true);
+      }
+
+      const persisted = getTalkRunById(queued.run.id);
+      expect(persisted?.status).toBe('cancelled');
+      expect(persisted?.cancel_reason).toContain(USER_A);
+      expect(persisted?.ended_at).toBeTruthy();
     });
   });
 
