@@ -1169,6 +1169,89 @@ describe('Main channel routes', () => {
         }
       });
 
+      it('rejects browser follow-ups when the thread already has a paused browser run', () => {
+        setupBrowserApiAgent();
+
+        const r1 = postMainMessageRoute(makeAuth(USER_A), {
+          content: 'Open LinkedIn and tell me what you can access.',
+        });
+        expect(r1.statusCode).toBe(202);
+        expect(r1.body.ok).toBe(true);
+        if (!r1.body.ok) throw new Error('unexpected');
+
+        const { threadId, runId } = r1.body.data;
+        const now = new Date().toISOString();
+        getDb()
+          .prepare(
+            `UPDATE talk_runs
+             SET status = 'awaiting_confirmation',
+                 blocked_reason = 'app_approval',
+                 browser_phase = 'starting',
+                 browser_session_id = ?
+             WHERE id = ?`,
+          )
+          .run('bs_linkedin_auth', runId);
+        updateTalkRunMetadata(runId, (current) => ({
+          ...current,
+          userVisibleSummary: 'LinkedIn is waiting for approval.',
+          browserBlock: {
+            kind: 'auth_required',
+            sessionId: 'bs_linkedin_auth',
+            siteKey: 'linkedin',
+            accountLabel: null,
+            url: 'https://www.linkedin.com/checkpoint/challenge',
+            title: 'Approve sign in',
+            message:
+              'LinkedIn is waiting for phone or app approval on a trusted device.',
+            riskReason: null,
+            setupCommand: null,
+            artifacts: [],
+            confirmationId: null,
+            pendingToolCall: {
+              toolName: 'browser_open',
+              args: {
+                siteKey: 'linkedin',
+                url: 'https://www.linkedin.com/messaging/',
+              },
+            },
+            createdAt: now,
+            updatedAt: now,
+          },
+        }));
+
+        const r2 = postMainMessageRoute(makeAuth(USER_A), {
+          content: 'approved',
+          threadId,
+        });
+
+        expect(r2.statusCode).toBe(409);
+        expect(r2.body.ok).toBe(false);
+        if (!r2.body.ok) {
+          expect(r2.body.error.code).toBe('browser_run_pending');
+          expect(r2.body.error.message).toContain(
+            'LinkedIn sign-in is already waiting in this thread.',
+          );
+        }
+        expect(
+          getDb()
+            .prepare(
+              `SELECT COUNT(*) AS count
+               FROM talk_messages
+               WHERE talk_id IS NULL AND thread_id = ?`,
+            )
+            .get(threadId),
+        ).toMatchObject({ count: 1 });
+        expect(
+          getDb()
+            .prepare(
+              `SELECT COUNT(*) AS count
+               FROM talk_runs
+               WHERE talk_id IS NULL AND thread_id = ?`,
+            )
+            .get(threadId),
+        ).toMatchObject({ count: 1 });
+      });
+
       it('inheritance requires browserCapable', () => {
         setupBrowserApiAgent();
         const { threadId } = postBrowserAndComplete();

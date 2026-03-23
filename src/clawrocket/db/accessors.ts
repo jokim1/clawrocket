@@ -4962,6 +4962,53 @@ export function getUnambiguousPausedMainBrowserOwner(input: {
   };
 }
 
+export function getPendingMainBrowserRun(input: {
+  threadId: string;
+  excludeRunId?: string | null;
+}): {
+  runId: string;
+  browserBlock: BrowserBlockMetadata;
+  summary: string | null;
+} | null {
+  const pausedRuns = getDb()
+    .prepare(
+      `
+      SELECT *
+      FROM talk_runs
+      WHERE talk_id IS NULL
+        AND thread_id = ?
+        AND status = 'awaiting_confirmation'
+        ${input.excludeRunId ? 'AND id != ?' : ''}
+      ORDER BY created_at ASC, id ASC
+    `,
+    )
+    .all(
+      ...(input.excludeRunId
+        ? [input.threadId, input.excludeRunId]
+        : [input.threadId]),
+    ) as TalkRunRecord[];
+
+  for (const run of pausedRuns) {
+    const browserBlock = parseMainBrowserBlockMetadata(run.metadata_json);
+    if (!browserBlock) {
+      continue;
+    }
+    return {
+      runId: run.id,
+      browserBlock: {
+        ...browserBlock,
+        sessionId: browserBlock.sessionId ?? getTalkRunBrowserSessionId(run),
+      },
+      summary:
+        parseMainRunUserVisibleSummary(run.metadata_json) ||
+        browserBlock.message ||
+        null,
+    };
+  }
+
+  return null;
+}
+
 export function getPausedMainBrowserOwnerForProfile(input: {
   threadId: string;
   siteKey: string;

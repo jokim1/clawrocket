@@ -16,6 +16,7 @@ import {
   deleteMainThread,
   enqueueMainTurnAtomic,
   getLastMainRunForThread,
+  getPendingMainBrowserRun,
   getTalkRunBlockedReason,
   getTalkRunBrowserPhase,
   getTalkRunBrowserSessionId,
@@ -57,6 +58,34 @@ function looksLikeHighConfidenceBrowserIntent(content: string): boolean {
       normalized,
     ) || /what you can access/.test(normalized);
   return mentionsSurface && mentionsAction;
+}
+
+function humanizeBrowserSite(siteKey: string): string {
+  if (siteKey.toLowerCase() === 'linkedin') {
+    return 'LinkedIn';
+  }
+  if (siteKey.length <= 3) {
+    return siteKey.toUpperCase();
+  }
+  return siteKey
+    .split(/[-_.]+/g)
+    .filter(Boolean)
+    .map((segment) => segment.charAt(0).toUpperCase() + segment.slice(1))
+    .join(' ');
+}
+
+function buildPendingBrowserRunMessage(input: BrowserBlockMetadata): string {
+  const siteLabel = humanizeBrowserSite(input.siteKey);
+  if (input.kind === 'confirmation_required') {
+    return `${siteLabel} already has a paused browser action waiting for approval in this thread. Use the existing blocked run instead of sending another browser message.`;
+  }
+  if (input.kind === 'human_step_required') {
+    return `${siteLabel} already has a manual browser step waiting in this thread. Finish that step and resume the existing run instead of sending another browser message.`;
+  }
+  if (input.kind === 'session_conflict') {
+    return `${siteLabel} already has a paused browser task in this thread. Resolve or resume the existing blocked run before sending another browser message.`;
+  }
+  return `${siteLabel} sign-in is already waiting in this thread. Finish that step and resume the existing run instead of sending another browser message.`;
 }
 // ---------------------------------------------------------------------------
 // List Main Threads Route
@@ -584,6 +613,24 @@ export function postMainMessageRoute(
   let transport: 'direct' | 'subscription' | null = null;
 
   if (taskType === 'browser') {
+    if (body.threadId) {
+      const pendingBrowserRun = getPendingMainBrowserRun({ threadId });
+      if (pendingBrowserRun) {
+        return {
+          statusCode: 409,
+          body: {
+            ok: false,
+            error: {
+              code: 'browser_run_pending',
+              message: buildPendingBrowserRunMessage(
+                pendingBrowserRun.browserBlock,
+              ),
+            },
+          },
+        };
+      }
+    }
+
     if (inheritedBrowser && browserContract.ready) {
       selectedMode = inheritedBrowser.selectedMode;
       transport = inheritedBrowser.transport;
