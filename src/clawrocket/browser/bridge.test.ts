@@ -117,8 +117,11 @@ describe('browser bridge request handler', () => {
   it('emits bridge activity and page-ready events and passes the timeout profile through', async () => {
     const listener = vi.fn();
     const unsubscribe = subscribeBrowserBridgeRunEvents('run-events', listener);
-    executeBrowserToolMock.mockResolvedValue({
-      result: JSON.stringify({ status: 'ok' }),
+    executeBrowserToolMock.mockImplementation(async (input) => {
+      input.context.onPageReady?.();
+      return {
+        result: JSON.stringify({ status: 'ok' }),
+      };
     });
 
     await expect(
@@ -156,8 +159,10 @@ describe('browser bridge request handler', () => {
         userId: 'owner-1',
         talkId: 'talk-1',
         timeoutProfile: 'fast_lane',
+        onPageReady: expect.any(Function),
       },
     });
+    expect(listener).toHaveBeenCalledTimes(2);
     expect(listener).toHaveBeenNthCalledWith(1, {
       type: 'activity',
       runId: 'run-events',
@@ -169,5 +174,147 @@ describe('browser bridge request handler', () => {
       currentStep: 'Reading page access…',
     });
     unsubscribe();
+  });
+
+  it('emits page_ready before aborting a needs-auth browser_open run', async () => {
+    const listener = vi.fn();
+    const abortSpy = vi.fn();
+    const unsubscribe = subscribeBrowserBridgeRunEvents(
+      'run-needs-auth',
+      listener,
+    );
+    registerBrowserBridgeRunAbort('run-needs-auth', abortSpy);
+    executeBrowserToolMock.mockImplementation(async (input) => {
+      input.context.onPageReady?.();
+      throw new BrowserRunPausedError('run-needs-auth', {
+        kind: 'auth_required',
+        sessionId: 'bs_linkedin_auth',
+        siteKey: 'linkedin',
+        accountLabel: null,
+        url: 'https://www.linkedin.com/checkpoint/challenge',
+        title: 'LinkedIn Login',
+        message: 'This site requires interactive authentication.',
+        riskReason: null,
+        setupCommand:
+          "npx tsx src/clawrocket/browser/setup.ts --site 'linkedin'",
+        artifacts: [],
+        confirmationId: null,
+        pendingToolCall: {
+          toolName: 'browser_open',
+          args: {
+            siteKey: 'linkedin',
+            url: 'https://www.linkedin.com/messaging/',
+          },
+        },
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      });
+    });
+
+    await expect(
+      executeBrowserBridgeRequest({
+        request: {
+          requestId: 'bridge_needs_auth_1',
+          toolName: 'browser_open',
+          args: {
+            siteKey: 'linkedin',
+            url: 'https://www.linkedin.com/messaging/',
+          },
+          context: {
+            runId: 'run-needs-auth',
+            userId: 'owner-1',
+            talkId: 'talk-1',
+          },
+        },
+        signal: new AbortController().signal,
+      }),
+    ).resolves.toBeNull();
+
+    expect(listener).toHaveBeenCalledTimes(2);
+    expect(listener).toHaveBeenNthCalledWith(1, {
+      type: 'activity',
+      runId: 'run-needs-auth',
+      toolName: 'browser_open',
+    });
+    expect(listener).toHaveBeenNthCalledWith(2, {
+      type: 'page_ready',
+      runId: 'run-needs-auth',
+      currentStep: 'Reading page access…',
+    });
+    expect(abortSpy).toHaveBeenCalledTimes(1);
+
+    unsubscribe();
+    unregisterBrowserBridgeRunAbort('run-needs-auth');
+  });
+
+  it('emits page_ready before aborting a human-step browser_open run', async () => {
+    const listener = vi.fn();
+    const abortSpy = vi.fn();
+    const unsubscribe = subscribeBrowserBridgeRunEvents(
+      'run-human-step',
+      listener,
+    );
+    registerBrowserBridgeRunAbort('run-human-step', abortSpy);
+    executeBrowserToolMock.mockImplementation(async (input) => {
+      input.context.onPageReady?.();
+      throw new BrowserRunPausedError('run-human-step', {
+        kind: 'human_step_required',
+        sessionId: 'bs_linkedin_human',
+        siteKey: 'linkedin',
+        accountLabel: null,
+        url: 'https://www.linkedin.com/checkpoint/challenge',
+        title: 'LinkedIn Security Check',
+        message: 'Complete the manual browser verification step.',
+        riskReason: null,
+        setupCommand:
+          "npx tsx src/clawrocket/browser/setup.ts --site 'linkedin'",
+        artifacts: [],
+        confirmationId: null,
+        pendingToolCall: {
+          toolName: 'browser_open',
+          args: {
+            siteKey: 'linkedin',
+            url: 'https://www.linkedin.com/messaging/',
+          },
+        },
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      });
+    });
+
+    await expect(
+      executeBrowserBridgeRequest({
+        request: {
+          requestId: 'bridge_human_step_1',
+          toolName: 'browser_open',
+          args: {
+            siteKey: 'linkedin',
+            url: 'https://www.linkedin.com/messaging/',
+          },
+          context: {
+            runId: 'run-human-step',
+            userId: 'owner-1',
+            talkId: 'talk-1',
+          },
+        },
+        signal: new AbortController().signal,
+      }),
+    ).resolves.toBeNull();
+
+    expect(listener).toHaveBeenCalledTimes(2);
+    expect(listener).toHaveBeenNthCalledWith(1, {
+      type: 'activity',
+      runId: 'run-human-step',
+      toolName: 'browser_open',
+    });
+    expect(listener).toHaveBeenNthCalledWith(2, {
+      type: 'page_ready',
+      runId: 'run-human-step',
+      currentStep: 'Reading page access…',
+    });
+    expect(abortSpy).toHaveBeenCalledTimes(1);
+
+    unsubscribe();
+    unregisterBrowserBridgeRunAbort('run-human-step');
   });
 });

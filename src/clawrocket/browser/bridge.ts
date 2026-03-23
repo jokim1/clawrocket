@@ -84,9 +84,28 @@ function emitBrowserBridgeRunEvent(event: BrowserBridgeRunEvent): void {
   }
 }
 
-function maybeEmitPageReadyEvent(
+function createPageReadyEmitter(
+  runId: string,
+  currentStep = 'Reading page access…',
+): () => void {
+  let emitted = false;
+  return () => {
+    if (emitted) {
+      return;
+    }
+    emitted = true;
+    emitBrowserBridgeRunEvent({
+      type: 'page_ready',
+      runId,
+      currentStep,
+    });
+  };
+}
+
+function maybeEmitSnapshotPageReadyEvent(
   request: BrowserBridgeRequest,
   result: string,
+  emitPageReady: () => void,
 ): void {
   let parsed: { status?: unknown } | null = null;
   try {
@@ -97,15 +116,8 @@ function maybeEmitPageReadyEvent(
   if (!parsed || parsed.status !== 'ok') {
     return;
   }
-  if (
-    request.toolName === 'browser_open' ||
-    request.toolName === 'browser_snapshot'
-  ) {
-    emitBrowserBridgeRunEvent({
-      type: 'page_ready',
-      runId: request.context.runId,
-      currentStep: 'Reading page access…',
-    });
+  if (request.toolName === 'browser_snapshot') {
+    emitPageReady();
   }
 }
 
@@ -113,6 +125,7 @@ export async function executeBrowserBridgeRequest(input: {
   request: BrowserBridgeRequest;
   signal: AbortSignal;
 }): Promise<BrowserBridgeResponse | null> {
+  const emitPageReady = createPageReadyEmitter(input.request.context.runId);
   try {
     emitBrowserBridgeRunEvent({
       type: 'activity',
@@ -128,9 +141,15 @@ export async function executeBrowserBridgeRequest(input: {
         userId: input.request.context.userId,
         talkId: input.request.context.talkId ?? null,
         timeoutProfile: input.request.context.timeoutProfile ?? 'default',
+        onPageReady:
+          input.request.toolName === 'browser_open' ? emitPageReady : undefined,
       },
     });
-    maybeEmitPageReadyEvent(input.request, result.result);
+    maybeEmitSnapshotPageReadyEvent(
+      input.request,
+      result.result,
+      emitPageReady,
+    );
     return {
       requestId: input.request.requestId,
       result: result.result,
