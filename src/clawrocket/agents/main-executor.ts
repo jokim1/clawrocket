@@ -941,6 +941,7 @@ export async function executeMainChannel(
       ? subscribeBrowserBridgeRunEvents(input.runId, (event) => {
           if (event.type === 'activity') {
             markFirstBrowserEvent();
+            startFirstPageReadyBudget();
             switch (event.toolName) {
               case 'browser_open':
                 setCurrentStep('Opening LinkedIn…');
@@ -964,14 +965,19 @@ export async function executeMainChannel(
   if (!shouldUseContainer) {
     startFirstProgressBudget();
   }
-  if (executionStrategy === 'browser_fast_lane' && !useWarmSubscriptionWorker) {
+  if (executionStrategy === 'browser_fast_lane' && !shouldUseContainer) {
     startFirstPageReadyBudget();
   }
   if (executionStrategy === 'browser_fast_lane' && !useWarmSubscriptionWorker) {
+    const totalMs = shouldUseContainer
+      ? MAIN_RUN_SUBSCRIPTION_FALLBACK_TOTAL_BUDGET_MS
+      : MAIN_RUN_FAST_LANE_TOTAL_BUDGET_MS;
     totalBudgetTimer = scheduleBudgetTimer(
-      MAIN_RUN_FAST_LANE_TOTAL_BUDGET_MS,
+      totalMs,
       'total_run',
-      'The browser fast-lane run exceeded its maximum time budget.',
+      shouldUseContainer
+        ? 'The container browser run exceeded its maximum time budget.'
+        : 'The browser fast-lane run exceeded its maximum time budget.',
     );
   } else if (
     shouldUseContainer &&
