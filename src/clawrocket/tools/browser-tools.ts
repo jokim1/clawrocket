@@ -871,6 +871,14 @@ export async function executeBrowserTool(input: {
             });
           }
         }
+        let pageReadyEmitted = false;
+        const markPageReady = (): void => {
+          if (pageReadyEmitted) {
+            return;
+          }
+          pageReadyEmitted = true;
+          input.context.onPageReady?.();
+        };
 
         const result = await runBrowserToolWithProgress({
           toolName: 'browser_open',
@@ -885,7 +893,7 @@ export async function executeBrowserTool(input: {
               runId: input.context.runId,
               headed,
               reuseSession,
-              onPageReady: input.context.onPageReady,
+              onPageReady: markPageReady,
               navigationTimeoutMs:
                 input.context.timeoutProfile === 'fast_lane'
                   ? FAST_LANE_BROWSER_OPEN_TIMEOUT_MS
@@ -894,7 +902,7 @@ export async function executeBrowserTool(input: {
                 input.context.timeoutProfile === 'fast_lane',
             }),
         });
-        input.context.onPageReady?.();
+        markPageReady();
         if (result.sessionId) {
           service.recordRunSessionTouch(
             input.context.runId,
