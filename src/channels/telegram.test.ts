@@ -12,6 +12,7 @@ vi.mock('../env.js', () => ({ readEnvFile: vi.fn(() => ({})) }));
 vi.mock('../config.js', () => ({
   ASSISTANT_NAME: 'Andy',
   TRIGGER_PATTERN: /^@Andy\b/i,
+  TIMEZONE: 'UTC',
 }));
 
 // Mock logger
