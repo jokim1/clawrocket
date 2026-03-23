@@ -15,6 +15,7 @@ import {
   deleteMainMessagesAtomic,
   deleteMainThread,
   enqueueMainTurnAtomic,
+  getLastMainRunForThread,
   getTalkRunBlockedReason,
   getTalkRunBrowserPhase,
   getTalkRunBrowserSessionId,
@@ -27,6 +28,9 @@ import {
   listMainThreadsForUser,
   listMainRunsForThread,
   MainThreadBusyError,
+  normalizeTalkRunSelectedMode,
+  normalizeTalkRunTaskType,
+  normalizeTalkRunTransport,
   recordMainRunFirstVisibleAt,
   TalkActiveRoundError,
   ThreadDeleteConflictError,
@@ -514,34 +518,8 @@ export function postMainMessageRoute(
 
   const content = body.content.trim();
   const forceBrowser = body.forceBrowser === true;
-  const browserContract = resolveMainBrowserContract(auth.userId);
-  const browserCapable = browserContract.browserEnabled;
-  const taskType: 'chat' | 'browser' =
-    forceBrowser ||
-    (browserCapable && looksLikeHighConfidenceBrowserIntent(content))
-      ? 'browser'
-      : 'chat';
-  let selectedMode: 'api' | 'subscription' | null = null;
-  let transport: 'direct' | 'subscription' | null = null;
 
-  if (taskType === 'browser') {
-    if (!browserContract.ready) {
-      return {
-        statusCode: 409,
-        body: {
-          ok: false,
-          error: {
-            code: 'browser_execution_not_configured',
-            message: browserContract.message,
-          },
-        },
-      };
-    }
-    selectedMode = browserContract.selectedMode;
-    transport = browserContract.transport;
-  }
-
-  // Determine threadId
+  // Determine threadId early so it's available for browser inheritance
   let threadId: string;
   if (body.threadId !== undefined) {
     if (typeof body.threadId !== 'string' || !body.threadId.trim()) {
@@ -573,6 +551,57 @@ export function postMainMessageRoute(
     }
   } else {
     threadId = randomUUID();
+  }
+
+  const browserContract = resolveMainBrowserContract(auth.userId);
+  const browserCapable = browserContract.browserEnabled;
+
+  // If follow-up in existing thread, check if last run was browser
+  let inheritedBrowser: {
+    selectedMode: 'api' | 'subscription' | null;
+    transport: 'direct' | 'subscription' | null;
+  } | null = null;
+  if (body.threadId && browserCapable && !forceBrowser) {
+    const lastRun = getLastMainRunForThread(threadId);
+    if (lastRun) {
+      const lastTaskType = normalizeTalkRunTaskType(lastRun.task_type);
+      if (lastTaskType === 'browser') {
+        inheritedBrowser = {
+          selectedMode: normalizeTalkRunSelectedMode(lastRun.selected_mode),
+          transport: normalizeTalkRunTransport(lastRun.transport),
+        };
+      }
+    }
+  }
+
+  const taskType: 'chat' | 'browser' =
+    forceBrowser ||
+    inheritedBrowser !== null ||
+    (browserCapable && looksLikeHighConfidenceBrowserIntent(content))
+      ? 'browser'
+      : 'chat';
+  let selectedMode: 'api' | 'subscription' | null = null;
+  let transport: 'direct' | 'subscription' | null = null;
+
+  if (taskType === 'browser') {
+    if (inheritedBrowser && browserContract.ready) {
+      selectedMode = inheritedBrowser.selectedMode;
+      transport = inheritedBrowser.transport;
+    } else if (!browserContract.ready) {
+      return {
+        statusCode: 409,
+        body: {
+          ok: false,
+          error: {
+            code: 'browser_execution_not_configured',
+            message: browserContract.message,
+          },
+        },
+      };
+    } else {
+      selectedMode = browserContract.selectedMode;
+      transport = browserContract.transport;
+    }
   }
 
   try {

@@ -20,6 +20,7 @@ import {
   enqueueMainTurnAtomic,
   failInterruptedMainRunsOnStartup,
   failMainRunAtomic,
+  getLastMainRunForThread,
   getMainThreadOwner,
   getOrCreateDefaultThread,
   listMainThreadsForUser,
@@ -1052,6 +1053,234 @@ describe('Main channel routes', () => {
         expect(persisted?.selected_mode).toBe('api');
         expect(persisted?.transport).toBe('direct');
       }
+    });
+
+    describe('browser thread inheritance', () => {
+      function setupBrowserApiAgent(): void {
+        getDb()
+          .prepare(
+            `UPDATE registered_agents
+             SET tool_permissions_json = ?
+             WHERE id = 'agent.main'`,
+          )
+          .run(JSON.stringify({ web: true, browser: true }));
+        seedAnthropicSecret();
+        upsertProviderVerification('provider.anthropic', 'verified');
+        upsertSettingValue({
+          key: 'executor.authMode',
+          value: 'api_key',
+          updatedBy: USER_A,
+        });
+      }
+
+      function postBrowserAndComplete(threadId?: string): {
+        threadId: string;
+        runId: string;
+      } {
+        const r = postMainMessageRoute(makeAuth(USER_A), {
+          content: 'Open LinkedIn and tell me what you can access.',
+          threadId,
+        });
+        expect(r.statusCode).toBe(202);
+        expect(r.body.ok).toBe(true);
+        if (!r.body.ok) throw new Error('unexpected');
+        const runId = r.body.data.runId;
+        const tid = r.body.data.threadId;
+        // Claim and complete the run so thread is no longer busy
+        claimQueuedMainRuns(1);
+        completeMainRunAtomic({
+          runId,
+          threadId: tid,
+          requestedBy: USER_A,
+          responseMessageId: `msg_${randomUUID()}`,
+          responseContent: 'done',
+          agentId: AGENT_ID,
+          providerId: PROVIDER_ID,
+          modelId: MODEL_ID,
+        });
+        return { threadId: tid, runId };
+      }
+
+      it('follow-up inherits browser from completed run', () => {
+        setupBrowserApiAgent();
+        const { threadId } = postBrowserAndComplete();
+
+        // Follow-up with non-browser text
+        const r2 = postMainMessageRoute(makeAuth(USER_A), {
+          content: "here's my password",
+          threadId,
+        });
+
+        expect(r2.statusCode).toBe(202);
+        expect(r2.body.ok).toBe(true);
+        if (r2.body.ok) {
+          expect(r2.body.data.run.taskType).toBe('browser');
+          expect(r2.body.data.run.selectedMode).toBe('api');
+          expect(r2.body.data.run.transport).toBe('direct');
+        }
+      });
+
+      it('new thread with non-browser content stays chat', () => {
+        setupBrowserApiAgent();
+
+        const result = postMainMessageRoute(makeAuth(USER_A), {
+          content: "here's my password",
+        });
+
+        expect(result.statusCode).toBe(202);
+        expect(result.body.ok).toBe(true);
+        if (result.body.ok) {
+          expect(result.body.data.run.taskType).toBe('chat');
+        }
+      });
+
+      it('thread with only chat runs stays chat', () => {
+        setupBrowserApiAgent();
+
+        // First message is chat (non-browser text)
+        const threadId = randomUUID();
+        const r1 = postMainMessageRoute(makeAuth(USER_A), {
+          content: 'What is the weather today?',
+          threadId,
+        });
+        expect(r1.statusCode).toBe(202);
+        if (!r1.body.ok) throw new Error('unexpected');
+        claimQueuedMainRuns(1);
+        completeMainRunAtomic({
+          runId: r1.body.data.runId,
+          threadId,
+          requestedBy: USER_A,
+          responseMessageId: `msg_${randomUUID()}`,
+          responseContent: 'done',
+          agentId: AGENT_ID,
+          providerId: PROVIDER_ID,
+          modelId: MODEL_ID,
+        });
+
+        // Follow-up
+        const r2 = postMainMessageRoute(makeAuth(USER_A), {
+          content: 'just try it',
+          threadId,
+        });
+        expect(r2.statusCode).toBe(202);
+        expect(r2.body.ok).toBe(true);
+        if (r2.body.ok) {
+          expect(r2.body.data.run.taskType).toBe('chat');
+        }
+      });
+
+      it('inheritance requires browserCapable', () => {
+        setupBrowserApiAgent();
+        const { threadId } = postBrowserAndComplete();
+
+        // Remove browser from agent tools
+        getDb()
+          .prepare(
+            `UPDATE registered_agents
+             SET tool_permissions_json = ?
+             WHERE id = 'agent.main'`,
+          )
+          .run(JSON.stringify({ web: true }));
+
+        const r2 = postMainMessageRoute(makeAuth(USER_A), {
+          content: "here's my password",
+          threadId,
+        });
+
+        expect(r2.statusCode).toBe(202);
+        expect(r2.body.ok).toBe(true);
+        if (r2.body.ok) {
+          expect(r2.body.data.run.taskType).toBe('chat');
+        }
+      });
+
+      it('forceBrowser bypasses inheritance query', () => {
+        setupBrowserApiAgent();
+        const { threadId } = postBrowserAndComplete();
+
+        const r2 = postMainMessageRoute(makeAuth(USER_A), {
+          content: 'do it again',
+          threadId,
+          forceBrowser: true,
+        });
+
+        expect(r2.statusCode).toBe(202);
+        expect(r2.body.ok).toBe(true);
+        if (r2.body.ok) {
+          expect(r2.body.data.run.taskType).toBe('browser');
+        }
+      });
+
+      it('inherited mode/transport preserved across config changes', () => {
+        // Start with subscription mode
+        getDb()
+          .prepare(
+            `UPDATE registered_agents
+             SET tool_permissions_json = ?
+             WHERE id = 'agent.main'`,
+          )
+          .run(JSON.stringify({ web: true, browser: true }));
+        upsertSettingValue({
+          key: 'executor.authMode',
+          value: 'subscription',
+          updatedBy: USER_A,
+        });
+        upsertSettingValue({
+          key: 'executor.claudeOauthToken',
+          value: 'oauth-token-123',
+          updatedBy: USER_A,
+        });
+        upsertSettingValue({
+          key: 'executor.verificationStatus',
+          value: 'verified',
+          updatedBy: USER_A,
+        });
+
+        // Post a browser message — will use subscription mode
+        const threadId = randomUUID();
+        const r1 = postMainMessageRoute(makeAuth(USER_A), {
+          content: 'Open LinkedIn and tell me what you can access.',
+          threadId,
+        });
+        expect(r1.statusCode).toBe(202);
+        if (!r1.body.ok) throw new Error('unexpected');
+        expect(r1.body.data.run.selectedMode).toBe('subscription');
+        expect(r1.body.data.run.transport).toBe('subscription');
+
+        claimQueuedMainRuns(1);
+        completeMainRunAtomic({
+          runId: r1.body.data.runId,
+          threadId,
+          requestedBy: USER_A,
+          responseMessageId: `msg_${randomUUID()}`,
+          responseContent: 'done',
+          agentId: AGENT_ID,
+          providerId: PROVIDER_ID,
+          modelId: MODEL_ID,
+        });
+
+        // Now switch to API mode
+        seedAnthropicSecret();
+        upsertProviderVerification('provider.anthropic', 'verified');
+        upsertSettingValue({
+          key: 'executor.authMode',
+          value: 'api_key',
+          updatedBy: USER_A,
+        });
+
+        // Follow-up should inherit subscription mode from prior run
+        const r2 = postMainMessageRoute(makeAuth(USER_A), {
+          content: "here's my password",
+          threadId,
+        });
+        expect(r2.statusCode).toBe(202);
+        expect(r2.body.ok).toBe(true);
+        if (r2.body.ok) {
+          expect(r2.body.data.run.taskType).toBe('browser');
+          expect(r2.body.data.run.selectedMode).toBe('subscription');
+          expect(r2.body.data.run.transport).toBe('subscription');
+        }
+      });
     });
 
     it('returns 404 when posting to thread owned by another user', () => {

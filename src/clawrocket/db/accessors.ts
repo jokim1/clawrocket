@@ -5189,6 +5189,26 @@ function updateParentPromotionState(
   }));
 }
 
+export function getLastMainRunForThread(
+  threadId: string,
+): Pick<TalkRunRecord, 'task_type' | 'selected_mode' | 'transport'> | null {
+  const row = getDb()
+    .prepare(
+      `
+      SELECT task_type, selected_mode, transport
+      FROM talk_runs
+      WHERE thread_id = ? AND talk_id IS NULL
+        AND trigger_message_id IS NOT NULL
+      ORDER BY created_at DESC
+      LIMIT 1
+    `,
+    )
+    .get(threadId) as
+    | Pick<TalkRunRecord, 'task_type' | 'selected_mode' | 'transport'>
+    | undefined;
+  return row ?? null;
+}
+
 export function listMainRunsForThread(threadId: string): TalkRunRecord[] {
   return getDb()
     .prepare(
