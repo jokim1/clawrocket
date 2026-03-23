@@ -22,6 +22,8 @@ import {
 import {
   getSettingValue,
   getTalkRunById,
+  getTalkRunTaskType,
+  getTalkRunTransport,
   updateTalkRunMetadata,
 } from '../db/accessors.js';
 import {
@@ -340,6 +342,21 @@ function updateRunStateMetadata(
   }));
 }
 
+function setRunBrowserPhase(
+  runId: string,
+  phase: 'starting' | 'interacting' | 'summarizing' | null,
+): void {
+  getDb()
+    .prepare(
+      `
+      UPDATE talk_runs
+      SET browser_phase = ?
+      WHERE id = ?
+    `,
+    )
+    .run(phase, runId);
+}
+
 function parseRunTimingMetadata(
   metadata: Record<string, unknown>,
 ): Record<string, unknown> {
@@ -567,8 +584,9 @@ export async function executeMainChannel(
   }
 
   const mainPlan = planMainExecution(agent, input.requestedBy);
-  const useHostCodex = mainPlan.policy === 'host_codex_only';
   const runRecord = getTalkRunById(input.runId);
+  const runTaskType = runRecord ? getTalkRunTaskType(runRecord) : 'chat';
+  const intendedTransport = runRecord ? getTalkRunTransport(runRecord) : null;
   const runMetadata = parseObject(runRecord?.metadata_json);
   const timingMetadata = parseRunTimingMetadata(runMetadata);
   const browserResumeSection = buildBrowserResumeSection(runMetadata);
@@ -596,6 +614,7 @@ export async function executeMainChannel(
           requiresApproval: false,
         } satisfies MainPromotionRequest)
       : null;
+  let useHostCodex = mainPlan.policy === 'host_codex_only';
   const executionStrategy: MainExecutionStrategy = shouldUseBrowserFastLane({
     triggerContent: input.triggerContent,
     mainPlan,
@@ -604,8 +623,28 @@ export async function executeMainChannel(
   })
     ? 'browser_fast_lane'
     : 'generic_agent_loop';
-  const shouldUseContainer =
+  let shouldUseContainer =
     Boolean(promotedRun) || mainPlan.policy === 'container_only';
+  if (runTaskType === 'browser' && intendedTransport === 'direct') {
+    if (!mainPlan.directPlan) {
+      throw new Error(
+        'Main browser run requested direct transport, but no direct execution path is configured.',
+      );
+    }
+    useHostCodex = false;
+    shouldUseContainer = false;
+  } else if (
+    runTaskType === 'browser' &&
+    intendedTransport === 'subscription'
+  ) {
+    if (!mainPlan.containerPlan) {
+      throw new Error(
+        'Main browser run requested subscription transport, but no subscription execution path is configured.',
+      );
+    }
+    useHostCodex = false;
+    shouldUseContainer = true;
+  }
   const routeReason = deriveRouteReason({
     strategy: executionStrategy,
     shouldUseContainer,
@@ -619,7 +658,8 @@ export async function executeMainChannel(
       : 'direct_http';
   const useWarmSubscriptionWorker =
     shouldUseContainer &&
-    routeReason === 'subscription_fallback' &&
+    (routeReason === 'subscription_fallback' ||
+      (runTaskType === 'browser' && intendedTransport === 'subscription')) &&
     MAIN_SUBSCRIPTION_WARM_WORKER_ENABLED;
   const executorStartedAt = new Date().toISOString();
   const queueStartedAtMs = parseIsoMs(
@@ -635,6 +675,9 @@ export async function executeMainChannel(
           : null,
     executorStartedAt,
   });
+  if (runTaskType === 'browser') {
+    setRunBrowserPhase(input.runId, 'starting');
+  }
   updateRunStateMetadata(input.runId, {
     executionStrategy,
     routeReason,
@@ -834,6 +877,9 @@ export async function executeMainChannel(
     updateRunTiming(input.runId, {
       firstPageReadyAt: new Date().toISOString(),
     });
+    if (runTaskType === 'browser') {
+      setRunBrowserPhase(input.runId, 'interacting');
+    }
     if (currentStep) {
       emitEvent({
         type: 'main_progress_update',

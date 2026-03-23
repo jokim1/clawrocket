@@ -2694,6 +2694,7 @@ export function enqueueTalkTurnAtomic(input: {
             talkId: txInput.talkId,
             threadId,
             runId: run.id,
+            runKind: run.run_kind ?? 'conversation',
             triggerMessageId: txInput.messageId,
             targetAgentId: run.target_agent_id || null,
             responseGroupId,
@@ -3232,6 +3233,19 @@ export function scanDeadLetterQueue(limit = 50): DeadLetterRecord[] {
 
 // --- Talk runs ---
 
+export type TalkRunKind = 'conversation' | 'instruction_review';
+export type TalkRunTaskType = 'chat' | 'browser';
+export type TalkRunBrowserPhase = 'starting' | 'interacting' | 'summarizing';
+export type TalkRunBlockedReason =
+  | 'login_required'
+  | 'phone_approval'
+  | 'app_approval'
+  | 'code_entry'
+  | 'session_conflict'
+  | 'manual_takeover';
+export type TalkRunSelectedMode = 'api' | 'subscription';
+export type TalkRunTransport = 'direct' | 'subscription';
+
 export interface TalkRunRecord {
   id: string;
   talk_id: string | null;
@@ -3242,6 +3256,7 @@ export interface TalkRunRecord {
   job_id?: string | null;
   target_agent_id?: string | null;
   idempotency_key: string | null;
+  run_kind?: TalkRunKind;
   response_group_id?: string | null;
   sequence_index?: number | null;
   executor_alias: string | null;
@@ -3249,6 +3264,13 @@ export interface TalkRunRecord {
   source_binding_id?: string | null;
   source_external_message_id?: string | null;
   source_thread_key?: string | null;
+  task_type?: TalkRunTaskType | null;
+  browser_phase?: TalkRunBrowserPhase | null;
+  blocked_reason?: TalkRunBlockedReason | null;
+  browser_session_id?: string | null;
+  selected_mode?: TalkRunSelectedMode | null;
+  transport?: TalkRunTransport | null;
+  timeout_phase?: string | null;
   created_at: string;
   started_at: string | null;
   ended_at: string | null;
@@ -3262,11 +3284,12 @@ export function createTalkRun(input: TalkRunRecord): void {
       `
     INSERT INTO talk_runs (
       id, talk_id, thread_id, requested_by, status, trigger_message_id, job_id, target_agent_id, idempotency_key,
-      response_group_id, sequence_index, executor_alias, executor_model,
+      run_kind, response_group_id, sequence_index, executor_alias, executor_model,
       source_binding_id, source_external_message_id, source_thread_key,
+      task_type, browser_phase, blocked_reason, browser_session_id, selected_mode, transport, timeout_phase,
       created_at, started_at, ended_at, cancel_reason, metadata_json
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `,
     )
     .run(
@@ -3279,6 +3302,7 @@ export function createTalkRun(input: TalkRunRecord): void {
       input.job_id ?? null,
       input.target_agent_id || null,
       input.idempotency_key,
+      input.run_kind ?? 'conversation',
       input.response_group_id || null,
       input.sequence_index ?? null,
       input.executor_alias,
@@ -3286,6 +3310,13 @@ export function createTalkRun(input: TalkRunRecord): void {
       input.source_binding_id || null,
       input.source_external_message_id || null,
       input.source_thread_key || null,
+      input.task_type ?? null,
+      input.browser_phase ?? null,
+      input.blocked_reason ?? null,
+      input.browser_session_id ?? null,
+      input.selected_mode ?? null,
+      input.transport ?? null,
+      input.timeout_phase ?? null,
       input.created_at,
       input.started_at,
       input.ended_at,
@@ -3322,6 +3353,184 @@ function parseRunMetadataJson(
     // ignored
   }
   return {};
+}
+
+function parseMainBrowserBlockFromMetadata(
+  metadataJson: string | null | undefined,
+): BrowserBlockMetadata | null {
+  const metadata = parseRunMetadataJson(metadataJson);
+  const browserBlock = metadata.browserBlock;
+  if (
+    !browserBlock ||
+    typeof browserBlock !== 'object' ||
+    Array.isArray(browserBlock)
+  ) {
+    return null;
+  }
+  return browserBlock as BrowserBlockMetadata;
+}
+
+export function normalizeTalkRunTaskType(
+  value: unknown,
+): TalkRunTaskType | null {
+  return value === 'chat' || value === 'browser' ? value : null;
+}
+
+export function normalizeTalkRunBrowserPhase(
+  value: unknown,
+): TalkRunBrowserPhase | null {
+  return value === 'starting' ||
+    value === 'interacting' ||
+    value === 'summarizing'
+    ? value
+    : null;
+}
+
+export function normalizeTalkRunBlockedReason(
+  value: unknown,
+): TalkRunBlockedReason | null {
+  return value === 'login_required' ||
+    value === 'phone_approval' ||
+    value === 'app_approval' ||
+    value === 'code_entry' ||
+    value === 'session_conflict' ||
+    value === 'manual_takeover'
+    ? value
+    : null;
+}
+
+export function normalizeTalkRunSelectedMode(
+  value: unknown,
+): TalkRunSelectedMode | null {
+  return value === 'api' || value === 'subscription' ? value : null;
+}
+
+export function normalizeTalkRunTransport(
+  value: unknown,
+): TalkRunTransport | null {
+  return value === 'direct' || value === 'subscription' ? value : null;
+}
+
+export function inferTalkRunBlockedReasonFromBrowserBlock(
+  browserBlock: BrowserBlockMetadata | null,
+): TalkRunBlockedReason | null {
+  if (!browserBlock) return null;
+  if (browserBlock.kind === 'session_conflict') {
+    return 'session_conflict';
+  }
+  if (browserBlock.kind === 'human_step_required') {
+    return 'manual_takeover';
+  }
+  const text = [
+    browserBlock.message,
+    browserBlock.title,
+    browserBlock.url,
+    browserBlock.riskReason,
+  ]
+    .filter(
+      (value): value is string => typeof value === 'string' && value.length > 0,
+    )
+    .join(' ')
+    .toLowerCase();
+  if (/\b(linkedin )?app\b/.test(text)) {
+    return 'app_approval';
+  }
+  if (/\bphone\b|\bdevice\b/.test(text)) {
+    return 'phone_approval';
+  }
+  if (/\bcode\b/.test(text)) {
+    return 'code_entry';
+  }
+  return 'login_required';
+}
+
+export function getTalkRunTaskType(
+  run: Pick<TalkRunRecord, 'task_type' | 'metadata_json'>,
+): TalkRunTaskType {
+  const typed = normalizeTalkRunTaskType(run.task_type);
+  if (typed) return typed;
+  const metadata = parseRunMetadataJson(run.metadata_json);
+  if (
+    metadata.browserBlock ||
+    metadata.executionStrategy === 'browser_fast_lane' ||
+    metadata.routeReason === 'browser_fast_lane'
+  ) {
+    return 'browser';
+  }
+  return 'chat';
+}
+
+export function getTalkRunBrowserPhase(
+  run: Pick<TalkRunRecord, 'browser_phase'>,
+): TalkRunBrowserPhase | null {
+  return normalizeTalkRunBrowserPhase(run.browser_phase);
+}
+
+export function getTalkRunBlockedReason(
+  run: Pick<TalkRunRecord, 'blocked_reason' | 'metadata_json'>,
+): TalkRunBlockedReason | null {
+  const typed = normalizeTalkRunBlockedReason(run.blocked_reason);
+  if (typed) return typed;
+  return inferTalkRunBlockedReasonFromBrowserBlock(
+    parseMainBrowserBlockFromMetadata(run.metadata_json),
+  );
+}
+
+export function getTalkRunBrowserSessionId(
+  run: Pick<TalkRunRecord, 'browser_session_id' | 'metadata_json'>,
+): string | null {
+  if (typeof run.browser_session_id === 'string' && run.browser_session_id) {
+    return run.browser_session_id;
+  }
+  return (
+    parseMainBrowserBlockFromMetadata(run.metadata_json)?.sessionId ?? null
+  );
+}
+
+export function getTalkRunSelectedMode(
+  run: Pick<TalkRunRecord, 'selected_mode' | 'metadata_json'>,
+): TalkRunSelectedMode | null {
+  const typed = normalizeTalkRunSelectedMode(run.selected_mode);
+  if (typed) return typed;
+  const metadata = parseRunMetadataJson(run.metadata_json);
+  const authPath =
+    metadata.executionDecision &&
+    typeof metadata.executionDecision === 'object' &&
+    !Array.isArray(metadata.executionDecision)
+      ? (metadata.executionDecision as Record<string, unknown>).authPath
+      : null;
+  if (authPath === 'api_key') return 'api';
+  if (authPath === 'subscription') return 'subscription';
+  return null;
+}
+
+export function getTalkRunTransport(
+  run: Pick<TalkRunRecord, 'transport' | 'metadata_json'>,
+): TalkRunTransport | null {
+  const typed = normalizeTalkRunTransport(run.transport);
+  if (typed) return typed;
+  const metadata = parseRunMetadataJson(run.metadata_json);
+  const backend =
+    metadata.executionDecision &&
+    typeof metadata.executionDecision === 'object' &&
+    !Array.isArray(metadata.executionDecision)
+      ? (metadata.executionDecision as Record<string, unknown>).backend
+      : null;
+  if (backend === 'direct_http') return 'direct';
+  if (backend === 'container') return 'subscription';
+  return null;
+}
+
+export function getTalkRunTimeoutPhase(
+  run: Pick<TalkRunRecord, 'timeout_phase' | 'metadata_json'>,
+): string | null {
+  if (typeof run.timeout_phase === 'string' && run.timeout_phase) {
+    return run.timeout_phase;
+  }
+  const metadata = parseRunMetadataJson(run.metadata_json);
+  return typeof metadata.timeoutPhase === 'string'
+    ? metadata.timeoutPhase
+    : null;
 }
 
 export function updateTalkRunMetadata(
@@ -3502,6 +3711,7 @@ export function listTalkRunsForTalk(
       FROM talk_runs r
       LEFT JOIN registered_agents ra ON ra.id = r.target_agent_id
       WHERE r.talk_id = ?
+        AND COALESCE(r.run_kind, 'conversation') = 'conversation'
       ORDER BY r.created_at DESC
       LIMIT ?
     `,
@@ -3685,6 +3895,12 @@ export function claimQueuedTalkRuns(
         `
         UPDATE talk_runs
         SET status = 'running',
+            browser_phase = CASE
+              WHEN task_type = 'browser' THEN 'starting'
+              ELSE browser_phase
+            END,
+            blocked_reason = NULL,
+            timeout_phase = NULL,
             started_at = ?,
             ended_at = NULL,
             cancel_reason = NULL
@@ -3710,6 +3926,7 @@ export function claimQueuedTalkRuns(
             talkId: run.talk_id,
             threadId: run.thread_id,
             runId: run.id,
+            runKind: run.run_kind ?? 'conversation',
             triggerMessageId: run.trigger_message_id,
             targetAgentId: run.target_agent_id || null,
             responseGroupId: run.response_group_id || null,
@@ -3733,6 +3950,8 @@ export function completeRunAndPromoteNextAtomic(input: {
   responseMessageId: string;
   responseContent: string;
   responseMetadataJson?: string | null;
+  deliverySuppressed?: boolean;
+  suppressionReason?: string | null;
   agentId?: string | null;
   agentNickname?: string | null;
   providerId?: string | null;
@@ -3764,8 +3983,8 @@ export function completeRunAndPromoteNextAtomic(input: {
         .prepare(
           `
           SELECT id, talk_id, thread_id, trigger_message_id, target_agent_id, executor_alias, executor_model,
-                 response_group_id, sequence_index,
-                 source_binding_id, source_external_message_id, source_thread_key
+                 run_kind, response_group_id, sequence_index,
+                 source_binding_id, source_external_message_id, source_thread_key, metadata_json
           FROM talk_runs
           WHERE id = ? AND status = 'running'
           LIMIT 1
@@ -3780,16 +3999,21 @@ export function completeRunAndPromoteNextAtomic(input: {
             target_agent_id: string | null;
             executor_alias: string | null;
             executor_model: string | null;
+            run_kind: TalkRunKind | null;
             response_group_id: string | null;
             sequence_index: number | null;
             source_binding_id: string | null;
             source_external_message_id: string | null;
             source_thread_key: string | null;
+            metadata_json: string | null;
           }
         | undefined;
       if (!run) {
         return { applied: false, talkId: null, deliveryQueued: false };
       }
+
+      const suppressionActive =
+        run.source_binding_id !== null && txInput.deliverySuppressed === true;
 
       const completed = getDb()
         .prepare(
@@ -3806,18 +4030,36 @@ export function completeRunAndPromoteNextAtomic(input: {
         return { applied: false, talkId: run.talk_id, deliveryQueued: false };
       }
 
-      const responseMessage = appendAssistantMessageWithOutbox({
-        talkId: run.talk_id,
-        threadId: run.thread_id,
-        runId: run.id,
-        messageId: txInput.responseMessageId,
-        content: txInput.responseContent,
-        metadataJson: txInput.responseMetadataJson || null,
-        agentId: txInput.agentId || run.target_agent_id,
-        agentNickname: txInput.agentNickname || null,
-        sequenceInRun: txInput.responseSequenceInRun ?? null,
-        createdAt: now,
-      });
+      if (run.source_binding_id) {
+        const currentMetadata = parseRunMetadataJson(run.metadata_json);
+        currentMetadata.channelDelivery = {
+          suppressed: suppressionActive,
+          suppressionReason: suppressionActive
+            ? txInput.suppressionReason || null
+            : null,
+        };
+        setTalkRunMetadataJson(
+          run.id,
+          Object.keys(currentMetadata).length > 0
+            ? JSON.stringify(currentMetadata)
+            : null,
+        );
+      }
+
+      const responseMessage = suppressionActive
+        ? null
+        : appendAssistantMessageWithOutbox({
+            talkId: run.talk_id,
+            threadId: run.thread_id,
+            runId: run.id,
+            messageId: txInput.responseMessageId,
+            content: txInput.responseContent,
+            metadataJson: txInput.responseMetadataJson || null,
+            agentId: txInput.agentId || run.target_agent_id,
+            agentNickname: txInput.agentNickname || null,
+            sequenceInRun: txInput.responseSequenceInRun ?? null,
+            createdAt: now,
+          });
 
       if (txInput.modelId) {
         getDb()
@@ -3847,13 +4089,14 @@ export function completeRunAndPromoteNextAtomic(input: {
       }
 
       let deliveryQueued = false;
-      if (run.source_binding_id) {
+      if (run.source_binding_id && responseMessage) {
         const binding = getDb()
           .prepare(
             `
-            SELECT id, active, target_kind, target_id
-            FROM talk_channel_bindings
-            WHERE id = ?
+            SELECT b.id, b.active, b.target_kind, b.target_id, p.delivery_mode
+            FROM talk_channel_bindings b
+            JOIN talk_channel_policies p ON p.binding_id = b.id
+            WHERE b.id = ?
             LIMIT 1
           `,
           )
@@ -3863,6 +4106,7 @@ export function completeRunAndPromoteNextAtomic(input: {
               active: number;
               target_kind: string;
               target_id: string;
+              delivery_mode: 'reply' | 'channel';
             }
           | undefined;
         if (binding) {
@@ -3888,6 +4132,7 @@ export function completeRunAndPromoteNextAtomic(input: {
               JSON.stringify({
                 content: txInput.responseContent,
                 metadataJson: txInput.responseMetadataJson || null,
+                deliveryMode: binding.delivery_mode,
                 sourceThreadKey: run.source_thread_key || null,
                 sourceExternalMessageId: run.source_external_message_id || null,
               }),
@@ -3912,8 +4157,9 @@ export function completeRunAndPromoteNextAtomic(input: {
           talkId: run.talk_id,
           threadId: run.thread_id,
           runId: run.id,
+          runKind: run.run_kind ?? 'conversation',
           triggerMessageId: run.trigger_message_id,
-          responseMessageId: responseMessage.id,
+          responseMessageId: responseMessage?.id || null,
           responseGroupId: run.response_group_id,
           sequenceIndex: run.sequence_index,
           executorAlias: run.executor_alias,
@@ -3953,7 +4199,7 @@ export function failRunAndPromoteNextAtomic(input: {
         .prepare(
           `
           SELECT id, talk_id, thread_id, trigger_message_id, target_agent_id, executor_alias, executor_model,
-                 response_group_id, sequence_index
+                 run_kind, response_group_id, sequence_index
           FROM talk_runs
           WHERE id = ? AND status = 'running'
           LIMIT 1
@@ -3968,6 +4214,7 @@ export function failRunAndPromoteNextAtomic(input: {
             target_agent_id: string | null;
             executor_alias: string | null;
             executor_model: string | null;
+            run_kind: TalkRunKind | null;
             response_group_id: string | null;
             sequence_index: number | null;
           }
@@ -4002,6 +4249,7 @@ export function failRunAndPromoteNextAtomic(input: {
           talkId: run.talk_id,
           threadId: run.thread_id,
           runId: run.id,
+          runKind: run.run_kind ?? 'conversation',
           triggerMessageId: run.trigger_message_id,
           responseGroupId: run.response_group_id,
           sequenceIndex: run.sequence_index,
@@ -4215,7 +4463,7 @@ export function failInterruptedRunsOnStartup(now?: string): {
       const runningRuns = getDb()
         .prepare(
           `
-          SELECT id, talk_id, thread_id, trigger_message_id, executor_alias, executor_model
+          SELECT id, talk_id, thread_id, trigger_message_id, executor_alias, executor_model, run_kind
           FROM talk_runs
           WHERE status = 'running' AND talk_id IS NOT NULL
           ORDER BY created_at ASC
@@ -4228,6 +4476,7 @@ export function failInterruptedRunsOnStartup(now?: string): {
         trigger_message_id: string | null;
         executor_alias: string | null;
         executor_model: string | null;
+        run_kind: TalkRunKind | null;
       }>;
 
       const failedRunIds: string[] = [];
@@ -4253,6 +4502,7 @@ export function failInterruptedRunsOnStartup(now?: string): {
             talkId: run.talk_id,
             threadId: run.thread_id,
             runId: run.id,
+            runKind: run.run_kind ?? 'conversation',
             triggerMessageId: run.trigger_message_id,
             errorCode: 'interrupted_by_restart',
             errorMessage: 'Run interrupted by process restart',
@@ -4580,16 +4830,7 @@ function isMainPromotionChildRun(run: TalkRunRecord): boolean {
 function parseMainBrowserBlockMetadata(
   metadataJson: string | null | undefined,
 ): BrowserBlockMetadata | null {
-  const metadata = parseRunMetadataJson(metadataJson);
-  const browserBlock = metadata.browserBlock;
-  if (
-    !browserBlock ||
-    typeof browserBlock !== 'object' ||
-    Array.isArray(browserBlock)
-  ) {
-    return null;
-  }
-  return browserBlock as BrowserBlockMetadata;
+  return parseMainBrowserBlockFromMetadata(metadataJson);
 }
 
 function parseMainResumeRequestMetadata(
@@ -4687,10 +4928,21 @@ export function getUnambiguousPausedMainBrowserOwner(input: {
   }> = [];
   for (const run of pausedRuns) {
     const browserBlock = parseMainBrowserBlockMetadata(run.metadata_json);
-    if (!browserBlock?.sessionId || browserBlock.kind === 'session_conflict') {
+    const sessionId = getTalkRunBrowserSessionId(run);
+    if (
+      !browserBlock ||
+      !sessionId ||
+      getTalkRunBlockedReason(run) === 'session_conflict'
+    ) {
       continue;
     }
-    owners.push({ run, browserBlock });
+    owners.push({
+      run,
+      browserBlock: {
+        ...browserBlock,
+        sessionId,
+      },
+    });
   }
   if (owners.length !== 1) {
     return null;
@@ -4749,7 +5001,12 @@ export function getPausedMainBrowserOwnerForProfile(input: {
   }> = [];
   for (const run of pausedRuns) {
     const browserBlock = parseMainBrowserBlockMetadata(run.metadata_json);
-    if (!browserBlock?.sessionId || browserBlock.kind === 'session_conflict') {
+    const sessionId = getTalkRunBrowserSessionId(run);
+    if (
+      !browserBlock ||
+      !sessionId ||
+      getTalkRunBlockedReason(run) === 'session_conflict'
+    ) {
       continue;
     }
     if (
@@ -4758,7 +5015,13 @@ export function getPausedMainBrowserOwnerForProfile(input: {
     ) {
       continue;
     }
-    owners.push({ run, browserBlock });
+    owners.push({
+      run,
+      browserBlock: {
+        ...browserBlock,
+        sessionId,
+      },
+    });
   }
 
   if (owners.length !== 1) {
@@ -4798,6 +5061,8 @@ function queuePausedMainRun(
       `
       UPDATE talk_runs
       SET status = 'queued',
+          blocked_reason = NULL,
+          timeout_phase = NULL,
           cancel_reason = NULL,
           ended_at = NULL,
           metadata_json = ?
@@ -5158,6 +5423,9 @@ export function enqueueMainTurnAtomic(input: {
   content: string;
   messageId: string;
   runId: string;
+  taskType?: TalkRunTaskType;
+  selectedMode?: TalkRunSelectedMode | null;
+  transport?: TalkRunTransport | null;
 }): { message: TalkMessageRecord; run: TalkRunRecord } {
   const tx = getDb().transaction(
     (
@@ -5209,15 +5477,21 @@ export function enqueueMainTurnAtomic(input: {
           `
           INSERT INTO talk_runs (
             id, talk_id, thread_id, requested_by, status,
-            trigger_message_id, created_at, metadata_json
-          ) VALUES (?, NULL, ?, ?, 'queued', ?, ?, ?)
+            trigger_message_id, task_type, selected_mode, transport,
+            created_at, metadata_json
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `,
         )
         .run(
           txInput.runId,
+          null,
           txInput.threadId,
           txInput.userId,
+          'queued',
           txInput.messageId,
+          txInput.taskType ?? 'chat',
+          txInput.selectedMode ?? null,
+          txInput.transport ?? null,
           now,
           JSON.stringify({
             timing: {
@@ -5272,6 +5546,13 @@ export function enqueueMainTurnAtomic(input: {
         requested_by: txInput.userId,
         status: 'queued',
         trigger_message_id: txInput.messageId,
+        task_type: txInput.taskType ?? 'chat',
+        selected_mode: txInput.selectedMode ?? null,
+        transport: txInput.transport ?? null,
+        browser_phase: null,
+        blocked_reason: null,
+        browser_session_id: null,
+        timeout_phase: null,
         idempotency_key: null,
         executor_alias: null,
         executor_model: null,
@@ -5372,6 +5653,10 @@ export function claimQueuedMainRuns(
           claimed.push({
             ...run,
             status: 'running' as TalkRunStatus,
+            browser_phase:
+              getTalkRunTaskType(run) === 'browser' ? 'starting' : null,
+            blocked_reason: null,
+            timeout_phase: null,
             started_at: startedAt,
           });
         }
@@ -5412,7 +5697,11 @@ export function completeMainRunAtomic(input: {
         .prepare(
           `
           UPDATE talk_runs
-          SET status = 'completed', ended_at = ?
+          SET status = 'completed',
+              browser_phase = NULL,
+              blocked_reason = NULL,
+              timeout_phase = NULL,
+              ended_at = ?
           WHERE id = ? AND status = 'running'
         `,
         )
@@ -5554,11 +5843,16 @@ export function failMainRunAtomic(input: {
         .prepare(
           `
           UPDATE talk_runs
-          SET status = 'failed', ended_at = ?, cancel_reason = ?
+          SET status = 'failed',
+              blocked_reason = NULL,
+              timeout_phase = ?,
+              ended_at = ?,
+              cancel_reason = ?
           WHERE id = ? AND status = 'running'
         `,
         )
         .run(
+          txInput.timeoutPhase ?? null,
           now,
           `${txInput.errorCode}: ${txInput.errorMessage}`,
           txInput.runId,

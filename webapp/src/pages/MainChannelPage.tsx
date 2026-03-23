@@ -279,15 +279,34 @@ function formatMainRunMetaLine(run: MainRun): string | null {
   return parts.length > 0 ? parts.join(' · ') : null;
 }
 
-function getBrowserBlockStatusLabel(
-  browserBlock: MainRun['browserBlock'],
-  resumeRequestedAt?: string | null,
-): string {
-  if (resumeRequestedAt) {
+function isBlockedBrowserRun(run: MainRun): boolean {
+  return (
+    run.taskType === 'browser' &&
+    run.status === 'awaiting_confirmation' &&
+    Boolean(run.blockedReason || run.browserBlock)
+  );
+}
+
+function getBrowserBlockStatusLabel(run: MainRun): string {
+  if (run.resumeRequestedAt) {
     return 'Resume requested';
   }
+  const browserBlock = run.browserBlock;
   if (!browserBlock) {
-    return 'Waiting for approval';
+    switch (run.blockedReason) {
+      case 'phone_approval':
+      case 'app_approval':
+        return 'Check phone approval';
+      case 'code_entry':
+      case 'login_required':
+        return 'Authentication required';
+      case 'manual_takeover':
+        return 'Manual step required';
+      case 'session_conflict':
+        return 'Waiting for browser session';
+      default:
+        return 'Waiting for approval';
+    }
   }
   switch (browserBlock.kind) {
     case 'auth_required':
@@ -650,6 +669,7 @@ function mainReducer(state: MainState, action: MainAction): MainState {
       const runsById = upsertRun(state.runsById, {
         id: action.event.runId,
         threadId: action.event.threadId,
+        taskType: existingRun?.taskType || 'chat',
         status: existingRun?.status || 'running',
         createdAt: existingRun?.createdAt || new Date().toISOString(),
         startedAt: existingRun?.startedAt || new Date().toISOString(),
@@ -1289,6 +1309,7 @@ export function MainChannelPage({
           run: {
             id: event.runId,
             threadId: event.threadId,
+            taskType: 'chat',
             status: 'queued',
             createdAt: event.createdAt || new Date().toISOString(),
             startedAt: null,
@@ -1315,6 +1336,7 @@ export function MainChannelPage({
           run: {
             id: event.runId,
             threadId: event.threadId,
+            taskType: existing?.taskType || 'chat',
             status: 'running',
             createdAt: existing?.createdAt || new Date().toISOString(),
             startedAt: event.startedAt || new Date().toISOString(),
@@ -1341,6 +1363,7 @@ export function MainChannelPage({
           run: {
             id: event.runId,
             threadId: event.threadId,
+            taskType: existing?.taskType || 'chat',
             status: 'awaiting_confirmation',
             createdAt: event.createdAt || existing?.createdAt || new Date().toISOString(),
             startedAt: event.startedAt || existing?.startedAt || null,
@@ -1501,11 +1524,10 @@ export function MainChannelPage({
     for (const run of Object.values(state.runsById)) {
       if (run.threadId !== state.activeThreadId) continue;
       const isPromotionPending = run.promotionState === 'pending';
-      const isBlockedBrowserRun =
-        run.status === 'awaiting_confirmation' && Boolean(run.browserBlock);
+      const isBlockedRunCard = isBlockedBrowserRun(run);
       const isGenericActiveRun =
-        isMainRunActive(run) && !isBlockedBrowserRun;
-      if (isPromotionPending || isBlockedBrowserRun || isGenericActiveRun) {
+        isMainRunActive(run) && !isBlockedRunCard;
+      if (isPromotionPending || isBlockedRunCard || isGenericActiveRun) {
         entries.push({ kind: 'run', run });
         continue;
       }
@@ -1896,17 +1918,11 @@ export function MainChannelPage({
       const threadRuns = Object.values(state.runsById).filter(
         (run) => run.threadId === thread.threadId,
       );
-      const blockedRun = threadRuns.find(
-        (run) => run.status === 'awaiting_confirmation' && run.browserBlock,
-      );
+      const blockedRun = threadRuns.find((run) => isBlockedBrowserRun(run));
       if (blockedRun) {
         return (
           <span className="main-thread-item-meta main-thread-item-meta-responding">
-            *{' '}
-            {getBrowserBlockStatusLabel(
-              blockedRun.browserBlock,
-              blockedRun.resumeRequestedAt,
-            )}
+            * {getBrowserBlockStatusLabel(blockedRun)}
           </span>
         );
       }
@@ -2144,10 +2160,7 @@ export function MainChannelPage({
                     : isStalled
                       ? 'Stalled'
                     : run.status === 'awaiting_confirmation'
-                      ? getBrowserBlockStatusLabel(
-                          run.browserBlock,
-                          run.resumeRequestedAt,
-                        )
+                      ? getBrowserBlockStatusLabel(run)
                     : run.status === 'queued'
                         ? 'Queued'
                         : 'Working';

@@ -10,6 +10,7 @@
 
 import { randomUUID } from 'crypto';
 
+import { getDb } from '../../db.js';
 import { TALK_RUN_MAX_CONCURRENCY, TALK_RUN_POLL_MS } from '../config.js';
 import {
   appendOutboxEvent,
@@ -18,6 +19,7 @@ import {
   createMainPromotionRunAtomic,
   failInterruptedMainRunsOnStartup,
   failMainRunAtomic,
+  getTalkRunTaskType,
   getUnambiguousPausedMainBrowserOwner,
   getTalkMessageById,
   getTalkRunById,
@@ -74,6 +76,21 @@ function isAbortError(error: unknown): boolean {
 const STREAMED_TEXT_PREVIEW_MAX_CHARS = 4_000;
 const STREAMED_TEXT_PERSIST_INTERVAL_MS = 1_000;
 const MAIN_RUN_HEARTBEAT_INTERVAL_MS = 10_000;
+
+function setRunBrowserPhase(
+  runId: string,
+  phase: 'starting' | 'interacting' | 'summarizing' | null,
+): void {
+  getDb()
+    .prepare(
+      `
+      UPDATE talk_runs
+      SET browser_phase = ?
+      WHERE id = ?
+    `,
+    )
+    .run(phase, runId);
+}
 
 function appendStreamedPreview(currentPreview: string, delta: string): string {
   if (!delta) return currentPreview;
@@ -237,6 +254,7 @@ export class MainRunWorker implements MainRunWorkerControl {
     run: TalkRunRecord,
     signal: AbortSignal,
   ): Promise<void> {
+    const runTaskType = getTalkRunTaskType(run);
     if (!run.trigger_message_id) {
       this.failRun(
         run,
@@ -344,6 +362,9 @@ export class MainRunWorker implements MainRunWorkerControl {
           let eventToPublish = event;
           // Sanitize streaming deltas before publishing
           if (event.type === 'main_response_delta') {
+            if (runTaskType === 'browser') {
+              setRunBrowserPhase(run.id, 'summarizing');
+            }
             const cleaned = sanitizer.push(event.text);
             if (!cleaned) return;
             eventToPublish = { ...event, text: cleaned };

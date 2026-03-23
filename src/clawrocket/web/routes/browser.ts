@@ -71,7 +71,7 @@ async function maybeResumeTakeover(
   const service = getBrowserService();
   const snapshot = await service.getSessionStatus(sessionId);
   if (snapshot?.state === 'takeover') {
-    await service.resumeTakeover({ sessionId });
+    await service.resumeTakeover({ sessionId, userId: null });
   }
 }
 
@@ -108,6 +108,7 @@ export async function startBrowserSetupSessionRoute(input: {
             ? input.accountLabel.trim() || null
             : null,
         url: typeof input.url === 'string' ? input.url.trim() || null : null,
+        userId: input.auth.userId,
       }),
     },
   };
@@ -136,6 +137,7 @@ export async function startBrowserTakeoverRoute(input: {
   try {
     const snapshot = await getBrowserService().startTakeover({
       sessionId: input.sessionId,
+      userId: input.auth.userId,
     });
     return {
       statusCode: 200,
@@ -224,6 +226,7 @@ export async function resumeBrowserSessionRoute(input: {
   try {
     const snapshot = await getBrowserService().resumeTakeover({
       sessionId: input.sessionId,
+      userId: input.auth.userId,
     });
     return {
       statusCode: 200,

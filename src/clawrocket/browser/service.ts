@@ -7,9 +7,13 @@ import { chromium, type BrowserContext, type Page } from 'playwright-core';
 import { DATA_DIR } from '../../config.js';
 import { logger } from '../../logger.js';
 import {
+  buildBrowserProfileKey,
   ensureBrowserProfile,
+  getBrowserSessionById,
   getBrowserProfileById,
+  reconcileBrowserSessionsOnStartup,
   touchBrowserProfileLastUsed,
+  upsertBrowserSessionState,
   type BrowserProfileSnapshot,
 } from '../db/browser-accessors.js';
 
@@ -44,6 +48,7 @@ export type BrowserSessionState =
   | 'active'
   | 'blocked'
   | 'takeover'
+  | 'disconnected'
   | 'closed'
   | 'dead';
 
@@ -154,6 +159,8 @@ export interface BrowserActionAuditInput {
 
 interface LiveSession {
   sessionId: string;
+  userId: string | null;
+  ownerRunId: string | null;
   profileId: string;
   siteKey: string;
   accountLabel: string | null;
@@ -178,7 +185,7 @@ function buildProfileMapKey(
   siteKey: string,
   accountLabel: string | null,
 ): string {
-  return accountLabel ? `${siteKey}::${accountLabel}` : siteKey;
+  return buildBrowserProfileKey(siteKey, accountLabel);
 }
 
 function humanizeSiteKey(siteKey: string): string {
@@ -352,6 +359,42 @@ function buildSetupSessionReuseMessage(
     return `Resolve the existing ${siteLabel} confirmation step in the opened browser window.`;
   }
   return `Continue the existing ${siteLabel} sign-in or device approval step in the opened browser window.`;
+}
+
+function inferPersistedBlockedReason(input: {
+  kind: BrowserBlockedKind | null;
+  message?: string | null;
+}):
+  | 'login_required'
+  | 'phone_approval'
+  | 'app_approval'
+  | 'code_entry'
+  | 'session_conflict'
+  | 'manual_takeover'
+  | null {
+  if (input.kind === 'session_conflict') {
+    return 'session_conflict';
+  }
+  if (
+    input.kind === 'human_step_required' ||
+    input.kind === 'confirmation_required'
+  ) {
+    return 'manual_takeover';
+  }
+  if (input.kind !== 'auth_required') {
+    return null;
+  }
+  const text = (input.message || '').toLowerCase();
+  if (/\b(linkedin )?app\b/.test(text)) {
+    return 'app_approval';
+  }
+  if (/\bphone\b|\bdevice\b/.test(text)) {
+    return 'phone_approval';
+  }
+  if (/\bcode\b/.test(text)) {
+    return 'code_entry';
+  }
+  return 'login_required';
 }
 
 function urlsEquivalent(left: string, right: string): boolean {
@@ -711,6 +754,65 @@ export class BrowserService {
   private readonly profileSessionIds = new Map<string, string>();
   private readonly runSessionIds = new Map<string, Set<string>>();
 
+  constructor() {
+    const reconciled = reconcileBrowserSessionsOnStartup();
+    if (reconciled > 0) {
+      logger.info(
+        { reconciled },
+        'Reconciled persisted browser sessions on startup',
+      );
+    }
+  }
+
+  private persistSessionState(session: LiveSession): void {
+    upsertBrowserSessionState({
+      id: session.sessionId,
+      userId: session.userId,
+      profileId: session.profileId,
+      siteKey: session.siteKey,
+      accountLabel: session.accountLabel,
+      state: session.state === 'dead' ? 'disconnected' : session.state,
+      blockedReason: inferPersistedBlockedReason({
+        kind: session.blockedKind,
+        message: session.blockedMessage,
+      }),
+      ownerRunId: session.ownerRunId,
+      lastSeenAt: session.lastUpdatedAt,
+      lastLiveContextAt:
+        session.state === 'closed' || session.state === 'dead'
+          ? null
+          : session.lastUpdatedAt,
+      updatedAt: session.lastUpdatedAt,
+    });
+  }
+
+  private buildPersistedStatusSnapshot(
+    sessionId: string,
+  ): BrowserSessionStatusSnapshot | null {
+    const persisted = getBrowserSessionById(sessionId);
+    if (!persisted) return null;
+    return {
+      sessionId: persisted.id,
+      siteKey: persisted.siteKey,
+      accountLabel: persisted.accountLabel,
+      headed: false,
+      state: persisted.state,
+      owner: persisted.state === 'takeover' ? 'user' : 'agent',
+      blockedKind:
+        persisted.blockedReason === 'session_conflict'
+          ? 'session_conflict'
+          : persisted.blockedReason === 'manual_takeover'
+            ? 'human_step_required'
+            : persisted.blockedReason
+              ? 'auth_required'
+              : null,
+      blockedMessage: null,
+      currentUrl: '',
+      currentTitle: '',
+      lastUpdatedAt: persisted.updatedAt,
+    };
+  }
+
   getSessionSnapshot(sessionId: string): BrowserSessionSnapshot | null {
     const session = this.sessionsById.get(sessionId);
     if (!session) return null;
@@ -728,6 +830,7 @@ export class BrowserService {
     session.lastKnownUrl = session.page.url();
     session.lastKnownTitle = await session.page.title();
     session.lastUpdatedAt = nowIso();
+    this.persistSessionState(session);
     return {
       sessionId: session.sessionId,
       siteKey: session.siteKey,
@@ -770,20 +873,39 @@ export class BrowserService {
   recordRunSessionTouch(
     runId: string | null | undefined,
     sessionId: string,
+    userId?: string | null,
   ): void {
     if (!runId) return;
     const session = this.sessionsById.get(sessionId);
-    if (!session) return;
+    if (!session) {
+      const persisted = getBrowserSessionById(sessionId);
+      if (!persisted) return;
+      upsertBrowserSessionState({
+        id: sessionId,
+        userId: userId ?? null,
+        profileId: persisted.profileId,
+        siteKey: persisted.siteKey,
+        accountLabel: persisted.accountLabel,
+        state: persisted.state,
+        blockedReason: persisted.blockedReason,
+        ownerRunId: runId,
+      });
+      return;
+    }
+    session.userId = userId ?? session.userId;
+    session.ownerRunId = runId;
     session.touchedRunIds.add(runId);
     const current = this.runSessionIds.get(runId) || new Set<string>();
     current.add(sessionId);
     this.runSessionIds.set(runId, current);
+    this.persistSessionState(session);
   }
 
   getSessionTouchedRunIds(sessionId: string): string[] {
     const session = this.sessionsById.get(sessionId);
     if (!session) {
-      return [];
+      const persisted = getBrowserSessionById(sessionId);
+      return persisted?.ownerRunId ? [persisted.ownerRunId] : [];
     }
     return Array.from(session.touchedRunIds);
   }
@@ -792,7 +914,7 @@ export class BrowserService {
     sessionId: string,
   ): Promise<BrowserSessionStatusSnapshot | null> {
     const session = this.sessionsById.get(sessionId);
-    if (!session) return null;
+    if (!session) return this.buildPersistedStatusSnapshot(sessionId);
     if (
       session.owner !== 'user' &&
       session.state !== 'closed' &&
@@ -824,6 +946,8 @@ export class BrowserService {
     profile: BrowserProfileSnapshot;
     headed: boolean;
     sessionId?: string;
+    userId?: string | null;
+    ownerRunId?: string | null;
   }): Promise<LiveSession> {
     fs.mkdirSync(input.profile.profilePath, { recursive: true });
     fs.mkdirSync(input.profile.downloadDir, { recursive: true });
@@ -838,6 +962,8 @@ export class BrowserService {
 
     const session: LiveSession = {
       sessionId: input.sessionId || `bs_${randomUUID()}`,
+      userId: input.userId ?? null,
+      ownerRunId: input.ownerRunId ?? null,
       profileId: input.profile.id,
       siteKey: input.profile.siteKey,
       accountLabel: input.profile.accountLabel,
@@ -855,6 +981,23 @@ export class BrowserService {
     };
 
     context.once('close', () => {
+      session.lastUpdatedAt = nowIso();
+      upsertBrowserSessionState({
+        id: session.sessionId,
+        userId: session.userId,
+        profileId: session.profileId,
+        siteKey: session.siteKey,
+        accountLabel: session.accountLabel,
+        state: session.state === 'closed' ? 'closed' : 'disconnected',
+        blockedReason: inferPersistedBlockedReason({
+          kind: session.blockedKind,
+          message: session.blockedMessage,
+        }),
+        ownerRunId: session.ownerRunId,
+        lastSeenAt: session.lastUpdatedAt,
+        lastLiveContextAt: null,
+        updatedAt: session.lastUpdatedAt,
+      });
       this.profileSessionIds.delete(
         buildProfileMapKey(session.siteKey, session.accountLabel),
       );
@@ -874,6 +1017,7 @@ export class BrowserService {
       buildProfileMapKey(session.siteKey, session.accountLabel),
       session.sessionId,
     );
+    this.persistSessionState(session);
     return session;
   }
 
@@ -887,6 +1031,8 @@ export class BrowserService {
     }
     const {
       sessionId,
+      userId,
+      ownerRunId,
       state,
       owner,
       blockedKind,
@@ -900,6 +1046,8 @@ export class BrowserService {
       profile,
       headed,
       sessionId,
+      userId,
+      ownerRunId,
     });
     relaunched.state = state;
     relaunched.owner = owner;
@@ -914,6 +1062,7 @@ export class BrowserService {
       sessions.add(relaunched.sessionId);
       this.runSessionIds.set(runId, sessions);
     }
+    this.persistSessionState(relaunched);
     return relaunched;
   }
 
@@ -936,6 +1085,7 @@ export class BrowserService {
     session.blockedKind = null;
     session.blockedMessage = null;
     session.lastUpdatedAt = nowIso();
+    this.persistSessionState(session);
   }
 
   private markSessionBlocked(
@@ -948,6 +1098,7 @@ export class BrowserService {
     session.blockedKind = kind;
     session.blockedMessage = message;
     session.lastUpdatedAt = nowIso();
+    this.persistSessionState(session);
   }
 
   private async refreshSessionLocation(session: LiveSession): Promise<void> {
@@ -960,6 +1111,8 @@ export class BrowserService {
     siteKey: string;
     url: string;
     accountLabel?: string | null;
+    userId?: string | null;
+    runId?: string | null;
     headed?: boolean;
     reuseSession?: boolean;
     navigationTimeoutMs?: number;
@@ -1001,6 +1154,9 @@ export class BrowserService {
           liveSession.sessionId,
         );
         if (existingSnapshot) {
+          liveSession.userId = input.userId ?? liveSession.userId;
+          liveSession.ownerRunId = input.runId ?? liveSession.ownerRunId;
+          this.persistSessionState(liveSession);
           const blockedResult = buildOpenResultFromExistingSessionSnapshot({
             snapshot: existingSnapshot,
             createdProfile: created,
@@ -1037,7 +1193,16 @@ export class BrowserService {
     }
 
     if (!session) {
-      session = await this.createSession({ profile, headed });
+      session = await this.createSession({
+        profile,
+        headed,
+        userId: input.userId ?? null,
+        ownerRunId: input.runId ?? null,
+      });
+    } else {
+      session.userId = input.userId ?? session.userId;
+      session.ownerRunId = input.runId ?? session.ownerRunId;
+      this.persistSessionState(session);
     }
 
     await gotoWithOptionalRetry({
@@ -1095,6 +1260,7 @@ export class BrowserService {
     siteKey: string;
     accountLabel?: string | null;
     url?: string | null;
+    userId?: string | null;
   }): Promise<BrowserOpenResult> {
     const { profile, created } = ensureBrowserProfile({
       siteKey: input.siteKey,
@@ -1118,7 +1284,14 @@ export class BrowserService {
         ? existingSession
         : existingSession
           ? await this.relaunchSession(existingSession, true)
-          : await this.createSession({ profile, headed: true });
+          : await this.createSession({
+              profile,
+              headed: true,
+              userId: input.userId ?? null,
+            });
+
+    session.userId = input.userId ?? session.userId;
+    this.persistSessionState(session);
 
     if (
       existingSnapshot &&
@@ -1131,6 +1304,7 @@ export class BrowserService {
       session.blockedKind = null;
       session.blockedMessage = null;
       session.lastUpdatedAt = nowIso();
+      this.persistSessionState(session);
       return {
         status: 'ok',
         siteKey: profile.siteKey,
@@ -1158,6 +1332,7 @@ export class BrowserService {
     session.blockedKind = null;
     session.blockedMessage = null;
     session.lastUpdatedAt = nowIso();
+    this.persistSessionState(session);
     return {
       status: 'ok',
       siteKey: profile.siteKey,
@@ -1550,10 +1725,13 @@ export class BrowserService {
   async close(input: {
     sessionId: string;
     keepProfile?: boolean;
+    userId?: string | null;
   }): Promise<BrowserCloseResult> {
     const session = this.getSessionOrThrow(input.sessionId);
+    session.userId = input.userId ?? session.userId;
     session.state = 'closed';
     session.lastUpdatedAt = nowIso();
+    this.persistSessionState(session);
     await session.context.close();
     return {
       status: 'ok',
@@ -1565,6 +1743,7 @@ export class BrowserService {
 
   async startTakeover(input: {
     sessionId: string;
+    userId?: string | null;
   }): Promise<BrowserSessionStatusSnapshot> {
     const session = this.sessionsById.get(input.sessionId);
     if (!session) {
@@ -1574,22 +1753,26 @@ export class BrowserService {
     const activeSession = session.headed
       ? session
       : await this.relaunchSession(session, true);
+    activeSession.userId = input.userId ?? activeSession.userId;
     await this.refreshSessionLocation(activeSession);
     activeSession.state = 'takeover';
     activeSession.owner = 'user';
     activeSession.blockedKind = null;
     activeSession.blockedMessage = null;
     activeSession.lastUpdatedAt = nowIso();
+    this.persistSessionState(activeSession);
     return this.buildStatusSnapshot(activeSession);
   }
 
   async resumeTakeover(input: {
     sessionId: string;
+    userId?: string | null;
   }): Promise<BrowserSessionStatusSnapshot> {
     const session = this.sessionsById.get(input.sessionId);
     if (!session) {
       throw new Error(`Browser session ${input.sessionId} not found`);
     }
+    session.userId = input.userId ?? session.userId;
     this.markSessionActive(session);
     await this.refreshSessionLocation(session);
     return this.buildStatusSnapshot(session);

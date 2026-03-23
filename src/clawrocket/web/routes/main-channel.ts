@@ -7,14 +7,27 @@ import {
   type MainRunLeaseState,
   type MainRunTimingMetadata,
 } from '../../browser/metadata.js';
-import { buildMainExecutionPreview } from '../../agents/execution-preview.js';
 import { getMainAgent } from '../../agents/agent-registry.js';
+import type { TalkRunBrowserPhase } from '../../db/index.js';
+import {
+  ExecutionPlannerError,
+  planMainExecution,
+  resolveContainerCredential,
+} from '../../agents/execution-planner.js';
 import { getEffectiveToolsForAgent } from '../../db/agent-accessors.js';
 import {
   canUserAccessMainThread,
   deleteMainMessagesAtomic,
   deleteMainThread,
   enqueueMainTurnAtomic,
+  getSettingValue,
+  getTalkRunBlockedReason,
+  getTalkRunBrowserPhase,
+  getTalkRunBrowserSessionId,
+  getTalkRunSelectedMode,
+  getTalkRunTaskType,
+  getTalkRunTimeoutPhase,
+  getTalkRunTransport,
   getMainThreadTitle,
   getTalkRunById,
   listMainThreadsForUser,
@@ -25,6 +38,7 @@ import {
   ThreadDeleteConflictError,
   updateMainThreadMetadata,
 } from '../../db/index.js';
+import { getContainerRuntimeStatus } from '../../../container-runtime.js';
 import {
   ThreadTitleValidationError,
   validateEditableThreadTitle,
@@ -52,6 +66,92 @@ function mainAgentHasBrowserAccess(userId: string): boolean {
   return getEffectiveToolsForAgent(agent.id, userId).some(
     (tool) => tool.toolFamily === 'browser' && tool.enabled,
   );
+}
+
+function looksLikeHighConfidenceBrowserIntent(content: string): boolean {
+  const normalized = content.trim().toLowerCase();
+  if (!normalized) return false;
+  const mentionsSurface =
+    /https?:\/\//.test(normalized) ||
+    /\blinkedin\b/.test(normalized) ||
+    /\bbrowser\b/.test(normalized) ||
+    /\bsession\b/.test(normalized) ||
+    /\bsite\b/.test(normalized);
+  const mentionsAction =
+    /\b(open|access|check|visit|navigate|login|log in|show|see)\b/.test(
+      normalized,
+    ) || /what you can access/.test(normalized);
+  return mentionsSurface && mentionsAction;
+}
+
+function resolveSelectedBrowserMode(input: { userId: string }):
+  | {
+      ok: true;
+      selectedMode: 'api' | 'subscription';
+      transport: 'direct' | 'subscription';
+    }
+  | { ok: false; message: string } {
+  const configuredMode = (
+    getSettingValue('executor.authMode')?.trim() || ''
+  ).toLowerCase();
+  const agent = getMainAgent();
+
+  if (configuredMode === 'api_key') {
+    try {
+      const plan = planMainExecution(agent, input.userId);
+      if (!plan.directPlan) {
+        return {
+          ok: false,
+          message:
+            'Main browser runs are set to API key mode, but no verified direct Anthropic API path is configured for this agent.',
+        };
+      }
+      return {
+        ok: true,
+        selectedMode: 'api',
+        transport: 'direct',
+      };
+    } catch (error) {
+      return {
+        ok: false,
+        message:
+          error instanceof ExecutionPlannerError
+            ? error.message
+            : String(error),
+      };
+    }
+  }
+
+  if (configuredMode === 'subscription') {
+    try {
+      resolveContainerCredential({ preferredAuthMode: 'subscription' });
+      if (getContainerRuntimeStatus() !== 'ready') {
+        return {
+          ok: false,
+          message:
+            'Claude container runtime is unavailable on this host. Start Docker before using subscription mode for browser runs.',
+        };
+      }
+      return {
+        ok: true,
+        selectedMode: 'subscription',
+        transport: 'subscription',
+      };
+    } catch (error) {
+      return {
+        ok: false,
+        message:
+          error instanceof ExecutionPlannerError
+            ? error.message
+            : String(error),
+      };
+    }
+  }
+
+  return {
+    ok: false,
+    message: BROWSER_EXECUTION_SETUP_MESSAGE,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -239,6 +339,19 @@ interface MainRunTerminalSummaryApiRecord {
 export interface MainRunApiRecord {
   id: string;
   threadId: string;
+  taskType: 'chat' | 'browser';
+  browserPhase: 'starting' | 'interacting' | 'summarizing' | null;
+  blockedReason:
+    | 'login_required'
+    | 'phone_approval'
+    | 'app_approval'
+    | 'code_entry'
+    | 'session_conflict'
+    | 'manual_takeover'
+    | null;
+  browserSessionId: string | null;
+  selectedMode: 'api' | 'subscription' | null;
+  transport: 'direct' | 'subscription' | null;
   status:
     | 'queued'
     | 'running'
@@ -337,11 +450,31 @@ function toMainRunApiRecord(run: {
   target_agent_id?: string | null;
   cancel_reason: string | null;
   metadata_json?: string | null;
+  task_type?: 'chat' | 'browser' | null;
+  browser_phase?: 'starting' | 'interacting' | 'summarizing' | null;
+  blocked_reason?:
+    | 'login_required'
+    | 'phone_approval'
+    | 'app_approval'
+    | 'code_entry'
+    | 'session_conflict'
+    | 'manual_takeover'
+    | null;
+  browser_session_id?: string | null;
+  selected_mode?: 'api' | 'subscription' | null;
+  transport?: 'direct' | 'subscription' | null;
+  timeout_phase?: string | null;
 }): MainRunApiRecord {
   const metadata = parseRunMetadata(run.metadata_json);
   return {
     id: run.id,
     threadId: run.thread_id,
+    taskType: getTalkRunTaskType(run),
+    browserPhase: getTalkRunBrowserPhase(run),
+    blockedReason: getTalkRunBlockedReason(run),
+    browserSessionId: getTalkRunBrowserSessionId(run),
+    selectedMode: getTalkRunSelectedMode(run),
+    transport: getTalkRunTransport(run),
     status: run.status,
     createdAt: run.created_at,
     startedAt: run.started_at,
@@ -402,8 +535,7 @@ function toMainRunApiRecord(run: {
         : null,
     currentStep:
       typeof metadata.currentStep === 'string' ? metadata.currentStep : null,
-    timeoutPhase:
-      typeof metadata.timeoutPhase === 'string' ? metadata.timeoutPhase : null,
+    timeoutPhase: getTalkRunTimeoutPhase(run),
     leaseState:
       metadata.leaseState === 'cold_boot' ||
       metadata.leaseState === 'warm_reuse' ||
@@ -443,37 +575,6 @@ export function postMainMessageRoute(
   statusCode: number;
   body: ApiEnvelope<PostMainMessageResponse>;
 } {
-  try {
-    if (mainAgentHasBrowserAccess(auth.userId)) {
-      const preview = buildMainExecutionPreview(getMainAgent(), auth.userId);
-      if (!preview.ready) {
-        return {
-          statusCode: 409,
-          body: {
-            ok: false,
-            error: {
-              code: 'browser_execution_not_configured',
-              message: normalizeBrowserExecutionMessage(preview.message),
-            },
-          },
-        };
-      }
-    }
-  } catch (error) {
-    return {
-      statusCode: 409,
-      body: {
-        ok: false,
-        error: {
-          code: 'browser_execution_not_configured',
-          message: normalizeBrowserExecutionMessage(
-            error instanceof Error ? error.message : String(error),
-          ),
-        },
-      },
-    };
-  }
-
   // Validate content
   if (typeof body.content !== 'string' || !body.content.trim()) {
     return {
@@ -489,6 +590,31 @@ export function postMainMessageRoute(
   }
 
   const content = body.content.trim();
+  const browserCapable = mainAgentHasBrowserAccess(auth.userId);
+  const taskType: 'chat' | 'browser' =
+    browserCapable && looksLikeHighConfidenceBrowserIntent(content)
+      ? 'browser'
+      : 'chat';
+  let selectedMode: 'api' | 'subscription' | null = null;
+  let transport: 'direct' | 'subscription' | null = null;
+
+  if (taskType === 'browser') {
+    const selected = resolveSelectedBrowserMode({ userId: auth.userId });
+    if (!selected.ok) {
+      return {
+        statusCode: 409,
+        body: {
+          ok: false,
+          error: {
+            code: 'browser_execution_not_configured',
+            message: normalizeBrowserExecutionMessage(selected.message),
+          },
+        },
+      };
+    }
+    selectedMode = selected.selectedMode;
+    transport = selected.transport;
+  }
 
   // Determine threadId
   let threadId: string;
@@ -534,6 +660,9 @@ export function postMainMessageRoute(
       content,
       messageId,
       runId,
+      taskType,
+      selectedMode,
+      transport,
     });
 
     return {

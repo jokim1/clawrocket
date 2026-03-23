@@ -209,6 +209,24 @@ export type BindingDiagnosis = {
   action: BindingDiagnosisAction | null;
 };
 
+export type TalkChannelBindingStateEntry = {
+  id: string;
+  key: string;
+  keySuffix: string;
+  value: unknown;
+  version: number;
+  updatedAt: string;
+  updatedByUserId: string | null;
+  updatedByRunId: string | null;
+};
+
+export type ChannelInstructionReview = {
+  strengths: string[];
+  missing: string[];
+  removeOrSimplify: string[];
+  rewrittenInstructions: string | null;
+};
+
 export type TalkChannelBinding = {
   id: string;
   talkId: string;
@@ -224,7 +242,8 @@ export type TalkChannelBinding = {
   responderMode: 'primary' | 'agent';
   responderAgentId: string | null;
   deliveryMode: 'reply' | 'channel';
-  channelContextNote: string | null;
+  instructions: string | null;
+  stateNamespace: string;
   inboundRateLimitPerMinute: number;
   maxPendingEvents: number;
   overflowPolicy: 'drop_oldest' | 'drop_newest';
@@ -2613,7 +2632,7 @@ export async function createTalkChannel(input: {
   responderMode?: TalkChannelBinding['responderMode'];
   responderAgentId?: string | null;
   deliveryMode?: TalkChannelBinding['deliveryMode'];
-  channelContextNote?: string | null;
+  instructions?: string | null;
   inboundRateLimitPerMinute?: number;
   maxPendingEvents?: number;
   overflowPolicy?: TalkChannelBinding['overflowPolicy'];
@@ -2639,7 +2658,7 @@ export async function patchTalkChannel(input: {
   responderMode?: TalkChannelBinding['responderMode'];
   responderAgentId?: string | null;
   deliveryMode?: TalkChannelBinding['deliveryMode'];
-  channelContextNote?: string | null;
+  instructions?: string | null;
   inboundRateLimitPerMinute?: number;
   maxPendingEvents?: number;
   overflowPolicy?: TalkChannelBinding['overflowPolicy'];
@@ -2679,6 +2698,81 @@ export async function testTalkChannelBinding(input: {
       method: 'POST',
     },
   );
+}
+
+export async function listTalkChannelBindingState(input: {
+  talkId: string;
+  bindingId: string;
+}): Promise<{
+  stateNamespace: string;
+  entries: TalkChannelBindingStateEntry[];
+}> {
+  const envelope = await apiRequest<{
+    stateNamespace: string;
+    entries: TalkChannelBindingStateEntry[];
+  }>(
+    `/api/v1/talks/${encodeURIComponent(input.talkId)}/channels/${encodeURIComponent(input.bindingId)}/state`,
+  );
+  return envelope;
+}
+
+export async function upsertTalkChannelBindingState(input: {
+  talkId: string;
+  bindingId: string;
+  keySuffix: string;
+  value: unknown;
+  expectedVersion: number;
+}): Promise<TalkChannelBindingStateEntry> {
+  const envelope = await apiMutationRequest<{ entry: TalkChannelBindingStateEntry }>(
+    `/api/v1/talks/${encodeURIComponent(input.talkId)}/channels/${encodeURIComponent(input.bindingId)}/state`,
+    {
+      method: 'POST',
+      includeJson: true,
+      body: JSON.stringify({
+        keySuffix: input.keySuffix,
+        value: input.value,
+        expectedVersion: input.expectedVersion,
+      }),
+    },
+  );
+  return envelope.entry;
+}
+
+export async function deleteTalkChannelBindingState(input: {
+  talkId: string;
+  bindingId: string;
+  keySuffix: string;
+  expectedVersion: number;
+}): Promise<void> {
+  await apiMutationRequest<{ deleted: true }>(
+    `/api/v1/talks/${encodeURIComponent(input.talkId)}/channels/${encodeURIComponent(input.bindingId)}/state`,
+    {
+      method: 'DELETE',
+      includeJson: true,
+      body: JSON.stringify({
+        keySuffix: input.keySuffix,
+        expectedVersion: input.expectedVersion,
+      }),
+    },
+  );
+}
+
+export async function reviewTalkChannelInstructions(input: {
+  talkId: string;
+  platform: 'slack' | 'telegram';
+  instructions: string;
+  bindingId?: string | null;
+  bindingLabel?: string | null;
+}): Promise<ChannelInstructionReview> {
+  const envelope = await apiMutationRequest<{ review: ChannelInstructionReview }>(
+    `/api/v1/talks/${encodeURIComponent(input.talkId)}/channel-instruction-review`,
+    {
+      method: 'POST',
+      includeJson: true,
+      body: JSON.stringify(input),
+    },
+  );
+  return envelope.review;
 }
 
 export async function unquarantineTalkChannelBinding(input: {
@@ -3311,6 +3405,19 @@ export type MainThreadMessage = {
 export type MainRun = {
   id: string;
   threadId: string;
+  taskType: 'chat' | 'browser';
+  browserPhase?: 'starting' | 'interacting' | 'summarizing' | null;
+  blockedReason?:
+    | 'login_required'
+    | 'phone_approval'
+    | 'app_approval'
+    | 'code_entry'
+    | 'session_conflict'
+    | 'manual_takeover'
+    | null;
+  browserSessionId?: string | null;
+  selectedMode?: 'api' | 'subscription' | null;
+  transport?: 'direct' | 'subscription' | null;
   status:
     | 'queued'
     | 'running'

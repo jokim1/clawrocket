@@ -865,6 +865,8 @@ export async function executeBrowserTool(input: {
               siteKey,
               url,
               accountLabel,
+              userId: input.context.userId,
+              runId: input.context.runId,
               headed,
               reuseSession,
               navigationTimeoutMs:
@@ -877,7 +879,11 @@ export async function executeBrowserTool(input: {
         });
         input.context.onPageReady?.();
         if (result.sessionId) {
-          service.recordRunSessionTouch(input.context.runId, result.sessionId);
+          service.recordRunSessionTouch(
+            input.context.runId,
+            result.sessionId,
+            input.context.userId,
+          );
         }
 
         updateBrowserProfileState({
@@ -966,7 +972,11 @@ export async function executeBrowserTool(input: {
                   : undefined,
             }),
         });
-        service.recordRunSessionTouch(input.context.runId, sessionId);
+        service.recordRunSessionTouch(
+          input.context.runId,
+          sessionId,
+          input.context.userId,
+        );
         updateBrowserLastState({
           talkId: input.context.talkId,
           userId: input.context.userId,
@@ -1030,7 +1040,11 @@ export async function executeBrowserTool(input: {
               },
             ),
         });
-        service.recordRunSessionTouch(input.context.runId, sessionId);
+        service.recordRunSessionTouch(
+          input.context.runId,
+          sessionId,
+          input.context.userId,
+        );
 
         updateBrowserLastState({
           talkId: input.context.talkId,
@@ -1128,7 +1142,11 @@ export async function executeBrowserTool(input: {
                     : undefined,
             }),
         });
-        service.recordRunSessionTouch(input.context.runId, sessionId);
+        service.recordRunSessionTouch(
+          input.context.runId,
+          sessionId,
+          input.context.userId,
+        );
         updateBrowserLastState({
           talkId: input.context.talkId,
           userId: input.context.userId,
@@ -1201,7 +1219,11 @@ export async function executeBrowserTool(input: {
                   : undefined,
             }),
         });
-        service.recordRunSessionTouch(input.context.runId, sessionId);
+        service.recordRunSessionTouch(
+          input.context.runId,
+          sessionId,
+          input.context.userId,
+        );
         updateBrowserLastState({
           talkId: input.context.talkId,
           userId: input.context.userId,
@@ -1282,10 +1304,15 @@ export async function executeBrowserTool(input: {
           operation: () =>
             service.close({
               sessionId,
+              userId: input.context.userId,
               keepProfile: input.args.keepProfile !== false,
             }),
         });
-        service.recordRunSessionTouch(input.context.runId, sessionId);
+        service.recordRunSessionTouch(
+          input.context.runId,
+          sessionId,
+          input.context.userId,
+        );
         return jsonResult(result);
       }
     }
