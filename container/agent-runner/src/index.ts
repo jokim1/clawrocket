@@ -458,6 +458,15 @@ async function runQuery(
     Boolean(containerInput.browserBridgeSocketPath);
   const hasWebTalkMcpTools =
     hasWebTalkConnectorTools || hasWebTalkOutputTools || hasBrowserMcpTools;
+  if (useTalkMainProfile) {
+    log(`MCP config: browserBridgeSocketPath=${containerInput.browserBridgeSocketPath || '(empty)'} hasBrowserMcpTools=${hasBrowserMcpTools} hasWebTalkMcpTools=${hasWebTalkMcpTools}`);
+    if (containerInput.browserBridgeSocketPath) {
+      const socketExists = fs.existsSync(containerInput.browserBridgeSocketPath);
+      const socketDir = path.dirname(containerInput.browserBridgeSocketPath);
+      const dirExists = fs.existsSync(socketDir);
+      log(`Browser bridge: socketExists=${socketExists} dirExists=${dirExists} path=${containerInput.browserBridgeSocketPath}`);
+    }
+  }
 
   // Poll IPC for follow-up messages and _close sentinel during the query.
   // Single-turn profiles close the input stream immediately.
@@ -545,6 +554,14 @@ async function runQuery(
       ? ['mcp__nanoclaw__*']
       : []),
   ];
+  if (useTalkMainProfile) {
+    const hasMcpWildcard = allowedTools.includes('mcp__nanoclaw__*');
+    const willStartMcpServer = (!useWebTalkProfile && !useTalkMainProfile) || hasWebTalkMcpTools;
+    log(`Allowed tools (${allowedTools.length}): hasMcpWildcard=${hasMcpWildcard} willStartMcpServer=${willStartMcpServer}`);
+    if (hasMcpWildcard && !willStartMcpServer) {
+      log(`WARNING: mcp__nanoclaw__* is in allowedTools but MCP server will NOT be started — browser tools will be invisible to the agent`);
+    }
+  }
 
   for await (const message of query({
     prompt: stream,
@@ -718,10 +735,11 @@ async function executeSingleTurnTask(
       sdkEnv,
       captureOutput,
     );
-    if (finalOutput) {
+    if (finalOutput !== null) {
+      const output: ContainerOutput = finalOutput;
       return {
-        ...finalOutput,
-        newSessionId: finalOutput.newSessionId || queryResult.newSessionId,
+        ...output,
+        newSessionId: output.newSessionId || queryResult.newSessionId,
       };
     }
     return {

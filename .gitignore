@@ -34,6 +34,9 @@ groups/global/*
 .idea/
 .vscode/
 
+# Local Claude Code config (machine-specific)
+CLAUDE.local.md
+
 # Skills system (local per-installation state)
 .nanoclaw/
 
