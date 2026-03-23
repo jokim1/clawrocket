@@ -83,6 +83,7 @@ describe('browser-tools', () => {
 
   it('pauses the Talk run and records setup guidance when browser_open needs auth', async () => {
     createRun('run-browser-open');
+    const onPageReady = vi.fn();
     browserServiceMocks.service.open.mockResolvedValue({
       status: 'needs_auth',
       siteKey: 'linkedin',
@@ -118,6 +119,7 @@ describe('browser-tools', () => {
           runId: 'run-browser-open',
           userId: 'owner-1',
           talkId: TALK_ID,
+          onPageReady,
         },
       }),
     ).rejects.toBeInstanceOf(BrowserRunPausedError);
@@ -138,6 +140,7 @@ describe('browser-tools', () => {
     expect(getTalkRunById('run-browser-open')?.status).toBe(
       'awaiting_confirmation',
     );
+    expect(onPageReady).toHaveBeenCalledTimes(1);
     expect(listTalkOutputs(TALK_ID)).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -293,6 +296,7 @@ describe('browser-tools', () => {
       userId: 'owner-1',
       runId: 'run-browser-fast-open',
       reuseSession: true,
+      onPageReady: expect.any(Function),
       navigationTimeoutMs: 8000,
       retryOnInitialTimeout: true,
     });
