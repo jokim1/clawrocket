@@ -115,9 +115,26 @@ function buildMainAgentSnapshot(input?: {
   browserEnabled?: boolean;
   ready?: boolean;
   message?: string;
+  selectedMode?: 'api' | 'subscription' | null;
+  transport?: 'direct' | 'subscription' | null;
+  reasonCode?: string | null;
 }) {
   const browserEnabled = input?.browserEnabled ?? false;
   const ready = input?.ready ?? true;
+  const selectedMode = input?.selectedMode ?? (ready ? 'subscription' : null);
+  const transport = input?.transport ?? (ready ? 'subscription' : null);
+  const backend =
+    ready && transport === 'direct'
+      ? ('direct_http' as const)
+      : ready && transport === 'subscription'
+        ? ('container' as const)
+        : null;
+  const authPath =
+    ready && selectedMode === 'api'
+      ? ('api_key' as const)
+      : ready && selectedMode === 'subscription'
+        ? ('subscription' as const)
+        : null;
   return {
     id: 'agent.main',
     name: 'Nanoclaw',
@@ -133,14 +150,19 @@ function buildMainAgentSnapshot(input?: {
     updatedAt: '2026-03-20T20:00:00.000Z',
     executionPreview: {
       surface: 'main' as const,
-      backend: ready ? ('container' as const) : null,
-      authPath: ready ? ('subscription' as const) : null,
+      backend,
+      authPath,
+      selectedMode,
+      transport,
+      reasonCode: input?.reasonCode ?? null,
       routeReason: ready ? ('normal' as const) : ('no_valid_path' as const),
       ready,
       message:
         input?.message ||
         (ready
-          ? 'Main agent is ready.'
+          ? selectedMode === 'api'
+            ? 'Browser automation is ready in API mode.'
+            : 'Browser automation is ready in subscription mode.'
           : 'Browser access is not configured for this agent.'),
     },
   };
@@ -324,7 +346,7 @@ describe('MainChannelPage', () => {
     ).toBeTruthy();
   });
 
-  it('shows browser setup required when the Main agent is browser-capable but execution is not ready', async () => {
+  it('shows browser misconfigured when the Main agent is browser-capable but execution is not ready', async () => {
     listMainThreadsMock.mockResolvedValue([]);
     getMainThreadMock.mockResolvedValue([]);
     getMainRegisteredAgentMock.mockResolvedValue(
@@ -355,7 +377,7 @@ describe('MainChannelPage', () => {
       name: 'Main capability status',
     });
     expect(
-      within(capabilityStatus).getByText('Browser setup required'),
+      within(capabilityStatus).getByText('Browser misconfigured'),
     ).toBeTruthy();
     expect(
       screen.getByText(
@@ -579,6 +601,44 @@ describe('MainChannelPage', () => {
     expect(
       screen.queryByRole('button', { name: 'Open in browser instead' }),
     ).toBeNull();
+  });
+
+  it('shows browser ready with the selected mode in the Main header', async () => {
+    listMainThreadsMock.mockResolvedValue([]);
+    getMainThreadMock.mockResolvedValue([]);
+    getMainRegisteredAgentMock.mockResolvedValue(
+      buildMainAgentSnapshot({
+        browserEnabled: true,
+        ready: true,
+        selectedMode: 'api',
+        transport: 'direct',
+      }),
+    );
+
+    render(
+      <MemoryRouter initialEntries={['/app/main']}>
+        <Routes>
+          <Route
+            path="/app/main"
+            element={<MainChannelPage onUnauthorized={vi.fn()} />}
+          />
+          <Route
+            path="/app/main/:threadId"
+            element={<MainChannelPage onUnauthorized={vi.fn()} />}
+          />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    const capabilityStatus = await screen.findByRole('list', {
+      name: 'Main capability status',
+    });
+    expect(
+      within(capabilityStatus).getByText('Browser ready (API)'),
+    ).toBeTruthy();
+    expect(
+      screen.getByText('Browser automation is ready in API mode.'),
+    ).toBeTruthy();
   });
 
   it('renders persisted current step and fast-lane route timing for active runs', async () => {

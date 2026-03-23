@@ -127,7 +127,7 @@ function getProviderRecord(providerId: string): LlmProviderRecord | undefined {
     .get(providerId) as LlmProviderRecord | undefined;
 }
 
-function getProviderVerificationStatus(
+export function getProviderVerificationStatus(
   providerId: string,
 ):
   | 'missing'
@@ -156,7 +156,7 @@ function getProviderVerificationStatus(
   return null;
 }
 
-function getAnthropicApiKeyFromDb(): string | null {
+export function getAnthropicApiKeyFromDb(): string | null {
   const row = getDb()
     .prepare(
       `SELECT ciphertext FROM llm_provider_secrets WHERE provider_id = 'provider.anthropic' LIMIT 1`,
@@ -173,7 +173,7 @@ function getAnthropicApiKeyFromDb(): string | null {
   }
 }
 
-function getConfiguredExecutorAuthMode():
+export function getConfiguredExecutorAuthMode():
   | 'subscription'
   | 'api_key'
   | 'advanced_bearer'

@@ -7,21 +7,14 @@ import {
   type MainRunLeaseState,
   type MainRunTimingMetadata,
 } from '../../browser/metadata.js';
-import { getMainAgent } from '../../agents/agent-registry.js';
+import { resolveMainBrowserContract } from '../../agents/main-browser-contract.js';
 import type { TalkRunBrowserPhase } from '../../db/index.js';
-import {
-  ExecutionPlannerError,
-  planMainExecution,
-  resolveContainerCredential,
-} from '../../agents/execution-planner.js';
-import { getEffectiveToolsForAgent } from '../../db/agent-accessors.js';
 import {
   canUserAccessMainThread,
   cancelMainRunAtomic,
   deleteMainMessagesAtomic,
   deleteMainThread,
   enqueueMainTurnAtomic,
-  getSettingValue,
   getTalkRunBlockedReason,
   getTalkRunBrowserPhase,
   getTalkRunBrowserSessionId,
@@ -39,35 +32,12 @@ import {
   ThreadDeleteConflictError,
   updateMainThreadMetadata,
 } from '../../db/index.js';
-import { getContainerRuntimeStatus } from '../../../container-runtime.js';
 import {
   ThreadTitleValidationError,
   validateEditableThreadTitle,
 } from '../../db/thread-title-utils.js';
 import { getDb } from '../../../db.js';
 import type { AuthContext, ApiEnvelope } from '../types.js';
-
-const BROWSER_EXECUTION_SETUP_MESSAGE =
-  "Browser access is not configured for this agent. Configure the agent's execution credentials in AI Agents before retrying. For Claude agents, run `claude login` and import subscription auth, or add an Anthropic API key.";
-
-function normalizeBrowserExecutionMessage(message: string): string {
-  if (
-    message ===
-      'No valid Main execution path is currently configured for this agent.' ||
-    /container execution is not configured/i.test(message) ||
-    /direct execution is unavailable/i.test(message)
-  ) {
-    return BROWSER_EXECUTION_SETUP_MESSAGE;
-  }
-  return message;
-}
-
-function mainAgentHasBrowserAccess(userId: string): boolean {
-  const agent = getMainAgent();
-  return getEffectiveToolsForAgent(agent.id, userId).some(
-    (tool) => tool.toolFamily === 'browser' && tool.enabled,
-  );
-}
 
 function looksLikeHighConfidenceBrowserIntent(content: string): boolean {
   const normalized = content.trim().toLowerCase();
@@ -84,77 +54,6 @@ function looksLikeHighConfidenceBrowserIntent(content: string): boolean {
     ) || /what you can access/.test(normalized);
   return mentionsSurface && mentionsAction;
 }
-
-function resolveSelectedBrowserMode(input: { userId: string }):
-  | {
-      ok: true;
-      selectedMode: 'api' | 'subscription';
-      transport: 'direct' | 'subscription';
-    }
-  | { ok: false; message: string } {
-  const configuredMode = (
-    getSettingValue('executor.authMode')?.trim() || ''
-  ).toLowerCase();
-  const agent = getMainAgent();
-
-  if (configuredMode === 'api_key') {
-    try {
-      const plan = planMainExecution(agent, input.userId);
-      if (!plan.directPlan) {
-        return {
-          ok: false,
-          message:
-            'Main browser runs are set to API key mode, but no verified direct Anthropic API path is configured for this agent.',
-        };
-      }
-      return {
-        ok: true,
-        selectedMode: 'api',
-        transport: 'direct',
-      };
-    } catch (error) {
-      return {
-        ok: false,
-        message:
-          error instanceof ExecutionPlannerError
-            ? error.message
-            : String(error),
-      };
-    }
-  }
-
-  if (configuredMode === 'subscription') {
-    try {
-      resolveContainerCredential({ preferredAuthMode: 'subscription' });
-      if (getContainerRuntimeStatus() !== 'ready') {
-        return {
-          ok: false,
-          message:
-            'Claude container runtime is unavailable on this host. Start Docker before using subscription mode for browser runs.',
-        };
-      }
-      return {
-        ok: true,
-        selectedMode: 'subscription',
-        transport: 'subscription',
-      };
-    } catch (error) {
-      return {
-        ok: false,
-        message:
-          error instanceof ExecutionPlannerError
-            ? error.message
-            : String(error),
-      };
-    }
-  }
-
-  return {
-    ok: false,
-    message: BROWSER_EXECUTION_SETUP_MESSAGE,
-  };
-}
-
 // ---------------------------------------------------------------------------
 // List Main Threads Route
 // ---------------------------------------------------------------------------
@@ -615,20 +514,8 @@ export function postMainMessageRoute(
 
   const content = body.content.trim();
   const forceBrowser = body.forceBrowser === true;
-  const browserCapable = mainAgentHasBrowserAccess(auth.userId);
-  if (forceBrowser && !browserCapable) {
-    return {
-      statusCode: 409,
-      body: {
-        ok: false,
-        error: {
-          code: 'browser_execution_not_configured',
-          message:
-            'Browser access is disabled for the selected Main agent. Enable browser in AI Agents and retry.',
-        },
-      },
-    };
-  }
+  const browserContract = resolveMainBrowserContract(auth.userId);
+  const browserCapable = browserContract.browserEnabled;
   const taskType: 'chat' | 'browser' =
     forceBrowser ||
     (browserCapable && looksLikeHighConfidenceBrowserIntent(content))
@@ -638,21 +525,20 @@ export function postMainMessageRoute(
   let transport: 'direct' | 'subscription' | null = null;
 
   if (taskType === 'browser') {
-    const selected = resolveSelectedBrowserMode({ userId: auth.userId });
-    if (!selected.ok) {
+    if (!browserContract.ready) {
       return {
         statusCode: 409,
         body: {
           ok: false,
           error: {
             code: 'browser_execution_not_configured',
-            message: normalizeBrowserExecutionMessage(selected.message),
+            message: browserContract.message,
           },
         },
       };
     }
-    selectedMode = selected.selectedMode;
-    transport = selected.transport;
+    selectedMode = browserContract.selectedMode;
+    transport = browserContract.transport;
   }
 
   // Determine threadId

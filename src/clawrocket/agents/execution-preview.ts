@@ -5,11 +5,18 @@ import {
   planMainExecution,
   type ExecutionPlan,
 } from './execution-planner.js';
+import {
+  resolveBrowserExecutionContract,
+  type MainBrowserContractReasonCode,
+} from './main-browser-contract.js';
 
 export interface AgentExecutionPreview {
   surface: 'main';
   backend: 'direct_http' | 'container' | 'host_codex' | null;
   authPath: 'api_key' | 'subscription' | 'host_login' | null;
+  selectedMode: 'api' | 'subscription' | null;
+  transport: 'direct' | 'subscription' | null;
+  reasonCode: MainBrowserContractReasonCode | null;
   routeReason:
     | 'normal'
     | 'browser_fast_lane'
@@ -81,6 +88,31 @@ export function buildMainExecutionPreview(
   agent: RegisteredAgentRecord,
   userId: string,
 ): AgentExecutionPreview {
+  const browserContract = resolveBrowserExecutionContract(agent, userId);
+  const browserCapable = browserContract.browserEnabled;
+  if (browserCapable) {
+    return {
+      surface: 'main',
+      backend:
+        browserContract.transport === 'direct'
+          ? 'direct_http'
+          : browserContract.transport === 'subscription'
+            ? 'container'
+            : null,
+      authPath:
+        browserContract.selectedMode === 'api'
+          ? 'api_key'
+          : browserContract.selectedMode === 'subscription'
+            ? 'subscription'
+            : null,
+      selectedMode: browserContract.selectedMode,
+      transport: browserContract.transport,
+      reasonCode: browserContract.reasonCode,
+      routeReason: browserContract.ready ? 'normal' : 'no_valid_path',
+      ready: browserContract.ready,
+      message: browserContract.message,
+    };
+  }
   try {
     const mainPlan = planMainExecution(agent, userId);
     const plan =
@@ -94,6 +126,9 @@ export function buildMainExecutionPreview(
         surface: 'main',
         backend: null,
         authPath: null,
+        selectedMode: null,
+        transport: null,
+        reasonCode: null,
         routeReason: 'no_valid_path',
         ready: false,
         message:
@@ -101,6 +136,7 @@ export function buildMainExecutionPreview(
       };
     }
     if (
+      !browserCapable &&
       plan.backend === 'container' &&
       getContainerRuntimeStatus() !== 'ready'
     ) {
@@ -108,6 +144,9 @@ export function buildMainExecutionPreview(
         surface: 'main',
         backend: null,
         authPath: null,
+        selectedMode: null,
+        transport: null,
+        reasonCode: null,
         routeReason: 'no_valid_path',
         ready: false,
         message: buildContainerRuntimeUnavailableMessage(agent, plan),
@@ -118,6 +157,9 @@ export function buildMainExecutionPreview(
         surface: 'main',
         backend: 'direct_http',
         authPath: mainPlan.directPlan?.authPath ?? null,
+        selectedMode: null,
+        transport: null,
+        reasonCode: null,
         routeReason: 'direct_with_promotion',
         ready: true,
         message:
@@ -129,6 +171,9 @@ export function buildMainExecutionPreview(
         surface: 'main',
         backend: 'host_codex',
         authPath: 'host_login',
+        selectedMode: null,
+        transport: null,
+        reasonCode: null,
         routeReason: 'host_only',
         ready: true,
         message: buildReadyMessage(agent, plan),
@@ -143,6 +188,9 @@ export function buildMainExecutionPreview(
           : plan.backend === 'container'
             ? plan.containerCredential.authMode
             : plan.authPath,
+      selectedMode: null,
+      transport: null,
+      reasonCode: null,
       routeReason: plan.routeReason,
       ready: true,
       message: buildReadyMessage(agent, plan),
@@ -153,6 +201,9 @@ export function buildMainExecutionPreview(
         surface: 'main',
         backend: null,
         authPath: null,
+        selectedMode: null,
+        transport: null,
+        reasonCode: null,
         routeReason: 'no_valid_path',
         ready: false,
         message: normalizePlannerFailureMessage(error),

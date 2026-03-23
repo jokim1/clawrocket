@@ -11,6 +11,7 @@ import {
   enqueueMainTurnAtomic,
   getOutboxEventsForTopics,
   getTalkRunById,
+  upsertSettingValue,
   updateTalkRunMetadata,
   upsertUser,
 } from '../db/index.js';
@@ -27,6 +28,32 @@ const USER_A = 'user-a';
 let AGENT_ID: string;
 const PROVIDER_ID = 'builtin.mock';
 const MODEL_ID = 'mock-default';
+
+function upsertProviderVerification(
+  providerId: string,
+  status: 'verified' | 'invalid',
+  lastError: string | null = null,
+): void {
+  const now = new Date().toISOString();
+  getDb()
+    .prepare(
+      `INSERT INTO llm_provider_verifications (
+         provider_id, status, last_verified_at, last_error, updated_at
+       ) VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(provider_id) DO UPDATE SET
+         status = excluded.status,
+         last_verified_at = excluded.last_verified_at,
+         last_error = excluded.last_error,
+         updated_at = excluded.updated_at`,
+    )
+    .run(
+      providerId,
+      status,
+      status === 'verified' ? now : null,
+      lastError,
+      now,
+    );
+}
 
 beforeEach(() => {
   _initTestDatabase();
@@ -447,6 +474,135 @@ describe('MainRunWorker integration', () => {
     const payload = JSON.parse(failure!.payload);
     expect(payload.errorCode).toBe('execution_failed');
     expect(payload.errorMessage).toContain('LLM provider unreachable');
+  });
+
+  it('invalidates Anthropic browser verification after a direct auth failure', async () => {
+    upsertProviderVerification('provider.anthropic', 'verified');
+    const threadId = randomUUID();
+    const runId = `run_${randomUUID()}`;
+    enqueueMainTurnAtomic({
+      threadId,
+      userId: USER_A,
+      content: 'Open LinkedIn',
+      messageId: `msg_${randomUUID()}`,
+      runId,
+      taskType: 'browser',
+      selectedMode: 'api',
+      transport: 'direct',
+    });
+
+    const worker = new MainRunWorker({
+      pollMs: 10,
+      maxConcurrency: 1,
+      executor: createFailingExecutor('Anthropic API error: Unauthorized'),
+    });
+    await worker.start();
+
+    await waitForRunTerminal(runId);
+    await worker.stop();
+
+    const verification = getDb()
+      .prepare(
+        `SELECT status, last_error FROM llm_provider_verifications WHERE provider_id = 'provider.anthropic'`,
+      )
+      .get() as { status: string; last_error: string | null } | undefined;
+    expect(verification?.status).toBe('invalid');
+    expect(verification?.last_error).toContain('Unauthorized');
+  });
+
+  it('invalidates executor verification after a subscription bootstrap failure', async () => {
+    upsertSettingValue({
+      key: 'executor.verificationStatus',
+      value: 'verified',
+      updatedBy: USER_A,
+    });
+    const threadId = randomUUID();
+    const runId = `run_${randomUUID()}`;
+    enqueueMainTurnAtomic({
+      threadId,
+      userId: USER_A,
+      content: 'Open LinkedIn',
+      messageId: `msg_${randomUUID()}`,
+      runId,
+      taskType: 'browser',
+      selectedMode: 'subscription',
+      transport: 'subscription',
+    });
+
+    const worker = new MainRunWorker({
+      pollMs: 10,
+      maxConcurrency: 1,
+      executor: createFailingExecutor(
+        'Claude container runtime is unavailable on this host. Start Docker before using subscription mode for browser runs.',
+      ),
+    });
+    await worker.start();
+
+    await waitForRunTerminal(runId);
+    await worker.stop();
+
+    expect(
+      getDb()
+        .prepare(
+          `SELECT value FROM settings_kv WHERE key = 'executor.verificationStatus'`,
+        )
+        .get() as { value: string } | undefined,
+    ).toMatchObject({ value: 'not_verified' });
+    expect(
+      getDb()
+        .prepare(
+          `SELECT value FROM settings_kv WHERE key = 'executor.lastVerificationError'`,
+        )
+        .get() as { value: string } | undefined,
+    ).toMatchObject({
+      value: expect.stringContaining('container runtime is unavailable'),
+    });
+  });
+
+  it('does not invalidate readiness for ordinary browser task failures', async () => {
+    upsertProviderVerification('provider.anthropic', 'verified');
+    upsertSettingValue({
+      key: 'executor.verificationStatus',
+      value: 'verified',
+      updatedBy: USER_A,
+    });
+    const threadId = randomUUID();
+    const runId = `run_${randomUUID()}`;
+    enqueueMainTurnAtomic({
+      threadId,
+      userId: USER_A,
+      content: 'Open LinkedIn',
+      messageId: `msg_${randomUUID()}`,
+      runId,
+      taskType: 'browser',
+      selectedMode: 'subscription',
+      transport: 'subscription',
+    });
+
+    const worker = new MainRunWorker({
+      pollMs: 10,
+      maxConcurrency: 1,
+      executor: createFailingExecutor('LinkedIn login required'),
+    });
+    await worker.start();
+
+    await waitForRunTerminal(runId);
+    await worker.stop();
+
+    expect(
+      getDb()
+        .prepare(
+          `SELECT status FROM llm_provider_verifications WHERE provider_id = 'provider.anthropic'`,
+        )
+        .get() as { status: string } | undefined,
+    ).toMatchObject({ status: 'verified' });
+    expect(
+      getDb()
+        .prepare(
+          `SELECT value FROM settings_kv WHERE key = 'executor.verificationStatus'`,
+        )
+        .get() as { value: string } | undefined,
+    ).toMatchObject({ value: 'verified' });
   });
 
   it('persists timeout phase metadata when execution exceeds a phase budget', async () => {
