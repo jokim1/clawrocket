@@ -1117,6 +1117,7 @@ export class BrowserService {
     reuseSession?: boolean;
     navigationTimeoutMs?: number;
     retryOnInitialTimeout?: boolean;
+    onPageReady?: (() => void) | undefined;
   }): Promise<BrowserOpenResult> {
     const navigationTimeoutMs =
       input.navigationTimeoutMs ?? DEFAULT_NAVIGATION_TIMEOUT_MS;
@@ -1163,6 +1164,7 @@ export class BrowserService {
           });
           if (blockedResult) {
             touchBrowserProfileLastUsed(profile.id);
+            input.onPageReady?.();
             return blockedResult;
           }
           if (
@@ -1170,6 +1172,7 @@ export class BrowserService {
             urlsEquivalent(existingSnapshot.currentUrl, input.url)
           ) {
             touchBrowserProfileLastUsed(profile.id);
+            input.onPageReady?.();
             return {
               status: 'ok',
               siteKey: profile.siteKey,
@@ -1212,6 +1215,7 @@ export class BrowserService {
       retryOnTimeout: input.retryOnInitialTimeout === true,
     });
     await this.refreshSessionLocation(session);
+    input.onPageReady?.();
 
     touchBrowserProfileLastUsed(profile.id);
     const blockedState = await detectBlockedState(session.page);
