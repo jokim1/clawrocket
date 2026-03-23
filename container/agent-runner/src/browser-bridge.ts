@@ -50,8 +50,8 @@ export async function executeBrowserBridgeTool(input: {
     let settled = false;
 
     const finish = (
-      fn: (value?: BrowserBridgeResponse | Error) => void,
-      value?: BrowserBridgeResponse | Error,
+      fn: (value: BrowserBridgeResponse | Error) => void,
+      value: BrowserBridgeResponse | Error,
     ) => {
       if (settled) return;
       settled = true;

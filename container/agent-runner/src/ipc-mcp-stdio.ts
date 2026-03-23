@@ -57,8 +57,10 @@ const server = new McpServer({
 
 function registerBrowserTools(): void {
   if (!browserBridgeSocketPath || !browserRunId || !browserUserId) {
+    console.error(`[mcp-server] Browser tools NOT registered: socketPath=${browserBridgeSocketPath || '(empty)'} runId=${browserRunId || '(empty)'} userId=${browserUserId || '(empty)'}`);
     return;
   }
+  console.error(`[mcp-server] Registering browser tools: socketPath=${browserBridgeSocketPath} runId=${browserRunId}`);
 
   const proxyBrowserTool = async (
     toolName: string,
