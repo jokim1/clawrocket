@@ -801,6 +801,8 @@ function createClawrocketSchema(database: Database.Database): void {
       viewport_json TEXT NOT NULL,
       policy_json TEXT,
       download_dir TEXT NOT NULL,
+      connection_mode TEXT NOT NULL DEFAULT 'managed',
+      connection_config_json TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       last_used_at TEXT
@@ -1870,6 +1872,16 @@ function migrateAddMissingColumns(database: Database.Database): void {
     {
       table: 'browser_profiles',
       column: 'policy_json',
+      definition: 'TEXT',
+    },
+    {
+      table: 'browser_profiles',
+      column: 'connection_mode',
+      definition: "TEXT NOT NULL DEFAULT 'managed'",
+    },
+    {
+      table: 'browser_profiles',
+      column: 'connection_config_json',
       definition: 'TEXT',
     },
     {
