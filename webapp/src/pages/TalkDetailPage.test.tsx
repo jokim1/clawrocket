@@ -2843,6 +2843,9 @@ describe('TalkDetailPage', () => {
             surface: 'main',
             backend: 'container',
             authPath: 'subscription',
+            selectedMode: 'subscription',
+            transport: 'subscription',
+            reasonCode: null,
             routeReason: 'subscription_fallback',
             ready: true,
             message:
@@ -4412,6 +4415,11 @@ function buildRegisteredAgent(
       surface: 'main',
       backend: 'direct_http',
       authPath: input.providerId === 'provider.anthropic' ? 'api_key' : null,
+      selectedMode:
+        input.providerId === 'provider.anthropic' ? 'api' : null,
+      transport:
+        input.providerId === 'provider.anthropic' ? 'direct' : null,
+      reasonCode: null,
       routeReason: 'normal',
       ready: true,
       message: 'Main will use direct HTTP.',

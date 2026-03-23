@@ -5,6 +5,10 @@
  */
 import { describe, it, expect, beforeEach } from 'vitest';
 import { randomUUID } from 'crypto';
+import {
+  _resetContainerRuntimeStatusForTests,
+  _setContainerRuntimeStatusForTests,
+} from '../../container-runtime.js';
 
 import { getDb } from '../../db.js';
 import {
@@ -95,6 +99,7 @@ function setupUsers() {
 
 beforeEach(() => {
   _initTestDatabase();
+  _resetContainerRuntimeStatusForTests();
   setupUsers();
   const agent = createRegisteredAgent({
     name: 'Test Main Agent',
@@ -949,14 +954,7 @@ describe('Main channel routes', () => {
       }
     });
 
-    it('creates a browser run when forceBrowser is true and API mode is valid', () => {
-      seedAnthropicSecret();
-      upsertProviderVerification('provider.anthropic', 'verified');
-      upsertSettingValue({
-        key: 'executor.authMode',
-        value: 'api_key',
-        updatedBy: USER_A,
-      });
+    it('creates browser runs with selected mode and transport from the shared contract', () => {
       getDb()
         .prepare(
           `UPDATE registered_agents
@@ -964,6 +962,79 @@ describe('Main channel routes', () => {
            WHERE id = 'agent.main'`,
         )
         .run(JSON.stringify({ web: true, browser: true }));
+      seedAnthropicSecret();
+      upsertProviderVerification('provider.anthropic', 'verified');
+      upsertSettingValue({
+        key: 'executor.authMode',
+        value: 'api_key',
+        updatedBy: USER_A,
+      });
+
+      const result = postMainMessageRoute(makeAuth(USER_A), {
+        content: 'Open LinkedIn and tell me what you can access.',
+      });
+
+      expect(result.statusCode).toBe(202);
+      expect(result.body.ok).toBe(true);
+      if (result.body.ok) {
+        expect(result.body.data.run.taskType).toBe('browser');
+        expect(result.body.data.run.selectedMode).toBe('api');
+        expect(result.body.data.run.transport).toBe('direct');
+      }
+    });
+
+    it('returns 409 when subscription browser execution is selected but Docker is unavailable', () => {
+      getDb()
+        .prepare(
+          `UPDATE registered_agents
+           SET tool_permissions_json = ?
+           WHERE id = 'agent.main'`,
+        )
+        .run(JSON.stringify({ web: true, browser: true }));
+      upsertSettingValue({
+        key: 'executor.authMode',
+        value: 'subscription',
+        updatedBy: USER_A,
+      });
+      upsertSettingValue({
+        key: 'executor.claudeOauthToken',
+        value: 'oauth-token-123',
+        updatedBy: USER_A,
+      });
+      upsertSettingValue({
+        key: 'executor.verificationStatus',
+        value: 'verified',
+        updatedBy: USER_A,
+      });
+      _setContainerRuntimeStatusForTests('unavailable');
+
+      const result = postMainMessageRoute(makeAuth(USER_A), {
+        content: 'Open LinkedIn and tell me what you can access.',
+      });
+
+      expect(result.statusCode).toBe(409);
+      expect(result.body.ok).toBe(false);
+      if (!result.body.ok) {
+        expect(result.body.error.code).toBe('browser_execution_not_configured');
+        expect(result.body.error.message).toContain('Start Docker');
+      }
+    });
+
+    it('creates a browser run when forceBrowser is true and API mode is valid', () => {
+      getDb()
+        .prepare(
+          `UPDATE registered_agents
+           SET tool_permissions_json = ?
+           WHERE id = 'agent.main'`,
+        )
+        .run(JSON.stringify({ web: true, browser: true }));
+      seedAnthropicSecret();
+      upsertProviderVerification('provider.anthropic', 'verified');
+      upsertSettingValue({
+        key: 'executor.authMode',
+        value: 'api_key',
+        updatedBy: USER_A,
+      });
 
       const result = postMainMessageRoute(makeAuth(USER_A), {
         content: 'Please do it again.',

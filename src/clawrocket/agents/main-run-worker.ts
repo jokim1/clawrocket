@@ -24,6 +24,7 @@ import {
   getTalkMessageById,
   getTalkRunById,
   pauseRunForBrowserBlock,
+  upsertSettingValue,
   updateTalkRunMetadata,
   type TalkRunRecord,
 } from '../db/index.js';
@@ -72,6 +73,109 @@ function errorMessage(error: unknown): string {
 
 function isAbortError(error: unknown): boolean {
   return error instanceof Error && error.name === 'AbortError';
+}
+
+function getTypedBrowserRunTransport(
+  run: TalkRunRecord,
+): 'direct' | 'subscription' | null {
+  return run.transport === 'direct' || run.transport === 'subscription'
+    ? run.transport
+    : null;
+}
+
+function isDirectBrowserAuthFailure(message: string): boolean {
+  const normalized = message.trim().toLowerCase();
+  return (
+    normalized.includes('anthropic api error: unauthorized') ||
+    normalized.includes('anthropic api error: forbidden') ||
+    normalized.includes('invalid api key') ||
+    normalized.includes('invalid_api_key') ||
+    /\b401\b/.test(normalized) ||
+    /\b403\b/.test(normalized)
+  );
+}
+
+function isSubscriptionBrowserBootstrapFailure(message: string): boolean {
+  const normalized = message.trim().toLowerCase();
+  return (
+    normalized.includes('claude container runtime is unavailable') ||
+    normalized.includes('container runtime is unavailable') ||
+    normalized.includes(
+      'container execution requires an executor oauth/auth token',
+    ) ||
+    normalized.includes('subscription credential may have been removed') ||
+    normalized.includes('unauthorized') ||
+    normalized.includes('invalid_api_key') ||
+    /\b401\b/.test(normalized) ||
+    /\b403\b/.test(normalized)
+  );
+}
+
+function invalidateAnthropicBrowserVerification(lastError: string): void {
+  const now = new Date().toISOString();
+  getDb()
+    .prepare(
+      `INSERT INTO llm_provider_verifications (
+         provider_id, status, last_verified_at, last_error, updated_at
+       ) VALUES ('provider.anthropic', 'invalid', NULL, ?, ?)
+       ON CONFLICT(provider_id) DO UPDATE SET
+         status = 'invalid',
+         last_verified_at = NULL,
+         last_error = excluded.last_error,
+         updated_at = excluded.updated_at`,
+    )
+    .run(lastError, now);
+}
+
+function invalidateSubscriptionBrowserVerification(
+  updatedBy: string,
+  lastError: string,
+): void {
+  upsertSettingValue({
+    key: 'executor.verificationStatus',
+    value: 'not_verified',
+    updatedBy,
+  });
+  upsertSettingValue({
+    key: 'executor.lastVerifiedAt',
+    value: null,
+    updatedBy,
+  });
+  upsertSettingValue({
+    key: 'executor.lastVerificationError',
+    value: lastError,
+    updatedBy,
+  });
+  upsertSettingValue({
+    key: 'executor.lastVerificationMode',
+    value: null,
+    updatedBy,
+  });
+  upsertSettingValue({
+    key: 'executor.lastVerificationMethod',
+    value: null,
+    updatedBy,
+  });
+}
+
+function maybeInvalidateBrowserReadiness(
+  run: TalkRunRecord,
+  failureMessage: string,
+): void {
+  if (getTalkRunTaskType(run) !== 'browser') {
+    return;
+  }
+  const transport = getTypedBrowserRunTransport(run);
+  if (transport === 'direct' && isDirectBrowserAuthFailure(failureMessage)) {
+    invalidateAnthropicBrowserVerification(failureMessage);
+    return;
+  }
+  if (
+    transport === 'subscription' &&
+    isSubscriptionBrowserBootstrapFailure(failureMessage)
+  ) {
+    invalidateSubscriptionBrowserVerification(run.requested_by, failureMessage);
+  }
 }
 
 const STREAMED_TEXT_PREVIEW_MAX_CHARS = 4_000;
@@ -532,7 +636,9 @@ export class MainRunWorker implements MainRunWorkerControl {
         );
         return;
       }
-      this.failRun(run, 'execution_failed', errorMessage(error));
+      const failureMessage = errorMessage(error);
+      maybeInvalidateBrowserReadiness(run, failureMessage);
+      this.failRun(run, 'execution_failed', failureMessage);
     } finally {
       this.stopRunHeartbeat(heartbeatTimer);
     }

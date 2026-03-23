@@ -128,7 +128,7 @@ describe('execution-preview', () => {
       providerId: 'provider.anthropic',
       modelId: 'claude-sonnet-4-6',
       toolPermissionsJson: JSON.stringify({
-        browser: true,
+        web: true,
         shell: true,
         filesystem: true,
       }),
@@ -146,16 +146,11 @@ describe('execution-preview', () => {
   });
 
   it('shows browser-enabled Claude Main routes as direct fast-lane when a verified API key exists', () => {
-    seedAnthropicSecret('sk-ant-stale');
+    seedAnthropicSecret('sk-ant-verified');
     seedProviderVerification('provider.anthropic');
     upsertSettingValue({
       key: 'executor.authMode',
-      value: 'subscription',
-      updatedBy: 'owner-1',
-    });
-    upsertSettingValue({
-      key: 'executor.claudeOauthToken',
-      value: 'oauth-token-123',
+      value: 'api_key',
       updatedBy: 'owner-1',
     });
 
@@ -174,16 +169,17 @@ describe('execution-preview', () => {
       ready: true,
       backend: 'direct_http',
       authPath: 'api_key',
-      routeReason: 'direct_with_promotion',
+      selectedMode: 'api',
+      transport: 'direct',
+      reasonCode: null,
+      routeReason: 'normal',
     });
     expect(buildMainExecutionPreview(agent, 'owner-1').message).toMatch(
-      /promote shell\/filesystem work into a background container run/i,
+      /browser automation is ready in api mode/i,
     );
   });
 
-  it('shows subscription fallback when an Anthropic API key exists but is not verified', () => {
-    seedAnthropicSecret('sk-ant-stale');
-    upsertProviderVerification('provider.anthropic', 'invalid');
+  it('shows browser-enabled Claude Main routes as subscription-ready when executor verification passes', () => {
     upsertSettingValue({
       key: 'executor.authMode',
       value: 'subscription',
@@ -192,6 +188,11 @@ describe('execution-preview', () => {
     upsertSettingValue({
       key: 'executor.claudeOauthToken',
       value: 'oauth-token-123',
+      updatedBy: 'owner-1',
+    });
+    upsertSettingValue({
+      key: 'executor.verificationStatus',
+      value: 'verified',
       updatedBy: 'owner-1',
     });
 
@@ -206,10 +207,52 @@ describe('execution-preview', () => {
       ready: true,
       backend: 'container',
       authPath: 'subscription',
-      routeReason: 'subscription_fallback',
+      selectedMode: 'subscription',
+      transport: 'subscription',
+      reasonCode: null,
+      routeReason: 'normal',
     });
     expect(buildMainExecutionPreview(agent, 'owner-1').message).toMatch(
-      /no verified anthropic api key is configured/i,
+      /browser automation is ready in subscription mode/i,
+    );
+  });
+
+  it('shows browser-enabled Claude Main routes as misconfigured when subscription runtime is unavailable', () => {
+    upsertSettingValue({
+      key: 'executor.authMode',
+      value: 'subscription',
+      updatedBy: 'owner-1',
+    });
+    upsertSettingValue({
+      key: 'executor.claudeOauthToken',
+      value: 'oauth-token-123',
+      updatedBy: 'owner-1',
+    });
+    upsertSettingValue({
+      key: 'executor.verificationStatus',
+      value: 'verified',
+      updatedBy: 'owner-1',
+    });
+    _setContainerRuntimeStatusForTests('unavailable');
+
+    const agent = createRegisteredAgent({
+      name: 'Claude Browser Main',
+      providerId: 'provider.anthropic',
+      modelId: 'claude-sonnet-4-6',
+      toolPermissionsJson: JSON.stringify({ browser: true }),
+    });
+
+    expect(buildMainExecutionPreview(agent, 'owner-1')).toMatchObject({
+      ready: false,
+      backend: 'container',
+      authPath: 'subscription',
+      selectedMode: 'subscription',
+      transport: 'subscription',
+      reasonCode: 'subscription_runtime_unavailable',
+      routeReason: 'no_valid_path',
+    });
+    expect(buildMainExecutionPreview(agent, 'owner-1').message).toMatch(
+      /container runtime is unavailable/i,
     );
   });
 

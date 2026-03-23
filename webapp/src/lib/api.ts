@@ -1931,6 +1931,9 @@ export type RegisteredAgent = {
     surface: 'main';
     backend: 'direct_http' | 'container' | 'host_codex' | null;
     authPath: 'api_key' | 'subscription' | 'host_login' | null;
+    selectedMode: 'api' | 'subscription' | null;
+    transport: 'direct' | 'subscription' | null;
+    reasonCode: string | null;
     routeReason:
       | 'normal'
       | 'subscription_fallback'

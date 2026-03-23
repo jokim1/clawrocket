@@ -89,6 +89,26 @@ function hasHeavyTools(toolPermissions: Record<string, boolean>): boolean {
   );
 }
 
+function withExecutionPreviewDefaults(
+  input: Omit<
+    RegisteredAgent['executionPreview'],
+    'selectedMode' | 'transport' | 'reasonCode'
+  > &
+    Partial<
+      Pick<
+        RegisteredAgent['executionPreview'],
+        'selectedMode' | 'transport' | 'reasonCode'
+      >
+    >,
+): RegisteredAgent['executionPreview'] {
+  return {
+    selectedMode: null,
+    transport: null,
+    reasonCode: null,
+    ...input,
+  };
+}
+
 function buildDraftExecutionPreview(input: {
   draft: AgentDraft;
   providers: AgentProviderCard[];
@@ -115,20 +135,20 @@ function buildDraftExecutionPreview(input: {
       input.draft.toolPermissions.messaging ? 'messaging' : null,
     ].filter(Boolean) as string[];
     if (unsupportedFamilies.length > 0) {
-      return {
+      return withExecutionPreviewDefaults({
         surface: 'main',
         backend: null,
         authPath: null,
         routeReason: 'no_valid_path',
         ready: false,
         message: `Codex host runtime does not support these enabled tool families: ${unsupportedFamilies.join(', ')}.`,
-      };
+      });
     }
     if (
       !input.draft.toolPermissions.shell ||
       !input.draft.toolPermissions.filesystem
     ) {
-      return {
+      return withExecutionPreviewDefaults({
         surface: 'main',
         backend: null,
         authPath: null,
@@ -136,10 +156,10 @@ function buildDraftExecutionPreview(input: {
         ready: false,
         message:
           'Codex host runtime requires both shell and filesystem tools to be enabled.',
-      };
+      });
     }
     if (!provider.hasCredential) {
-      return {
+      return withExecutionPreviewDefaults({
         surface: 'main',
         backend: null,
         authPath: null,
@@ -147,10 +167,10 @@ function buildDraftExecutionPreview(input: {
         ready: false,
         message:
           'Codex host runtime is not authenticated. Run the managed Codex login command and verify the provider first.',
-      };
+      });
     }
     if (provider.verificationStatus !== 'verified') {
-      return {
+      return withExecutionPreviewDefaults({
         surface: 'main',
         backend: null,
         authPath: null,
@@ -158,16 +178,16 @@ function buildDraftExecutionPreview(input: {
         ready: false,
         message:
           'Codex host runtime is not verified. Verify the provider from AI Agents before saving this agent.',
-      };
+      });
     }
-    return {
+    return withExecutionPreviewDefaults({
       surface: 'main',
       backend: 'host_codex',
       authPath: 'host_login',
       routeReason: 'host_only',
       ready: true,
       message: 'Main will use the OpenAI Codex host runtime.',
-    };
+    });
   }
 
   if (provider.id !== 'provider.anthropic') {
@@ -190,7 +210,7 @@ function buildDraftExecutionPreview(input: {
     wouldFallbackToSubscriptionContainer;
 
   if (requiresContainerBackend && !containerRuntimeAvailable) {
-    return {
+    return withExecutionPreviewDefaults({
       surface: 'main',
       backend: null,
       authPath: null,
@@ -198,7 +218,7 @@ function buildDraftExecutionPreview(input: {
       ready: false,
       message:
         'Claude container runtime is unavailable on this host. Start Docker before using this Main agent configuration.',
-    };
+    });
   }
 
   if (heavyToolsEnabled) {
@@ -206,30 +226,34 @@ function buildDraftExecutionPreview(input: {
       input.executorSettings.executorAuthMode === 'subscription' &&
       hasSubscriptionCredential
     ) {
-      return {
+      return withExecutionPreviewDefaults({
         surface: 'main',
         backend: 'container',
         authPath: 'subscription',
+        selectedMode: 'subscription',
+        transport: 'subscription',
         routeReason: 'normal',
         ready: true,
         message: 'Main will use Claude subscription via the container runtime.',
-      };
+      });
     }
     if (
       input.executorSettings.executorAuthMode === 'api_key' &&
       input.executorSettings.hasApiKey
     ) {
-      return {
+      return withExecutionPreviewDefaults({
         surface: 'main',
         backend: 'container',
         authPath: 'api_key',
+        selectedMode: 'api',
+        transport: 'direct',
         routeReason: 'normal',
         ready: true,
         message:
           'Main will use the Claude container runtime with an Anthropic API key.',
-      };
+      });
     }
-    return {
+    return withExecutionPreviewDefaults({
       surface: 'main',
       backend: null,
       authPath: null,
@@ -237,61 +261,69 @@ function buildDraftExecutionPreview(input: {
       ready: false,
       message:
         'Heavy Claude tools require a valid container auth path. Configure subscription mode with a stored Claude credential, or switch to API key mode with an Anthropic API key.',
-    };
+    });
   }
 
   if (
     input.executorSettings.executorAuthMode === 'subscription' &&
     hasSubscriptionCredential
   ) {
-    return {
+    return withExecutionPreviewDefaults({
       surface: 'main',
       backend: 'container',
       authPath: 'subscription',
+      selectedMode: 'subscription',
+      transport: 'subscription',
       routeReason: 'normal',
       ready: true,
       message: 'Main will use Claude subscription via the container runtime.',
-    };
+    });
   }
 
   if (
     input.executorSettings.executorAuthMode === 'api_key' &&
     input.executorSettings.hasApiKey
   ) {
-    return {
+    return withExecutionPreviewDefaults({
       surface: 'main',
       backend: 'direct_http',
       authPath: 'api_key',
+      selectedMode: 'api',
+      transport: 'direct',
       routeReason: 'normal',
       ready: true,
       message: 'Main will use Anthropic direct HTTP with an API key.',
-    };
+    });
   }
 
   if (input.executorSettings.hasApiKey) {
-    return {
+    return withExecutionPreviewDefaults({
       surface: 'main',
       backend: 'direct_http',
       authPath: 'api_key',
+      selectedMode: 'api',
+      transport: 'direct',
       routeReason: 'normal',
       ready: true,
       message: 'Main will use Anthropic direct HTTP with an API key.',
-    };
+    });
   }
 
   if (hasSubscriptionCredential) {
-    return {
+    return withExecutionPreviewDefaults({
       surface: 'main',
       backend: 'container',
       authPath: 'subscription',
+      selectedMode: 'subscription',
+      transport: 'subscription',
       routeReason: 'subscription_fallback',
       ready: true,
       message:
         'Main will use Claude subscription via container fallback because no Anthropic API key is configured.',
-    };
+    });
   }
 
-  return {
+  return withExecutionPreviewDefaults({
     surface: 'main',
     backend: null,
     authPath: null,
@@ -299,7 +331,7 @@ function buildDraftExecutionPreview(input: {
     ready: false,
     message:
       'No Anthropic API key or Claude subscription credential is configured for this Claude agent.',
-  };
+  });
 }
 
 export function RegisteredAgentsPanel(props: Props): JSX.Element {

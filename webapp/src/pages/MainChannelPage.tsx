@@ -353,16 +353,21 @@ function describeMainBrowserCapability(agent: RegisteredAgent | null): {
 
   if (!agent.executionPreview.ready) {
     return {
-      badgeLabel: 'Browser setup required',
+      badgeLabel: 'Browser misconfigured',
       badgeTone: 'invalid',
       note: agent.executionPreview.message,
     };
   }
 
   return {
-    badgeLabel: 'Browser enabled',
+    badgeLabel:
+      agent.executionPreview.selectedMode === 'api'
+        ? 'Browser ready (API)'
+        : agent.executionPreview.selectedMode === 'subscription'
+          ? 'Browser ready (Subscription)'
+          : 'Browser ready',
     badgeTone: 'ready',
-    note: null,
+    note: agent.executionPreview.message,
   };
 }
 

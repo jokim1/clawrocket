@@ -14,6 +14,7 @@
  * Phase 2: Main executor now has direct web and browser tools.
  */
 
+import { getContainerRuntimeStatus } from '../../container-runtime.js';
 import { getDb } from '../../db.js';
 import {
   getRegisteredAgent,
@@ -23,7 +24,6 @@ import {
   getSettingValue,
   getTalkRunById,
   getTalkRunTaskType,
-  getTalkRunTransport,
   updateTalkRunMetadata,
 } from '../db/accessors.js';
 import {
@@ -586,7 +586,17 @@ export async function executeMainChannel(
   const mainPlan = planMainExecution(agent, input.requestedBy);
   const runRecord = getTalkRunById(input.runId);
   const runTaskType = runRecord ? getTalkRunTaskType(runRecord) : 'chat';
-  const intendedTransport = runRecord ? getTalkRunTransport(runRecord) : null;
+  const intendedTransport =
+    runTaskType === 'browser' &&
+    (runRecord?.transport === 'direct' ||
+      runRecord?.transport === 'subscription')
+      ? runRecord.transport
+      : runTaskType === 'browser'
+        ? null
+        : runRecord?.transport === 'direct' ||
+            runRecord?.transport === 'subscription'
+          ? runRecord.transport
+          : null;
   const runMetadata = parseObject(runRecord?.metadata_json);
   const timingMetadata = parseRunTimingMetadata(runMetadata);
   const browserResumeSection = buildBrowserResumeSection(runMetadata);
@@ -625,25 +635,28 @@ export async function executeMainChannel(
     : 'generic_agent_loop';
   let shouldUseContainer =
     Boolean(promotedRun) || mainPlan.policy === 'container_only';
-  if (runTaskType === 'browser' && intendedTransport === 'direct') {
-    if (!mainPlan.directPlan) {
+  if (runTaskType === 'browser') {
+    if (intendedTransport === 'direct') {
+      if (!mainPlan.directPlan) {
+        throw new Error(
+          'Direct plan unavailable for browser run. The credential may have been removed after the run was created.',
+        );
+      }
+      useHostCodex = false;
+      shouldUseContainer = false;
+    } else if (intendedTransport === 'subscription') {
+      if (!mainPlan.containerPlan) {
+        throw new Error(
+          'Container plan unavailable for browser run. The subscription credential may have been removed after the run was created.',
+        );
+      }
+      useHostCodex = false;
+      shouldUseContainer = true;
+    } else {
       throw new Error(
-        'Main browser run requested direct transport, but no direct execution path is configured.',
+        `Invalid transport '${String(runRecord?.transport ?? null)}' for browser run.`,
       );
     }
-    useHostCodex = false;
-    shouldUseContainer = false;
-  } else if (
-    runTaskType === 'browser' &&
-    intendedTransport === 'subscription'
-  ) {
-    if (!mainPlan.containerPlan) {
-      throw new Error(
-        'Main browser run requested subscription transport, but no subscription execution path is configured.',
-      );
-    }
-    useHostCodex = false;
-    shouldUseContainer = true;
   }
   const routeReason = deriveRouteReason({
     strategy: executionStrategy,
@@ -657,9 +670,9 @@ export async function executeMainChannel(
       ? 'container'
       : 'direct_http';
   const useWarmSubscriptionWorker =
+    runTaskType !== 'browser' &&
     shouldUseContainer &&
-    (routeReason === 'subscription_fallback' ||
-      (runTaskType === 'browser' && intendedTransport === 'subscription')) &&
+    routeReason === 'subscription_fallback' &&
     MAIN_SUBSCRIPTION_WARM_WORKER_ENABLED;
   const executorStartedAt = new Date().toISOString();
   const queueStartedAtMs = parseIsoMs(
@@ -973,6 +986,15 @@ export async function executeMainChannel(
   }
   try {
     if (shouldUseContainer) {
+      if (
+        runTaskType === 'browser' &&
+        intendedTransport === 'subscription' &&
+        getContainerRuntimeStatus({ refresh: true }) !== 'ready'
+      ) {
+        throw new Error(
+          'Claude container runtime is unavailable on this host. Start Docker before using subscription mode for browser runs.',
+        );
+      }
       const containerPlan = mainPlan.containerPlan;
       if (!containerPlan) {
         throw new Error(

@@ -38,6 +38,9 @@ vi.mock('./main-subscription-worker-manager.js', () => ({
 vi.mock('./project-mounts.js', () => ({
   resolveValidatedProjectMountPath: vi.fn(),
 }));
+vi.mock('../../container-runtime.js', () => ({
+  getContainerRuntimeStatus: vi.fn(() => 'ready'),
+}));
 vi.mock('../tools/browser-tools.js', () => ({
   BROWSER_TOOL_DEFINITIONS: [
     {
@@ -75,6 +78,7 @@ import {
   MainSubscriptionWorkerManagerError,
 } from './main-subscription-worker-manager.js';
 import { resolveValidatedProjectMountPath } from './project-mounts.js';
+import { getContainerRuntimeStatus } from '../../container-runtime.js';
 import { executeBrowserTool } from '../tools/browser-tools.js';
 
 describe('main-executor (pure)', () => {
@@ -92,6 +96,8 @@ describe('main-executor (pure)', () => {
     vi.mocked(executeWarmMainSubscriptionTurn).mockReset();
     vi.mocked(resolveValidatedProjectMountPath).mockReset();
     vi.mocked(executeBrowserTool).mockReset();
+    vi.mocked(getContainerRuntimeStatus).mockReset();
+    vi.mocked(getContainerRuntimeStatus).mockReturnValue('ready');
     vi.mocked(resolveValidatedProjectMountPath).mockImplementation((path) =>
       path ? String(path) : null,
     );
@@ -948,6 +954,263 @@ describe('main-executor (pure)', () => {
     >;
     expect(metadata.executionStrategy).toBe('browser_fast_lane');
     expect(metadata.routeReason).toBe('browser_fast_lane');
+  });
+
+  it('executes direct browser runs only on the direct path', async () => {
+    const queuedRun = enqueueMainTurnAtomic({
+      threadId: 'thread-browser-direct',
+      userId: 'owner-1',
+      content: 'Open LinkedIn and tell me what you can access.',
+      messageId: 'msg-browser-direct',
+      runId: 'run-browser-direct',
+      taskType: 'browser',
+      selectedMode: 'api',
+      transport: 'direct',
+    });
+
+    vi.mocked(planMainExecution).mockReturnValue({
+      policy: 'container_only',
+      effectiveTools: [
+        {
+          toolFamily: 'browser',
+          runtimeTools: ['browser_open'],
+          enabled: true,
+          requiresApproval: false,
+        },
+      ],
+      heavyToolFamilies: [],
+      directPlan: {
+        backend: 'direct_http',
+        routeReason: 'normal',
+        authPath: 'api_key',
+        credentialSource: 'env',
+        effectiveTools: [
+          {
+            toolFamily: 'browser',
+            runtimeTools: ['browser_open'],
+            enabled: true,
+            requiresApproval: false,
+          },
+        ],
+        providerId: 'provider.anthropic',
+        modelId: 'claude-sonnet-4-6',
+        binding: {
+          providerConfig: {
+            providerId: 'provider.anthropic',
+            baseUrl: 'https://api.anthropic.com',
+            apiFormat: 'anthropic_messages',
+            authScheme: 'x_api_key',
+          },
+          secret: { apiKey: 'sk-ant-test' },
+        },
+      },
+      containerPlan: {
+        backend: 'container',
+        routeReason: 'subscription_fallback',
+        providerId: 'provider.anthropic',
+        modelId: 'claude-sonnet-4-6',
+        effectiveTools: [
+          {
+            toolFamily: 'browser',
+            runtimeTools: ['browser_open'],
+            enabled: true,
+            requiresApproval: false,
+          },
+        ],
+        heavyToolFamilies: [],
+        containerCredential: {
+          authMode: 'subscription',
+          credentialSource: 'oauth_token',
+          secrets: {
+            CLAUDE_CODE_OAUTH_TOKEN: 'oauth-test',
+          },
+        },
+      },
+      hostCodexPlan: null,
+    });
+    vi.mocked(executeWithAgent).mockResolvedValue({
+      content: 'Direct browser reply',
+      agentId: 'agent.main',
+      providerId: 'provider.anthropic',
+      modelId: 'claude-sonnet-4-6',
+    });
+
+    const result = await executeMainChannel(
+      {
+        runId: queuedRun.run.id,
+        threadId: queuedRun.run.thread_id,
+        requestedBy: 'owner-1',
+        triggerMessageId: queuedRun.message.id,
+        triggerContent: queuedRun.message.content,
+      },
+      new AbortController().signal,
+    );
+
+    expect(result.content).toBe('Direct browser reply');
+    expect(executeWithAgent).toHaveBeenCalledTimes(1);
+    expect(executeContainerAgentTurn).not.toHaveBeenCalled();
+    expect(executeWarmMainSubscriptionTurn).not.toHaveBeenCalled();
+  });
+
+  it('executes subscription browser runs through one-shot container execution only', async () => {
+    const queuedRun = enqueueMainTurnAtomic({
+      threadId: 'thread-browser-subscription',
+      userId: 'owner-1',
+      content: 'Open LinkedIn and tell me what you can access.',
+      messageId: 'msg-browser-subscription',
+      runId: 'run-browser-subscription',
+      taskType: 'browser',
+      selectedMode: 'subscription',
+      transport: 'subscription',
+    });
+
+    vi.mocked(planMainExecution).mockReturnValue({
+      policy: 'container_only',
+      effectiveTools: [
+        {
+          toolFamily: 'browser',
+          runtimeTools: ['browser_open'],
+          enabled: true,
+          requiresApproval: false,
+        },
+      ],
+      heavyToolFamilies: [],
+      directPlan: null,
+      containerPlan: {
+        backend: 'container',
+        routeReason: 'subscription_fallback',
+        providerId: 'provider.anthropic',
+        modelId: 'claude-sonnet-4-6',
+        effectiveTools: [
+          {
+            toolFamily: 'browser',
+            runtimeTools: ['browser_open'],
+            enabled: true,
+            requiresApproval: false,
+          },
+        ],
+        heavyToolFamilies: [],
+        containerCredential: {
+          authMode: 'subscription',
+          credentialSource: 'oauth_token',
+          secrets: {
+            CLAUDE_CODE_OAUTH_TOKEN: 'oauth-test',
+          },
+        },
+      },
+      hostCodexPlan: null,
+    });
+    vi.mocked(executeContainerAgentTurn).mockResolvedValue({
+      content: 'One-shot subscription reply',
+    });
+
+    const result = await executeMainChannel(
+      {
+        runId: queuedRun.run.id,
+        threadId: queuedRun.run.thread_id,
+        requestedBy: 'owner-1',
+        triggerMessageId: queuedRun.message.id,
+        triggerContent: queuedRun.message.content,
+      },
+      new AbortController().signal,
+    );
+
+    expect(result.content).toBe('One-shot subscription reply');
+    expect(executeContainerAgentTurn).toHaveBeenCalledTimes(1);
+    expect(executeWarmMainSubscriptionTurn).not.toHaveBeenCalled();
+    expect(executeWithAgent).not.toHaveBeenCalled();
+  });
+
+  it('fails browser runs with a missing typed transport instead of falling back', async () => {
+    const queuedRun = enqueueMainTurnAtomic({
+      threadId: 'thread-browser-missing-transport',
+      userId: 'owner-1',
+      content: 'Open LinkedIn and tell me what you can access.',
+      messageId: 'msg-browser-missing-transport',
+      runId: 'run-browser-missing-transport',
+      taskType: 'browser',
+    });
+
+    await expect(
+      executeMainChannel(
+        {
+          runId: queuedRun.run.id,
+          threadId: queuedRun.run.thread_id,
+          requestedBy: 'owner-1',
+          triggerMessageId: queuedRun.message.id,
+          triggerContent: queuedRun.message.content,
+        },
+        new AbortController().signal,
+      ),
+    ).rejects.toThrow(/Invalid transport .* for browser run/i);
+    expect(executeWithAgent).not.toHaveBeenCalled();
+    expect(executeContainerAgentTurn).not.toHaveBeenCalled();
+  });
+
+  it('fails subscription browser runs clearly when Docker goes down before execution', async () => {
+    const queuedRun = enqueueMainTurnAtomic({
+      threadId: 'thread-browser-runtime-down',
+      userId: 'owner-1',
+      content: 'Open LinkedIn and tell me what you can access.',
+      messageId: 'msg-browser-runtime-down',
+      runId: 'run-browser-runtime-down',
+      taskType: 'browser',
+      selectedMode: 'subscription',
+      transport: 'subscription',
+    });
+
+    vi.mocked(planMainExecution).mockReturnValue({
+      policy: 'container_only',
+      effectiveTools: [
+        {
+          toolFamily: 'browser',
+          runtimeTools: ['browser_open'],
+          enabled: true,
+          requiresApproval: false,
+        },
+      ],
+      heavyToolFamilies: [],
+      directPlan: null,
+      containerPlan: {
+        backend: 'container',
+        routeReason: 'subscription_fallback',
+        providerId: 'provider.anthropic',
+        modelId: 'claude-sonnet-4-6',
+        effectiveTools: [
+          {
+            toolFamily: 'browser',
+            runtimeTools: ['browser_open'],
+            enabled: true,
+            requiresApproval: false,
+          },
+        ],
+        heavyToolFamilies: [],
+        containerCredential: {
+          authMode: 'subscription',
+          credentialSource: 'oauth_token',
+          secrets: {
+            CLAUDE_CODE_OAUTH_TOKEN: 'oauth-test',
+          },
+        },
+      },
+      hostCodexPlan: null,
+    });
+    vi.mocked(getContainerRuntimeStatus).mockReturnValue('unavailable');
+
+    await expect(
+      executeMainChannel(
+        {
+          runId: queuedRun.run.id,
+          threadId: queuedRun.run.thread_id,
+          requestedBy: 'owner-1',
+          triggerMessageId: queuedRun.message.id,
+          triggerContent: queuedRun.message.content,
+        },
+        new AbortController().signal,
+      ),
+    ).rejects.toThrow(/Start Docker before using subscription mode/i);
+    expect(executeContainerAgentTurn).not.toHaveBeenCalled();
+    expect(executeWarmMainSubscriptionTurn).not.toHaveBeenCalled();
   });
 
   it('rejects browser tool calls in Main when browser is not enabled', async () => {
