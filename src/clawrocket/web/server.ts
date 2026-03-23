@@ -145,12 +145,15 @@ import {
 import {
   approveBrowserConfirmationRoute,
   cancelConflictingBrowserRunRoute,
+  createBrowserProfileRoute,
   getBrowserSessionStatusRoute,
+  listBrowserProfilesRoute,
   rejectBrowserConfirmationRoute,
   resumeBrowserBlockedRunRoute,
   resumeBrowserSessionRoute,
   startBrowserSetupSessionRoute,
   startBrowserTakeoverRoute,
+  updateBrowserProfileConnectionModeRoute,
 } from './routes/browser.js';
 import {
   deleteTalkThreadRoute,
@@ -1782,6 +1785,91 @@ function buildApp(opts: WebServerOptions): Hono {
       status: result.statusCode,
       headers: { 'content-type': 'application/json; charset=utf-8' },
     });
+  });
+
+  // Browser profile management routes
+  app.get('/api/v1/browser/profiles', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+    const result = listBrowserProfilesRoute({ auth });
+    return c.json(result.body, result.statusCode as 200);
+  });
+
+  app.post('/api/v1/browser/profiles', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+    const rateResult = checkRateLimit({
+      principalId: auth.userId,
+      bucket: 'write',
+    });
+    if (!rateResult.allowed) return rateLimitedResponse(c, rateResult);
+    const csrf = validateCsrfToken({
+      method: c.req.method,
+      authType: auth.authType,
+      cookieHeader: c.req.header('cookie'),
+      csrfHeader: c.req.header('x-csrf-token'),
+    });
+    if (!csrf.ok) {
+      return c.json(
+        { ok: false, error: { code: 'csrf_failed', message: csrf.reason } },
+        403,
+      );
+    }
+    const payload = parseJsonPayload<Record<string, unknown>>(
+      await c.req.text(),
+    );
+    if (!payload.ok) {
+      return c.json(
+        { ok: false, error: { code: 'invalid_json', message: payload.error } },
+        400,
+      );
+    }
+    const result = createBrowserProfileRoute({
+      auth,
+      siteKey: payload.data.siteKey,
+      accountLabel: payload.data.accountLabel,
+      connectionMode: payload.data.connectionMode,
+      connectionConfig: payload.data.connectionConfig,
+    });
+    return c.json(result.body, result.statusCode as 200);
+  });
+
+  app.patch('/api/v1/browser/profiles/:profileId', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+    const rateResult = checkRateLimit({
+      principalId: auth.userId,
+      bucket: 'write',
+    });
+    if (!rateResult.allowed) return rateLimitedResponse(c, rateResult);
+    const csrf = validateCsrfToken({
+      method: c.req.method,
+      authType: auth.authType,
+      cookieHeader: c.req.header('cookie'),
+      csrfHeader: c.req.header('x-csrf-token'),
+    });
+    if (!csrf.ok) {
+      return c.json(
+        { ok: false, error: { code: 'csrf_failed', message: csrf.reason } },
+        403,
+      );
+    }
+    const payload = parseJsonPayload<Record<string, unknown>>(
+      await c.req.text(),
+    );
+    if (!payload.ok) {
+      return c.json(
+        { ok: false, error: { code: 'invalid_json', message: payload.error } },
+        400,
+      );
+    }
+    const result = updateBrowserProfileConnectionModeRoute({
+      auth,
+      profileId: c.req.param('profileId'),
+      connectionMode: payload.data.connectionMode,
+      connectionConfig: payload.data.connectionConfig,
+    });
+    return c.json(result.body, result.statusCode as 200);
   });
 
   app.post('/api/v1/browser/setup', async (c) => {
