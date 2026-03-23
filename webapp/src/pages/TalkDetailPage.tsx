@@ -14,6 +14,7 @@ import {
   KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent as ReactMouseEvent,
   type ReactNode,
+  type TextareaHTMLAttributes,
   useCallback,
   useEffect,
   useMemo,
@@ -565,6 +566,7 @@ const TALK_MESSAGE_MAX_CHARS = 20_000;
 const MAX_EVENT_RUN_CACHE = 500;
 const COMPOSER_TEXTAREA_MIN_HEIGHT_PX = 48;
 const COMPOSER_TEXTAREA_MAX_HEIGHT_PX = 240;
+const BINDING_INSTRUCTIONS_TEXTAREA_MAX_HEIGHT_PX = 360;
 
 const TALK_AGENT_ROLE_OPTIONS: TalkAgent['role'][] = [
   'assistant',
@@ -705,7 +707,10 @@ type AgentCreationDraft = {
 
 type InstructionTemplateKey = 'blank' | 'study_tracker';
 
-type InstructionLintStatus = 'ready' | 'needs_more_specifics' | 'potential_conflicts';
+type InstructionLintStatus =
+  | 'ready'
+  | 'needs_more_specifics'
+  | 'potential_conflicts';
 
 type InstructionLintResult = {
   status: InstructionLintStatus;
@@ -2385,6 +2390,52 @@ function buildInstructionTemplate(
   ].join('\n');
 }
 
+type AutoGrowingTextareaProps = TextareaHTMLAttributes<HTMLTextAreaElement> & {
+  maxHeightPx?: number;
+};
+
+function AutoGrowingTextarea({
+  maxHeightPx = BINDING_INSTRUCTIONS_TEXTAREA_MAX_HEIGHT_PX,
+  style,
+  value,
+  ...props
+}: AutoGrowingTextareaProps): JSX.Element {
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const minHeightRef = useRef<number | null>(null);
+
+  const resizeTextarea = useCallback(() => {
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+
+    textarea.style.height = 'auto';
+    const measuredMinHeight = textarea.offsetHeight;
+    if (!minHeightRef.current && measuredMinHeight > 0) {
+      minHeightRef.current = measuredMinHeight;
+    }
+    const minHeight = minHeightRef.current ?? measuredMinHeight;
+    const scrollHeight = Math.max(textarea.scrollHeight, minHeight);
+    const nextHeight = Math.min(scrollHeight, maxHeightPx);
+    textarea.style.height = `${nextHeight}px`;
+    textarea.style.overflowY = scrollHeight > maxHeightPx ? 'auto' : 'hidden';
+  }, [maxHeightPx]);
+
+  useEffect(() => {
+    resizeTextarea();
+  }, [resizeTextarea, value]);
+
+  return (
+    <textarea
+      {...props}
+      ref={textareaRef}
+      value={value}
+      style={{
+        ...style,
+        overflowY: 'hidden',
+      }}
+    />
+  );
+}
+
 function lintChannelInstructions(input: {
   instructions: string;
   stateNamespace?: string | null;
@@ -2408,7 +2459,9 @@ function lintChannelInstructions(input: {
     lower.includes('do not reply') ||
     lower.includes('reply only');
   if (!mentionsSilenceRule) {
-    messages.push('Explain when the assistant should reply versus stay silent.');
+    messages.push(
+      'Explain when the assistant should reply versus stay silent.',
+    );
   }
 
   const seemsStateful =
@@ -2418,7 +2471,9 @@ function lintChannelInstructions(input: {
       trimmed,
     );
   if (seemsStateful && !mentionsStateStrategy) {
-    messages.push('Stateful instructions should describe the state keys or JSON schema to use.');
+    messages.push(
+      'Stateful instructions should describe the state keys or JSON schema to use.',
+    );
   }
 
   if (
@@ -2429,14 +2484,18 @@ function lintChannelInstructions(input: {
       ) || Boolean(input.timezone?.trim())
     )
   ) {
-    messages.push('Time-based behavior should name a timezone or reset rule explicitly.');
+    messages.push(
+      'Time-based behavior should name a timezone or reset rule explicitly.',
+    );
   }
 
   if (
     /(participant|sender|kid|child|member|person|student)/i.test(trimmed) &&
     !/(sender id|slack id|stable id|user id)/i.test(trimmed)
   ) {
-    messages.push('Entity-tracking instructions work better when they mention stable sender IDs.');
+    messages.push(
+      'Entity-tracking instructions work better when they mention stable sender IDs.',
+    );
   }
 
   if (
@@ -2448,16 +2507,22 @@ function lintChannelInstructions(input: {
   }
 
   if (trimmed.length < 120) {
-    messages.push('Add more specifics so the assistant knows the trigger rules, reply policy, and state strategy.');
+    messages.push(
+      'Add more specifics so the assistant knows the trigger rules, reply policy, and state strategy.',
+    );
   }
 
   if (trimmed.length > 4000) {
-    messages.push('Remove repetitive detail. Shorter, sharper instructions usually work better.');
+    messages.push(
+      'Remove repetitive detail. Shorter, sharper instructions usually work better.',
+    );
   }
 
   if (/(study_tracker\.|tracker\.[a-z0-9_-]+)/i.test(trimmed)) {
     hasConflict = true;
-    messages.push('Use the binding state namespace instead of hard-coded global state keys.');
+    messages.push(
+      'Use the binding state namespace instead of hard-coded global state keys.',
+    );
   }
 
   if (
@@ -2465,7 +2530,9 @@ function lintChannelInstructions(input: {
     trimmed.includes('channel.') &&
     !trimmed.includes(input.stateNamespace)
   ) {
-    messages.push('If you reference explicit state keys, keep them inside this binding namespace.');
+    messages.push(
+      'If you reference explicit state keys, keep them inside this binding namespace.',
+    );
   }
 
   if (hasConflict) {
@@ -2476,7 +2543,9 @@ function lintChannelInstructions(input: {
   }
   return {
     status: 'ready',
-    messages: ['The instructions define a clear reply policy and state strategy.'],
+    messages: [
+      'The instructions define a clear reply policy and state strategy.',
+    ],
   };
 }
 
@@ -4553,11 +4622,12 @@ export function TalkDetailPage({
           ),
         );
         setChannelInstructionReviews((current) => ({
-          [CREATE_CHANNEL_INSTRUCTION_REVIEW_KEY]:
-            current[CREATE_CHANNEL_INSTRUCTION_REVIEW_KEY] ?? {
-              status: 'idle',
-              review: null,
-            },
+          [CREATE_CHANNEL_INSTRUCTION_REVIEW_KEY]: current[
+            CREATE_CHANNEL_INSTRUCTION_REVIEW_KEY
+          ] ?? {
+            status: 'idle',
+            review: null,
+          },
           ...Object.fromEntries(
             bindings.map((binding) => [
               binding.id,
@@ -5789,7 +5859,7 @@ export function TalkDetailPage({
         status: 'error',
         message:
           'Invite the Slack app to this channel first, then sync channels again before binding it to this Talk.',
-        });
+      });
       return;
     }
     setChannelStatus({ status: 'saving' });
@@ -5974,7 +6044,9 @@ export function TalkDetailPage({
   const handleChannelBindingMemoryDraftChange = useCallback(
     (
       bindingId: string,
-      patch: Partial<Pick<BindingMemoryPanelState, 'newKeySuffix' | 'newValueJson'>>,
+      patch: Partial<
+        Pick<BindingMemoryPanelState, 'newKeySuffix' | 'newValueJson'>
+      >,
     ) => {
       setChannelBindingMemoryById((state) => ({
         ...state,
@@ -6057,13 +6129,17 @@ export function TalkDetailPage({
               buildEmptyBindingMemoryPanelState(binding.stateNamespace)),
             status: 'error',
             errorMessage:
-              err instanceof Error ? err.message : 'Failed to save binding memory.',
+              err instanceof Error
+                ? err.message
+                : 'Failed to save binding memory.',
           },
         }));
         setChannelStatus({
           status: 'error',
           message:
-            err instanceof Error ? err.message : 'Failed to save binding memory.',
+            err instanceof Error
+              ? err.message
+              : 'Failed to save binding memory.',
         });
       }
     },
@@ -6077,7 +6153,10 @@ export function TalkDetailPage({
   );
 
   const handleEditChannelBindingMemoryEntry = useCallback(
-    async (binding: TalkChannelBinding, entry: TalkChannelBindingStateEntry) => {
+    async (
+      binding: TalkChannelBinding,
+      entry: TalkChannelBindingStateEntry,
+    ) => {
       if (!canEditChannels) return;
       const nextValueJson = window.prompt(
         `Edit JSON for ${entry.keySuffix}:`,
@@ -6101,9 +6180,7 @@ export function TalkDetailPage({
             buildEmptyBindingMemoryPanelState(binding.stateNamespace)),
           status: 'saving',
           stateNamespace: binding.stateNamespace,
-          entries:
-            state[binding.id]?.entries ??
-            [],
+          entries: state[binding.id]?.entries ?? [],
         },
       }));
       try {
@@ -6127,7 +6204,9 @@ export function TalkDetailPage({
         setChannelStatus({
           status: 'error',
           message:
-            err instanceof Error ? err.message : 'Failed to update binding memory.',
+            err instanceof Error
+              ? err.message
+              : 'Failed to update binding memory.',
         });
         setChannelBindingMemoryById((state) => ({
           ...state,
@@ -6136,16 +6215,26 @@ export function TalkDetailPage({
               buildEmptyBindingMemoryPanelState(binding.stateNamespace)),
             status: 'error',
             errorMessage:
-              err instanceof Error ? err.message : 'Failed to update binding memory.',
+              err instanceof Error
+                ? err.message
+                : 'Failed to update binding memory.',
           },
         }));
       }
     },
-    [canEditChannels, handleLoadChannelBindingMemory, handleUnauthorized, talkId],
+    [
+      canEditChannels,
+      handleLoadChannelBindingMemory,
+      handleUnauthorized,
+      talkId,
+    ],
   );
 
   const handleDeleteChannelBindingMemoryEntry = useCallback(
-    async (binding: TalkChannelBinding, entry: TalkChannelBindingStateEntry) => {
+    async (
+      binding: TalkChannelBinding,
+      entry: TalkChannelBindingStateEntry,
+    ) => {
       if (!canEditChannels) return;
       const confirmed = window.confirm(
         `Delete binding memory entry ${entry.keySuffix}?`,
@@ -6181,7 +6270,9 @@ export function TalkDetailPage({
         setChannelStatus({
           status: 'error',
           message:
-            err instanceof Error ? err.message : 'Failed to delete binding memory.',
+            err instanceof Error
+              ? err.message
+              : 'Failed to delete binding memory.',
         });
         setChannelBindingMemoryById((state) => ({
           ...state,
@@ -6190,12 +6281,19 @@ export function TalkDetailPage({
               buildEmptyBindingMemoryPanelState(binding.stateNamespace)),
             status: 'error',
             errorMessage:
-              err instanceof Error ? err.message : 'Failed to delete binding memory.',
+              err instanceof Error
+                ? err.message
+                : 'Failed to delete binding memory.',
           },
         }));
       }
     },
-    [canEditChannels, handleLoadChannelBindingMemory, handleUnauthorized, talkId],
+    [
+      canEditChannels,
+      handleLoadChannelBindingMemory,
+      handleUnauthorized,
+      talkId,
+    ],
   );
 
   const handleReviewBindingInstructions = useCallback(
@@ -10760,7 +10858,9 @@ export function TalkDetailPage({
                             When to respond
                           </span>
                           <select
-                            value={channelCreateDraft.responseMode ?? 'mentions'}
+                            value={
+                              channelCreateDraft.responseMode ?? 'mentions'
+                            }
                             onChange={(event) =>
                               setChannelCreateDraft((current) => ({
                                 ...current,
@@ -10910,7 +11010,10 @@ export function TalkDetailPage({
                           />
                         </label>
                       </div>
-                      <div className="talk-llm-card" style={{ marginTop: '0.75rem' }}>
+                      <div
+                        className="talk-llm-card"
+                        style={{ marginTop: '0.75rem' }}
+                      >
                         <div className="connector-card-header">
                           <div>
                             <h4>Binding Instructions</h4>
@@ -10932,11 +11035,16 @@ export function TalkDetailPage({
                               }
                               disabled={channelStatus.status === 'saving'}
                             >
-                              {createInstructionTemplateOptions.map((option) => (
-                                <option key={option.value} value={option.value}>
-                                  {option.label}
-                                </option>
-                                ))}
+                              {createInstructionTemplateOptions.map(
+                                (option) => (
+                                  <option
+                                    key={option.value}
+                                    value={option.value}
+                                  >
+                                    {option.label}
+                                  </option>
+                                ),
+                              )}
                             </select>
                           </label>
                           <label>
@@ -10955,7 +11063,9 @@ export function TalkDetailPage({
                             />
                           </label>
                           <label style={{ flex: 1 }}>
-                            <span className="settings-label">State namespace</span>
+                            <span className="settings-label">
+                              State namespace
+                            </span>
                             <input
                               type="text"
                               value="Generated after the binding is created."
@@ -10963,9 +11073,11 @@ export function TalkDetailPage({
                             />
                           </label>
                         </div>
-                        <label style={{ display: 'block', marginTop: '0.75rem' }}>
+                        <label
+                          style={{ display: 'block', marginTop: '0.75rem' }}
+                        >
                           <span className="settings-label">Instructions</span>
-                          <textarea
+                          <AutoGrowingTextarea
                             value={channelCreateDraft.instructions}
                             onChange={(event) => {
                               const nextValue = event.target.value;
@@ -11021,7 +11133,8 @@ export function TalkDetailPage({
                             className="secondary-btn"
                             onClick={() =>
                               void handleReviewBindingInstructions({
-                                reviewKey: CREATE_CHANNEL_INSTRUCTION_REVIEW_KEY,
+                                reviewKey:
+                                  CREATE_CHANNEL_INSTRUCTION_REVIEW_KEY,
                                 platform:
                                   selectedChannelPlatform === 'telegram'
                                     ? 'telegram'
@@ -11069,7 +11182,10 @@ export function TalkDetailPage({
                         channelInstructionReviews[
                           CREATE_CHANNEL_INSTRUCTION_REVIEW_KEY
                         ]?.review ? (
-                          <div className="talk-llm-card" style={{ marginTop: '0.75rem' }}>
+                          <div
+                            className="talk-llm-card"
+                            style={{ marginTop: '0.75rem' }}
+                          >
                             <strong>AI Review</strong>
                             {(
                               [
@@ -11094,7 +11210,10 @@ export function TalkDetailPage({
                               ] as const
                             ).map(([heading, items]) =>
                               items.length > 0 ? (
-                                <div key={heading} style={{ marginTop: '0.75rem' }}>
+                                <div
+                                  key={heading}
+                                  style={{ marginTop: '0.75rem' }}
+                                >
                                   <strong>{heading}</strong>
                                   <ul style={{ margin: '0.35rem 0 0 1rem' }}>
                                     {items.map((item) => (
@@ -11109,12 +11228,15 @@ export function TalkDetailPage({
                             ]?.review?.rewrittenInstructions ? (
                               <>
                                 <label
-                                  style={{ display: 'block', marginTop: '0.75rem' }}
+                                  style={{
+                                    display: 'block',
+                                    marginTop: '0.75rem',
+                                  }}
                                 >
                                   <span className="settings-label">
                                     Suggested rewrite
                                   </span>
-                                  <textarea
+                                  <AutoGrowingTextarea
                                     readOnly
                                     value={
                                       channelInstructionReviews[
@@ -11122,7 +11244,10 @@ export function TalkDetailPage({
                                       ]?.review?.rewrittenInstructions || ''
                                     }
                                     rows={10}
-                                    style={{ width: '100%', resize: 'vertical' }}
+                                    style={{
+                                      width: '100%',
+                                      resize: 'vertical',
+                                    }}
                                   />
                                 </label>
                                 <div
@@ -11210,11 +11335,12 @@ export function TalkDetailPage({
                       stateNamespace: binding.stateNamespace,
                       timezone: draft.timezone,
                     });
-                    const instructionReview =
-                      channelInstructionReviews[binding.id] ?? {
-                        status: 'idle',
-                        review: null,
-                      };
+                    const instructionReview = channelInstructionReviews[
+                      binding.id
+                    ] ?? {
+                      status: 'idle',
+                      review: null,
+                    };
                     const templateOptions = getInstructionTemplateOptions(
                       binding.platform,
                     );
@@ -11406,7 +11532,8 @@ export function TalkDetailPage({
                             <div>
                               <h4>Binding Instructions</h4>
                               <p className="talk-llm-meta">
-                                State namespace: <code>{binding.stateNamespace}</code>
+                                State namespace:{' '}
+                                <code>{binding.stateNamespace}</code>
                               </p>
                             </div>
                           </div>
@@ -11418,7 +11545,8 @@ export function TalkDetailPage({
                                 onChange={(event) =>
                                   handleApplyChannelTemplate(
                                     binding,
-                                    event.target.value as InstructionTemplateKey,
+                                    event.target
+                                      .value as InstructionTemplateKey,
                                   )
                                 }
                                 disabled={
@@ -11427,7 +11555,10 @@ export function TalkDetailPage({
                                 }
                               >
                                 {templateOptions.map((option) => (
-                                  <option key={option.value} value={option.value}>
+                                  <option
+                                    key={option.value}
+                                    value={option.value}
+                                  >
                                     {option.label}
                                   </option>
                                 ))}
@@ -11451,15 +11582,21 @@ export function TalkDetailPage({
                               />
                             </label>
                             <label style={{ flex: 1 }}>
-                              <span className="settings-label">State namespace</span>
-                              <input type="text" value={binding.stateNamespace} disabled />
+                              <span className="settings-label">
+                                State namespace
+                              </span>
+                              <input
+                                type="text"
+                                value={binding.stateNamespace}
+                                disabled
+                              />
                             </label>
                           </div>
                           <label
                             style={{ display: 'block', marginTop: '0.75rem' }}
                           >
                             <span className="settings-label">Instructions</span>
-                            <textarea
+                            <AutoGrowingTextarea
                               value={draft.instructions}
                               onChange={(event) =>
                                 handleChannelDraftChange(binding.id, {
@@ -11490,7 +11627,9 @@ export function TalkDetailPage({
                             style={{ marginTop: '0.75rem' }}
                           >
                             <strong>
-                              {formatInstructionLintTitle(instructionLint.status)}
+                              {formatInstructionLintTitle(
+                                instructionLint.status,
+                              )}
                             </strong>
                             <ul style={{ margin: '0.5rem 0 0 1rem' }}>
                               {instructionLint.messages.map((message) => (
@@ -11537,12 +11676,21 @@ export function TalkDetailPage({
                           ) : null}
                           {instructionReview.status === 'ready' &&
                           instructionReview.review ? (
-                            <div className="talk-llm-card" style={{ marginTop: '0.75rem' }}>
+                            <div
+                              className="talk-llm-card"
+                              style={{ marginTop: '0.75rem' }}
+                            >
                               <strong>AI Review</strong>
                               {(
                                 [
-                                  ['What is clear', instructionReview.review.strengths],
-                                  ['What is missing', instructionReview.review.missing],
+                                  [
+                                    'What is clear',
+                                    instructionReview.review.strengths,
+                                  ],
+                                  [
+                                    'What is missing',
+                                    instructionReview.review.missing,
+                                  ],
                                   [
                                     'What to remove or simplify',
                                     instructionReview.review.removeOrSimplify,
@@ -11550,7 +11698,10 @@ export function TalkDetailPage({
                                 ] as const
                               ).map(([heading, items]) =>
                                 items.length > 0 ? (
-                                  <div key={heading} style={{ marginTop: '0.75rem' }}>
+                                  <div
+                                    key={heading}
+                                    style={{ marginTop: '0.75rem' }}
+                                  >
                                     <strong>{heading}</strong>
                                     <ul style={{ margin: '0.35rem 0 0 1rem' }}>
                                       {items.map((item) => (
@@ -11560,7 +11711,8 @@ export function TalkDetailPage({
                                   </div>
                                 ) : null,
                               )}
-                              {instructionReview.review.rewrittenInstructions ? (
+                              {instructionReview.review
+                                .rewrittenInstructions ? (
                                 <>
                                   <label
                                     style={{
@@ -11571,7 +11723,7 @@ export function TalkDetailPage({
                                     <span className="settings-label">
                                       Suggested rewrite
                                     </span>
-                                    <textarea
+                                    <AutoGrowingTextarea
                                       readOnly
                                       value={
                                         instructionReview.review

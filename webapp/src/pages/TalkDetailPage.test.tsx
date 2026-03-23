@@ -74,6 +74,59 @@ function createDeferred<T>(): {
   return { promise, resolve, reject };
 }
 
+function mockTextareaMetrics(input: {
+  offsetHeight: number;
+  scrollHeight: number;
+}): {
+  setScrollHeight: (nextHeight: number) => void;
+  restore: () => void;
+} {
+  const originalOffsetHeight = Object.getOwnPropertyDescriptor(
+    HTMLTextAreaElement.prototype,
+    'offsetHeight',
+  );
+  const originalScrollHeight = Object.getOwnPropertyDescriptor(
+    HTMLTextAreaElement.prototype,
+    'scrollHeight',
+  );
+  let currentScrollHeight = input.scrollHeight;
+
+  Object.defineProperty(HTMLTextAreaElement.prototype, 'offsetHeight', {
+    configurable: true,
+    get: () => input.offsetHeight,
+  });
+  Object.defineProperty(HTMLTextAreaElement.prototype, 'scrollHeight', {
+    configurable: true,
+    get: () => currentScrollHeight,
+  });
+
+  return {
+    setScrollHeight(nextHeight: number) {
+      currentScrollHeight = nextHeight;
+    },
+    restore() {
+      if (originalOffsetHeight) {
+        Object.defineProperty(
+          HTMLTextAreaElement.prototype,
+          'offsetHeight',
+          originalOffsetHeight,
+        );
+      } else {
+        Reflect.deleteProperty(HTMLTextAreaElement.prototype, 'offsetHeight');
+      }
+      if (originalScrollHeight) {
+        Object.defineProperty(
+          HTMLTextAreaElement.prototype,
+          'scrollHeight',
+          originalScrollHeight,
+        );
+      } else {
+        Reflect.deleteProperty(HTMLTextAreaElement.prototype, 'scrollHeight');
+      }
+    },
+  };
+}
+
 describe('TalkDetailPage', () => {
   const openTalkStreamMock = vi.mocked(openTalkStream);
   const openGoogleDrivePickerMock = vi.mocked(openGoogleDrivePicker);
@@ -2054,7 +2107,10 @@ describe('TalkDetailPage', () => {
     await screen.findByRole('heading', { name: 'Connected Channels' });
 
     await user.click(screen.getByRole('button', { name: /#general/i }));
-    await user.selectOptions(screen.getByLabelText('Template'), 'study_tracker');
+    await user.selectOptions(
+      screen.getByLabelText('Template'),
+      'study_tracker',
+    );
 
     const instructions = screen.getByLabelText('Instructions');
     expect((instructions as HTMLTextAreaElement).value).toContain(
@@ -2072,8 +2128,78 @@ describe('TalkDetailPage', () => {
       screen.getAllByRole('heading', { name: 'Binding Instructions' }).length,
     ).toBeGreaterThan(0);
     expect(
-      screen.getByDisplayValue(/You are a study tracker for this Slack channel\./i),
+      screen.getByDisplayValue(
+        /You are a study tracker for this Slack channel\./i,
+      ),
     ).toBeTruthy();
+  });
+
+  it('uses Binding Instructions in the create form and auto-grows long prompts', async () => {
+    const user = userEvent.setup();
+    const textareaMetrics = mockTextareaMetrics({
+      offsetHeight: 220,
+      scrollHeight: 220,
+    });
+
+    try {
+      installTalkDetailFetch({
+        channelConnections: [
+          buildChannelConnection({
+            id: 'channel-conn:slack:kimfamily',
+            platform: 'slack',
+            accountKey: 'slack:T123',
+            displayName: 'KimFamily',
+            config: { teamId: 'T123', teamName: 'KimFamily' },
+          }),
+        ],
+        channelTargets: [
+          buildChannelTarget({
+            connectionId: 'channel-conn:slack:kimfamily',
+            targetKind: 'channel',
+            targetId: 'slack:C123',
+            displayName: '#general',
+            metadata: { isMember: true },
+            approved: false,
+          }),
+        ],
+        talkChannels: [],
+      });
+
+      renderDetailPage('/app/talks/talk-1/channels');
+      await screen.findByRole('heading', { name: 'Connected Channels' });
+
+      await user.click(screen.getByRole('button', { name: /#general/i }));
+
+      expect(
+        screen.getByRole('heading', { name: 'Binding Instructions' }),
+      ).toBeTruthy();
+      expect(screen.queryByText('Channel Context Note')).toBeNull();
+
+      const instructions = screen.getByLabelText(
+        'Instructions',
+      ) as HTMLTextAreaElement;
+
+      await waitFor(() => {
+        expect(instructions.style.height).toBe('220px');
+        expect(instructions.style.overflowY).toBe('hidden');
+      });
+
+      textareaMetrics.setScrollHeight(520);
+      fireEvent.change(instructions, {
+        target: {
+          value:
+            'Reply only for direct asks.\n' +
+            'Use [[NO_CHANNEL_REPLY]] for routine updates.\n'.repeat(24),
+        },
+      });
+
+      await waitFor(() => {
+        expect(instructions.style.height).toBe('360px');
+        expect(instructions.style.overflowY).toBe('auto');
+      });
+    } finally {
+      textareaMetrics.restore();
+    }
   });
 
   it('loads binding memory and lets admins edit entries', async () => {
@@ -2121,14 +2247,97 @@ describe('TalkDetailPage', () => {
     await screen.findByRole('heading', { name: 'Connected Channels' });
 
     await user.click(screen.getByRole('button', { name: 'Refresh Memory' }));
-    expect(
-      await screen.findByDisplayValue(/"minutes": 120/),
-    ).toBeTruthy();
+    expect(await screen.findByDisplayValue(/"minutes": 120/)).toBeTruthy();
 
     await user.click(screen.getByRole('button', { name: 'Edit' }));
     expect(await screen.findByText('Updated tracker.asher.')).toBeTruthy();
 
     promptSpy.mockRestore();
+  });
+
+  it('auto-grows existing binding instructions and the suggested rewrite editor', async () => {
+    const user = userEvent.setup();
+    const textareaMetrics = mockTextareaMetrics({
+      offsetHeight: 220,
+      scrollHeight: 220,
+    });
+
+    try {
+      installTalkDetailFetch({
+        talkChannels: [
+          buildTalkChannelBinding({
+            id: 'binding-study',
+            talkId: 'talk-1',
+            connectionId: 'channel-conn:slack:kimfamily',
+            platform: 'slack',
+            connectionDisplayName: 'Slack (KimFamily)',
+            targetKind: 'channel',
+            targetId: 'slack:C123',
+            displayName: '#general',
+            responseMode: 'all',
+            timezone: 'America/Los_Angeles',
+            instructions:
+              'Reply only for direct asks. Keep state under channel.binding-study.',
+            stateNamespace: 'channel.binding-study.',
+          }),
+        ],
+        channelConnections: [
+          buildChannelConnection({
+            id: 'channel-conn:slack:kimfamily',
+            platform: 'slack',
+            accountKey: 'slack:T123',
+            displayName: 'KimFamily',
+            config: { teamId: 'T123', teamName: 'KimFamily' },
+          }),
+        ],
+      });
+
+      renderDetailPage('/app/talks/talk-1/channels');
+      await screen.findByRole('heading', { name: 'Connected Channels' });
+
+      expect(
+        screen.getAllByRole('heading', { name: 'Binding Instructions' }).length,
+      ).toBeGreaterThan(0);
+      expect(screen.queryByText('Channel Context Note')).toBeNull();
+
+      const editInstructions = screen.getAllByLabelText(
+        'Instructions',
+      )[1] as HTMLTextAreaElement;
+
+      await waitFor(() => {
+        expect(editInstructions.style.height).toBe('220px');
+        expect(editInstructions.style.overflowY).toBe('hidden');
+      });
+
+      textareaMetrics.setScrollHeight(560);
+      fireEvent.change(editInstructions, {
+        target: {
+          value:
+            'Reply only for direct asks.\n' +
+            'Use [[NO_CHANNEL_REPLY]] for routine study logs.\n'.repeat(30),
+        },
+      });
+
+      await waitFor(() => {
+        expect(editInstructions.style.height).toBe('360px');
+        expect(editInstructions.style.overflowY).toBe('auto');
+      });
+
+      await user.click(
+        screen.getAllByRole('button', { name: 'Review Instructions' })[1]!,
+      );
+
+      const suggestedRewrite = (await screen.findByLabelText(
+        'Suggested rewrite',
+      )) as HTMLTextAreaElement;
+
+      await waitFor(() => {
+        expect(suggestedRewrite.style.height).toBe('360px');
+        expect(suggestedRewrite.style.overflowY).toBe('auto');
+      });
+    } finally {
+      textareaMetrics.restore();
+    }
   });
 
   it('shows inline Slack test-send errors on the binding card', async () => {
@@ -4457,8 +4666,7 @@ function buildTalkChannelBinding(
     timezone: input.timezone ?? 'America/Los_Angeles',
     instructions: input.instructions ?? null,
     stateNamespace:
-      input.stateNamespace ??
-      `channel.${input.id ?? 'binding-1'}.`,
+      input.stateNamespace ?? `channel.${input.id ?? 'binding-1'}.`,
     inboundRateLimitPerMinute: input.inboundRateLimitPerMinute ?? 10,
     maxPendingEvents: input.maxPendingEvents ?? 20,
     overflowPolicy: input.overflowPolicy ?? 'drop_oldest',
@@ -6140,9 +6348,9 @@ function installTalkDetailFetch(input?: {
         method === 'PATCH'
       ) {
         const bindingId = url.split('/api/v1/talks/talk-1/channels/')[1];
-        const patch = JSON.parse(String(init?.body || '{}')) as Partial<
-          TalkChannelBinding
-        >;
+        const patch = JSON.parse(
+          String(init?.body || '{}'),
+        ) as Partial<TalkChannelBinding>;
         talkChannels = talkChannels.map((binding) =>
           binding.id === bindingId
             ? {
@@ -6220,8 +6428,11 @@ function installTalkDetailFetch(input?: {
         const bindingId = url
           .split('/api/v1/talks/talk-1/channels/')[1]
           .split('/state')[0];
-        const binding = talkChannels.find((candidate) => candidate.id === bindingId);
-        const stateNamespace = binding?.stateNamespace ?? `channel.${bindingId}.`;
+        const binding = talkChannels.find(
+          (candidate) => candidate.id === bindingId,
+        );
+        const stateNamespace =
+          binding?.stateNamespace ?? `channel.${bindingId}.`;
         return jsonResponse(200, {
           ok: true,
           data: {
@@ -6249,8 +6460,11 @@ function installTalkDetailFetch(input?: {
         const bindingId = url
           .split('/api/v1/talks/talk-1/channels/')[1]
           .split('/state')[0];
-        const binding = talkChannels.find((candidate) => candidate.id === bindingId);
-        const stateNamespace = binding?.stateNamespace ?? `channel.${bindingId}.`;
+        const binding = talkChannels.find(
+          (candidate) => candidate.id === bindingId,
+        );
+        const stateNamespace =
+          binding?.stateNamespace ?? `channel.${bindingId}.`;
         const body = JSON.parse(String(init?.body || '{}')) as {
           keySuffix?: string;
           value?: unknown;
@@ -6292,8 +6506,11 @@ function installTalkDetailFetch(input?: {
         const bindingId = url
           .split('/api/v1/talks/talk-1/channels/')[1]
           .split('/state')[0];
-        const binding = talkChannels.find((candidate) => candidate.id === bindingId);
-        const stateNamespace = binding?.stateNamespace ?? `channel.${bindingId}.`;
+        const binding = talkChannels.find(
+          (candidate) => candidate.id === bindingId,
+        );
+        const stateNamespace =
+          binding?.stateNamespace ?? `channel.${bindingId}.`;
         const body = JSON.parse(String(init?.body || '{}')) as {
           keySuffix?: string;
         };
@@ -6322,8 +6539,8 @@ function installTalkDetailFetch(input?: {
               strengths: ['Clear scope and reply policy.'],
               missing:
                 body.instructions?.includes('timezone') || body.timezone
-                ? []
-                : ['Add an explicit timezone or reset rule.'],
+                  ? []
+                  : ['Add an explicit timezone or reset rule.'],
               removeOrSimplify: [],
               rewrittenInstructions: body.instructions
                 ? `${String(body.instructions).trim()}\n\nUse list_state before creating new state keys.`
