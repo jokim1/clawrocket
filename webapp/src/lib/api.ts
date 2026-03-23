@@ -3688,6 +3688,65 @@ export async function logout(): Promise<void> {
   });
 }
 
+// ---------------------------------------------------------------------------
+// Browser profiles
+// ---------------------------------------------------------------------------
+
+export type BrowserConnectionMode = 'managed' | 'chrome_profile' | 'cdp';
+
+export type BrowserProfileSummary = {
+  id: string;
+  siteKey: string;
+  accountLabel: string | null;
+  connectionMode: BrowserConnectionMode;
+  connectionConfig:
+    | { mode: 'managed' }
+    | { mode: 'chrome_profile'; chromeProfilePath: string }
+    | { mode: 'cdp'; endpointUrl: string };
+  createdAt: string;
+  updatedAt: string;
+  lastUsedAt: string | null;
+};
+
+export async function listBrowserProfiles(): Promise<BrowserProfileSummary[]> {
+  const envelope = await apiRequest<{ profiles: BrowserProfileSummary[] }>(
+    '/api/v1/browser/profiles',
+  );
+  return envelope.profiles;
+}
+
+export async function createBrowserProfile(input: {
+  siteKey: string;
+  accountLabel?: string | null;
+  connectionMode?: BrowserConnectionMode;
+  connectionConfig?: Record<string, unknown>;
+}): Promise<{ profile: BrowserProfileSummary; created: boolean }> {
+  return apiMutationRequest<{ profile: BrowserProfileSummary; created: boolean }>(
+    '/api/v1/browser/profiles',
+    {
+      method: 'POST',
+      includeJson: true,
+      body: JSON.stringify(input),
+    },
+  );
+}
+
+export async function updateBrowserProfileConnectionMode(
+  profileId: string,
+  connectionMode: BrowserConnectionMode,
+  connectionConfig?: Record<string, unknown>,
+): Promise<BrowserProfileSummary> {
+  const envelope = await apiMutationRequest<{ profile: BrowserProfileSummary }>(
+    `/api/v1/browser/profiles/${encodeURIComponent(profileId)}`,
+    {
+      method: 'PATCH',
+      includeJson: true,
+      body: JSON.stringify({ connectionMode, connectionConfig }),
+    },
+  );
+  return envelope.profile;
+}
+
 async function apiRequest<T>(path: string, init?: RequestInit): Promise<T> {
   return apiRequestWithRefresh<T>(path, init, true);
 }
