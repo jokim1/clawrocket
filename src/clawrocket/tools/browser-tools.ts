@@ -23,6 +23,7 @@ import {
   updateAttachmentExtraction,
   upsertTalkStateEntry,
 } from '../db/index.js';
+import { getBrowserProfile } from '../db/browser-accessors.js';
 import { saveAttachmentFile } from '../talks/attachment-storage.js';
 
 export const BROWSER_TOOL_NAMES = [
@@ -387,6 +388,21 @@ function browserSetupCommand(input: {
   siteKey: string;
   accountLabel?: string | null;
 }): string {
+  // Check profile connection mode to emit appropriate instructions
+  const profile = getBrowserProfile(input.siteKey, input.accountLabel);
+  const mode = profile?.connectionMode ?? 'managed';
+
+  if (mode === 'chrome_profile') {
+    return 'Close Chrome completely, then retry — your existing Chrome cookies will be used automatically.';
+  }
+  if (mode === 'cdp') {
+    const endpointUrl =
+      profile?.connectionConfig.mode === 'cdp'
+        ? profile.connectionConfig.endpointUrl
+        : 'http://localhost:9222';
+    return `Make sure Chrome is running with --remote-debugging-port (endpoint: ${endpointUrl}), then retry.`;
+  }
+
   const quote = (value: string): string =>
     `'${value.replace(/'/g, `'\"'\"'`)}'`;
   const accountPart = input.accountLabel
@@ -869,6 +885,7 @@ export async function executeBrowserTool(input: {
               runId: input.context.runId,
               headed,
               reuseSession,
+              onPageReady: input.context.onPageReady,
               navigationTimeoutMs:
                 input.context.timeoutProfile === 'fast_lane'
                   ? FAST_LANE_BROWSER_OPEN_TIMEOUT_MS
