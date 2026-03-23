@@ -2,7 +2,12 @@ import fs from 'fs';
 import path from 'path';
 import { randomUUID } from 'crypto';
 
-import { chromium, type BrowserContext, type Page } from 'playwright-core';
+import {
+  chromium,
+  type Browser,
+  type BrowserContext,
+  type Page,
+} from 'playwright-core';
 
 import { DATA_DIR } from '../../config.js';
 import { logger } from '../../logger.js';
@@ -14,6 +19,7 @@ import {
   reconcileBrowserSessionsOnStartup,
   touchBrowserProfileLastUsed,
   upsertBrowserSessionState,
+  type BrowserConnectionMode,
   type BrowserProfileSnapshot,
 } from '../db/browser-accessors.js';
 
@@ -165,6 +171,9 @@ interface LiveSession {
   siteKey: string;
   accountLabel: string | null;
   headed: boolean;
+  connectionMode: BrowserConnectionMode;
+  ownsBrowser: boolean;
+  browser: Browser | null;
   state: BrowserSessionState;
   owner: BrowserSessionOwner;
   blockedKind: BrowserBlockedKind | null;
@@ -749,6 +758,112 @@ function nowIso(): string {
   return new Date().toISOString();
 }
 
+function detectChromeLockFile(profileDir: string): boolean {
+  // On Linux, Chrome places a SingletonLock in the user-data directory (parent of profile dir).
+  // On macOS, check for the Chrome process instead (lock file is not reliably used).
+  const platform = process.platform;
+  if (platform === 'darwin') {
+    try {
+      const { execSync } =
+        require('child_process') as typeof import('child_process');
+      const result = execSync('pgrep -x "Google Chrome" 2>/dev/null || true', {
+        encoding: 'utf8',
+        timeout: 3000,
+      });
+      return result.trim().length > 0;
+    } catch {
+      return false;
+    }
+  }
+
+  // Linux / other: check SingletonLock in the parent (user data dir) of the profile directory
+  const userDataDir = path.dirname(profileDir);
+  const lockPath = path.join(userDataDir, 'SingletonLock');
+  try {
+    fs.lstatSync(lockPath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+interface AcquiredContext {
+  context: BrowserContext;
+  page: Page;
+  browser: Browser | null;
+  ownsBrowser: boolean;
+}
+
+async function acquireManagedContext(
+  profile: BrowserProfileSnapshot,
+  headed: boolean,
+): Promise<AcquiredContext> {
+  fs.mkdirSync(profile.profilePath, { recursive: true });
+  fs.mkdirSync(profile.downloadDir, { recursive: true });
+  const context = await chromium.launchPersistentContext(
+    profile.profilePath,
+    buildLaunchOptions(profile, headed),
+  );
+  const page = await ensurePrimaryPage(context);
+  return { context, page, browser: null, ownsBrowser: true };
+}
+
+async function acquireChromeProfileContext(
+  profile: BrowserProfileSnapshot,
+  headed: boolean,
+): Promise<AcquiredContext> {
+  if (profile.connectionConfig.mode !== 'chrome_profile') {
+    throw new Error('Profile is not configured for chrome_profile mode');
+  }
+  const chromeProfilePath = profile.connectionConfig.chromeProfilePath;
+
+  if (detectChromeLockFile(chromeProfilePath)) {
+    logger.warn(
+      { chromeProfilePath },
+      'Chrome may already be running with this profile — close Chrome and retry',
+    );
+  }
+
+  // Ensure the managed download directory still exists
+  fs.mkdirSync(profile.downloadDir, { recursive: true });
+
+  const context = await chromium.launchPersistentContext(
+    chromeProfilePath,
+    buildLaunchOptions(profile, headed),
+  );
+  const page = await ensurePrimaryPage(context);
+  return { context, page, browser: null, ownsBrowser: true };
+}
+
+async function acquireCdpContext(
+  profile: BrowserProfileSnapshot,
+): Promise<AcquiredContext> {
+  if (profile.connectionConfig.mode !== 'cdp') {
+    throw new Error('Profile is not configured for cdp mode');
+  }
+  const endpointUrl = profile.connectionConfig.endpointUrl;
+  const browser = await chromium.connectOverCDP(endpointUrl);
+  const context = browser.contexts()[0]!;
+  // Always open a NEW tab — never hijack existing ones
+  const page = await context.newPage();
+  return { context, page, browser, ownsBrowser: false };
+}
+
+async function acquireContext(
+  profile: BrowserProfileSnapshot,
+  headed: boolean,
+): Promise<AcquiredContext> {
+  switch (profile.connectionMode) {
+    case 'chrome_profile':
+      return acquireChromeProfileContext(profile, headed);
+    case 'cdp':
+      return acquireCdpContext(profile);
+    case 'managed':
+    default:
+      return acquireManagedContext(profile, headed);
+  }
+}
+
 export class BrowserService {
   private readonly sessionsById = new Map<string, LiveSession>();
   private readonly profileSessionIds = new Map<string, string>();
@@ -949,14 +1064,8 @@ export class BrowserService {
     userId?: string | null;
     ownerRunId?: string | null;
   }): Promise<LiveSession> {
-    fs.mkdirSync(input.profile.profilePath, { recursive: true });
-    fs.mkdirSync(input.profile.downloadDir, { recursive: true });
-
-    const context = await chromium.launchPersistentContext(
-      input.profile.profilePath,
-      buildLaunchOptions(input.profile, input.headed),
-    );
-    const page = await ensurePrimaryPage(context);
+    const acquired = await acquireContext(input.profile, input.headed);
+    const { context, page, browser, ownsBrowser } = acquired;
     page.setDefaultNavigationTimeout(DEFAULT_NAVIGATION_TIMEOUT_MS);
     page.setDefaultTimeout(DEFAULT_ACTION_TIMEOUT_MS);
 
@@ -968,6 +1077,9 @@ export class BrowserService {
       siteKey: input.profile.siteKey,
       accountLabel: input.profile.accountLabel,
       headed: input.headed,
+      connectionMode: input.profile.connectionMode,
+      ownsBrowser,
+      browser,
       state: 'active',
       owner: 'agent',
       blockedKind: null,
@@ -1041,7 +1153,25 @@ export class BrowserService {
       lastKnownTitle,
       touchedRunIds,
     } = liveSession;
-    await liveSession.context.close();
+
+    // Close the old session appropriately
+    if (liveSession.ownsBrowser) {
+      await liveSession.context.close();
+    } else {
+      try {
+        await liveSession.page.close();
+      } catch {
+        /* ignore */
+      }
+      if (liveSession.browser) {
+        try {
+          await liveSession.browser.close();
+        } catch {
+          /* ignore */
+        }
+      }
+    }
+
     const relaunched = await this.createSession({
       profile,
       headed,
@@ -1736,7 +1866,26 @@ export class BrowserService {
     session.state = 'closed';
     session.lastUpdatedAt = nowIso();
     this.persistSessionState(session);
-    await session.context.close();
+
+    if (session.ownsBrowser) {
+      // managed / chrome_profile: we launched the browser, so context.close() kills it
+      await session.context.close();
+    } else {
+      // CDP: close only the tab we opened, then disconnect (don't kill Chrome)
+      try {
+        await session.page.close();
+      } catch {
+        // page may already be closed
+      }
+      if (session.browser) {
+        try {
+          await session.browser.close();
+        } catch {
+          // disconnect may already have happened
+        }
+      }
+    }
+
     return {
       status: 'ok',
       siteKey: session.siteKey,

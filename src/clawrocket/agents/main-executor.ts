@@ -216,7 +216,7 @@ const MAIN_RUN_LEASE_BOOT_BUDGET_MS = 15_000;
 const MAIN_RUN_QUEUE_START_BUDGET_MS = 2_000;
 const MAIN_RUN_FIRST_PROGRESS_BUDGET_MS = 10_000;
 // Cold browser startup plus a LinkedIn checkpoint page can exceed 45s before
-// the auth block is surfaced to the Main fast-lane.
+// the auth block is surfaced, especially on subscription-backed runs.
 const MAIN_RUN_FIRST_PAGE_READY_BUDGET_MS = 90_000;
 const MAIN_RUN_FAST_LANE_TOTAL_BUDGET_MS = 90_000;
 const MAIN_RUN_WARM_SUBSCRIPTION_TOTAL_BUDGET_MS = 60_000;

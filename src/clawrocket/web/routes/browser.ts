@@ -5,6 +5,16 @@ import {
   type BrowserSessionStatusSnapshot,
 } from '../../browser/service.js';
 import {
+  checkBrowserProfileConnectionUniqueness,
+  ensureBrowserProfile,
+  getBrowserProfileById,
+  hasNonterminalBrowserSessions,
+  listAllBrowserProfiles,
+  updateBrowserProfileConnectionMode,
+  type BrowserConnectionMode,
+  type BrowserProfileSnapshot,
+} from '../../db/browser-accessors.js';
+import {
   canUserAccessMainThread,
   canUserAccessTalk,
   cancelBrowserBlockedRun,
@@ -659,4 +669,342 @@ export async function rejectBrowserConfirmationRoute(input: {
     wakeMain: false,
     wakeTalk: false,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Browser profile CRUD routes
+// ---------------------------------------------------------------------------
+
+const VALID_CONNECTION_MODES: BrowserConnectionMode[] = [
+  'managed',
+  'chrome_profile',
+  'cdp',
+];
+
+function isValidConnectionMode(mode: unknown): mode is BrowserConnectionMode {
+  return (
+    typeof mode === 'string' &&
+    VALID_CONNECTION_MODES.includes(mode as BrowserConnectionMode)
+  );
+}
+
+function validateConnectionConfig(
+  mode: BrowserConnectionMode,
+  config: unknown,
+): { valid: boolean; error?: string; configJson: string | null } {
+  if (mode === 'managed') {
+    return { valid: true, configJson: null };
+  }
+
+  if (!config || typeof config !== 'object') {
+    return {
+      valid: false,
+      error: `connectionConfig is required for mode '${mode}'.`,
+      configJson: null,
+    };
+  }
+
+  const configObj = config as Record<string, unknown>;
+
+  if (mode === 'chrome_profile') {
+    if (
+      typeof configObj.chromeProfilePath !== 'string' ||
+      !configObj.chromeProfilePath.trim()
+    ) {
+      return {
+        valid: false,
+        error:
+          'chromeProfilePath is required for chrome_profile mode. Provide the Chrome user data directory (e.g. /home/user/.config/google-chrome), not a profile subdirectory like Default/.',
+        configJson: null,
+      };
+    }
+    const chromeProfilePath = configObj.chromeProfilePath.trim();
+    if (!chromeProfilePath.startsWith('/')) {
+      return {
+        valid: false,
+        error:
+          'chromeProfilePath must be an absolute path to the Chrome user data directory.',
+        configJson: null,
+      };
+    }
+    // Warn if user appears to have provided a profile subdirectory instead of user data dir
+    const basename = chromeProfilePath.split('/').pop() || '';
+    if (/^(Default|Profile \d+)$/i.test(basename)) {
+      return {
+        valid: false,
+        error: `chromeProfilePath should be the Chrome user data directory, not the profile subdirectory. Use "${chromeProfilePath.replace(/\/[^/]+$/, '')}" instead of "${chromeProfilePath}".`,
+        configJson: null,
+      };
+    }
+    return {
+      valid: true,
+      configJson: JSON.stringify({ chromeProfilePath }),
+    };
+  }
+
+  if (mode === 'cdp') {
+    if (
+      typeof configObj.endpointUrl !== 'string' ||
+      !configObj.endpointUrl.trim()
+    ) {
+      return {
+        valid: false,
+        error: 'endpointUrl is required for cdp mode.',
+        configJson: null,
+      };
+    }
+    const endpointUrl = configObj.endpointUrl.trim();
+    try {
+      new URL(endpointUrl);
+    } catch {
+      return {
+        valid: false,
+        error: 'endpointUrl must be a valid URL.',
+        configJson: null,
+      };
+    }
+    return {
+      valid: true,
+      configJson: JSON.stringify({ endpointUrl }),
+    };
+  }
+
+  return { valid: false, error: `Unknown mode '${mode}'.`, configJson: null };
+}
+
+export function listBrowserProfilesRoute(input: { auth: AuthContext }): {
+  statusCode: number;
+  body: ApiEnvelope<{ profiles: BrowserProfileSnapshot[] }>;
+} {
+  const profiles = listAllBrowserProfiles();
+  return {
+    statusCode: 200,
+    body: { ok: true, data: { profiles } },
+  };
+}
+
+export function createBrowserProfileRoute(input: {
+  auth: AuthContext;
+  siteKey?: unknown;
+  accountLabel?: unknown;
+  connectionMode?: unknown;
+  connectionConfig?: unknown;
+}): {
+  statusCode: number;
+  body: ApiEnvelope<{ profile: BrowserProfileSnapshot; created: boolean }>;
+} {
+  if (input.auth.role !== 'owner') {
+    return {
+      statusCode: 403,
+      body: {
+        ok: false,
+        error: { code: 'forbidden', message: 'Owner role required.' },
+      },
+    };
+  }
+
+  if (typeof input.siteKey !== 'string' || !input.siteKey.trim()) {
+    return {
+      statusCode: 400,
+      body: {
+        ok: false,
+        error: { code: 'invalid_site_key', message: 'siteKey is required.' },
+      },
+    };
+  }
+
+  // Validate connection config BEFORE creating the profile row to avoid
+  // leaving behind a managed profile when validation fails.
+  const mode = isValidConnectionMode(input.connectionMode)
+    ? input.connectionMode
+    : null;
+  let validatedConfigJson: string | null = null;
+  if (mode && mode !== 'managed') {
+    const validation = validateConnectionConfig(mode, input.connectionConfig);
+    if (!validation.valid) {
+      return {
+        statusCode: 400,
+        body: {
+          ok: false,
+          error: {
+            code: 'invalid_connection_config',
+            message: validation.error!,
+          },
+        },
+      };
+    }
+    validatedConfigJson = validation.configJson;
+
+    // Pre-flight uniqueness check (excludeProfileId=null since profile may not exist yet)
+    const uniqueness = checkBrowserProfileConnectionUniqueness({
+      mode,
+      configJson: validatedConfigJson,
+      excludeProfileId: null,
+    });
+    if (uniqueness.conflict) {
+      return {
+        statusCode: 409,
+        body: {
+          ok: false,
+          error: {
+            code: 'connection_config_conflict',
+            message: `Another profile (${uniqueness.conflictSiteKey}) already uses this ${mode === 'chrome_profile' ? 'Chrome user data directory' : 'CDP endpoint'}.`,
+          },
+        },
+      };
+    }
+  }
+
+  const { profile, created } = ensureBrowserProfile({
+    siteKey: input.siteKey.trim(),
+    accountLabel:
+      typeof input.accountLabel === 'string'
+        ? input.accountLabel.trim() || null
+        : null,
+  });
+
+  // Apply connection mode if specified
+  if (mode && mode !== 'managed') {
+    // Block mode change on existing profiles with active sessions
+    if (!created && hasNonterminalBrowserSessions(profile.id)) {
+      return {
+        statusCode: 409,
+        body: {
+          ok: false,
+          error: {
+            code: 'active_session_exists',
+            message:
+              'Cannot change connection mode while active, blocked, or takeover sessions exist for this profile.',
+          },
+        },
+      };
+    }
+
+    const updated = updateBrowserProfileConnectionMode(
+      profile.id,
+      mode,
+      validatedConfigJson,
+    );
+    if (updated) {
+      return {
+        statusCode: 200,
+        body: { ok: true, data: { profile: updated, created } },
+      };
+    }
+  }
+
+  return { statusCode: 200, body: { ok: true, data: { profile, created } } };
+}
+
+export function updateBrowserProfileConnectionModeRoute(input: {
+  auth: AuthContext;
+  profileId: string;
+  connectionMode?: unknown;
+  connectionConfig?: unknown;
+}): {
+  statusCode: number;
+  body: ApiEnvelope<{ profile: BrowserProfileSnapshot }>;
+} {
+  if (input.auth.role !== 'owner') {
+    return {
+      statusCode: 403,
+      body: {
+        ok: false,
+        error: { code: 'forbidden', message: 'Owner role required.' },
+      },
+    };
+  }
+
+  const existing = getBrowserProfileById(input.profileId);
+  if (!existing) {
+    return {
+      statusCode: 404,
+      body: {
+        ok: false,
+        error: {
+          code: 'profile_not_found',
+          message: 'Browser profile not found.',
+        },
+      },
+    };
+  }
+
+  if (!isValidConnectionMode(input.connectionMode)) {
+    return {
+      statusCode: 400,
+      body: {
+        ok: false,
+        error: {
+          code: 'invalid_connection_mode',
+          message: `connectionMode must be one of: ${VALID_CONNECTION_MODES.join(', ')}.`,
+        },
+      },
+    };
+  }
+
+  const mode = input.connectionMode;
+  const validation = validateConnectionConfig(mode, input.connectionConfig);
+  if (!validation.valid) {
+    return {
+      statusCode: 400,
+      body: {
+        ok: false,
+        error: {
+          code: 'invalid_connection_config',
+          message: validation.error!,
+        },
+      },
+    };
+  }
+
+  // Block mode change if any nonterminal session exists
+  if (hasNonterminalBrowserSessions(input.profileId)) {
+    return {
+      statusCode: 409,
+      body: {
+        ok: false,
+        error: {
+          code: 'active_session_exists',
+          message:
+            'Cannot change connection mode while active, blocked, or takeover sessions exist for this profile.',
+        },
+      },
+    };
+  }
+
+  // Uniqueness check
+  const uniqueness = checkBrowserProfileConnectionUniqueness({
+    mode,
+    configJson: validation.configJson,
+    excludeProfileId: input.profileId,
+  });
+  if (uniqueness.conflict) {
+    return {
+      statusCode: 409,
+      body: {
+        ok: false,
+        error: {
+          code: 'connection_config_conflict',
+          message: `Another profile (${uniqueness.conflictSiteKey}) already uses this ${mode === 'chrome_profile' ? 'Chrome profile path' : 'CDP endpoint'}.`,
+        },
+      },
+    };
+  }
+
+  const updated = updateBrowserProfileConnectionMode(
+    input.profileId,
+    mode,
+    validation.configJson,
+  );
+  if (!updated) {
+    return {
+      statusCode: 500,
+      body: {
+        ok: false,
+        error: { code: 'update_failed', message: 'Failed to update profile.' },
+      },
+    };
+  }
+
+  return { statusCode: 200, body: { ok: true, data: { profile: updated } } };
 }

@@ -1,6 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ApiError,
+  BrowserConnectionMode,
+  BrowserProfileSummary,
+  createBrowserProfile,
   ExecutorSettings,
   ExecutorSubscriptionHostStatus,
   ExecutorStatus,
@@ -9,8 +12,10 @@ import {
   getExecutorStatus,
   getHealthStatus,
   importExecutorSubscriptionFromHost,
+  listBrowserProfiles,
   restartService,
   UnauthorizedError,
+  updateBrowserProfileConnectionMode,
   updateExecutorSettings,
   verifyExecutorCredentials,
 } from '../lib/api';
@@ -228,6 +233,19 @@ export function SettingsPage({ onUnauthorized, userRole }: Props) {
     useState(false);
   const verificationPollAttemptsRef = useRef(0);
 
+  // Browser profiles state
+  const [browserProfiles, setBrowserProfiles] = useState<BrowserProfileSummary[]>([]);
+  const [browserProfilesBusy, setBrowserProfilesBusy] = useState(false);
+  const [browserProfileEditId, setBrowserProfileEditId] = useState<string | null>(null);
+  const [browserProfileEditMode, setBrowserProfileEditMode] = useState<BrowserConnectionMode>('managed');
+  const [browserProfileEditConfig, setBrowserProfileEditConfig] = useState('');
+  const [browserProfileNotice, setBrowserProfileNotice] = useState<string | null>(null);
+  const [showAddProfile, setShowAddProfile] = useState(false);
+  const [newProfileSiteKey, setNewProfileSiteKey] = useState('');
+  const [newProfileAccountLabel, setNewProfileAccountLabel] = useState('');
+  const [newProfileMode, setNewProfileMode] = useState<BrowserConnectionMode>('managed');
+  const [newProfileConfig, setNewProfileConfig] = useState('');
+
   const applySettingsDrafts = (nextSettings: ExecutorSettings): void => {
     setSettings(nextSettings);
     setAliasRows(configuredAliasRows(nextSettings.configuredAliasMap));
@@ -242,6 +260,15 @@ export function SettingsPage({ onUnauthorized, userRole }: Props) {
     setClearBaseUrl(false);
   };
 
+  const loadBrowserProfiles = async (): Promise<void> => {
+    try {
+      const profiles = await listBrowserProfiles();
+      setBrowserProfiles(profiles);
+    } catch {
+      // Non-critical — don't block the page for browser profile load failures
+    }
+  };
+
   const loadPage = async (): Promise<void> => {
     try {
       const [nextSettings, nextStatus] = await Promise.all([
@@ -251,6 +278,7 @@ export function SettingsPage({ onUnauthorized, userRole }: Props) {
       applySettingsDrafts(nextSettings);
       setStatus(nextStatus);
       setPageError(null);
+      void loadBrowserProfiles();
     } catch (err) {
       if (err instanceof UnauthorizedError) {
         onUnauthorized();
@@ -853,6 +881,360 @@ export function SettingsPage({ onUnauthorized, userRole }: Props) {
         >
           {busySection === 'aliases' ? 'Saving…' : 'Save Alias Settings'}
         </button>
+      </section>
+
+      <section className="settings-card">
+        <h2>Browser Profiles</h2>
+        <p className="settings-copy">
+          Configure how browser profiles connect: use a managed sandbox, your
+          real Chrome profile (inherits cookies/login), or attach to a running
+          Chrome instance via CDP.
+        </p>
+
+        {browserProfileNotice ? (
+          <div className="settings-banner settings-banner-success">
+            {browserProfileNotice}
+          </div>
+        ) : null}
+
+        {browserProfiles.length > 0 ? (
+          <div className="settings-grid" style={{ gap: '0.75rem' }}>
+            {browserProfiles.map((profile) => (
+              <div
+                key={profile.id}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '0.75rem',
+                  padding: '0.5rem 0',
+                  borderBottom: '1px solid var(--border-color, #e5e5e5)',
+                }}
+              >
+                <div style={{ flex: 1 }}>
+                  <strong>{profile.siteKey}</strong>
+                  {profile.accountLabel ? (
+                    <span style={{ opacity: 0.6 }}> ({profile.accountLabel})</span>
+                  ) : null}
+                  <span
+                    style={{
+                      marginLeft: '0.5rem',
+                      fontSize: '0.8em',
+                      padding: '0.1em 0.4em',
+                      borderRadius: '3px',
+                      background:
+                        profile.connectionMode === 'managed'
+                          ? 'var(--badge-bg, #e8e8e8)'
+                          : profile.connectionMode === 'chrome_profile'
+                            ? 'var(--badge-active-bg, #dbeafe)'
+                            : 'var(--badge-warn-bg, #fef3c7)',
+                    }}
+                  >
+                    {profile.connectionMode === 'managed'
+                      ? 'Managed'
+                      : profile.connectionMode === 'chrome_profile'
+                        ? 'Chrome Profile'
+                        : 'CDP'}
+                  </span>
+                </div>
+                {userRole === 'owner' ? (
+                  <button
+                    type="button"
+                    className="secondary-btn"
+                    disabled={browserProfilesBusy}
+                    onClick={() => {
+                      setBrowserProfileEditId(profile.id);
+                      setBrowserProfileEditMode(profile.connectionMode);
+                      setBrowserProfileEditConfig(
+                        profile.connectionConfig.mode === 'chrome_profile'
+                          ? profile.connectionConfig.chromeProfilePath
+                          : profile.connectionConfig.mode === 'cdp'
+                            ? profile.connectionConfig.endpointUrl
+                            : '',
+                      );
+                      setBrowserProfileNotice(null);
+                    }}
+                  >
+                    Edit
+                  </button>
+                ) : null}
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="settings-copy" style={{ opacity: 0.6 }}>
+            No browser profiles yet. Profiles are created automatically when a
+            browser tool is first used, or you can add one below.
+          </p>
+        )}
+
+        {browserProfileEditId ? (
+          <div
+            style={{
+              marginTop: '1rem',
+              padding: '1rem',
+              border: '1px solid var(--border-color, #e5e5e5)',
+              borderRadius: '6px',
+            }}
+          >
+            <h3 style={{ margin: '0 0 0.75rem' }}>
+              Edit Connection Mode
+            </h3>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+              <label>
+                <input
+                  type="radio"
+                  name="editMode"
+                  checked={browserProfileEditMode === 'managed'}
+                  onChange={() => {
+                    setBrowserProfileEditMode('managed');
+                    setBrowserProfileEditConfig('');
+                  }}
+                />{' '}
+                Managed (isolated sandbox)
+              </label>
+              <label>
+                <input
+                  type="radio"
+                  name="editMode"
+                  checked={browserProfileEditMode === 'chrome_profile'}
+                  onChange={() => setBrowserProfileEditMode('chrome_profile')}
+                />{' '}
+                Chrome Profile (use real Chrome cookies)
+              </label>
+              {browserProfileEditMode === 'chrome_profile' ? (
+                <input
+                  type="text"
+                  placeholder="/home/user/.config/google-chrome"
+                  value={browserProfileEditConfig}
+                  onChange={(e) => setBrowserProfileEditConfig(e.target.value)}
+                  style={{ marginLeft: '1.5rem' }}
+                />
+              ) : null}
+              <label>
+                <input
+                  type="radio"
+                  name="editMode"
+                  checked={browserProfileEditMode === 'cdp'}
+                  onChange={() => setBrowserProfileEditMode('cdp')}
+                />{' '}
+                CDP (attach to running Chrome)
+              </label>
+              {browserProfileEditMode === 'cdp' ? (
+                <input
+                  type="text"
+                  placeholder="http://localhost:9222"
+                  value={browserProfileEditConfig}
+                  onChange={(e) => setBrowserProfileEditConfig(e.target.value)}
+                  style={{ marginLeft: '1.5rem' }}
+                />
+              ) : null}
+            </div>
+            <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.75rem' }}>
+              <button
+                type="button"
+                className="primary-btn"
+                disabled={browserProfilesBusy}
+                onClick={async () => {
+                  setBrowserProfilesBusy(true);
+                  setBrowserProfileNotice(null);
+                  try {
+                    const config =
+                      browserProfileEditMode === 'chrome_profile'
+                        ? { chromeProfilePath: browserProfileEditConfig }
+                        : browserProfileEditMode === 'cdp'
+                          ? { endpointUrl: browserProfileEditConfig }
+                          : undefined;
+                    await updateBrowserProfileConnectionMode(
+                      browserProfileEditId!,
+                      browserProfileEditMode,
+                      config,
+                    );
+                    setBrowserProfileEditId(null);
+                    setBrowserProfileNotice('Connection mode updated.');
+                    await loadBrowserProfiles();
+                  } catch (err) {
+                    if (err instanceof UnauthorizedError) {
+                      onUnauthorized();
+                      return;
+                    }
+                    setBrowserProfileNotice(
+                      err instanceof ApiError
+                        ? err.message
+                        : 'Failed to update connection mode.',
+                    );
+                  } finally {
+                    setBrowserProfilesBusy(false);
+                  }
+                }}
+              >
+                {browserProfilesBusy ? 'Saving…' : 'Save'}
+              </button>
+              <button
+                type="button"
+                className="secondary-btn"
+                onClick={() => setBrowserProfileEditId(null)}
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        ) : null}
+
+        {userRole === 'owner' ? (
+          <>
+            {!showAddProfile ? (
+              <button
+                type="button"
+                className="secondary-btn"
+                style={{ marginTop: '0.75rem' }}
+                onClick={() => {
+                  setShowAddProfile(true);
+                  setNewProfileSiteKey('');
+                  setNewProfileAccountLabel('');
+                  setNewProfileMode('managed');
+                  setNewProfileConfig('');
+                  setBrowserProfileNotice(null);
+                }}
+              >
+                Add Profile
+              </button>
+            ) : (
+              <div
+                style={{
+                  marginTop: '1rem',
+                  padding: '1rem',
+                  border: '1px solid var(--border-color, #e5e5e5)',
+                  borderRadius: '6px',
+                }}
+              >
+                <h3 style={{ margin: '0 0 0.75rem' }}>Add Browser Profile</h3>
+                <div
+                  style={{
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '0.5rem',
+                  }}
+                >
+                  <input
+                    type="text"
+                    placeholder="Site key (e.g. linkedin)"
+                    value={newProfileSiteKey}
+                    onChange={(e) => setNewProfileSiteKey(e.target.value)}
+                  />
+                  <input
+                    type="text"
+                    placeholder="Account label (optional)"
+                    value={newProfileAccountLabel}
+                    onChange={(e) => setNewProfileAccountLabel(e.target.value)}
+                  />
+                  <label>
+                    <input
+                      type="radio"
+                      name="newMode"
+                      checked={newProfileMode === 'managed'}
+                      onChange={() => {
+                        setNewProfileMode('managed');
+                        setNewProfileConfig('');
+                      }}
+                    />{' '}
+                    Managed
+                  </label>
+                  <label>
+                    <input
+                      type="radio"
+                      name="newMode"
+                      checked={newProfileMode === 'chrome_profile'}
+                      onChange={() => setNewProfileMode('chrome_profile')}
+                    />{' '}
+                    Chrome Profile
+                  </label>
+                  {newProfileMode === 'chrome_profile' ? (
+                    <input
+                      type="text"
+                      placeholder="/home/user/.config/google-chrome"
+                      value={newProfileConfig}
+                      onChange={(e) => setNewProfileConfig(e.target.value)}
+                      style={{ marginLeft: '1.5rem' }}
+                    />
+                  ) : null}
+                  <label>
+                    <input
+                      type="radio"
+                      name="newMode"
+                      checked={newProfileMode === 'cdp'}
+                      onChange={() => setNewProfileMode('cdp')}
+                    />{' '}
+                    CDP
+                  </label>
+                  {newProfileMode === 'cdp' ? (
+                    <input
+                      type="text"
+                      placeholder="http://localhost:9222"
+                      value={newProfileConfig}
+                      onChange={(e) => setNewProfileConfig(e.target.value)}
+                      style={{ marginLeft: '1.5rem' }}
+                    />
+                  ) : null}
+                </div>
+                <div
+                  style={{
+                    display: 'flex',
+                    gap: '0.5rem',
+                    marginTop: '0.75rem',
+                  }}
+                >
+                  <button
+                    type="button"
+                    className="primary-btn"
+                    disabled={browserProfilesBusy || !newProfileSiteKey.trim()}
+                    onClick={async () => {
+                      setBrowserProfilesBusy(true);
+                      setBrowserProfileNotice(null);
+                      try {
+                        const config =
+                          newProfileMode === 'chrome_profile'
+                            ? { chromeProfilePath: newProfileConfig }
+                            : newProfileMode === 'cdp'
+                              ? { endpointUrl: newProfileConfig }
+                              : undefined;
+                        await createBrowserProfile({
+                          siteKey: newProfileSiteKey.trim(),
+                          accountLabel: newProfileAccountLabel.trim() || null,
+                          connectionMode: newProfileMode,
+                          connectionConfig: config,
+                        });
+                        setShowAddProfile(false);
+                        setBrowserProfileNotice('Profile created.');
+                        await loadBrowserProfiles();
+                      } catch (err) {
+                        if (err instanceof UnauthorizedError) {
+                          onUnauthorized();
+                          return;
+                        }
+                        setBrowserProfileNotice(
+                          err instanceof ApiError
+                            ? err.message
+                            : 'Failed to create profile.',
+                        );
+                      } finally {
+                        setBrowserProfilesBusy(false);
+                      }
+                    }}
+                  >
+                    {browserProfilesBusy ? 'Creating…' : 'Create'}
+                  </button>
+                  <button
+                    type="button"
+                    className="secondary-btn"
+                    onClick={() => setShowAddProfile(false)}
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            )}
+          </>
+        ) : null}
       </section>
 
       <section className="settings-card">

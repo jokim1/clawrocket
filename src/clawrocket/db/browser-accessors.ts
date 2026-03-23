@@ -16,6 +16,8 @@ export interface BrowserProfileRecord {
   viewport_json: string;
   policy_json: string | null;
   download_dir: string;
+  connection_mode: string;
+  connection_config_json: string | null;
   created_at: string;
   updated_at: string;
   last_used_at: string | null;
@@ -25,6 +27,13 @@ export interface BrowserViewport {
   width: number;
   height: number;
 }
+
+export type BrowserConnectionMode = 'managed' | 'chrome_profile' | 'cdp';
+
+export type BrowserConnectionConfig =
+  | { mode: 'managed' }
+  | { mode: 'chrome_profile'; chromeProfilePath: string }
+  | { mode: 'cdp'; endpointUrl: string };
 
 export interface BrowserProfileSnapshot {
   id: string;
@@ -38,6 +47,8 @@ export interface BrowserProfileSnapshot {
   viewport: BrowserViewport;
   policy: Record<string, unknown> | null;
   downloadDir: string;
+  connectionMode: BrowserConnectionMode;
+  connectionConfig: BrowserConnectionConfig;
   createdAt: string;
   updatedAt: string;
   lastUsedAt: string | null;
@@ -194,7 +205,55 @@ function parsePolicy(
   return null;
 }
 
+function parseConnectionConfig(
+  mode: string | null | undefined,
+  configJson: string | null | undefined,
+): {
+  connectionMode: BrowserConnectionMode;
+  connectionConfig: BrowserConnectionConfig;
+} {
+  const connectionMode: BrowserConnectionMode =
+    mode === 'chrome_profile' || mode === 'cdp' ? mode : 'managed';
+
+  if (connectionMode === 'managed') {
+    return { connectionMode, connectionConfig: { mode: 'managed' } };
+  }
+
+  if (configJson) {
+    try {
+      const parsed = JSON.parse(configJson) as Record<string, unknown>;
+      if (
+        connectionMode === 'chrome_profile' &&
+        typeof parsed.chromeProfilePath === 'string'
+      ) {
+        return {
+          connectionMode,
+          connectionConfig: {
+            mode: 'chrome_profile',
+            chromeProfilePath: parsed.chromeProfilePath,
+          },
+        };
+      }
+      if (connectionMode === 'cdp' && typeof parsed.endpointUrl === 'string') {
+        return {
+          connectionMode,
+          connectionConfig: { mode: 'cdp', endpointUrl: parsed.endpointUrl },
+        };
+      }
+    } catch {
+      // fall through to default
+    }
+  }
+
+  // Mode is set but config is missing/invalid — fall back to managed
+  return { connectionMode: 'managed', connectionConfig: { mode: 'managed' } };
+}
+
 function toSnapshot(row: BrowserProfileRecord): BrowserProfileSnapshot {
+  const { connectionMode, connectionConfig } = parseConnectionConfig(
+    row.connection_mode,
+    row.connection_config_json,
+  );
   return {
     id: row.id,
     siteKey: row.site_key,
@@ -207,6 +266,8 @@ function toSnapshot(row: BrowserProfileRecord): BrowserProfileSnapshot {
     viewport: parseViewport(row.viewport_json),
     policy: parsePolicy(row.policy_json),
     downloadDir: row.download_dir,
+    connectionMode,
+    connectionConfig,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     lastUsedAt: row.last_used_at,
@@ -303,11 +364,13 @@ export function ensureBrowserProfile(input: {
         viewport_json,
         policy_json,
         download_dir,
+        connection_mode,
+        connection_config_json,
         created_at,
         updated_at,
         last_used_at
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'managed', NULL, ?, ?, NULL)
     `,
     )
     .run(
@@ -492,6 +555,127 @@ export function upsertBrowserSessionState(input: {
     throw new Error(`Failed to persist browser session ${input.id}`);
   }
   return snapshot;
+}
+
+export function listAllBrowserProfiles(): BrowserProfileSnapshot[] {
+  const rows = getDb()
+    .prepare(
+      `
+      SELECT *
+      FROM browser_profiles
+      ORDER BY site_key ASC, account_label ASC
+    `,
+    )
+    .all() as BrowserProfileRecord[];
+  return rows.map(toSnapshot);
+}
+
+export function updateBrowserProfileConnectionMode(
+  profileId: string,
+  mode: BrowserConnectionMode,
+  configJson: string | null,
+): BrowserProfileSnapshot | null {
+  const now = new Date().toISOString();
+  getDb()
+    .prepare(
+      `
+      UPDATE browser_profiles
+      SET connection_mode = ?,
+          connection_config_json = ?,
+          updated_at = ?
+      WHERE id = ?
+    `,
+    )
+    .run(mode, configJson, now, profileId);
+  return getBrowserProfileById(profileId);
+}
+
+export function checkBrowserProfileConnectionUniqueness(input: {
+  mode: BrowserConnectionMode;
+  configJson: string | null;
+  excludeProfileId?: string | null;
+}): {
+  conflict: boolean;
+  conflictProfileId?: string;
+  conflictSiteKey?: string;
+} {
+  if (input.mode === 'managed' || !input.configJson) {
+    return { conflict: false };
+  }
+
+  try {
+    const parsed = JSON.parse(input.configJson) as Record<string, unknown>;
+    let matchValue: string | null = null;
+    let matchKey: string | null = null;
+
+    if (
+      input.mode === 'chrome_profile' &&
+      typeof parsed.chromeProfilePath === 'string'
+    ) {
+      matchValue = parsed.chromeProfilePath;
+      matchKey = 'chromeProfilePath';
+    } else if (input.mode === 'cdp' && typeof parsed.endpointUrl === 'string') {
+      matchValue = parsed.endpointUrl;
+      matchKey = 'endpointUrl';
+    }
+
+    if (!matchValue || !matchKey) {
+      return { conflict: false };
+    }
+
+    // Search existing profiles for duplicates
+    const rows = getDb()
+      .prepare(
+        `
+        SELECT id, site_key, connection_config_json
+        FROM browser_profiles
+        WHERE connection_mode = ?
+          AND connection_config_json IS NOT NULL
+          AND id != ?
+      `,
+      )
+      .all(input.mode, input.excludeProfileId ?? '') as Array<{
+      id: string;
+      site_key: string;
+      connection_config_json: string;
+    }>;
+
+    for (const row of rows) {
+      try {
+        const existingConfig = JSON.parse(row.connection_config_json) as Record<
+          string,
+          unknown
+        >;
+        if (existingConfig[matchKey] === matchValue) {
+          return {
+            conflict: true,
+            conflictProfileId: row.id,
+            conflictSiteKey: row.site_key,
+          };
+        }
+      } catch {
+        // ignore parse errors in existing rows
+      }
+    }
+  } catch {
+    // ignore parse errors
+  }
+
+  return { conflict: false };
+}
+
+export function hasNonterminalBrowserSessions(profileId: string): boolean {
+  const row = getDb()
+    .prepare(
+      `
+      SELECT COUNT(*) as cnt
+      FROM browser_sessions
+      WHERE profile_id = ?
+        AND state IN ('active', 'blocked', 'takeover')
+    `,
+    )
+    .get(profileId) as { cnt: number } | undefined;
+  return (row?.cnt ?? 0) > 0;
 }
 
 export function reconcileBrowserSessionsOnStartup(
