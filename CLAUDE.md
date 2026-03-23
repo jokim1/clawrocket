@@ -67,6 +67,15 @@ Keep those domains separate when making changes.
 - `CLAWROCKET_SELF_RESTART=1` enables owner-triggered restart from the settings page.
 - The web server should only log startup success after confirmed bind.
 
+## Deploy Configuration
+
+- Platform: systemd (self-hosted)
+- SSH: `ssh k1min8r@100.69.69.108` (Tailscale, key auth)
+- Project path: `~/projects/clawrocket`
+- Service: `nanoclaw` (systemd --user)
+- Deploy steps: `cd ~/projects/clawrocket && git pull origin main && systemctl --user restart nanoclaw`
+- Production URL: http://100.69.69.108:3210
+
 ## Development Commands
 
 ```bash
