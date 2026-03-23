@@ -75,6 +75,18 @@ describe('clawrocket schema init', () => {
     expect(colNames).toContain('version');
   });
 
+  it('talk_channel_policies includes timezone', () => {
+    _initTestDatabase();
+    const db = getDb();
+
+    const columns = db
+      .prepare(`PRAGMA table_info('talk_channel_policies')`)
+      .all() as Array<{ name: string }>;
+    const colNames = columns.map((c) => c.name);
+
+    expect(colNames).toContain('timezone');
+  });
+
   it('talk_runs includes typed browser lifecycle columns', () => {
     _initTestDatabase();
     const db = getDb();

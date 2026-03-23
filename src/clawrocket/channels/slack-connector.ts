@@ -74,9 +74,27 @@ export interface SlackTargetDiagnosticResult {
   target?: SlackTargetResolutionResult;
 }
 
+export interface SlackRecentConversationContext {
+  mode: 'thread' | 'channel' | 'skipped' | 'unavailable';
+  lines: string[];
+  unavailableReason: string | null;
+}
+
 type SlackApiResponse<T extends Record<string, unknown>> =
   | ({ ok: true } & T)
   | { ok: false; error?: string };
+
+type SlackHistoryMessage = {
+  ts?: string;
+  text?: string;
+  user?: string;
+  username?: string;
+  subtype?: string;
+  bot_id?: string;
+  bot_profile?: {
+    name?: string;
+  };
+};
 
 function randomOpaque(bytes: number): string {
   return crypto.randomBytes(bytes).toString('base64url');
@@ -195,6 +213,55 @@ function normalizeScopeSet(input: string | null | undefined): string[] {
     .map((value) => value.trim())
     .filter(Boolean)
     .sort((a, b) => a.localeCompare(b));
+}
+
+function parseSlackChannelId(targetId: string): string | null {
+  const trimmed = targetId.trim();
+  if (!trimmed.startsWith('slack:')) return null;
+  const channelId = trimmed.slice('slack:'.length).trim();
+  return channelId || null;
+}
+
+function truncateSlackHistoryText(text: string, maxChars: number): string {
+  const normalized = text.replace(/\s+/g, ' ').trim();
+  if (normalized.length <= maxChars) return normalized;
+  return `${normalized.slice(0, Math.max(1, maxChars - 1)).trimEnd()}…`;
+}
+
+function formatSlackHistorySpeaker(message: SlackHistoryMessage): string {
+  if (message.bot_profile?.name?.trim()) return message.bot_profile.name.trim();
+  if (message.username?.trim()) return message.username.trim();
+  if (message.user?.trim()) return `Slack user ${message.user.trim()}`;
+  if (message.bot_id?.trim()) return `Slack bot ${message.bot_id.trim()}`;
+  if (message.subtype?.trim()) return `Slack ${message.subtype.trim()}`;
+  return 'Slack message';
+}
+
+function buildSlackHistoryLines(input: {
+  messages: SlackHistoryMessage[] | undefined;
+  excludeTs?: string | null;
+  maxMessages: number;
+  maxCharsPerMessage: number;
+}): string[] {
+  const messages = (input.messages || [])
+    .filter(
+      (message) => typeof message.text === 'string' && message.text.trim(),
+    )
+    .filter((message) => message.ts !== input.excludeTs)
+    .sort((a, b) =>
+      String(a.ts || '').localeCompare(String(b.ts || ''), undefined, {
+        numeric: true,
+      }),
+    )
+    .slice(-input.maxMessages);
+  return messages.map((message) => {
+    const speaker = formatSlackHistorySpeaker(message);
+    const text = truncateSlackHistoryText(
+      message.text || '',
+      input.maxCharsPerMessage,
+    );
+    return `- ${speaker}: ${text}`;
+  });
 }
 
 export async function probeSlackBotToken(
@@ -502,6 +569,119 @@ export async function syncSlackWorkspaceTargets(input: {
   } while (cursor);
 
   return { syncedCount, publicCount, privateCount };
+}
+
+export async function fetchSlackRecentConversationContext(input: {
+  connectionId: string;
+  targetId: string;
+  sourceThreadKey?: string | null;
+  externalMessageId?: string | null;
+  directMention: boolean;
+  maxMessages?: number;
+  maxCharsPerMessage?: number;
+}): Promise<SlackRecentConversationContext> {
+  const channelId = parseSlackChannelId(input.targetId);
+  if (!channelId) {
+    return {
+      mode: 'unavailable',
+      lines: [],
+      unavailableReason: 'Slack target ID is invalid.',
+    };
+  }
+
+  const isThreadReply =
+    Boolean(input.sourceThreadKey) &&
+    input.sourceThreadKey !== input.externalMessageId;
+  if (!isThreadReply && !input.directMention) {
+    return {
+      mode: 'skipped',
+      lines: [],
+      unavailableReason: null,
+    };
+  }
+
+  const credential = resolveSlackWorkspaceCredential(input.connectionId);
+  if (!credential) {
+    return {
+      mode: 'unavailable',
+      lines: [],
+      unavailableReason: 'Slack workspace credential is unavailable.',
+    };
+  }
+
+  const maxMessages = Math.max(1, Math.min(10, input.maxMessages ?? 10));
+  const maxCharsPerMessage = Math.max(
+    50,
+    Math.min(300, input.maxCharsPerMessage ?? 300),
+  );
+  const limit = String(maxMessages + 1);
+
+  try {
+    if (isThreadReply) {
+      const response = await slackApiRequest<
+        SlackApiResponse<{
+          messages: SlackHistoryMessage[];
+        }>
+      >({
+        botToken: credential.botToken,
+        url: `https://slack.com/api/conversations.replies?channel=${encodeURIComponent(channelId)}&ts=${encodeURIComponent(input.sourceThreadKey || '')}&limit=${encodeURIComponent(limit)}`,
+      });
+      if (!response.ok) {
+        return {
+          mode: 'unavailable',
+          lines: [],
+          unavailableReason:
+            response.error || 'Slack thread history could not be loaded.',
+        };
+      }
+      return {
+        mode: 'thread',
+        lines: buildSlackHistoryLines({
+          messages: response.messages,
+          excludeTs: input.externalMessageId,
+          maxMessages,
+          maxCharsPerMessage,
+        }),
+        unavailableReason: null,
+      };
+    }
+
+    const response = await slackApiRequest<
+      SlackApiResponse<{
+        messages: SlackHistoryMessage[];
+      }>
+    >({
+      botToken: credential.botToken,
+      url: `https://slack.com/api/conversations.history?channel=${encodeURIComponent(channelId)}&limit=${encodeURIComponent(limit)}`,
+    });
+    if (!response.ok) {
+      return {
+        mode: 'unavailable',
+        lines: [],
+        unavailableReason:
+          response.error || 'Slack channel history could not be loaded.',
+      };
+    }
+    return {
+      mode: 'channel',
+      lines: buildSlackHistoryLines({
+        messages: response.messages,
+        excludeTs: input.externalMessageId,
+        maxMessages,
+        maxCharsPerMessage,
+      }),
+      unavailableReason: null,
+    };
+  } catch (error) {
+    return {
+      mode: 'unavailable',
+      lines: [],
+      unavailableReason:
+        error instanceof Error
+          ? error.message
+          : 'Slack history could not be loaded.',
+    };
+  }
 }
 
 export async function diagnoseSlackTarget(input: {

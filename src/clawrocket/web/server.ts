@@ -233,6 +233,10 @@ import {
   createTalkChannelRoute,
   patchTalkChannelRoute,
   deleteTalkChannelRoute,
+  listTalkChannelBindingStateRoute,
+  upsertTalkChannelBindingStateRoute,
+  deleteTalkChannelBindingStateRoute,
+  reviewTalkChannelInstructionsRoute,
   testTalkChannelBindingRoute,
   unquarantineTalkChannelBindingRoute,
   retryTalkChannelDeliveryFailuresCappedRoute,
@@ -3961,10 +3965,9 @@ function buildApp(opts: WebServerOptions): Hono {
         body.deliveryMode === 'reply' || body.deliveryMode === 'channel'
           ? body.deliveryMode
           : undefined,
-      channelContextNote:
-        typeof body.channelContextNote === 'string'
-          ? body.channelContextNote
-          : null,
+      timezone: typeof body.timezone === 'string' ? body.timezone : undefined,
+      instructions:
+        typeof body.instructions === 'string' ? body.instructions : null,
       inboundRateLimitPerMinute:
         typeof body.inboundRateLimitPerMinute === 'number'
           ? body.inboundRateLimitPerMinute
@@ -4034,10 +4037,16 @@ function buildApp(opts: WebServerOptions): Hono {
         body.deliveryMode === 'reply' || body.deliveryMode === 'channel'
           ? body.deliveryMode
           : undefined,
-      channelContextNote:
-        typeof body.channelContextNote === 'string'
-          ? body.channelContextNote
-          : body.channelContextNote === null
+      timezone:
+        typeof body.timezone === 'string'
+          ? body.timezone
+          : body.timezone === null
+            ? null
+            : undefined,
+      instructions:
+        typeof body.instructions === 'string'
+          ? body.instructions
+          : body.instructions === null
             ? null
             : undefined,
       inboundRateLimitPerMinute:
@@ -4084,6 +4093,149 @@ function buildApp(opts: WebServerOptions): Hono {
       auth,
       talkId,
       bindingId: c.req.param('bindingId'),
+    });
+    return new Response(JSON.stringify(result.body), {
+      status: result.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
+  });
+
+  app.get('/api/v1/talks/:talkId/channels/:bindingId/state', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+    const talkId = safeDecodePathSegment(c.req.param('talkId'));
+    if (!talkId) {
+      return c.json(
+        {
+          ok: false,
+          error: {
+            code: 'invalid_talk_id',
+            message: 'Talk ID path segment is not valid URL encoding',
+          },
+        },
+        400,
+      );
+    }
+    const result = listTalkChannelBindingStateRoute({
+      auth,
+      talkId,
+      bindingId: c.req.param('bindingId'),
+    });
+    return new Response(JSON.stringify(result.body), {
+      status: result.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
+  });
+
+  app.post('/api/v1/talks/:talkId/channels/:bindingId/state', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+    const talkId = safeDecodePathSegment(c.req.param('talkId'));
+    if (!talkId) {
+      return c.json(
+        {
+          ok: false,
+          error: {
+            code: 'invalid_talk_id',
+            message: 'Talk ID path segment is not valid URL encoding',
+          },
+        },
+        400,
+      );
+    }
+    const body = (await c.req.json().catch(() => ({}))) as Record<
+      string,
+      unknown
+    >;
+    const result = upsertTalkChannelBindingStateRoute({
+      auth,
+      talkId,
+      bindingId: c.req.param('bindingId'),
+      keySuffix: typeof body.keySuffix === 'string' ? body.keySuffix : '',
+      value: body.value,
+      expectedVersion:
+        typeof body.expectedVersion === 'number'
+          ? body.expectedVersion
+          : Number.NaN,
+    });
+    return new Response(JSON.stringify(result.body), {
+      status: result.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
+  });
+
+  app.delete('/api/v1/talks/:talkId/channels/:bindingId/state', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+    const talkId = safeDecodePathSegment(c.req.param('talkId'));
+    if (!talkId) {
+      return c.json(
+        {
+          ok: false,
+          error: {
+            code: 'invalid_talk_id',
+            message: 'Talk ID path segment is not valid URL encoding',
+          },
+        },
+        400,
+      );
+    }
+    const body = (await c.req.json().catch(() => ({}))) as Record<
+      string,
+      unknown
+    >;
+    const result = deleteTalkChannelBindingStateRoute({
+      auth,
+      talkId,
+      bindingId: c.req.param('bindingId'),
+      keySuffix: typeof body.keySuffix === 'string' ? body.keySuffix : '',
+      expectedVersion:
+        typeof body.expectedVersion === 'number'
+          ? body.expectedVersion
+          : Number.NaN,
+    });
+    return new Response(JSON.stringify(result.body), {
+      status: result.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
+  });
+
+  app.post('/api/v1/talks/:talkId/channel-instruction-review', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+    const talkId = safeDecodePathSegment(c.req.param('talkId'));
+    if (!talkId) {
+      return c.json(
+        {
+          ok: false,
+          error: {
+            code: 'invalid_talk_id',
+            message: 'Talk ID path segment is not valid URL encoding',
+          },
+        },
+        400,
+      );
+    }
+    const body = (await c.req.json().catch(() => ({}))) as Record<
+      string,
+      unknown
+    >;
+    const result = await reviewTalkChannelInstructionsRoute({
+      auth,
+      talkId,
+      platform: body.platform === 'telegram' ? 'telegram' : 'slack',
+      instructions:
+        typeof body.instructions === 'string' ? body.instructions : '',
+      bindingId:
+        typeof body.bindingId === 'string' ? body.bindingId : undefined,
+      bindingLabel:
+        typeof body.bindingLabel === 'string' ? body.bindingLabel : undefined,
+      timezone:
+        typeof body.timezone === 'string'
+          ? body.timezone
+          : body.timezone === null
+            ? null
+            : undefined,
     });
     return new Response(JSON.stringify(result.body), {
       status: result.statusCode,

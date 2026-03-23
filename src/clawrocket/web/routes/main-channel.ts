@@ -84,7 +84,9 @@ function looksLikeHighConfidenceBrowserIntent(content: string): boolean {
   return mentionsSurface && mentionsAction;
 }
 
-function resolveSelectedBrowserMode(input: { userId: string }):
+function resolveSelectedBrowserMode(input: {
+  userId: string;
+}):
   | {
       ok: true;
       selectedMode: 'api' | 'subscription';

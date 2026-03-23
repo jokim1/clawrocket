@@ -42,6 +42,7 @@ function buildMessageMetadata(
     targetDisplayName: payload.targetDisplayName,
     senderId: payload.senderId,
     senderName: payload.senderName,
+    isMentioned: payload.isMentioned,
     timestamp: payload.timestamp,
     externalMessageId: payload.externalMessageId,
     metadata: payload.metadata || null,

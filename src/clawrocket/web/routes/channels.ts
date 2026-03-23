@@ -1,7 +1,12 @@
+import { randomUUID } from 'crypto';
+
 import {
   approveChannelTarget,
+  appendOutboxEvent,
+  buildTalkChannelBindingStateNamespace,
   clearBindingQuarantine,
   createTalkChannelBinding,
+  createTalkRun,
   deleteChannelProviderConfig,
   deleteChannelProviderSecret,
   deleteChannelConnectionSecret,
@@ -14,24 +19,30 @@ import {
   getChannelTarget,
   getChannelConnectionById,
   getTalkChannelBindingById,
+  getTalkStateEntry,
+  listTalkStateEntriesByPrefix,
   listChannelConnections,
   listChannelDeliveryFailures,
   listChannelIngressFailures,
   listTalkChannelBindingsForTalk,
+  markTalkRunStatus,
   quarantineBinding,
   retryChannelDeliveryFailure,
   retryChannelDeliveryFailuresCapped,
   retryChannelIngressFailure,
   searchChannelTargets,
+  setTalkRunMetadataJson,
   setChannelProviderConfig,
   setChannelProviderSecret,
   setChannelConnectionSecret,
   unapproveChannelTarget,
   upsertChannelTarget,
+  upsertTalkStateEntry,
   updateChannelConnectionConfig,
   updateBindingDeliveryResult,
   updateConnectionProbeResult,
   updateTalkChannelBinding,
+  deleteTalkStateEntry,
 } from '../../db/index.js';
 import {
   diagnoseBinding,
@@ -57,6 +68,10 @@ import {
   type TelegramBotIdentity,
   type TelegramTokenSource,
 } from '../../channels/telegram-connector.js';
+import { executeWithAgent } from '../../agents/agent-router.js';
+import { resolvePrimaryAgent } from '../../agents/agent-registry.js';
+import { resolveThreadIdForTalk } from '../../db/accessors.js';
+import { validateStateKey } from '../../db/context-accessors.js';
 import { canEditTalk } from '../middleware/acl.js';
 import { ApiEnvelope, AuthContext } from '../types.js';
 import { getTalkForUser } from '../../db/index.js';
@@ -77,7 +92,9 @@ export interface TalkChannelBindingApiRecord {
   responderMode: 'primary' | 'agent';
   responderAgentId: string | null;
   deliveryMode: 'reply' | 'channel';
-  channelContextNote: string | null;
+  timezone: string;
+  instructions: string | null;
+  stateNamespace: string;
   inboundRateLimitPerMinute: number;
   maxPendingEvents: number;
   overflowPolicy: 'drop_oldest' | 'drop_newest';
@@ -86,6 +103,9 @@ export interface TalkChannelBindingApiRecord {
   deferredIngressCount: number;
   deadLetterCount: number;
   unresolvedIngressCount: number;
+  suppressedReplyCount: number;
+  lastSuppressedAt: string | null;
+  lastSuppressionReason: string | null;
   lastIngressAt: string | null;
   lastDeliveryAt: string | null;
   lastIngressReasonCode: string | null;
@@ -93,6 +113,24 @@ export interface TalkChannelBindingApiRecord {
   healthQuarantined: boolean;
   healthQuarantineCode: string | null;
   diagnosis: BindingDiagnosis;
+}
+
+export interface TalkChannelBindingStateEntryApiRecord {
+  id: string;
+  key: string;
+  keySuffix: string;
+  value: unknown;
+  version: number;
+  updatedAt: string;
+  updatedByUserId: string | null;
+  updatedByRunId: string | null;
+}
+
+export interface ChannelInstructionReviewApiRecord {
+  strengths: string[];
+  missing: string[];
+  removeOrSimplify: string[];
+  rewrittenInstructions: string | null;
 }
 
 export interface ChannelConnectionApiRecord {
@@ -248,7 +286,9 @@ function toBindingApiRecord(
     responderMode: record.responder_mode,
     responderAgentId: record.responder_agent_id,
     deliveryMode: record.delivery_mode,
-    channelContextNote: record.channel_context_note,
+    timezone: record.timezone,
+    instructions: record.instructions,
+    stateNamespace: buildTalkChannelBindingStateNamespace(record.id),
     inboundRateLimitPerMinute: record.inbound_rate_limit_per_minute,
     maxPendingEvents: record.max_pending_events,
     overflowPolicy: record.overflow_policy,
@@ -257,6 +297,9 @@ function toBindingApiRecord(
     deferredIngressCount: record.deferred_ingress_count,
     deadLetterCount: record.dead_letter_count,
     unresolvedIngressCount: record.unresolved_ingress_count,
+    suppressedReplyCount: record.suppressed_reply_count,
+    lastSuppressedAt: record.last_suppressed_at,
+    lastSuppressionReason: record.last_suppression_reason,
     lastIngressAt: record.last_ingress_at,
     lastDeliveryAt: record.last_delivery_at,
     lastIngressReasonCode: record.last_ingress_reason_code,
@@ -378,6 +421,64 @@ function toChannelConnectionApiRecord(
     env_token_available: telegramCredential?.envTokenAvailable ? 1 : 0,
     has_stored_secret: telegramCredential?.hasStoredSecret ? 1 : 0,
   };
+}
+
+function buildBindingStateKey(bindingId: string, keySuffix: string): string {
+  const suffix = keySuffix.trim();
+  if (!suffix) {
+    throw new Error('State key suffix is required.');
+  }
+  const normalizedFullKey = validateStateKey(
+    `${buildTalkChannelBindingStateNamespace(bindingId)}${suffix}`,
+  );
+  const prefix = buildTalkChannelBindingStateNamespace(bindingId);
+  if (!normalizedFullKey.startsWith(prefix)) {
+    throw new Error('State key must stay inside the binding namespace.');
+  }
+  return normalizedFullKey;
+}
+
+function toBindingStateApiRecord(input: {
+  bindingId: string;
+  entry: ReturnType<typeof listTalkStateEntriesByPrefix>[number];
+}): TalkChannelBindingStateEntryApiRecord {
+  const prefix = buildTalkChannelBindingStateNamespace(input.bindingId);
+  return {
+    ...input.entry,
+    keySuffix: input.entry.key.startsWith(prefix)
+      ? input.entry.key.slice(prefix.length)
+      : input.entry.key,
+  };
+}
+
+function parseInstructionReviewResponse(
+  content: string,
+): ChannelInstructionReviewApiRecord {
+  try {
+    const parsed = JSON.parse(content) as Record<string, unknown>;
+    const readStringList = (key: string): string[] =>
+      Array.isArray(parsed[key])
+        ? parsed[key].filter(
+            (entry): entry is string => typeof entry === 'string',
+          )
+        : [];
+    return {
+      strengths: readStringList('strengths'),
+      missing: readStringList('missing'),
+      removeOrSimplify: readStringList('removeOrSimplify'),
+      rewrittenInstructions:
+        typeof parsed.rewrittenInstructions === 'string'
+          ? parsed.rewrittenInstructions
+          : null,
+    };
+  } catch {
+    return {
+      strengths: [],
+      missing: ['The review model returned an invalid response format.'],
+      removeOrSimplify: [],
+      rewrittenInstructions: null,
+    };
+  }
 }
 
 export function listChannelConnectionsRoute(input: { auth: AuthContext }) {
@@ -1315,7 +1416,8 @@ export function createTalkChannelRoute(input: {
   responderMode?: 'primary' | 'agent';
   responderAgentId?: string | null;
   deliveryMode?: 'reply' | 'channel';
-  channelContextNote?: string | null;
+  timezone?: string | null;
+  instructions?: string | null;
   inboundRateLimitPerMinute?: number;
   maxPendingEvents?: number;
   overflowPolicy?: 'drop_oldest' | 'drop_newest';
@@ -1411,13 +1513,29 @@ export function createTalkChannelRoute(input: {
       responderMode: input.responderMode,
       responderAgentId: input.responderAgentId,
       deliveryMode: input.deliveryMode,
-      channelContextNote: input.channelContextNote,
+      timezone: input.timezone,
+      instructions: input.instructions,
       inboundRateLimitPerMinute: input.inboundRateLimitPerMinute,
       maxPendingEvents: input.maxPendingEvents,
       overflowPolicy: input.overflowPolicy,
       maxDeferredAgeMinutes: input.maxDeferredAgeMinutes,
     });
   } catch (error) {
+    if (
+      error instanceof Error &&
+      error.message === 'channel_binding_timezone_invalid'
+    ) {
+      return {
+        statusCode: 400,
+        body: {
+          ok: false,
+          error: {
+            code: 'invalid_timezone',
+            message: 'Binding timezone must be a valid IANA timezone.',
+          },
+        },
+      };
+    }
     if (
       error instanceof Error &&
       (error.message.includes(
@@ -1477,7 +1595,8 @@ export function patchTalkChannelRoute(input: {
   responderMode?: 'primary' | 'agent';
   responderAgentId?: string | null;
   deliveryMode?: 'reply' | 'channel';
-  channelContextNote?: string | null;
+  timezone?: string | null;
+  instructions?: string | null;
   inboundRateLimitPerMinute?: number;
   maxPendingEvents?: number;
   overflowPolicy?: 'drop_oldest' | 'drop_newest';
@@ -1496,21 +1615,42 @@ export function patchTalkChannelRoute(input: {
   if (!binding || binding.talk_id !== input.talkId) {
     return notFound('Talk channel binding not found.');
   }
-  const updated = updateTalkChannelBinding({
-    bindingId: input.bindingId,
-    updatedBy: input.auth.userId,
-    active: input.active,
-    displayName: input.displayName,
-    responseMode: input.responseMode,
-    responderMode: input.responderMode,
-    responderAgentId: input.responderAgentId,
-    deliveryMode: input.deliveryMode,
-    channelContextNote: input.channelContextNote,
-    inboundRateLimitPerMinute: input.inboundRateLimitPerMinute,
-    maxPendingEvents: input.maxPendingEvents,
-    overflowPolicy: input.overflowPolicy,
-    maxDeferredAgeMinutes: input.maxDeferredAgeMinutes,
-  });
+  let updated;
+  try {
+    updated = updateTalkChannelBinding({
+      bindingId: input.bindingId,
+      updatedBy: input.auth.userId,
+      active: input.active,
+      displayName: input.displayName,
+      responseMode: input.responseMode,
+      responderMode: input.responderMode,
+      responderAgentId: input.responderAgentId,
+      deliveryMode: input.deliveryMode,
+      timezone: input.timezone,
+      instructions: input.instructions,
+      inboundRateLimitPerMinute: input.inboundRateLimitPerMinute,
+      maxPendingEvents: input.maxPendingEvents,
+      overflowPolicy: input.overflowPolicy,
+      maxDeferredAgeMinutes: input.maxDeferredAgeMinutes,
+    });
+  } catch (error) {
+    if (
+      error instanceof Error &&
+      error.message === 'channel_binding_timezone_invalid'
+    ) {
+      return {
+        statusCode: 400,
+        body: {
+          ok: false,
+          error: {
+            code: 'invalid_timezone',
+            message: 'Binding timezone must be a valid IANA timezone.',
+          },
+        },
+      };
+    }
+    throw error;
+  }
   return {
     statusCode: 200,
     body: {
@@ -1550,6 +1690,396 @@ export function deleteTalkChannelRoute(input: {
       },
     },
   };
+}
+
+export function listTalkChannelBindingStateRoute(input: {
+  auth: AuthContext;
+  talkId: string;
+  bindingId: string;
+}) {
+  const talk = getTalkForUser(input.talkId, input.auth.userId);
+  if (!talk) {
+    return notFound('Talk not found.');
+  }
+  const binding = getTalkChannelBindingById(input.bindingId);
+  if (!binding || binding.talk_id !== input.talkId) {
+    return notFound('Talk channel binding not found.');
+  }
+  const entries = listTalkStateEntriesByPrefix(
+    input.talkId,
+    buildTalkChannelBindingStateNamespace(binding.id),
+  ).map((entry) => toBindingStateApiRecord({ bindingId: binding.id, entry }));
+  return {
+    statusCode: 200,
+    body: {
+      ok: true,
+      data: {
+        bindingId: binding.id,
+        stateNamespace: buildTalkChannelBindingStateNamespace(binding.id),
+        entries,
+      },
+    },
+  };
+}
+
+export function upsertTalkChannelBindingStateRoute(input: {
+  auth: AuthContext;
+  talkId: string;
+  bindingId: string;
+  keySuffix: string;
+  value: unknown;
+  expectedVersion: number;
+}) {
+  const talk = getTalkForUser(input.talkId, input.auth.userId);
+  if (!talk) {
+    return notFound('Talk not found.');
+  }
+  if (!canEditTalk(input.talkId, input.auth.userId, input.auth.role)) {
+    return forbidden(
+      'You do not have permission to edit channel memory for this talk.',
+    );
+  }
+  const binding = getTalkChannelBindingById(input.bindingId);
+  if (!binding || binding.talk_id !== input.talkId) {
+    return notFound('Talk channel binding not found.');
+  }
+
+  try {
+    const key = buildBindingStateKey(binding.id, input.keySuffix);
+    const result = upsertTalkStateEntry({
+      talkId: input.talkId,
+      key,
+      value: input.value,
+      expectedVersion: input.expectedVersion,
+      updatedByUserId: input.auth.userId,
+    });
+    if (!result.ok) {
+      return {
+        statusCode: 409,
+        body: {
+          ok: false,
+          error: {
+            code: 'state_version_conflict',
+            message: 'Channel memory changed before this save completed.',
+            details: {
+              current: toBindingStateApiRecord({
+                bindingId: binding.id,
+                entry: result.current,
+              }),
+            },
+          },
+        },
+      };
+    }
+    return {
+      statusCode: 200,
+      body: {
+        ok: true,
+        data: {
+          entry: toBindingStateApiRecord({
+            bindingId: binding.id,
+            entry: result.entry,
+          }),
+        },
+      },
+    };
+  } catch (error) {
+    return {
+      statusCode: 400,
+      body: {
+        ok: false,
+        error: {
+          code: 'invalid_binding_state',
+          message:
+            error instanceof Error
+              ? error.message
+              : 'Binding state entry is invalid.',
+        },
+      },
+    };
+  }
+}
+
+export function deleteTalkChannelBindingStateRoute(input: {
+  auth: AuthContext;
+  talkId: string;
+  bindingId: string;
+  keySuffix: string;
+  expectedVersion: number;
+}) {
+  const talk = getTalkForUser(input.talkId, input.auth.userId);
+  if (!talk) {
+    return notFound('Talk not found.');
+  }
+  if (!canEditTalk(input.talkId, input.auth.userId, input.auth.role)) {
+    return forbidden(
+      'You do not have permission to edit channel memory for this talk.',
+    );
+  }
+  const binding = getTalkChannelBindingById(input.bindingId);
+  if (!binding || binding.talk_id !== input.talkId) {
+    return notFound('Talk channel binding not found.');
+  }
+
+  try {
+    const key = buildBindingStateKey(binding.id, input.keySuffix);
+    const existing = getTalkStateEntry(input.talkId, key);
+    if (!existing) {
+      return notFound('Binding memory entry not found.');
+    }
+    const result = deleteTalkStateEntry({
+      talkId: input.talkId,
+      key,
+      expectedVersion: input.expectedVersion,
+    });
+    if (!result.ok) {
+      return {
+        statusCode: 409,
+        body: {
+          ok: false,
+          error: {
+            code: 'state_version_conflict',
+            message: 'Channel memory changed before this delete completed.',
+            details: {
+              current: toBindingStateApiRecord({
+                bindingId: binding.id,
+                entry: result.current,
+              }),
+            },
+          },
+        },
+      };
+    }
+    return {
+      statusCode: 200,
+      body: {
+        ok: true,
+        data: {
+          deleted: true,
+          keySuffix: existing.key.slice(
+            buildTalkChannelBindingStateNamespace(binding.id).length,
+          ),
+        },
+      },
+    };
+  } catch (error) {
+    return {
+      statusCode: 400,
+      body: {
+        ok: false,
+        error: {
+          code: 'invalid_binding_state',
+          message:
+            error instanceof Error
+              ? error.message
+              : 'Binding state entry is invalid.',
+        },
+      },
+    };
+  }
+}
+
+export async function reviewTalkChannelInstructionsRoute(input: {
+  auth: AuthContext;
+  talkId: string;
+  platform: 'slack' | 'telegram';
+  instructions: string;
+  bindingId?: string | null;
+  bindingLabel?: string | null;
+  timezone?: string | null;
+}) {
+  const talk = getTalkForUser(input.talkId, input.auth.userId);
+  if (!talk) {
+    return notFound('Talk not found.');
+  }
+  if (!canEditTalk(input.talkId, input.auth.userId, input.auth.role)) {
+    return forbidden(
+      'You do not have permission to review channel instructions for this talk.',
+    );
+  }
+  const agent = resolvePrimaryAgent(input.talkId);
+  if (!agent) {
+    return {
+      statusCode: 400,
+      body: {
+        ok: false,
+        error: {
+          code: 'talk_primary_agent_missing',
+          message: 'This talk does not have a primary agent configured yet.',
+        },
+      },
+    };
+  }
+
+  const now = new Date().toISOString();
+  const runId = `run_${randomUUID()}`;
+  const threadId = resolveThreadIdForTalk(input.talkId, null);
+  createTalkRun({
+    id: runId,
+    talk_id: input.talkId,
+    thread_id: threadId,
+    requested_by: input.auth.userId,
+    status: 'running',
+    run_kind: 'instruction_review',
+    trigger_message_id: null,
+    idempotency_key: null,
+    executor_alias: null,
+    executor_model: null,
+    created_at: now,
+    started_at: now,
+    ended_at: null,
+    cancel_reason: null,
+    metadata_json: JSON.stringify({
+      kind: 'instruction_review',
+      platform: input.platform,
+      bindingId: input.bindingId ?? null,
+      bindingLabel: input.bindingLabel ?? null,
+      timezone: input.timezone ?? null,
+    }),
+  });
+  appendOutboxEvent({
+    topic: `talk:${input.talkId}`,
+    eventType: 'talk_run_started',
+    payload: JSON.stringify({
+      talkId: input.talkId,
+      threadId,
+      runId,
+      runKind: 'instruction_review',
+      status: 'running',
+      executorAlias: null,
+      executorModel: null,
+    }),
+  });
+
+  try {
+    const result = await executeWithAgent(
+      agent.id,
+      {
+        systemPrompt: [
+          'You critique channel binding instructions for a messaging assistant.',
+          'Respond with a single JSON object and no surrounding prose.',
+          'Return keys: strengths, missing, removeOrSimplify, rewrittenInstructions.',
+          'Each of strengths, missing, and removeOrSimplify must be arrays of concise strings.',
+          'rewrittenInstructions must be either a complete improved instructions draft string or null.',
+          'Focus on clarity, reply-vs-silence rules, stable identity hints, state key strategy, timezone/date rules, and avoiding irrelevant detail.',
+        ].join('\n'),
+        contextTools: [],
+        connectorTools: [],
+        history: [],
+      },
+      [
+        `Platform: ${input.platform}`,
+        input.bindingLabel ? `Binding label: ${input.bindingLabel}` : null,
+        input.timezone ? `Binding timezone: ${input.timezone}` : null,
+        input.bindingId
+          ? `Binding state namespace: ${buildTalkChannelBindingStateNamespace(input.bindingId)}`
+          : null,
+        'Instructions to review:',
+        input.instructions.trim(),
+      ]
+        .filter(Boolean)
+        .join('\n\n'),
+      {
+        runId,
+        userId: input.auth.userId,
+        alwaysAllowedContextToolNames: [],
+        maxToolIterations: 1,
+      },
+    );
+
+    const review = parseInstructionReviewResponse(result.content);
+    const endedAt = new Date().toISOString();
+    setTalkRunMetadataJson(
+      runId,
+      JSON.stringify({
+        kind: 'instruction_review',
+        platform: input.platform,
+        bindingId: input.bindingId ?? null,
+        bindingLabel: input.bindingLabel ?? null,
+        timezone: input.timezone ?? null,
+        review,
+        usage: result.usage ?? null,
+        providerId: result.providerId,
+        modelId: result.modelId,
+        rawOutput: result.content,
+      }),
+    );
+    markTalkRunStatus(runId, 'completed', endedAt, null);
+    appendOutboxEvent({
+      topic: `talk:${input.talkId}`,
+      eventType: 'talk_run_completed',
+      payload: JSON.stringify({
+        talkId: input.talkId,
+        threadId,
+        runId,
+        runKind: 'instruction_review',
+        triggerMessageId: null,
+        responseMessageId: null,
+        responseGroupId: null,
+        sequenceIndex: null,
+        executorAlias: null,
+        executorModel: null,
+      }),
+    });
+
+    return {
+      statusCode: 200,
+      body: {
+        ok: true,
+        data: {
+          review,
+        },
+      },
+    };
+  } catch (error) {
+    const endedAt = new Date().toISOString();
+    const message =
+      error instanceof Error ? error.message : 'Instruction review failed.';
+    setTalkRunMetadataJson(
+      runId,
+      JSON.stringify({
+        kind: 'instruction_review',
+        platform: input.platform,
+        bindingId: input.bindingId ?? null,
+        bindingLabel: input.bindingLabel ?? null,
+        timezone: input.timezone ?? null,
+        error: message,
+      }),
+    );
+    markTalkRunStatus(
+      runId,
+      'failed',
+      endedAt,
+      `instruction_review: ${message}`,
+    );
+    appendOutboxEvent({
+      topic: `talk:${input.talkId}`,
+      eventType: 'talk_run_failed',
+      payload: JSON.stringify({
+        talkId: input.talkId,
+        threadId,
+        runId,
+        runKind: 'instruction_review',
+        triggerMessageId: null,
+        responseGroupId: null,
+        sequenceIndex: null,
+        errorCode: 'instruction_review_failed',
+        errorMessage: message,
+        executorAlias: null,
+        executorModel: null,
+      }),
+    });
+    return {
+      statusCode: 500,
+      body: {
+        ok: false,
+        error: {
+          code: 'instruction_review_failed',
+          message,
+        },
+      },
+    };
+  }
 }
 
 export function listTalkChannelIngressFailuresRoute(input: {

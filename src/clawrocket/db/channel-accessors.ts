@@ -1,14 +1,17 @@
 import { randomUUID } from 'crypto';
 
+import { TIMEZONE } from '../../config.js';
 import { getDb } from '../../db.js';
 
 import {
+  createTalkThread,
   createTalkMessage,
   createTalkRun,
   hasActiveTalkRuns,
   touchTalkUpdatedAt,
   resolveThreadIdForTalk,
 } from './accessors.js';
+import { forceDeleteTalkStateEntriesByPrefix } from './context-accessors.js';
 import { resolvePrimaryAgent } from '../agents/agent-registry.js';
 
 export type ChannelPlatform = 'telegram' | 'slack';
@@ -126,7 +129,8 @@ export interface TalkChannelPolicyRecord {
   responder_agent_id: string | null;
   delivery_mode: ChannelDeliveryMode;
   thread_mode: ChannelThreadMode;
-  channel_context_note: string | null;
+  timezone: string;
+  instructions: string | null;
   allowed_senders_json: string | null;
   inbound_rate_limit_per_minute: number;
   max_pending_events: number;
@@ -147,6 +151,9 @@ export interface TalkChannelBindingWithPolicyRecord
   deferred_ingress_count: number;
   dead_letter_count: number;
   unresolved_ingress_count: number;
+  suppressed_reply_count: number;
+  last_suppressed_at: string | null;
+  last_suppression_reason: string | null;
   last_ingress_reason_code: string | null;
   last_delivery_reason_code: string | null;
 }
@@ -210,6 +217,37 @@ export interface ChannelDeliveryOutboxRecord {
   attempt_count: number;
 }
 
+export interface TalkChannelThreadMapRecord {
+  binding_id: string;
+  source_thread_key: string;
+  talk_thread_id: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export function buildTalkChannelBindingStateNamespace(
+  bindingId: string,
+): string {
+  return `channel.${bindingId}.`;
+}
+
+function getDefaultChannelBindingTimezone(): string {
+  return TIMEZONE || 'UTC';
+}
+
+function normalizeChannelBindingTimezone(value?: string | null): string {
+  const normalized = (value ?? getDefaultChannelBindingTimezone()).trim();
+  if (!normalized) {
+    throw new Error('channel_binding_timezone_invalid');
+  }
+  try {
+    Intl.DateTimeFormat('en-US', { timeZone: normalized }).format(new Date());
+    return normalized;
+  } catch {
+    throw new Error('channel_binding_timezone_invalid');
+  }
+}
+
 function normalizeTimestamp(value?: string | null): string {
   return value || new Date().toISOString();
 }
@@ -232,6 +270,35 @@ function parseJson(value: string | null): Record<string, unknown> | null {
   } catch {
     return null;
   }
+}
+
+function parseJsonMap(
+  value: string | null | undefined,
+): Record<string, unknown> | null {
+  if (!value) return null;
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function buildChannelConversationThreadTitle(input: {
+  targetDisplayName?: string | null;
+  senderName?: string | null;
+  senderId?: string | null;
+}): string | null {
+  const target = (input.targetDisplayName || '').trim();
+  const sender = (input.senderName || input.senderId || '').trim();
+  if (!target && !sender) {
+    return 'Channel conversation';
+  }
+  if (!target) return sender;
+  if (!sender) return `${target} conversation`;
+  return `${target} · ${sender}`;
 }
 
 export function ensureSystemManagedTelegramConnection(
@@ -876,7 +943,8 @@ const HYDRATED_TALK_CHANNEL_BINDING_SELECT = `
     p.responder_agent_id,
     p.delivery_mode,
     p.thread_mode,
-    p.instructions AS channel_context_note,
+    COALESCE(p.timezone, '${getDefaultChannelBindingTimezone().replace(/'/g, "''")}') AS timezone,
+    p.instructions,
     p.allowed_senders_json,
     p.inbound_rate_limit_per_minute,
     p.max_pending_events,
@@ -909,6 +977,28 @@ const HYDRATED_TALK_CHANNEL_BINDING_SELECT = `
       FROM channel_ingress_queue q
       WHERE q.binding_id = b.id AND q.status IN ('deferred', 'dead_letter')
     ) AS unresolved_ingress_count,
+    (
+      SELECT COUNT(*)
+      FROM talk_runs r
+      WHERE r.source_binding_id = b.id
+        AND json_extract(r.metadata_json, '$.channelDelivery.suppressed') = 1
+    ) AS suppressed_reply_count,
+    (
+      SELECT r.ended_at
+      FROM talk_runs r
+      WHERE r.source_binding_id = b.id
+        AND json_extract(r.metadata_json, '$.channelDelivery.suppressed') = 1
+      ORDER BY r.ended_at DESC
+      LIMIT 1
+    ) AS last_suppressed_at,
+    (
+      SELECT json_extract(r.metadata_json, '$.channelDelivery.suppressionReason')
+      FROM talk_runs r
+      WHERE r.source_binding_id = b.id
+        AND json_extract(r.metadata_json, '$.channelDelivery.suppressed') = 1
+      ORDER BY r.ended_at DESC
+      LIMIT 1
+    ) AS last_suppression_reason,
     (
       SELECT q.reason_code
       FROM channel_ingress_queue q
@@ -1006,6 +1096,86 @@ export function getTalkChannelBindingById(
   return normalizeHydratedBinding(hydrateTalkChannelBinding(bindingId));
 }
 
+export function getTalkChannelThreadMap(input: {
+  bindingId: string;
+  sourceThreadKey: string;
+}): TalkChannelThreadMapRecord | undefined {
+  return getDb()
+    .prepare(
+      `
+      SELECT binding_id, source_thread_key, talk_thread_id, created_at, updated_at
+      FROM talk_channel_thread_map
+      WHERE binding_id = ? AND source_thread_key = ?
+      LIMIT 1
+    `,
+    )
+    .get(input.bindingId, input.sourceThreadKey) as
+    | TalkChannelThreadMapRecord
+    | undefined;
+}
+
+function resolveOrCreateChannelConversationThread(input: {
+  talkId: string;
+  bindingId: string;
+  sourceThreadKey?: string | null;
+  metadataJson?: string | null;
+  now: string;
+}): string {
+  if (!input.sourceThreadKey) {
+    return resolveThreadIdForTalk(input.talkId, null);
+  }
+
+  const existing = getTalkChannelThreadMap({
+    bindingId: input.bindingId,
+    sourceThreadKey: input.sourceThreadKey,
+  });
+  if (existing) {
+    getDb()
+      .prepare(
+        `
+        UPDATE talk_channel_thread_map
+        SET updated_at = ?
+        WHERE binding_id = ? AND source_thread_key = ?
+      `,
+      )
+      .run(input.now, input.bindingId, input.sourceThreadKey);
+    return existing.talk_thread_id;
+  }
+
+  const metadata = parseJsonMap(input.metadataJson);
+  const thread = createTalkThread({
+    talkId: input.talkId,
+    title: buildChannelConversationThreadTitle({
+      targetDisplayName:
+        typeof metadata?.targetDisplayName === 'string'
+          ? metadata.targetDisplayName
+          : null,
+      senderName:
+        typeof metadata?.senderName === 'string' ? metadata.senderName : null,
+      senderId:
+        typeof metadata?.senderId === 'string' ? metadata.senderId : null,
+    }),
+  });
+
+  getDb()
+    .prepare(
+      `
+      INSERT INTO talk_channel_thread_map (
+        binding_id, source_thread_key, talk_thread_id, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?)
+    `,
+    )
+    .run(
+      input.bindingId,
+      input.sourceThreadKey,
+      thread.id,
+      input.now,
+      input.now,
+    );
+
+  return thread.id;
+}
+
 export function getChannelDeliveryBindingState(
   bindingId: string,
 ): ChannelDeliveryBindingStateRecord | undefined {
@@ -1044,7 +1214,8 @@ export function getResolvedTalkChannelBinding(input: {
         p.responder_agent_id,
         p.delivery_mode,
         p.thread_mode,
-        p.instructions AS channel_context_note,
+        COALESCE(p.timezone, '${getDefaultChannelBindingTimezone().replace(/'/g, "''")}') AS timezone,
+        p.instructions,
         p.allowed_senders_json,
         p.inbound_rate_limit_per_minute,
         p.max_pending_events,
@@ -1062,6 +1233,9 @@ export function getResolvedTalkChannelBinding(input: {
         0 AS deferred_ingress_count,
         0 AS dead_letter_count,
         0 AS unresolved_ingress_count,
+        0 AS suppressed_reply_count,
+        NULL AS last_suppressed_at,
+        NULL AS last_suppression_reason,
         NULL AS last_ingress_reason_code,
         NULL AS last_delivery_reason_code
       FROM talk_channel_bindings b
@@ -1157,7 +1331,8 @@ export function createTalkChannelBinding(input: {
   responderAgentId?: string | null;
   deliveryMode?: ChannelDeliveryMode;
   threadMode?: ChannelThreadMode;
-  channelContextNote?: string | null;
+  timezone?: string | null;
+  instructions?: string | null;
   allowedSendersJson?: string | null;
   inboundRateLimitPerMinute?: number;
   maxPendingEvents?: number;
@@ -1176,6 +1351,7 @@ export function createTalkChannelBinding(input: {
   );
   const deliveryMode = input.deliveryMode || 'reply';
   const threadMode = input.threadMode || 'conversation';
+  const timezone = normalizeChannelBindingTimezone(input.timezone);
   const inboundRateLimitPerMinute = Math.max(
     1,
     Math.floor(input.inboundRateLimitPerMinute ?? 10),
@@ -1218,10 +1394,10 @@ export function createTalkChannelBinding(input: {
         `
         INSERT INTO talk_channel_policies (
           binding_id, response_mode, responder_mode, responder_agent_id,
-          delivery_mode, thread_mode, instructions, allowed_senders_json,
+          delivery_mode, thread_mode, timezone, instructions, allowed_senders_json,
           inbound_rate_limit_per_minute, max_pending_events, overflow_policy,
           max_deferred_age_minutes, updated_at, updated_by
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `,
       )
       .run(
@@ -1231,7 +1407,8 @@ export function createTalkChannelBinding(input: {
         responderAgentId,
         deliveryMode,
         threadMode,
-        input.channelContextNote || null,
+        timezone,
+        input.instructions || null,
         input.allowedSendersJson || null,
         inboundRateLimitPerMinute,
         maxPendingEvents,
@@ -1255,7 +1432,8 @@ export function updateTalkChannelBinding(input: {
   responderMode?: ChannelResponderMode;
   responderAgentId?: string | null;
   deliveryMode?: ChannelDeliveryMode;
-  channelContextNote?: string | null;
+  timezone?: string | null;
+  instructions?: string | null;
   allowedSendersJson?: string | null;
   inboundRateLimitPerMinute?: number;
   maxPendingEvents?: number;
@@ -1279,6 +1457,10 @@ export function updateTalkChannelBinding(input: {
       ? current.responder_agent_id
       : input.responderAgentId,
   );
+  const nextTimezone =
+    input.timezone === undefined
+      ? current.timezone
+      : normalizeChannelBindingTimezone(input.timezone);
 
   const tx = getDb().transaction(() => {
     getDb()
@@ -1299,6 +1481,7 @@ export function updateTalkChannelBinding(input: {
             responder_mode = ?,
             responder_agent_id = ?,
             delivery_mode = ?,
+            timezone = ?,
             instructions = ?,
             allowed_senders_json = ?,
             inbound_rate_limit_per_minute = ?,
@@ -1315,9 +1498,10 @@ export function updateTalkChannelBinding(input: {
         nextResponderMode,
         nextResponderAgentId,
         input.deliveryMode || current.delivery_mode,
-        input.channelContextNote === undefined
-          ? current.channel_context_note
-          : input.channelContextNote,
+        nextTimezone,
+        input.instructions === undefined
+          ? current.instructions
+          : input.instructions,
         input.allowedSendersJson === undefined
           ? current.allowed_senders_json
           : input.allowedSendersJson,
@@ -1379,9 +1563,20 @@ export function updateTalkChannelBinding(input: {
 }
 
 export function deleteTalkChannelBinding(bindingId: string): void {
-  getDb()
-    .prepare(`DELETE FROM talk_channel_bindings WHERE id = ?`)
-    .run(bindingId);
+  const binding = getTalkChannelBindingById(bindingId);
+  if (!binding) return;
+
+  const tx = getDb().transaction(() => {
+    forceDeleteTalkStateEntriesByPrefix(
+      binding.talk_id,
+      buildTalkChannelBindingStateNamespace(bindingId),
+    );
+    getDb()
+      .prepare(`DELETE FROM talk_channel_bindings WHERE id = ?`)
+      .run(bindingId);
+  });
+
+  tx();
 }
 
 export function enqueueChannelIngressEvent(input: {
@@ -1834,9 +2029,13 @@ export function enqueueChannelTurnAtomic(input: {
       };
     }
 
-    // Resolve thread for channel ingress: use the default thread for now.
-    // Future: could map source_thread_key to a dedicated thread.
-    const threadId = resolveThreadIdForTalk(input.talkId, null);
+    const threadId = resolveOrCreateChannelConversationThread({
+      talkId: input.talkId,
+      bindingId: binding.id,
+      sourceThreadKey: input.sourceThreadKey || null,
+      metadataJson: input.metadataJson,
+      now,
+    });
     const active = hasActiveTalkRuns(input.talkId, threadId);
     if (active) {
       return { status: 'thread_busy' as const };
@@ -1877,6 +2076,7 @@ export function enqueueChannelTurnAtomic(input: {
       thread_id: threadId,
       requested_by: 'system:channel-ingress',
       status: 'queued',
+      run_kind: 'conversation',
       trigger_message_id: input.messageId,
       target_agent_id: input.targetAgentId,
       idempotency_key: null,
@@ -1926,6 +2126,7 @@ export function enqueueChannelTurnAtomic(input: {
           talkId: input.talkId,
           threadId,
           runId: input.runId,
+          runKind: 'conversation',
           triggerMessageId: input.messageId,
           targetAgentId: input.targetAgentId,
           status: 'queued',

@@ -436,6 +436,16 @@ export function listTalkStateEntries(talkId: string): TalkStateEntrySnapshot[] {
   return rows.map(toStateSnapshot);
 }
 
+export function listTalkStateEntriesByPrefix(
+  talkId: string,
+  prefix: string,
+): TalkStateEntrySnapshot[] {
+  const normalizedPrefix = validateStateKey(prefix);
+  return listTalkStateEntries(talkId).filter((entry) =>
+    entry.key.startsWith(normalizedPrefix),
+  );
+}
+
 export function getTalkStateEntry(
   talkId: string,
   key: string,
@@ -607,6 +617,19 @@ export function forceDeleteTalkStateEntry(
     .prepare(`DELETE FROM talk_state_entries WHERE talk_id = ? AND key = ?`)
     .run(talkId, validatedKey);
   return result.changes > 0;
+}
+
+export function forceDeleteTalkStateEntriesByPrefix(
+  talkId: string,
+  prefix: string,
+): number {
+  const validatedPrefix = validateStateKey(prefix);
+  const result = getDb()
+    .prepare(
+      `DELETE FROM talk_state_entries WHERE talk_id = ? AND key LIKE ? ESCAPE '\\'`,
+    )
+    .run(talkId, `${validatedPrefix.replace(/[\\%_]/g, '\\$&')}%`);
+  return result.changes;
 }
 
 // ---------------------------------------------------------------------------

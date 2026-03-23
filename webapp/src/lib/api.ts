@@ -242,6 +242,7 @@ export type TalkChannelBinding = {
   responderMode: 'primary' | 'agent';
   responderAgentId: string | null;
   deliveryMode: 'reply' | 'channel';
+  timezone: string;
   instructions: string | null;
   stateNamespace: string;
   inboundRateLimitPerMinute: number;
@@ -2632,6 +2633,7 @@ export async function createTalkChannel(input: {
   responderMode?: TalkChannelBinding['responderMode'];
   responderAgentId?: string | null;
   deliveryMode?: TalkChannelBinding['deliveryMode'];
+  timezone?: string | null;
   instructions?: string | null;
   inboundRateLimitPerMinute?: number;
   maxPendingEvents?: number;
@@ -2658,6 +2660,7 @@ export async function patchTalkChannel(input: {
   responderMode?: TalkChannelBinding['responderMode'];
   responderAgentId?: string | null;
   deliveryMode?: TalkChannelBinding['deliveryMode'];
+  timezone?: string | null;
   instructions?: string | null;
   inboundRateLimitPerMinute?: number;
   maxPendingEvents?: number;
@@ -2763,6 +2766,7 @@ export async function reviewTalkChannelInstructions(input: {
   instructions: string;
   bindingId?: string | null;
   bindingLabel?: string | null;
+  timezone?: string | null;
 }): Promise<ChannelInstructionReview> {
   const envelope = await apiMutationRequest<{ review: ChannelInstructionReview }>(
     `/api/v1/talks/${encodeURIComponent(input.talkId)}/channel-instruction-review`,

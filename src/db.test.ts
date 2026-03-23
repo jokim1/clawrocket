@@ -73,6 +73,7 @@ import {
   ThreadDeleteConflictError,
   upsertTalk,
   upsertChannelTarget,
+  upsertChannelConnection,
   upsertTalkExecutorSession,
   upsertTalkLlmPolicy,
   upsertTalkMember,
@@ -1506,6 +1507,145 @@ describe('phase 0 schema and reliability tables', () => {
     expect(run?.thread_id).toBe(message?.thread_id);
   });
 
+  it('maps Slack conversations to distinct Talk threads by sourceThreadKey', () => {
+    const connection = upsertChannelConnection({
+      platform: 'slack',
+      connectionMode: 'oauth_workspace',
+      accountKey: 'slack:T-test',
+      displayName: 'Slack (KimFamily)',
+      config: { teamId: 'T-test' },
+      createdBy: 'owner-1',
+      updatedBy: 'owner-1',
+      healthStatus: 'healthy',
+      lastHealthCheckAt: '2024-01-01T00:00:23.000Z',
+      lastHealthError: null,
+    });
+    const binding = createTalkChannelBinding({
+      talkId: 'talk-1',
+      connectionId: connection.id,
+      targetKind: 'channel',
+      targetId: 'slack:C-general',
+      displayName: '#general',
+      createdBy: 'owner-1',
+      now: '2024-01-01T00:00:23.100Z',
+    });
+
+    const first = enqueueChannelTurnAtomic({
+      talkId: 'talk-1',
+      messageId: 'msg-slack-thread-1',
+      runId: 'run-slack-thread-1',
+      targetAgentId: binding.responder_agent_id!,
+      content: 'first slack message',
+      metadataJson: JSON.stringify({ platform: 'slack' }),
+      externalCreatedAt: '2024-01-01T00:00:23.200Z',
+      sourceBindingId: binding.id,
+      sourceExternalMessageId: '1710000000.000100',
+      sourceThreadKey: '1710000000.000100',
+      now: '2024-01-01T00:00:23.300Z',
+    });
+    expect(first.status).toBe('enqueued');
+
+    markTalkRunStatus(
+      'run-slack-thread-1',
+      'running',
+      null,
+      null,
+      '2024-01-01T00:00:23.350Z',
+    );
+
+    const second = enqueueChannelTurnAtomic({
+      talkId: 'talk-1',
+      messageId: 'msg-slack-thread-2',
+      runId: 'run-slack-thread-2',
+      targetAgentId: binding.responder_agent_id!,
+      content: 'second slack message',
+      metadataJson: JSON.stringify({ platform: 'slack' }),
+      externalCreatedAt: '2024-01-01T00:00:23.400Z',
+      sourceBindingId: binding.id,
+      sourceExternalMessageId: '1710000001.000100',
+      sourceThreadKey: '1710000001.000100',
+      now: '2024-01-01T00:00:23.500Z',
+    });
+    expect(second.status).toBe('enqueued');
+
+    const firstMessage = listTalkMessages({ talkId: 'talk-1', limit: 20 }).find(
+      (entry) => entry.id === 'msg-slack-thread-1',
+    );
+    const secondMessage = listTalkMessages({
+      talkId: 'talk-1',
+      limit: 20,
+    }).find((entry) => entry.id === 'msg-slack-thread-2');
+    expect(firstMessage?.thread_id).toBeTruthy();
+    expect(secondMessage?.thread_id).toBeTruthy();
+    expect(secondMessage?.thread_id).not.toBe(firstMessage?.thread_id);
+
+    const threadMappings = getDb()
+      .prepare(
+        `
+        SELECT source_thread_key, talk_thread_id
+        FROM talk_channel_thread_map
+        WHERE binding_id = ?
+        ORDER BY source_thread_key ASC
+      `,
+      )
+      .all(binding.id) as Array<{
+      source_thread_key: string;
+      talk_thread_id: string;
+    }>;
+    expect(threadMappings).toHaveLength(2);
+    expect(threadMappings.map((entry) => entry.source_thread_key)).toEqual([
+      '1710000000.000100',
+      '1710000001.000100',
+    ]);
+  });
+
+  it('keeps Telegram channel ingress on the default thread when no sourceThreadKey exists', () => {
+    const connection = ensureSystemManagedTelegramConnection(
+      '2024-01-01T00:00:23.600Z',
+    );
+    const binding = createTalkChannelBinding({
+      talkId: 'talk-1',
+      connectionId: connection.id,
+      targetKind: 'chat',
+      targetId: 'tg:chat:no-thread-key',
+      displayName: 'Telegram Chat',
+      createdBy: 'owner-1',
+      now: '2024-01-01T00:00:23.700Z',
+    });
+    const defaultThreadId = getOrCreateDefaultThread('talk-1');
+
+    const result = enqueueChannelTurnAtomic({
+      talkId: 'talk-1',
+      messageId: 'msg-telegram-default-thread',
+      runId: 'run-telegram-default-thread',
+      targetAgentId: binding.responder_agent_id!,
+      content: 'telegram inbound',
+      metadataJson: JSON.stringify({ platform: 'telegram' }),
+      externalCreatedAt: '2024-01-01T00:00:23.800Z',
+      sourceBindingId: binding.id,
+      sourceExternalMessageId: 'tg-msg-threadless',
+      now: '2024-01-01T00:00:23.900Z',
+    });
+
+    expect(result.status).toBe('enqueued');
+    expect(getTalkRunById('run-telegram-default-thread')?.thread_id).toBe(
+      defaultThreadId,
+    );
+
+    const mapCount = (
+      getDb()
+        .prepare(
+          `
+          SELECT COUNT(*) AS count
+          FROM talk_channel_thread_map
+          WHERE binding_id = ?
+        `,
+        )
+        .get(binding.id) as { count: number }
+    ).count;
+    expect(mapCount).toBe(0);
+  });
+
   it('completes a running run and appends the assistant message', () => {
     enqueueTalkTurnAtomic({
       talkId: 'talk-1',
@@ -1608,6 +1748,7 @@ describe('phase 0 schema and reliability tables', () => {
     expect(delivery?.talk_message_id).toBe('msg-channel-1-response');
     expect(delivery?.status).toBe('sending');
     expect(delivery?.payload_json).toContain('Here is the channel reply');
+    expect(delivery?.payload_json).toContain('"deliveryMode":"reply"');
   });
 
   it('escapes LIKE wildcards when searching channel targets', () => {

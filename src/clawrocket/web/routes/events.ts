@@ -42,10 +42,16 @@ export function buildTalkScopedSseStream(input: {
   lastEventId: number;
   threadId?: string | null;
 }): string {
+  const filters: OutboxEventFilter[] = [buildConversationRunEventFilter()];
+  if (input.threadId) {
+    filters.push(buildTalkThreadEventFilter(input.threadId));
+  }
   return buildSseStreamForTopics(
     getTalkScopedEventTopics(input.talkId),
     input.lastEventId,
-    input.threadId ? buildTalkThreadEventFilter(input.threadId) : undefined,
+    filters.length === 1
+      ? filters[0]
+      : (event) => filters.every((filter) => filter(event)),
   );
 }
 
@@ -94,6 +100,26 @@ function isStringArray(value: unknown): value is string[] {
   );
 }
 
+function isConversationRunPayload(payload: Record<string, unknown>): boolean {
+  return payload.runKind === undefined || payload.runKind === 'conversation';
+}
+
+function buildConversationRunEventFilter(): OutboxEventFilter {
+  return (event) => {
+    switch (event.event_type) {
+      case 'talk_run_queued':
+      case 'talk_run_started':
+      case 'talk_run_completed':
+      case 'talk_run_failed': {
+        const payload = parsePayload(event.payload);
+        return payload ? isConversationRunPayload(payload) : false;
+      }
+      default:
+        return true;
+    }
+  };
+}
+
 export function buildTalkThreadEventFilter(
   threadId: string,
 ): OutboxEventFilter {
@@ -106,6 +132,10 @@ export function buildTalkThreadEventFilter(
       case 'talk_run_started':
       case 'talk_run_completed':
       case 'talk_run_failed':
+        if (!isConversationRunPayload(payload)) {
+          return false;
+        }
+        return payload.threadId === threadId;
       case 'browser_blocked':
       case 'browser_unblocked':
       case 'talk_response_started':

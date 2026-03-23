@@ -1,3 +1,5 @@
+import type { BrowserBlock, BrowserResume } from './api';
+
 export type TalkStreamState =
   | 'connecting'
   | 'live'
@@ -22,6 +24,7 @@ export type TalkRunStartedEvent = {
   talkId: string;
   threadId?: string | null;
   runId: string;
+  runKind?: 'conversation' | 'instruction_review';
   responseGroupId?: string | null;
   sequenceIndex?: number | null;
   triggerMessageId: string | null;
@@ -34,10 +37,11 @@ export type TalkRunCompletedEvent = {
   talkId: string;
   threadId?: string | null;
   runId: string;
+  runKind?: 'conversation' | 'instruction_review';
   responseGroupId?: string | null;
   sequenceIndex?: number | null;
   triggerMessageId: string | null;
-  responseMessageId: string;
+  responseMessageId: string | null;
   executorAlias?: string | null;
   executorModel?: string | null;
 };
@@ -120,6 +124,7 @@ export type TalkRunFailedEvent = {
   talkId: string;
   threadId?: string | null;
   runId: string;
+  runKind?: 'conversation' | 'instruction_review';
   responseGroupId?: string | null;
   sequenceIndex?: number | null;
   triggerMessageId: string | null;
@@ -148,22 +153,14 @@ export type TalkBrowserBlockedEvent = {
   talkId: string;
   threadId?: string | null;
   runId: string;
-  browserBlock: {
-    kind: 'auth_required' | 'confirmation_required' | 'human_step_required';
-  };
+  browserBlock: BrowserBlock;
 };
 
 export type TalkBrowserUnblockedEvent = {
   talkId: string;
   threadId?: string | null;
   runId: string;
-  browserResume?: {
-    kind?:
-      | 'auth_completed'
-      | 'confirmation_approved'
-      | 'confirmation_rejected'
-      | 'human_step_completed';
-  } | null;
+  browserResume?: BrowserResume | null;
 };
 
 interface EventSourceLike {
@@ -253,10 +250,8 @@ export function openTalkStream(input: OpenTalkStreamInput): TalkStreamHandle {
     clearReconnectTimer();
     emitState('reconnecting');
 
-    const baseDelay = BACKOFF_STEPS_MS[Math.min(
-      reconnectAttempt,
-      BACKOFF_STEPS_MS.length - 1,
-    )];
+    const baseDelay =
+      BACKOFF_STEPS_MS[Math.min(reconnectAttempt, BACKOFF_STEPS_MS.length - 1)];
     reconnectAttempt += 1;
     const delay = baseDelay + Math.max(0, jitterMs(baseDelay));
     reconnectTimer = setTimeout(() => {
