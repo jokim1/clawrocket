@@ -394,6 +394,270 @@ describe('SettingsPage', () => {
     ).toHaveValue('Profile 4');
     expect(screen.getByText(/Selected subprofile:/i)).toBeTruthy();
   });
+
+  it('warns when Add Browser Profile matches an existing profile', async () => {
+    const user = userEvent.setup();
+    mockFetch([
+      jsonResponse(200, {
+        ok: true,
+        data: {
+          configuredAliasMap: {},
+          effectiveAliasMap: {},
+          defaultAlias: 'Mock',
+          executorAuthMode: 'none',
+          hasApiKey: false,
+          hasOauthToken: false,
+          hasAuthToken: false,
+          activeCredentialConfigured: false,
+          verificationStatus: 'missing',
+          lastVerifiedAt: null,
+          lastVerificationError: null,
+          anthropicBaseUrl: '',
+          isConfigured: false,
+          configVersion: 0,
+          lastUpdatedAt: null,
+          lastUpdatedBy: null,
+          configErrors: [],
+        },
+      }),
+      jsonResponse(200, {
+        ok: true,
+        data: {
+          mode: 'mock',
+          restartSupported: false,
+          pendingRestartReasons: [],
+          activeRunCount: 0,
+          containerRuntimeAvailability: 'ready',
+          executorAuthMode: 'none',
+          activeCredentialConfigured: false,
+          verificationStatus: 'missing',
+          lastVerifiedAt: null,
+          lastVerificationError: null,
+          hasProviderAuth: false,
+          hasValidAliasMap: true,
+          configVersion: 0,
+          isConfigured: false,
+          bootId: 'boot-browser-duplicate',
+          configErrors: [],
+        },
+      }),
+      jsonResponse(200, {
+        ok: true,
+        data: {
+          profiles: [
+            {
+              id: 'bp-linkedin',
+              siteKey: 'linkedin',
+              accountLabel: null,
+              connectionMode: 'managed',
+              connectionConfig: { mode: 'managed' },
+              createdAt: '2026-03-27T21:40:00.000Z',
+              updatedAt: '2026-03-27T21:40:00.000Z',
+              lastUsedAt: null,
+            },
+          ],
+        },
+      }),
+    ]);
+
+    render(<SettingsPage onUnauthorized={vi.fn()} userRole="owner" />);
+
+    await screen.findByRole('heading', { name: 'Browser Profiles' });
+    await user.click(screen.getByRole('button', { name: 'Add Profile' }));
+    await user.type(
+      screen.getByPlaceholderText('Site key (e.g. linkedin)'),
+      'linkedin',
+    );
+
+    expect(
+      await screen.findByText(/This matches existing profile/i),
+    ).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Create' })).toBeDisabled();
+  });
+
+  it('renders browser profile create failures as an error banner', async () => {
+    const user = userEvent.setup();
+    mockFetch([
+      jsonResponse(200, {
+        ok: true,
+        data: {
+          configuredAliasMap: {},
+          effectiveAliasMap: {},
+          defaultAlias: 'Mock',
+          executorAuthMode: 'none',
+          hasApiKey: false,
+          hasOauthToken: false,
+          hasAuthToken: false,
+          activeCredentialConfigured: false,
+          verificationStatus: 'missing',
+          lastVerifiedAt: null,
+          lastVerificationError: null,
+          anthropicBaseUrl: '',
+          isConfigured: false,
+          configVersion: 0,
+          lastUpdatedAt: null,
+          lastUpdatedBy: null,
+          configErrors: [],
+        },
+      }),
+      jsonResponse(200, {
+        ok: true,
+        data: {
+          mode: 'mock',
+          restartSupported: false,
+          pendingRestartReasons: [],
+          activeRunCount: 0,
+          containerRuntimeAvailability: 'ready',
+          executorAuthMode: 'none',
+          activeCredentialConfigured: false,
+          verificationStatus: 'missing',
+          lastVerifiedAt: null,
+          lastVerificationError: null,
+          hasProviderAuth: false,
+          hasValidAliasMap: true,
+          configVersion: 0,
+          isConfigured: false,
+          bootId: 'boot-browser-error',
+          configErrors: [],
+        },
+      }),
+      jsonResponse(200, {
+        ok: true,
+        data: {
+          profiles: [],
+        },
+      }),
+      jsonResponse(409, {
+        ok: false,
+        error: {
+          code: 'profile_exists',
+          message:
+            'A browser profile for github already exists and is using Managed.',
+        },
+      }),
+    ]);
+
+    render(<SettingsPage onUnauthorized={vi.fn()} userRole="owner" />);
+
+    await screen.findByRole('heading', { name: 'Browser Profiles' });
+    await user.click(screen.getByRole('button', { name: 'Add Profile' }));
+    await user.type(
+      screen.getByPlaceholderText('Site key (e.g. linkedin)'),
+      'github',
+    );
+    await user.click(screen.getByRole('button', { name: 'Create' }));
+
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent(
+      'A browser profile for github already exists and is using Managed.',
+    );
+    expect(alert).toHaveClass('settings-banner-error');
+  });
+
+  it('releases blocking sessions from the browser profile edit form', async () => {
+    const user = userEvent.setup();
+    const fetchMock = vi.fn<
+      (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>
+    >();
+    fetchMock
+      .mockResolvedValueOnce(
+        jsonResponse(200, {
+          ok: true,
+          data: {
+            configuredAliasMap: {},
+            effectiveAliasMap: {},
+            defaultAlias: 'Mock',
+            executorAuthMode: 'none',
+            hasApiKey: false,
+            hasOauthToken: false,
+            hasAuthToken: false,
+            activeCredentialConfigured: false,
+            verificationStatus: 'missing',
+            lastVerifiedAt: null,
+            lastVerificationError: null,
+            anthropicBaseUrl: '',
+            isConfigured: false,
+            configVersion: 0,
+            lastUpdatedAt: null,
+            lastUpdatedBy: null,
+            configErrors: [],
+          },
+        }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse(200, {
+          ok: true,
+          data: {
+            mode: 'mock',
+            restartSupported: false,
+            pendingRestartReasons: [],
+            activeRunCount: 0,
+            containerRuntimeAvailability: 'ready',
+            executorAuthMode: 'none',
+            activeCredentialConfigured: false,
+            verificationStatus: 'missing',
+            lastVerifiedAt: null,
+            lastVerificationError: null,
+            hasProviderAuth: false,
+            hasValidAliasMap: true,
+            configVersion: 0,
+            isConfigured: false,
+            bootId: 'boot-browser-release',
+            configErrors: [],
+          },
+        }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse(200, {
+          ok: true,
+          data: {
+            profiles: [
+              {
+                id: 'bp-linkedin',
+                siteKey: 'linkedin',
+                accountLabel: null,
+                connectionMode: 'managed',
+                connectionConfig: { mode: 'managed' },
+                createdAt: '2026-03-27T21:40:00.000Z',
+                updatedAt: '2026-03-27T21:40:00.000Z',
+                lastUsedAt: null,
+              },
+            ],
+          },
+        }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse(200, {
+          ok: true,
+          data: {
+            releasedCount: 1,
+            liveReleasedCount: 0,
+            staleReleasedCount: 1,
+          },
+        }),
+      );
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(<SettingsPage onUnauthorized={vi.fn()} userRole="owner" />);
+
+    await screen.findByRole('heading', { name: 'Browser Profiles' });
+    await user.click(screen.getByRole('button', { name: 'Edit' }));
+    await user.click(
+      screen.getByRole('button', { name: 'Disconnect Blocking Sessions' }),
+    );
+
+    expect(
+      await screen.findByText(
+        'Disconnected 1 blocking browser session. Save again to apply the new connection mode.',
+      ),
+    ).toBeTruthy();
+    expect(fetchMock).toHaveBeenLastCalledWith(
+      '/api/v1/browser/profiles/bp-linkedin/release-sessions',
+      expect.objectContaining({
+        method: 'POST',
+      }),
+    );
+  });
 });
 
 function mockFetch(responses: Response[]): void {

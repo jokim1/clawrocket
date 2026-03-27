@@ -87,7 +87,8 @@ Before enabling the workflow, confirm the production host already has:
 - the repo cloned at the deploy path
 - the `nanoclaw` user service installed and working
 - `sudo loginctl enable-linger "$USER"` set for public mode
-- Node/npm compatible with the repo
+- outbound HTTPS access to `nodejs.org` so deploy can refresh the repo-managed
+  Node 24 LTS runtime under `.runtime/node-current`
 - Cloudflare Tunnel already forwarding `clawtalk.app` to `127.0.0.1:3210`
 
 ### 3.4 What the deploy script does
@@ -97,8 +98,11 @@ Before enabling the workflow, confirm the production host already has:
 It:
 
 - fetches and hard-resets the checkout to `origin/main`
+- installs or refreshes the latest official Node `24.x` runtime under
+  `.runtime/node-current`
 - installs dependencies with `npm ci` where lockfiles exist
 - builds the server and webapp bundle
+- syncs the checked-in `systemd --user` unit file
 - restarts `systemd --user` service `nanoclaw`
 - waits for `http://127.0.0.1:3210/api/v1/health` to succeed
 - exits non-zero and prints service logs if health checks fail
@@ -129,6 +133,7 @@ Expected:
 - service is `active (running)`
 - health returns `200`
 - one effective process owner for the active `DATA_DIR`
+- `~/projects/clawrocket/.runtime/node-current/bin/node -v` reports `v24.x`
 
 ## 6. Rollback
 
@@ -148,6 +153,15 @@ curl -fsS http://127.0.0.1:3210/api/v1/health
 
 If `webapp/package-lock.json` is intentionally absent on a future branch, replace
 `npm --prefix webapp ci` with `npm --prefix webapp install`.
+
+If the rollback target predates the repo-managed runtime change, re-copy the
+current checked-in service file after resetting:
+
+```bash
+mkdir -p ~/.config/systemd/user
+cp ops/systemd/nanoclaw.service ~/.config/systemd/user/nanoclaw.service
+systemctl --user daemon-reload
+```
 
 ## 7. Single-Instance Guidance
 
