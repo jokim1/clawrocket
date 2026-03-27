@@ -649,6 +649,9 @@ export type TalkRun = {
   browserResume?: BrowserResume | null;
   carriedBrowserSessions?: CarriedBrowserSession[];
   executionDecision?: ExecutionDecision | null;
+  completionStatus?: 'complete' | 'incomplete' | null;
+  providerStopReason?: string | null;
+  incompleteReason?: 'truncated' | 'empty' | 'unknown' | null;
 };
 
 export type TalkRunContextStateEntrySnapshot = {
@@ -3793,6 +3796,22 @@ export async function updateBrowserProfileConnectionMode(
     },
   );
   return envelope.profile;
+}
+
+export async function releaseBrowserProfileSessions(profileId: string): Promise<{
+  releasedCount: number;
+  liveReleasedCount: number;
+  staleReleasedCount: number;
+}> {
+  return apiMutationRequest<{
+    releasedCount: number;
+    liveReleasedCount: number;
+    staleReleasedCount: number;
+  }>(`/api/v1/browser/profiles/${encodeURIComponent(profileId)}/release-sessions`, {
+    method: 'POST',
+    includeJson: true,
+    body: '{}',
+  });
 }
 
 async function apiRequest<T>(path: string, init?: RequestInit): Promise<T> {

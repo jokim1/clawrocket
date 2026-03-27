@@ -11,12 +11,16 @@ import {
 import {
   checkBrowserProfileConnectionUniqueness,
   ensureBrowserProfile,
+  getBrowserProfile,
   getBrowserProfileById,
   hasNonterminalBrowserSessions,
+  listBrowserSessionsByProfile,
   listAllBrowserProfiles,
+  markBrowserSessionDisconnected,
   updateBrowserProfileConnectionMode,
   type BrowserConnectionMode,
   type BrowserProfileSnapshot,
+  type BrowserSessionSnapshot,
 } from '../../db/browser-accessors.js';
 import {
   canUserAccessMainThread,
@@ -1123,6 +1127,38 @@ function isValidConnectionMode(mode: unknown): mode is BrowserConnectionMode {
   );
 }
 
+function describeConnectionMode(mode: BrowserConnectionMode): string {
+  switch (mode) {
+    case 'managed':
+      return 'Managed';
+    case 'chrome_profile':
+      return 'Chrome Profile';
+    case 'cdp':
+      return 'CDP';
+  }
+}
+
+function buildProfileExistsMessage(profile: BrowserProfileSnapshot): string {
+  const label = profile.accountLabel
+    ? `${profile.siteKey} (${profile.accountLabel})`
+    : profile.siteKey;
+  const modeLabel = describeConnectionMode(profile.connectionMode);
+  if (profile.accountLabel) {
+    return `A browser profile for ${label} already exists and is using ${modeLabel}. Use Edit to change it.`;
+  }
+  return `A browser profile for ${label} already exists and is using ${modeLabel}. Use Edit to change it, or add an account label to create another profile for the same site.`;
+}
+
+function isNonterminalProfileSession(
+  session: BrowserSessionSnapshot,
+): boolean {
+  return (
+    session.state === 'active' ||
+    session.state === 'blocked' ||
+    session.state === 'takeover'
+  );
+}
+
 function validateConnectionConfig(
   mode: BrowserConnectionMode,
   config: unknown,
@@ -1380,6 +1416,25 @@ export function createBrowserProfileRoute(input: {
     };
   }
 
+  const siteKey = input.siteKey.trim();
+  const accountLabel =
+    typeof input.accountLabel === 'string'
+      ? input.accountLabel.trim() || null
+      : null;
+  const existing = getBrowserProfile(siteKey, accountLabel);
+  if (existing) {
+    return {
+      statusCode: 409,
+      body: {
+        ok: false,
+        error: {
+          code: 'profile_exists',
+          message: buildProfileExistsMessage(existing),
+        },
+      },
+    };
+  }
+
   // Validate connection config BEFORE creating the profile row to avoid
   // leaving behind a managed profile when validation fails.
   const mode = isValidConnectionMode(input.connectionMode)
@@ -1423,12 +1478,22 @@ export function createBrowserProfileRoute(input: {
   }
 
   const { profile, created } = ensureBrowserProfile({
-    siteKey: input.siteKey.trim(),
-    accountLabel:
-      typeof input.accountLabel === 'string'
-        ? input.accountLabel.trim() || null
-        : null,
+    siteKey,
+    accountLabel,
   });
+
+  if (!created) {
+    return {
+      statusCode: 409,
+      body: {
+        ok: false,
+        error: {
+          code: 'profile_exists',
+          message: buildProfileExistsMessage(profile),
+        },
+      },
+    };
+  }
 
   // Apply connection mode if specified
   if (mode && mode !== 'managed') {
@@ -1574,4 +1639,85 @@ export function updateBrowserProfileConnectionModeRoute(input: {
   }
 
   return { statusCode: 200, body: { ok: true, data: { profile: updated } } };
+}
+
+export async function releaseBrowserProfileSessionsRoute(input: {
+  auth: AuthContext;
+  profileId: string;
+}): Promise<{
+  statusCode: number;
+  body: ApiEnvelope<{
+    releasedCount: number;
+    liveReleasedCount: number;
+    staleReleasedCount: number;
+  }>;
+}> {
+  if (input.auth.role !== 'owner') {
+    return {
+      statusCode: 403,
+      body: {
+        ok: false,
+        error: { code: 'forbidden', message: 'Owner role required.' },
+      },
+    };
+  }
+
+  const profile = getBrowserProfileById(input.profileId);
+  if (!profile) {
+    return {
+      statusCode: 404,
+      body: {
+        ok: false,
+        error: {
+          code: 'profile_not_found',
+          message: 'Browser profile not found.',
+        },
+      },
+    };
+  }
+
+  const sessions = listBrowserSessionsByProfile({ profileId: input.profileId })
+    .filter(isNonterminalProfileSession);
+  if (sessions.length === 0) {
+    return {
+      statusCode: 200,
+      body: {
+        ok: true,
+        data: {
+          releasedCount: 0,
+          liveReleasedCount: 0,
+          staleReleasedCount: 0,
+        },
+      },
+    };
+  }
+
+  const service = getBrowserService();
+  let liveReleasedCount = 0;
+  let staleReleasedCount = 0;
+  for (const session of sessions) {
+    const liveSnapshot = await service.getSessionStatus(session.id);
+    if (liveSnapshot) {
+      await service.close({
+        sessionId: session.id,
+        userId: input.auth.userId,
+      });
+      liveReleasedCount += 1;
+      continue;
+    }
+    markBrowserSessionDisconnected(session.id);
+    staleReleasedCount += 1;
+  }
+
+  return {
+    statusCode: 200,
+    body: {
+      ok: true,
+      data: {
+        releasedCount: liveReleasedCount + staleReleasedCount,
+        liveReleasedCount,
+        staleReleasedCount,
+      },
+    },
+  };
 }

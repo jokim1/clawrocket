@@ -1880,7 +1880,10 @@ export class BrowserService {
     keepProfile?: boolean;
     userId?: string | null;
   }): Promise<BrowserCloseResult> {
-    const session = this.getSessionOrThrow(input.sessionId);
+    const session = this.sessionsById.get(input.sessionId);
+    if (!session) {
+      throw new Error(`Browser session ${input.sessionId} not found`);
+    }
     session.userId = input.userId ?? session.userId;
     session.state = 'closed';
     session.lastUpdatedAt = nowIso();

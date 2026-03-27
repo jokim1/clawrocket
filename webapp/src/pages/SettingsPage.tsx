@@ -18,6 +18,7 @@ import {
   getHealthStatus,
   importExecutorSubscriptionFromHost,
   listBrowserProfiles,
+  releaseBrowserProfileSessions,
   restartService,
   UnauthorizedError,
   updateBrowserProfileConnectionMode,
@@ -36,6 +37,10 @@ type Props = {
 };
 
 type AuthMode = ExecutorSettings['executorAuthMode'];
+type BrowserProfileNotice = {
+  tone: 'success' | 'error';
+  message: string;
+};
 
 function formatChromeSubprofileLabel(
   candidate: ChromeSubprofileCandidate,
@@ -51,6 +56,33 @@ function formatChromeSubprofileLabel(
     parts.push('Last used');
   }
   return parts.join(' · ');
+}
+
+function normalizeBrowserProfileLookupValue(
+  value: string | null | undefined,
+): string | null {
+  if (typeof value !== 'string') {
+    return null;
+  }
+  const trimmed = value.trim().toLowerCase();
+  return trimmed || null;
+}
+
+function formatBrowserConnectionMode(mode: BrowserConnectionMode): string {
+  switch (mode) {
+    case 'managed':
+      return 'Managed';
+    case 'chrome_profile':
+      return 'Chrome Profile';
+    case 'cdp':
+      return 'CDP';
+  }
+}
+
+function formatBrowserProfileLabel(profile: BrowserProfileSummary): string {
+  return profile.accountLabel
+    ? `${profile.siteKey} (${profile.accountLabel})`
+    : profile.siteKey;
 }
 
 function createRowId(): string {
@@ -262,7 +294,8 @@ export function SettingsPage({ onUnauthorized, userRole }: Props) {
   const [browserProfileEditConfig, setBrowserProfileEditConfig] = useState('');
   const [browserProfileEditProfileDirectory, setBrowserProfileEditProfileDirectory] =
     useState('');
-  const [browserProfileNotice, setBrowserProfileNotice] = useState<string | null>(null);
+  const [browserProfileNotice, setBrowserProfileNotice] =
+    useState<BrowserProfileNotice | null>(null);
   const [showAddProfile, setShowAddProfile] = useState(false);
   const [newProfileSiteKey, setNewProfileSiteKey] = useState('');
   const [newProfileAccountLabel, setNewProfileAccountLabel] = useState('');
@@ -496,6 +529,28 @@ export function SettingsPage({ onUnauthorized, userRole }: Props) {
     for (const error of status?.configErrors || []) combined.add(error);
     return Array.from(combined);
   }, [settings, status]);
+
+  const matchingNewBrowserProfile =
+    normalizeBrowserProfileLookupValue(newProfileSiteKey) !== null
+      ? browserProfiles.find((profile) => {
+          const normalizedSiteKey = normalizeBrowserProfileLookupValue(
+            profile.siteKey,
+          );
+          const normalizedAccountLabel = normalizeBrowserProfileLookupValue(
+            profile.accountLabel,
+          );
+          return (
+            normalizedSiteKey ===
+              normalizeBrowserProfileLookupValue(newProfileSiteKey) &&
+            normalizedAccountLabel ===
+              normalizeBrowserProfileLookupValue(newProfileAccountLabel)
+          );
+        }) || null
+      : null;
+
+  const editingBrowserProfile = browserProfileEditId
+    ? browserProfiles.find((profile) => profile.id === browserProfileEditId) || null
+    : null;
 
 
   const handleApiFailure = (err: unknown, fallback: string): void => {
@@ -1234,8 +1289,15 @@ export function SettingsPage({ onUnauthorized, userRole }: Props) {
         </p>
 
         {browserProfileNotice ? (
-          <div className="settings-banner settings-banner-success">
-            {browserProfileNotice}
+          <div
+            className={`settings-banner ${
+              browserProfileNotice.tone === 'error'
+                ? 'settings-banner-error'
+                : 'settings-banner-success'
+            }`}
+            role={browserProfileNotice.tone === 'error' ? 'alert' : 'status'}
+          >
+            {browserProfileNotice.message}
           </div>
         ) : null}
 
@@ -1398,8 +1460,65 @@ export function SettingsPage({ onUnauthorized, userRole }: Props) {
                   value={browserProfileEditConfig}
                   onChange={(e) => setBrowserProfileEditConfig(e.target.value)}
                   style={{ marginLeft: '1.5rem' }}
-                />
-              ) : null}
+                  />
+                ) : null}
+              </div>
+            <div
+              className="settings-copy"
+              style={{
+                marginTop: '0.75rem',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '0.75rem',
+                flexWrap: 'wrap',
+              }}
+            >
+              <span>
+                If this profile is locked by an active or paused browser task,
+                disconnect its blocking sessions, then save again. This
+                interrupts any in-progress browser work for{' '}
+                {editingBrowserProfile
+                  ? formatBrowserProfileLabel(editingBrowserProfile)
+                  : 'this profile'}
+                .
+              </span>
+              <button
+                type="button"
+                className="secondary-btn"
+                disabled={browserProfilesBusy}
+                onClick={async () => {
+                  if (!browserProfileEditId) return;
+                  setBrowserProfilesBusy(true);
+                  setBrowserProfileNotice(null);
+                  try {
+                    const result =
+                      await releaseBrowserProfileSessions(browserProfileEditId);
+                    setBrowserProfileNotice({
+                      tone: 'success',
+                      message:
+                        result.releasedCount > 0
+                          ? `Disconnected ${result.releasedCount} blocking browser ${result.releasedCount === 1 ? 'session' : 'sessions'}. Save again to apply the new connection mode.`
+                          : 'No blocking browser sessions were found for this profile.',
+                    });
+                  } catch (err) {
+                    if (err instanceof UnauthorizedError) {
+                      onUnauthorized();
+                      return;
+                    }
+                    setBrowserProfileNotice({
+                      tone: 'error',
+                      message:
+                        err instanceof ApiError
+                          ? err.message
+                          : 'Failed to disconnect blocking browser sessions.',
+                    });
+                  } finally {
+                    setBrowserProfilesBusy(false);
+                  }
+                }}
+              >
+                Disconnect Blocking Sessions
+              </button>
             </div>
             <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.75rem' }}>
               <button
@@ -1431,18 +1550,25 @@ export function SettingsPage({ onUnauthorized, userRole }: Props) {
                     );
                     setBrowserProfileEditId(null);
                     setBrowserProfileEditProfileDirectory('');
-                    setBrowserProfileNotice('Connection mode updated.');
+                    setBrowserProfileNotice({
+                      tone: 'success',
+                      message: 'Connection mode updated.',
+                    });
                     await loadBrowserProfiles();
                   } catch (err) {
                     if (err instanceof UnauthorizedError) {
                       onUnauthorized();
                       return;
                     }
-                    setBrowserProfileNotice(
-                      err instanceof ApiError
-                        ? err.message
-                        : 'Failed to update connection mode.',
-                    );
+                    setBrowserProfileNotice({
+                      tone: 'error',
+                      message:
+                        err instanceof ApiError
+                          ? err.code === 'active_session_exists'
+                            ? `${err.message} Disconnect the blocking sessions below, or finish the paused browser task first.`
+                            : err.message
+                          : 'Failed to update connection mode.',
+                    });
                   } finally {
                     setBrowserProfilesBusy(false);
                   }
@@ -1512,6 +1638,28 @@ export function SettingsPage({ onUnauthorized, userRole }: Props) {
                     value={newProfileAccountLabel}
                     onChange={(e) => setNewProfileAccountLabel(e.target.value)}
                   />
+                  <p
+                    className="settings-copy"
+                    style={{ margin: '0', fontSize: '0.92rem' }}
+                  >
+                    Profiles are unique by site key plus account label. Use the
+                    same site key with a different account label for multiple
+                    accounts on one site.
+                  </p>
+                  {matchingNewBrowserProfile ? (
+                    <div className="settings-banner settings-banner-warning">
+                      This matches existing profile{' '}
+                      <strong>
+                        {formatBrowserProfileLabel(matchingNewBrowserProfile)}
+                      </strong>{' '}
+                      and it is still using{' '}
+                      {formatBrowserConnectionMode(
+                        matchingNewBrowserProfile.connectionMode,
+                      )}
+                      . Use Edit to change it, or change the account label to
+                      create a second profile for the same site.
+                    </div>
+                  ) : null}
                   <label>
                     <input
                       type="radio"
@@ -1582,7 +1730,11 @@ export function SettingsPage({ onUnauthorized, userRole }: Props) {
                   <button
                     type="button"
                     className="primary-btn"
-                    disabled={browserProfilesBusy || !newProfileSiteKey.trim()}
+                    disabled={
+                      browserProfilesBusy ||
+                      !newProfileSiteKey.trim() ||
+                      matchingNewBrowserProfile !== null
+                    }
                     onClick={async () => {
                       setBrowserProfilesBusy(true);
                       setBrowserProfileNotice(null);
@@ -1609,18 +1761,23 @@ export function SettingsPage({ onUnauthorized, userRole }: Props) {
                         });
                         setShowAddProfile(false);
                         setNewProfileProfileDirectory('');
-                        setBrowserProfileNotice('Profile created.');
+                        setBrowserProfileNotice({
+                          tone: 'success',
+                          message: 'Profile created.',
+                        });
                         await loadBrowserProfiles();
                       } catch (err) {
                         if (err instanceof UnauthorizedError) {
                           onUnauthorized();
                           return;
                         }
-                        setBrowserProfileNotice(
-                          err instanceof ApiError
-                            ? err.message
-                            : 'Failed to create profile.',
-                        );
+                        setBrowserProfileNotice({
+                          tone: 'error',
+                          message:
+                            err instanceof ApiError
+                              ? err.message
+                              : 'Failed to create profile.',
+                        });
                       } finally {
                         setBrowserProfilesBusy(false);
                       }

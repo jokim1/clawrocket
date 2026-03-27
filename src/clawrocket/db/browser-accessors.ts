@@ -490,6 +490,25 @@ export function listBrowserSessionsByProfile(input: {
   return [];
 }
 
+export function markBrowserSessionDisconnected(
+  sessionId: string,
+  now = new Date().toISOString(),
+): BrowserSessionSnapshot | null {
+  getDb()
+    .prepare(
+      `
+      UPDATE browser_sessions
+      SET state = 'disconnected',
+          updated_at = ?,
+          last_seen_at = ?,
+          last_live_context_at = NULL
+      WHERE id = ?
+    `,
+    )
+    .run(now, now, sessionId);
+  return getBrowserSessionById(sessionId);
+}
+
 export function upsertBrowserSessionState(input: {
   id: string;
   userId?: string | null;
@@ -749,8 +768,9 @@ export function reconcileBrowserSessionsOnStartup(
       UPDATE browser_sessions
       SET state = 'disconnected',
           updated_at = ?,
-          last_seen_at = ?
-      WHERE state IN ('active', 'takeover')
+          last_seen_at = ?,
+          last_live_context_at = NULL
+      WHERE state IN ('active', 'blocked', 'takeover')
     `,
     )
     .run(now, now);

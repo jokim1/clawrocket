@@ -5,8 +5,8 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-WorkingDirectory=/home/k1min8r/projects/clawrocket
-ExecStart=/usr/bin/npm start
+WorkingDirectory=%h/projects/clawrocket
+ExecStart=%h/projects/clawrocket/ops/systemd/start-nanoclaw.sh
 Restart=always
 RestartSec=3
 KillSignal=SIGTERM

@@ -8,6 +8,7 @@ const browserServiceMocks = vi.hoisted(() => ({
   service: {
     getSessionStatus: vi.fn(),
     getSessionTouchedRunIds: vi.fn(),
+    close: vi.fn(),
     resumeTakeover: vi.fn(),
   },
 }));
@@ -31,6 +32,7 @@ import {
   discoverChromeUserDataDirectories,
   discoverChromeUserDataDirectoriesRoute,
   getBrowserSessionStatusRoute,
+  releaseBrowserProfileSessionsRoute,
   resumeBrowserBlockedRunRoute,
 } from './browser.js';
 import type { AuthContext } from '../types.js';
@@ -65,6 +67,7 @@ describe('browser routes', () => {
 
     browserServiceMocks.service.getSessionStatus.mockReset();
     browserServiceMocks.service.getSessionTouchedRunIds.mockReset();
+    browserServiceMocks.service.close.mockReset();
     browserServiceMocks.service.resumeTakeover.mockReset();
     browserServiceMocks.service.resumeTakeover.mockResolvedValue(undefined);
   });
@@ -438,5 +441,173 @@ describe('browser routes', () => {
         profileDirectory: 'Profile 4',
       });
     }
+  });
+
+  it('rejects duplicate add requests for an existing browser profile', () => {
+    const created = createBrowserProfileRoute({
+      auth: makeAuth('user-a'),
+      siteKey: 'linkedin',
+    });
+
+    expect(created.statusCode).toBe(200);
+    expect(created.body.ok).toBe(true);
+
+    const result = createBrowserProfileRoute({
+      auth: makeAuth('user-a'),
+      siteKey: 'linkedin',
+      connectionMode: 'chrome_profile',
+    });
+
+    expect(result.statusCode).toBe(409);
+    expect(result.body.ok).toBe(false);
+    if (!result.body.ok) {
+      expect(result.body.error.code).toBe('profile_exists');
+      expect(result.body.error.message).toContain(
+        'A browser profile for linkedin already exists and is using Managed.',
+      );
+      expect(result.body.error.message).toContain('Use Edit to change it');
+    }
+  });
+
+  it('releases stale blocking sessions for a browser profile', async () => {
+    const created = createBrowserProfileRoute({
+      auth: makeAuth('user-a'),
+      siteKey: 'linkedin',
+    });
+
+    expect(created.body.ok).toBe(true);
+    if (!created.body.ok) {
+      throw new Error('Expected profile creation to succeed');
+    }
+
+    getDb()
+      .prepare(
+        `
+        INSERT INTO browser_sessions (
+          id, user_id, profile_id, profile_key, site_key, account_label,
+          state, blocked_reason, owner_run_id, last_seen_at, last_live_context_at,
+          created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `,
+      )
+      .run(
+        'bs-linkedin-stale',
+        'user-a',
+        created.body.data.profile.id,
+        'linkedin',
+        'linkedin',
+        null,
+        'blocked',
+        'login_required',
+        null,
+        '2026-03-27T21:50:00.000Z',
+        '2026-03-27T21:50:00.000Z',
+        '2026-03-27T21:50:00.000Z',
+        '2026-03-27T21:50:00.000Z',
+      );
+
+    browserServiceMocks.service.getSessionStatus.mockResolvedValue(null);
+
+    const result = await releaseBrowserProfileSessionsRoute({
+      auth: makeAuth('user-a'),
+      profileId: created.body.data.profile.id,
+    });
+
+    expect(result.statusCode).toBe(200);
+    expect(result.body.ok).toBe(true);
+    if (result.body.ok) {
+      expect(result.body.data).toEqual({
+        releasedCount: 1,
+        liveReleasedCount: 0,
+        staleReleasedCount: 1,
+      });
+    }
+
+    const session = getDb()
+      .prepare(`SELECT state, last_live_context_at FROM browser_sessions WHERE id = ?`)
+      .get('bs-linkedin-stale') as
+      | { state: string; last_live_context_at: string | null }
+      | undefined;
+    expect(session).toEqual({
+      state: 'disconnected',
+      last_live_context_at: null,
+    });
+  });
+
+  it('closes live blocking sessions for a browser profile', async () => {
+    const created = createBrowserProfileRoute({
+      auth: makeAuth('user-a'),
+      siteKey: 'linkedin',
+    });
+
+    expect(created.body.ok).toBe(true);
+    if (!created.body.ok) {
+      throw new Error('Expected profile creation to succeed');
+    }
+
+    getDb()
+      .prepare(
+        `
+        INSERT INTO browser_sessions (
+          id, user_id, profile_id, profile_key, site_key, account_label,
+          state, blocked_reason, owner_run_id, last_seen_at, last_live_context_at,
+          created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `,
+      )
+      .run(
+        'bs-linkedin-live',
+        'user-a',
+        created.body.data.profile.id,
+        'linkedin',
+        'linkedin',
+        null,
+        'takeover',
+        'manual_takeover',
+        null,
+        '2026-03-27T22:00:00.000Z',
+        '2026-03-27T22:00:00.000Z',
+        '2026-03-27T22:00:00.000Z',
+        '2026-03-27T22:00:00.000Z',
+      );
+
+    browserServiceMocks.service.getSessionStatus.mockResolvedValue({
+      sessionId: 'bs-linkedin-live',
+      siteKey: 'linkedin',
+      accountLabel: null,
+      headed: true,
+      state: 'takeover',
+      owner: 'user',
+      blockedKind: null,
+      blockedMessage: null,
+      currentUrl: 'https://www.linkedin.com/feed/',
+      currentTitle: 'LinkedIn',
+      lastUpdatedAt: '2026-03-27T22:00:00.000Z',
+    });
+    browserServiceMocks.service.close.mockResolvedValue({
+      status: 'ok',
+      siteKey: 'linkedin',
+      accountLabel: null,
+      message: 'Browser session closed.',
+    });
+
+    const result = await releaseBrowserProfileSessionsRoute({
+      auth: makeAuth('user-a'),
+      profileId: created.body.data.profile.id,
+    });
+
+    expect(result.statusCode).toBe(200);
+    expect(result.body.ok).toBe(true);
+    if (result.body.ok) {
+      expect(result.body.data).toEqual({
+        releasedCount: 1,
+        liveReleasedCount: 1,
+        staleReleasedCount: 0,
+      });
+    }
+    expect(browserServiceMocks.service.close).toHaveBeenCalledWith({
+      sessionId: 'bs-linkedin-live',
+      userId: 'user-a',
+    });
   });
 });
