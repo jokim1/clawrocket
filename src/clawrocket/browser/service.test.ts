@@ -243,4 +243,63 @@ describe('browser service helpers', () => {
 
     expect(result).toBeTruthy();
   });
+
+  it('adds --profile-directory when a Chrome subprofile is selected', () => {
+    const options = _testOnly.buildLaunchOptions(
+      {
+        id: 'profile-1',
+        siteKey: 'linkedin',
+        accountLabel: null,
+        profilePath: '/tmp/managed-profile',
+        channel: 'chrome',
+        locale: 'en-US',
+        timezoneId: 'America/Los_Angeles',
+        userAgent: null,
+        viewport: { width: 1280, height: 720 },
+        policy: null,
+        downloadDir: '/tmp/downloads',
+        connectionMode: 'chrome_profile',
+        connectionConfig: {
+          mode: 'chrome_profile',
+          chromeProfilePath: '/Users/alice/Library/Application Support/Google/Chrome',
+          profileDirectory: 'Profile 4',
+        },
+        createdAt: '2026-03-27T00:00:00.000Z',
+        updatedAt: '2026-03-27T00:00:00.000Z',
+        lastUsedAt: null,
+      },
+      false,
+    );
+
+    expect(options?.args).toEqual(['--profile-directory=Profile 4']);
+  });
+
+  it('does not add profile args when no Chrome subprofile is selected', () => {
+    const options = _testOnly.buildLaunchOptions(
+      {
+        id: 'profile-1',
+        siteKey: 'linkedin',
+        accountLabel: null,
+        profilePath: '/tmp/managed-profile',
+        channel: 'chrome',
+        locale: 'en-US',
+        timezoneId: 'America/Los_Angeles',
+        userAgent: null,
+        viewport: { width: 1280, height: 720 },
+        policy: null,
+        downloadDir: '/tmp/downloads',
+        connectionMode: 'chrome_profile',
+        connectionConfig: {
+          mode: 'chrome_profile',
+          chromeProfilePath: '/Users/alice/Library/Application Support/Google/Chrome',
+        },
+        createdAt: '2026-03-27T00:00:00.000Z',
+        updatedAt: '2026-03-27T00:00:00.000Z',
+        lastUsedAt: null,
+      },
+      false,
+    );
+
+    expect(options?.args).toBeUndefined();
+  });
 });

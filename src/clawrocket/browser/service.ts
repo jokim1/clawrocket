@@ -428,6 +428,21 @@ function resolveViewport(profile: BrowserProfileSnapshot): {
   return profile.viewport;
 }
 
+function buildChromeProfileLaunchArgs(
+  profile: BrowserProfileSnapshot,
+): string[] {
+  if (profile.connectionConfig.mode !== 'chrome_profile') {
+    return [];
+  }
+
+  const profileDirectory = profile.connectionConfig.profileDirectory?.trim();
+  if (!profileDirectory) {
+    return [];
+  }
+
+  return [`--profile-directory=${profileDirectory}`];
+}
+
 function buildLaunchOptions(
   profile: BrowserProfileSnapshot,
   headed: boolean,
@@ -443,6 +458,10 @@ function buildLaunchOptions(
   };
   if (profile.userAgent) {
     options.userAgent = profile.userAgent;
+  }
+  const args = buildChromeProfileLaunchArgs(profile);
+  if (args.length > 0) {
+    options.args = args;
   }
   return options;
 }
@@ -758,8 +777,8 @@ function nowIso(): string {
   return new Date().toISOString();
 }
 
-function detectChromeLockFile(profileDir: string): boolean {
-  // On Linux, Chrome places a SingletonLock in the user-data directory (parent of profile dir).
+function detectChromeLockFile(userDataDir: string): boolean {
+  // On Linux, Chrome places a SingletonLock in the user-data directory root.
   // On macOS, check for the Chrome process instead (lock file is not reliably used).
   const platform = process.platform;
   if (platform === 'darwin') {
@@ -776,8 +795,6 @@ function detectChromeLockFile(profileDir: string): boolean {
     }
   }
 
-  // Linux / other: check SingletonLock in the parent (user data dir) of the profile directory
-  const userDataDir = path.dirname(profileDir);
   const lockPath = path.join(userDataDir, 'SingletonLock');
   try {
     fs.lstatSync(lockPath);
@@ -815,11 +832,13 @@ async function acquireChromeProfileContext(
   if (profile.connectionConfig.mode !== 'chrome_profile') {
     throw new Error('Profile is not configured for chrome_profile mode');
   }
-  const chromeProfilePath = profile.connectionConfig.chromeProfilePath;
+  const chromeUserDataDir = profile.connectionConfig.chromeProfilePath;
+  const profileDirectory =
+    profile.connectionConfig.profileDirectory?.trim() || null;
 
-  if (detectChromeLockFile(chromeProfilePath)) {
+  if (detectChromeLockFile(chromeUserDataDir)) {
     logger.warn(
-      { chromeProfilePath },
+      { chromeUserDataDir, profileDirectory },
       'Chrome may already be running with this profile — close Chrome and retry',
     );
   }
@@ -828,7 +847,7 @@ async function acquireChromeProfileContext(
   fs.mkdirSync(profile.downloadDir, { recursive: true });
 
   const context = await chromium.launchPersistentContext(
-    chromeProfilePath,
+    chromeUserDataDir,
     buildLaunchOptions(profile, headed),
   );
   const page = await ensurePrimaryPage(context);
@@ -1950,4 +1969,6 @@ export const _testOnly = {
   classifyRisk,
   buildLinkedInBlockedReason,
   buildOpenResultFromExistingSessionSnapshot,
+  buildChromeProfileLaunchArgs,
+  buildLaunchOptions,
 };

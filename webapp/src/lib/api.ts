@@ -3694,6 +3694,36 @@ export async function logout(): Promise<void> {
 
 export type BrowserConnectionMode = 'managed' | 'chrome_profile' | 'cdp';
 
+export type ChromeUserDataDirectoryCandidate = {
+  id: string;
+  label: string;
+  path: string;
+  preferred: boolean;
+};
+
+export type ChromeUserDataDirectoryDiscovery = {
+  platform: string;
+  defaultPathHint: string | null;
+  candidates: ChromeUserDataDirectoryCandidate[];
+};
+
+export type ChromeSubprofileCandidate = {
+  directoryName: string;
+  displayName: string;
+  email: string | null;
+  fullName: string | null;
+  kind: 'default' | 'profile' | 'guest' | 'system' | 'other';
+  preferred: boolean;
+  lastUsed: boolean;
+  path: string;
+};
+
+export type ChromeSubprofileDiscovery = {
+  userDataDir: string;
+  localStateFound: boolean;
+  candidates: ChromeSubprofileCandidate[];
+};
+
 export type BrowserProfileSummary = {
   id: string;
   siteKey: string;
@@ -3701,7 +3731,11 @@ export type BrowserProfileSummary = {
   connectionMode: BrowserConnectionMode;
   connectionConfig:
     | { mode: 'managed' }
-    | { mode: 'chrome_profile'; chromeProfilePath: string }
+    | {
+        mode: 'chrome_profile';
+        chromeProfilePath: string;
+        profileDirectory?: string;
+      }
     | { mode: 'cdp'; endpointUrl: string };
   createdAt: string;
   updatedAt: string;
@@ -3713,6 +3747,20 @@ export async function listBrowserProfiles(): Promise<BrowserProfileSummary[]> {
     '/api/v1/browser/profiles',
   );
   return envelope.profiles;
+}
+
+export async function discoverChromeUserDataDirectories(): Promise<ChromeUserDataDirectoryDiscovery> {
+  return apiRequest<ChromeUserDataDirectoryDiscovery>(
+    '/api/v1/browser/discovery/chrome-user-data',
+  );
+}
+
+export async function discoverChromeSubprofiles(
+  userDataDir: string,
+): Promise<ChromeSubprofileDiscovery> {
+  return apiRequest<ChromeSubprofileDiscovery>(
+    `/api/v1/browser/discovery/chrome-profiles?userDataDir=${encodeURIComponent(userDataDir)}`,
+  );
 }
 
 export async function createBrowserProfile(input: {

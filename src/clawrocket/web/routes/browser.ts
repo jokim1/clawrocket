@@ -1,3 +1,7 @@
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
+
 import type { ApiEnvelope, AuthContext } from '../types.js';
 import {
   getBrowserService,
@@ -29,6 +33,422 @@ import type {
   BrowserBlockMetadata,
   BrowserResumeMetadata,
 } from '../../browser/metadata.js';
+
+export interface ChromeUserDataDirectoryCandidate {
+  id: string;
+  label: string;
+  path: string;
+  preferred: boolean;
+}
+
+export interface ChromeUserDataDirectoryDiscovery {
+  platform: string;
+  defaultPathHint: string | null;
+  candidates: ChromeUserDataDirectoryCandidate[];
+}
+
+export interface ChromeSubprofileCandidate {
+  directoryName: string;
+  displayName: string;
+  email: string | null;
+  fullName: string | null;
+  kind: 'default' | 'profile' | 'guest' | 'system' | 'other';
+  preferred: boolean;
+  lastUsed: boolean;
+  path: string;
+}
+
+export interface ChromeSubprofileDiscovery {
+  userDataDir: string;
+  localStateFound: boolean;
+  candidates: ChromeSubprofileCandidate[];
+}
+
+type ChromeUserDataDirectoryDiscoveryInput = {
+  platform?: NodeJS.Platform;
+  homeDir?: string;
+  env?: NodeJS.ProcessEnv;
+  isDirectory?: ((targetPath: string) => boolean) | undefined;
+};
+
+type ChromeSubprofileDiscoveryInput = {
+  userDataDir: string;
+  isDirectory?: ((targetPath: string) => boolean) | undefined;
+  pathExists?: ((targetPath: string) => boolean) | undefined;
+  readDirNames?: ((targetPath: string) => string[]) | undefined;
+  readFile?: ((targetPath: string) => string) | undefined;
+};
+
+function isDirectory(targetPath: string): boolean {
+  try {
+    return fs.statSync(targetPath).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+function pathExists(targetPath: string): boolean {
+  try {
+    fs.lstatSync(targetPath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function readDirNames(targetPath: string): string[] {
+  return fs.readdirSync(targetPath);
+}
+
+function readFile(targetPath: string): string {
+  return fs.readFileSync(targetPath, 'utf8');
+}
+
+function stringOrNull(value: unknown): string | null {
+  if (typeof value !== 'string') {
+    return null;
+  }
+  const trimmed = value.trim();
+  return trimmed || null;
+}
+
+function inferChromeSubprofileKind(
+  directoryName: string,
+): ChromeSubprofileCandidate['kind'] {
+  if (/^Default$/i.test(directoryName)) {
+    return 'default';
+  }
+  if (/^Profile \d+$/i.test(directoryName)) {
+    return 'profile';
+  }
+  if (/^Guest Profile$/i.test(directoryName)) {
+    return 'guest';
+  }
+  if (/^System Profile$/i.test(directoryName)) {
+    return 'system';
+  }
+  return 'other';
+}
+
+function isSafeChromeProfileDirectoryName(directoryName: string): boolean {
+  const trimmed = directoryName.trim();
+  if (!trimmed) {
+    return false;
+  }
+  if (trimmed === '.' || trimmed === '..') {
+    return false;
+  }
+  if (trimmed.includes('/') || trimmed.includes('\\')) {
+    return false;
+  }
+  return !path.isAbsolute(trimmed);
+}
+
+function compareChromeSubprofiles(
+  left: ChromeSubprofileCandidate,
+  right: ChromeSubprofileCandidate,
+): number {
+  if (left.preferred !== right.preferred) {
+    return left.preferred ? -1 : 1;
+  }
+  if (left.lastUsed !== right.lastUsed) {
+    return left.lastUsed ? -1 : 1;
+  }
+
+  const rank = (candidate: ChromeSubprofileCandidate): number => {
+    switch (candidate.kind) {
+      case 'default':
+        return 0;
+      case 'profile':
+        return 1;
+      case 'other':
+        return 2;
+      case 'guest':
+        return 3;
+      case 'system':
+        return 4;
+      default:
+        return 5;
+    }
+  };
+
+  const rankDiff = rank(left) - rank(right);
+  if (rankDiff !== 0) {
+    return rankDiff;
+  }
+
+  return left.directoryName.localeCompare(right.directoryName, undefined, {
+    numeric: true,
+    sensitivity: 'base',
+  });
+}
+
+function buildDiscoveryCandidates(input: {
+  platform: NodeJS.Platform;
+  homeDir: string;
+  env: NodeJS.ProcessEnv;
+}): { defaultPathHint: string | null; candidates: ChromeUserDataDirectoryCandidate[] } {
+  switch (input.platform) {
+    case 'darwin': {
+      const libraryDir = path.join(input.homeDir, 'Library', 'Application Support');
+      return {
+        defaultPathHint: path.join(libraryDir, 'Google', 'Chrome'),
+        candidates: [
+          {
+            id: 'google-chrome',
+            label: 'Google Chrome',
+            path: path.join(libraryDir, 'Google', 'Chrome'),
+            preferred: true,
+          },
+          {
+            id: 'google-chrome-beta',
+            label: 'Google Chrome Beta',
+            path: path.join(libraryDir, 'Google', 'Chrome Beta'),
+            preferred: false,
+          },
+          {
+            id: 'google-chrome-dev',
+            label: 'Google Chrome Dev',
+            path: path.join(libraryDir, 'Google', 'Chrome Dev'),
+            preferred: false,
+          },
+          {
+            id: 'google-chrome-canary',
+            label: 'Google Chrome Canary',
+            path: path.join(libraryDir, 'Google', 'Chrome Canary'),
+            preferred: false,
+          },
+          {
+            id: 'chromium',
+            label: 'Chromium',
+            path: path.join(libraryDir, 'Chromium'),
+            preferred: false,
+          },
+        ],
+      };
+    }
+    case 'win32': {
+      const localAppData =
+        input.env.LOCALAPPDATA?.trim() ||
+        path.join(input.homeDir, 'AppData', 'Local');
+      return {
+        defaultPathHint: path.join(localAppData, 'Google', 'Chrome', 'User Data'),
+        candidates: [
+          {
+            id: 'google-chrome',
+            label: 'Google Chrome',
+            path: path.join(localAppData, 'Google', 'Chrome', 'User Data'),
+            preferred: true,
+          },
+          {
+            id: 'google-chrome-beta',
+            label: 'Google Chrome Beta',
+            path: path.join(localAppData, 'Google', 'Chrome Beta', 'User Data'),
+            preferred: false,
+          },
+          {
+            id: 'google-chrome-canary',
+            label: 'Google Chrome Canary',
+            path: path.join(localAppData, 'Google', 'Chrome SxS', 'User Data'),
+            preferred: false,
+          },
+          {
+            id: 'chromium',
+            label: 'Chromium',
+            path: path.join(localAppData, 'Chromium', 'User Data'),
+            preferred: false,
+          },
+        ],
+      };
+    }
+    default: {
+      const configDir = path.join(input.homeDir, '.config');
+      return {
+        defaultPathHint: path.join(configDir, 'google-chrome'),
+        candidates: [
+          {
+            id: 'google-chrome',
+            label: 'Google Chrome',
+            path: path.join(configDir, 'google-chrome'),
+            preferred: true,
+          },
+          {
+            id: 'google-chrome-beta',
+            label: 'Google Chrome Beta',
+            path: path.join(configDir, 'google-chrome-beta'),
+            preferred: false,
+          },
+          {
+            id: 'google-chrome-dev',
+            label: 'Google Chrome Dev',
+            path: path.join(configDir, 'google-chrome-unstable'),
+            preferred: false,
+          },
+          {
+            id: 'chromium',
+            label: 'Chromium',
+            path: path.join(configDir, 'chromium'),
+            preferred: false,
+          },
+        ],
+      };
+    }
+  }
+}
+
+export function discoverChromeUserDataDirectories(
+  input: ChromeUserDataDirectoryDiscoveryInput = {},
+): ChromeUserDataDirectoryDiscovery {
+  const platform = input.platform ?? process.platform;
+  const homeDir = input.homeDir ?? os.homedir();
+  const env = input.env ?? process.env;
+  const checkDirectory = input.isDirectory ?? isDirectory;
+  const { defaultPathHint, candidates } = buildDiscoveryCandidates({
+    platform,
+    homeDir,
+    env,
+  });
+
+  const seenPaths = new Set<string>();
+  const detected = candidates.filter((candidate) => {
+    if (!candidate.path || seenPaths.has(candidate.path)) {
+      return false;
+    }
+    seenPaths.add(candidate.path);
+    return checkDirectory(candidate.path);
+  });
+
+  return {
+    platform,
+    defaultPathHint,
+    candidates: detected,
+  };
+}
+
+export function discoverChromeSubprofiles(
+  input: ChromeSubprofileDiscoveryInput,
+): ChromeSubprofileDiscovery {
+  const userDataDir = input.userDataDir.trim();
+  const checkDirectory = input.isDirectory ?? isDirectory;
+  const exists = input.pathExists ?? pathExists;
+  const listDirNames = input.readDirNames ?? readDirNames;
+  const readTextFile = input.readFile ?? readFile;
+
+  let localStateFound = false;
+  let preferredDirectoryName: string | null = null;
+  let infoCache: Record<string, Record<string, unknown>> = {};
+
+  try {
+    const localStatePath = path.join(userDataDir, 'Local State');
+    const parsed = JSON.parse(readTextFile(localStatePath)) as Record<
+      string,
+      unknown
+    >;
+    const profileSection =
+      parsed.profile && typeof parsed.profile === 'object'
+        ? (parsed.profile as Record<string, unknown>)
+        : null;
+    if (profileSection) {
+      localStateFound = true;
+      preferredDirectoryName =
+        stringOrNull(profileSection.last_used) ||
+        (Array.isArray(profileSection.last_active_profiles)
+          ? profileSection.last_active_profiles.find(
+              (value): value is string =>
+                typeof value === 'string' && value.trim().length > 0,
+            ) || null
+          : null);
+      if (
+        profileSection.info_cache &&
+        typeof profileSection.info_cache === 'object' &&
+        !Array.isArray(profileSection.info_cache)
+      ) {
+        infoCache = Object.fromEntries(
+          Object.entries(profileSection.info_cache as Record<string, unknown>)
+            .filter(
+              ([, value]) =>
+                value && typeof value === 'object' && !Array.isArray(value),
+            )
+            .map(([key, value]) => [key, value as Record<string, unknown>]),
+        );
+      }
+    }
+  } catch {
+    // ignored
+  }
+
+  const candidateNames = new Set<string>(Object.keys(infoCache));
+  try {
+    for (const entryName of listDirNames(userDataDir)) {
+      candidateNames.add(entryName);
+    }
+  } catch {
+    // ignored
+  }
+
+  const candidates: ChromeSubprofileCandidate[] = [];
+  for (const directoryName of candidateNames) {
+    if (!isSafeChromeProfileDirectoryName(directoryName)) {
+      continue;
+    }
+
+    const fullPath = path.join(userDataDir, directoryName);
+    if (!checkDirectory(fullPath)) {
+      continue;
+    }
+
+    const hasPreferences = exists(path.join(fullPath, 'Preferences'));
+    const hasLocalStateInfo = Object.prototype.hasOwnProperty.call(
+      infoCache,
+      directoryName,
+    );
+    const kind = inferChromeSubprofileKind(directoryName);
+    if (kind === 'guest' || kind === 'system') {
+      continue;
+    }
+    if (!hasPreferences && !hasLocalStateInfo && kind === 'other') {
+      continue;
+    }
+
+    const profileInfo = infoCache[directoryName] ?? {};
+    const fullName = stringOrNull(profileInfo.gaia_name);
+    const email = stringOrNull(profileInfo.user_name);
+    const configuredName = stringOrNull(profileInfo.name);
+    const usesDefaultName = profileInfo.is_using_default_name === true;
+    const displayName =
+      (usesDefaultName && fullName) || configuredName || fullName || directoryName;
+    const lastUsed = preferredDirectoryName === directoryName;
+
+    candidates.push({
+      directoryName,
+      displayName,
+      email,
+      fullName,
+      kind,
+      preferred: lastUsed,
+      lastUsed,
+      path: fullPath,
+    });
+  }
+
+  candidates.sort(compareChromeSubprofiles);
+  if (!candidates.some((candidate) => candidate.preferred)) {
+    const fallback =
+      candidates.find(
+        (candidate) =>
+          candidate.kind === 'default' || candidate.kind === 'profile',
+      ) || candidates[0];
+    if (fallback) {
+      fallback.preferred = true;
+    }
+  }
+
+  return {
+    userDataDir,
+    localStateFound,
+    candidates,
+  };
+}
 
 function parseObject(
   value: string | null | undefined,
@@ -719,7 +1139,7 @@ function validateConnectionConfig(
       };
     }
     const chromeProfilePath = configObj.chromeProfilePath.trim();
-    if (!chromeProfilePath.startsWith('/')) {
+    if (!path.isAbsolute(chromeProfilePath)) {
       return {
         valid: false,
         error:
@@ -727,18 +1147,54 @@ function validateConnectionConfig(
         configJson: null,
       };
     }
-    // Warn if user appears to have provided a profile subdirectory instead of user data dir
-    const basename = chromeProfilePath.split('/').pop() || '';
-    if (/^(Default|Profile \d+)$/i.test(basename)) {
+    if (!isDirectory(chromeProfilePath)) {
       return {
         valid: false,
-        error: `chromeProfilePath should be the Chrome user data directory, not the profile subdirectory. Use "${chromeProfilePath.replace(/\/[^/]+$/, '')}" instead of "${chromeProfilePath}".`,
+        error: `chromeProfilePath was not found: ${chromeProfilePath}`,
         configJson: null,
       };
     }
+    // Warn if user appears to have provided a profile subdirectory instead of user data dir
+    const basename = path.basename(chromeProfilePath);
+    if (/^(Default|Profile \d+|Guest Profile|System Profile)$/i.test(basename)) {
+      return {
+        valid: false,
+        error: `chromeProfilePath should be the Chrome user data directory, not the profile subdirectory. Use "${path.dirname(chromeProfilePath)}" instead of "${chromeProfilePath}".`,
+        configJson: null,
+      };
+    }
+
+    const profileDirectory =
+      typeof configObj.profileDirectory === 'string' &&
+      configObj.profileDirectory.trim()
+        ? configObj.profileDirectory.trim()
+        : null;
+    if (profileDirectory) {
+      if (!isSafeChromeProfileDirectoryName(profileDirectory)) {
+        return {
+          valid: false,
+          error:
+            'profileDirectory must be a Chrome subprofile folder name like Default or Profile 4, not a full path.',
+          configJson: null,
+        };
+      }
+
+      const selectedProfilePath = path.join(chromeProfilePath, profileDirectory);
+      if (!isDirectory(selectedProfilePath)) {
+        return {
+          valid: false,
+          error: `profileDirectory "${profileDirectory}" was not found inside "${chromeProfilePath}".`,
+          configJson: null,
+        };
+      }
+    }
+
     return {
       valid: true,
-      configJson: JSON.stringify({ chromeProfilePath }),
+      configJson: JSON.stringify({
+        chromeProfilePath,
+        ...(profileDirectory ? { profileDirectory } : {}),
+      }),
     };
   }
 
@@ -780,6 +1236,97 @@ export function listBrowserProfilesRoute(input: { auth: AuthContext }): {
   return {
     statusCode: 200,
     body: { ok: true, data: { profiles } },
+  };
+}
+
+export function discoverChromeUserDataDirectoriesRoute(input: {
+  auth: AuthContext;
+}): {
+  statusCode: number;
+  body: ApiEnvelope<ChromeUserDataDirectoryDiscovery>;
+} {
+  if (input.auth.role !== 'owner') {
+    return {
+      statusCode: 403,
+      body: {
+        ok: false,
+        error: { code: 'forbidden', message: 'Owner role required.' },
+      },
+    };
+  }
+
+  return {
+    statusCode: 200,
+    body: {
+      ok: true,
+      data: discoverChromeUserDataDirectories(),
+    },
+  };
+}
+
+export function discoverChromeSubprofilesRoute(input: {
+  auth: AuthContext;
+  userDataDir?: unknown;
+}): {
+  statusCode: number;
+  body: ApiEnvelope<ChromeSubprofileDiscovery>;
+} {
+  if (input.auth.role !== 'owner') {
+    return {
+      statusCode: 403,
+      body: {
+        ok: false,
+        error: { code: 'forbidden', message: 'Owner role required.' },
+      },
+    };
+  }
+
+  if (typeof input.userDataDir !== 'string' || !input.userDataDir.trim()) {
+    return {
+      statusCode: 400,
+      body: {
+        ok: false,
+        error: {
+          code: 'invalid_user_data_dir',
+          message: 'userDataDir is required.',
+        },
+      },
+    };
+  }
+
+  const userDataDir = input.userDataDir.trim();
+  if (!path.isAbsolute(userDataDir)) {
+    return {
+      statusCode: 400,
+      body: {
+        ok: false,
+        error: {
+          code: 'invalid_user_data_dir',
+          message: 'userDataDir must be an absolute path.',
+        },
+      },
+    };
+  }
+
+  if (!isDirectory(userDataDir)) {
+    return {
+      statusCode: 404,
+      body: {
+        ok: false,
+        error: {
+          code: 'user_data_dir_not_found',
+          message: `Chrome user data directory not found: ${userDataDir}`,
+        },
+      },
+    };
+  }
+
+  return {
+    statusCode: 200,
+    body: {
+      ok: true,
+      data: discoverChromeSubprofiles({ userDataDir }),
+    },
   };
 }
 
@@ -848,7 +1395,7 @@ export function createBrowserProfileRoute(input: {
           ok: false,
           error: {
             code: 'connection_config_conflict',
-            message: `Another profile (${uniqueness.conflictSiteKey}) already uses this ${mode === 'chrome_profile' ? 'Chrome user data directory' : 'CDP endpoint'}.`,
+            message: `Another profile (${uniqueness.conflictSiteKey}) already uses this ${mode === 'chrome_profile' ? 'Chrome profile selection' : 'CDP endpoint'}.`,
           },
         },
       };
@@ -985,7 +1532,7 @@ export function updateBrowserProfileConnectionModeRoute(input: {
         ok: false,
         error: {
           code: 'connection_config_conflict',
-          message: `Another profile (${uniqueness.conflictSiteKey}) already uses this ${mode === 'chrome_profile' ? 'Chrome profile path' : 'CDP endpoint'}.`,
+          message: `Another profile (${uniqueness.conflictSiteKey}) already uses this ${mode === 'chrome_profile' ? 'Chrome profile selection' : 'CDP endpoint'}.`,
         },
       },
     };

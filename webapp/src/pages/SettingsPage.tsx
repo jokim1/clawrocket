@@ -2,8 +2,13 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ApiError,
   BrowserConnectionMode,
+  ChromeSubprofileCandidate,
+  ChromeSubprofileDiscovery,
+  ChromeUserDataDirectoryDiscovery,
   BrowserProfileSummary,
   createBrowserProfile,
+  discoverChromeSubprofiles,
+  discoverChromeUserDataDirectories,
   ExecutorSettings,
   ExecutorSubscriptionHostStatus,
   ExecutorStatus,
@@ -31,6 +36,22 @@ type Props = {
 };
 
 type AuthMode = ExecutorSettings['executorAuthMode'];
+
+function formatChromeSubprofileLabel(
+  candidate: ChromeSubprofileCandidate,
+): string {
+  const parts = [candidate.displayName];
+  if (candidate.email) {
+    parts.push(candidate.email);
+  }
+  if (candidate.directoryName !== candidate.displayName) {
+    parts.push(candidate.directoryName);
+  }
+  if (candidate.lastUsed) {
+    parts.push('Last used');
+  }
+  return parts.join(' · ');
+}
 
 function createRowId(): string {
   const randomUUID = globalThis.crypto?.randomUUID;
@@ -239,12 +260,29 @@ export function SettingsPage({ onUnauthorized, userRole }: Props) {
   const [browserProfileEditId, setBrowserProfileEditId] = useState<string | null>(null);
   const [browserProfileEditMode, setBrowserProfileEditMode] = useState<BrowserConnectionMode>('managed');
   const [browserProfileEditConfig, setBrowserProfileEditConfig] = useState('');
+  const [browserProfileEditProfileDirectory, setBrowserProfileEditProfileDirectory] =
+    useState('');
   const [browserProfileNotice, setBrowserProfileNotice] = useState<string | null>(null);
   const [showAddProfile, setShowAddProfile] = useState(false);
   const [newProfileSiteKey, setNewProfileSiteKey] = useState('');
   const [newProfileAccountLabel, setNewProfileAccountLabel] = useState('');
   const [newProfileMode, setNewProfileMode] = useState<BrowserConnectionMode>('managed');
   const [newProfileConfig, setNewProfileConfig] = useState('');
+  const [newProfileProfileDirectory, setNewProfileProfileDirectory] = useState('');
+  const [chromeUserDataDiscovery, setChromeUserDataDiscovery] =
+    useState<ChromeUserDataDirectoryDiscovery | null>(null);
+  const [chromeUserDataDiscoveryBusy, setChromeUserDataDiscoveryBusy] =
+    useState(false);
+  const [chromeUserDataDiscoveryError, setChromeUserDataDiscoveryError] =
+    useState<string | null>(null);
+  const [chromeSubprofileDiscovery, setChromeSubprofileDiscovery] =
+    useState<ChromeSubprofileDiscovery | null>(null);
+  const [chromeSubprofileDiscoveryPath, setChromeSubprofileDiscoveryPath] =
+    useState<string | null>(null);
+  const [chromeSubprofileDiscoveryBusy, setChromeSubprofileDiscoveryBusy] =
+    useState(false);
+  const [chromeSubprofileDiscoveryError, setChromeSubprofileDiscoveryError] =
+    useState<string | null>(null);
 
   const applySettingsDrafts = (nextSettings: ExecutorSettings): void => {
     setSettings(nextSettings);
@@ -266,6 +304,115 @@ export function SettingsPage({ onUnauthorized, userRole }: Props) {
       setBrowserProfiles(profiles);
     } catch {
       // Non-critical — don't block the page for browser profile load failures
+    }
+  };
+
+  const loadChromeUserDataDiscovery = async (
+    force = false,
+  ): Promise<ChromeUserDataDirectoryDiscovery | null> => {
+    if (!force && chromeUserDataDiscovery) {
+      return chromeUserDataDiscovery;
+    }
+
+    setChromeUserDataDiscoveryBusy(true);
+    setChromeUserDataDiscoveryError(null);
+    try {
+      const discovery = await discoverChromeUserDataDirectories();
+      setChromeUserDataDiscovery(discovery);
+      return discovery;
+    } catch (err) {
+      if (err instanceof UnauthorizedError) {
+        onUnauthorized();
+        return null;
+      }
+      setChromeUserDataDiscoveryError(
+        err instanceof ApiError
+          ? err.message
+          : 'Failed to detect Chrome user data directories.',
+      );
+      return null;
+    } finally {
+      setChromeUserDataDiscoveryBusy(false);
+    }
+  };
+
+  const loadChromeSubprofileDiscovery = async (
+    userDataDir: string,
+    force = false,
+  ): Promise<ChromeSubprofileDiscovery | null> => {
+    const trimmed = userDataDir.trim();
+    if (!trimmed) {
+      setChromeSubprofileDiscovery(null);
+      setChromeSubprofileDiscoveryPath(null);
+      setChromeSubprofileDiscoveryError(null);
+      return null;
+    }
+
+    if (
+      !force &&
+      chromeSubprofileDiscovery &&
+      chromeSubprofileDiscoveryPath === trimmed
+    ) {
+      return chromeSubprofileDiscovery;
+    }
+
+    setChromeSubprofileDiscoveryBusy(true);
+    setChromeSubprofileDiscoveryError(null);
+    try {
+      const discovery = await discoverChromeSubprofiles(trimmed);
+      setChromeSubprofileDiscovery(discovery);
+      setChromeSubprofileDiscoveryPath(trimmed);
+      return discovery;
+    } catch (err) {
+      if (err instanceof UnauthorizedError) {
+        onUnauthorized();
+        return null;
+      }
+      setChromeSubprofileDiscovery(null);
+      setChromeSubprofileDiscoveryPath(trimmed);
+      setChromeSubprofileDiscoveryError(
+        err instanceof ApiError
+          ? err.message
+          : 'Failed to detect Chrome subprofiles.',
+      );
+      return null;
+    } finally {
+      setChromeSubprofileDiscoveryBusy(false);
+    }
+  };
+
+  const maybeAutofillChromeProfileSelection = async (input: {
+    currentPath: string;
+    currentProfileDirectory: string;
+    setPath: (value: string) => void;
+    setProfileDirectory: (value: string) => void;
+  }): Promise<void> => {
+    let nextPath = input.currentPath.trim();
+    if (!nextPath) {
+      const discovery = await loadChromeUserDataDiscovery();
+      if (!discovery) {
+        return;
+      }
+      const preferredPath =
+        discovery.candidates.find((candidate) => candidate.preferred) ||
+        discovery.candidates[0];
+      if (!preferredPath) {
+        return;
+      }
+      nextPath = preferredPath.path;
+      input.setPath(nextPath);
+    }
+
+    const subprofileDiscovery = await loadChromeSubprofileDiscovery(nextPath);
+    if (!subprofileDiscovery || input.currentProfileDirectory.trim()) {
+      return;
+    }
+
+    const preferredProfile =
+      subprofileDiscovery.candidates.find((candidate) => candidate.preferred) ||
+      subprofileDiscovery.candidates[0];
+    if (preferredProfile) {
+      input.setProfileDirectory(preferredProfile.directoryName);
     }
   };
 
@@ -694,6 +841,201 @@ export function SettingsPage({ onUnauthorized, userRole }: Props) {
     status.activeCredentialConfigured &&
     status.containerRuntimeAvailability === 'unavailable';
 
+  const applyChromeUserDataDirectorySelection = async (input: {
+    path: string;
+    currentProfileDirectory: string;
+    setPath: (value: string) => void;
+    setProfileDirectory: (value: string) => void;
+  }): Promise<void> => {
+    input.setPath(input.path);
+    if (input.currentProfileDirectory.trim()) {
+      return;
+    }
+    const discovery = await loadChromeSubprofileDiscovery(input.path, true);
+    const preferred =
+      discovery?.candidates.find((candidate) => candidate.preferred) ||
+      discovery?.candidates[0];
+    if (preferred) {
+      input.setProfileDirectory(preferred.directoryName);
+    }
+  };
+
+  const renderChromeProfileSelection = (input: {
+    currentPath: string;
+    setPath: (value: string) => void;
+    currentProfileDirectory: string;
+    setProfileDirectory: (value: string) => void;
+  }): JSX.Element => {
+    const userDataCandidates = chromeUserDataDiscovery?.candidates || [];
+    const userDataDetectLabel = chromeUserDataDiscoveryBusy
+      ? 'Detecting…'
+      : userDataCandidates.length > 0
+        ? 'Refresh detected paths'
+        : 'Detect Chrome paths';
+    const activeSubprofileDiscovery =
+      chromeSubprofileDiscoveryPath === input.currentPath.trim()
+        ? chromeSubprofileDiscovery
+        : null;
+    const subprofileCandidates = activeSubprofileDiscovery?.candidates || [];
+    const selectedSubprofile =
+      subprofileCandidates.find(
+        (candidate) => candidate.directoryName === input.currentProfileDirectory,
+      ) || null;
+    const subprofileDetectLabel = chromeSubprofileDiscoveryBusy
+      ? 'Detecting subprofiles…'
+      : subprofileCandidates.length > 0
+        ? 'Refresh subprofiles'
+        : 'Detect subprofiles';
+
+    return (
+      <div
+        style={{
+          marginLeft: '1.5rem',
+          display: 'flex',
+          flexDirection: 'column',
+          gap: '0.5rem',
+        }}
+      >
+        <input
+          type="text"
+          placeholder="/home/user/.config/google-chrome"
+          value={input.currentPath}
+          onChange={(e) => {
+            input.setPath(e.target.value);
+            input.setProfileDirectory('');
+          }}
+          onBlur={(e) => {
+            if (e.target.value.trim()) {
+              void loadChromeSubprofileDiscovery(e.target.value.trim(), true);
+            }
+          }}
+          style={{ marginLeft: '1.5rem' }}
+        />
+        <div style={{ fontSize: '0.9rem', opacity: 0.75 }}>
+          Use the Chrome user data directory, not a profile subdirectory like
+          <code style={{ marginLeft: '0.25rem' }}>Default</code> or
+          <code style={{ marginLeft: '0.25rem' }}>Profile 1</code>.
+        </div>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem' }}>
+          <button
+            type="button"
+            className="secondary-btn"
+            onClick={() => void loadChromeUserDataDiscovery(true)}
+            disabled={chromeUserDataDiscoveryBusy}
+          >
+            {userDataDetectLabel}
+          </button>
+          {userDataCandidates.map((candidate) => (
+            <button
+              key={candidate.id}
+              type="button"
+              className="secondary-btn"
+              onClick={() =>
+                void applyChromeUserDataDirectorySelection({
+                  path: candidate.path,
+                  currentProfileDirectory: '',
+                  setPath: input.setPath,
+                  setProfileDirectory: input.setProfileDirectory,
+                })
+              }
+              disabled={chromeUserDataDiscoveryBusy}
+            >
+              Use {candidate.label}
+            </button>
+          ))}
+        </div>
+        {userDataCandidates.length > 0 ? (
+          <div style={{ fontSize: '0.9rem', opacity: 0.75 }}>
+            Detected on this machine:{' '}
+            {userDataCandidates.map((candidate) => candidate.path).join(' · ')}
+          </div>
+        ) : chromeUserDataDiscovery?.defaultPathHint ? (
+          <div style={{ fontSize: '0.9rem', opacity: 0.75 }}>
+            Nothing was auto-detected yet. The usual path on this machine is
+            <code style={{ marginLeft: '0.25rem' }}>
+              {chromeUserDataDiscovery.defaultPathHint}
+            </code>
+            .
+          </div>
+        ) : null}
+        {chromeUserDataDiscoveryError ? (
+          <div style={{ color: 'var(--danger-color, #b91c1c)', fontSize: '0.9rem' }}>
+            {chromeUserDataDiscoveryError}
+          </div>
+        ) : null}
+        {input.currentPath.trim() ? (
+          <div style={{ fontSize: '0.9rem', opacity: 0.75 }}>
+            Selected path:
+            <code style={{ marginLeft: '0.25rem' }}>{input.currentPath}</code>
+          </div>
+        ) : null}
+        <div style={{ marginTop: '0.25rem', fontWeight: 600 }}>
+          Chrome subprofile
+        </div>
+        <div style={{ fontSize: '0.9rem', opacity: 0.75 }}>
+          Recommended. This determines which signed-in Chrome profile the agent
+          inherits for this site.
+        </div>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem' }}>
+          <button
+            type="button"
+            className="secondary-btn"
+            onClick={() => void loadChromeSubprofileDiscovery(input.currentPath, true)}
+            disabled={chromeSubprofileDiscoveryBusy || !input.currentPath.trim()}
+          >
+            {subprofileDetectLabel}
+          </button>
+        </div>
+        <select
+          value={input.currentProfileDirectory}
+          onChange={(e) => input.setProfileDirectory(e.target.value)}
+          disabled={!input.currentPath.trim()}
+          style={{ marginLeft: '1.5rem', maxWidth: '42rem' }}
+        >
+          <option value="">Chrome default / last-used profile</option>
+          {subprofileCandidates.map((candidate) => (
+            <option key={candidate.directoryName} value={candidate.directoryName}>
+              {formatChromeSubprofileLabel(candidate)}
+            </option>
+          ))}
+        </select>
+        {subprofileCandidates.length > 0 ? (
+          <div style={{ fontSize: '0.9rem', opacity: 0.75 }}>
+            Detected subprofiles:{' '}
+            {subprofileCandidates
+              .map((candidate) => formatChromeSubprofileLabel(candidate))
+              .join(' · ')}
+          </div>
+        ) : activeSubprofileDiscovery ? (
+          <div style={{ fontSize: '0.9rem', opacity: 0.75 }}>
+            No Chrome subprofiles were detected in this user data directory.
+          </div>
+        ) : null}
+        {chromeSubprofileDiscoveryError &&
+        chromeSubprofileDiscoveryPath === input.currentPath.trim() ? (
+          <div style={{ color: 'var(--danger-color, #b91c1c)', fontSize: '0.9rem' }}>
+            {chromeSubprofileDiscoveryError}
+          </div>
+        ) : null}
+        {selectedSubprofile ? (
+          <div style={{ fontSize: '0.9rem', opacity: 0.75 }}>
+            Selected subprofile:
+            <code style={{ marginLeft: '0.25rem' }}>
+              {formatChromeSubprofileLabel(selectedSubprofile)}
+            </code>
+          </div>
+        ) : input.currentProfileDirectory.trim() ? (
+          <div style={{ fontSize: '0.9rem', opacity: 0.75 }}>
+            Selected subprofile:
+            <code style={{ marginLeft: '0.25rem' }}>
+              {input.currentProfileDirectory}
+            </code>
+          </div>
+        ) : null}
+      </div>
+    );
+  };
+
   return (
     <section className="page-shell settings-shell">
       <header className="page-header">
@@ -935,6 +1277,15 @@ export function SettingsPage({ onUnauthorized, userRole }: Props) {
                         ? 'Chrome Profile'
                         : 'CDP'}
                   </span>
+                  {profile.connectionConfig.mode !== 'managed' ? (
+                    <div style={{ marginTop: '0.25rem', fontSize: '0.9rem', opacity: 0.75 }}>
+                      {profile.connectionConfig.mode === 'chrome_profile'
+                        ? profile.connectionConfig.profileDirectory
+                          ? `${profile.connectionConfig.chromeProfilePath} · ${profile.connectionConfig.profileDirectory}`
+                          : profile.connectionConfig.chromeProfilePath
+                        : profile.connectionConfig.endpointUrl}
+                    </div>
+                  ) : null}
                 </div>
                 {userRole === 'owner' ? (
                   <button
@@ -951,6 +1302,16 @@ export function SettingsPage({ onUnauthorized, userRole }: Props) {
                             ? profile.connectionConfig.endpointUrl
                             : '',
                       );
+                      setBrowserProfileEditProfileDirectory(
+                        profile.connectionConfig.mode === 'chrome_profile'
+                          ? profile.connectionConfig.profileDirectory || ''
+                          : '',
+                      );
+                      if (profile.connectionConfig.mode === 'chrome_profile') {
+                        void loadChromeSubprofileDiscovery(
+                          profile.connectionConfig.chromeProfilePath,
+                        );
+                      }
                       setBrowserProfileNotice(null);
                     }}
                   >
@@ -988,6 +1349,7 @@ export function SettingsPage({ onUnauthorized, userRole }: Props) {
                   onChange={() => {
                     setBrowserProfileEditMode('managed');
                     setBrowserProfileEditConfig('');
+                    setBrowserProfileEditProfileDirectory('');
                   }}
                 />{' '}
                 Managed (isolated sandbox)
@@ -997,25 +1359,35 @@ export function SettingsPage({ onUnauthorized, userRole }: Props) {
                   type="radio"
                   name="editMode"
                   checked={browserProfileEditMode === 'chrome_profile'}
-                  onChange={() => setBrowserProfileEditMode('chrome_profile')}
+                  onChange={() => {
+                    setBrowserProfileEditMode('chrome_profile');
+                    void maybeAutofillChromeProfileSelection({
+                      currentPath: browserProfileEditConfig,
+                      currentProfileDirectory: browserProfileEditProfileDirectory,
+                      setPath: setBrowserProfileEditConfig,
+                      setProfileDirectory: setBrowserProfileEditProfileDirectory,
+                    });
+                  }}
                 />{' '}
                 Chrome Profile (use real Chrome cookies)
               </label>
               {browserProfileEditMode === 'chrome_profile' ? (
-                <input
-                  type="text"
-                  placeholder="/home/user/.config/google-chrome"
-                  value={browserProfileEditConfig}
-                  onChange={(e) => setBrowserProfileEditConfig(e.target.value)}
-                  style={{ marginLeft: '1.5rem' }}
-                />
+                renderChromeProfileSelection({
+                  currentPath: browserProfileEditConfig,
+                  setPath: setBrowserProfileEditConfig,
+                  currentProfileDirectory: browserProfileEditProfileDirectory,
+                  setProfileDirectory: setBrowserProfileEditProfileDirectory,
+                })
               ) : null}
               <label>
                 <input
                   type="radio"
                   name="editMode"
                   checked={browserProfileEditMode === 'cdp'}
-                  onChange={() => setBrowserProfileEditMode('cdp')}
+                  onChange={() => {
+                    setBrowserProfileEditMode('cdp');
+                    setBrowserProfileEditProfileDirectory('');
+                  }}
                 />{' '}
                 CDP (attach to running Chrome)
               </label>
@@ -1040,7 +1412,15 @@ export function SettingsPage({ onUnauthorized, userRole }: Props) {
                   try {
                     const config =
                       browserProfileEditMode === 'chrome_profile'
-                        ? { chromeProfilePath: browserProfileEditConfig }
+                        ? {
+                            chromeProfilePath: browserProfileEditConfig,
+                            ...(browserProfileEditProfileDirectory.trim()
+                              ? {
+                                  profileDirectory:
+                                    browserProfileEditProfileDirectory.trim(),
+                                }
+                              : {}),
+                          }
                         : browserProfileEditMode === 'cdp'
                           ? { endpointUrl: browserProfileEditConfig }
                           : undefined;
@@ -1050,6 +1430,7 @@ export function SettingsPage({ onUnauthorized, userRole }: Props) {
                       config,
                     );
                     setBrowserProfileEditId(null);
+                    setBrowserProfileEditProfileDirectory('');
                     setBrowserProfileNotice('Connection mode updated.');
                     await loadBrowserProfiles();
                   } catch (err) {
@@ -1072,7 +1453,10 @@ export function SettingsPage({ onUnauthorized, userRole }: Props) {
               <button
                 type="button"
                 className="secondary-btn"
-                onClick={() => setBrowserProfileEditId(null)}
+                onClick={() => {
+                  setBrowserProfileEditId(null);
+                  setBrowserProfileEditProfileDirectory('');
+                }}
               >
                 Cancel
               </button>
@@ -1093,6 +1477,7 @@ export function SettingsPage({ onUnauthorized, userRole }: Props) {
                   setNewProfileAccountLabel('');
                   setNewProfileMode('managed');
                   setNewProfileConfig('');
+                  setNewProfileProfileDirectory('');
                   setBrowserProfileNotice(null);
                 }}
               >
@@ -1135,6 +1520,7 @@ export function SettingsPage({ onUnauthorized, userRole }: Props) {
                       onChange={() => {
                         setNewProfileMode('managed');
                         setNewProfileConfig('');
+                        setNewProfileProfileDirectory('');
                       }}
                     />{' '}
                     Managed
@@ -1144,25 +1530,35 @@ export function SettingsPage({ onUnauthorized, userRole }: Props) {
                       type="radio"
                       name="newMode"
                       checked={newProfileMode === 'chrome_profile'}
-                      onChange={() => setNewProfileMode('chrome_profile')}
+                      onChange={() => {
+                        setNewProfileMode('chrome_profile');
+                        void maybeAutofillChromeProfileSelection({
+                          currentPath: newProfileConfig,
+                          currentProfileDirectory: newProfileProfileDirectory,
+                          setPath: setNewProfileConfig,
+                          setProfileDirectory: setNewProfileProfileDirectory,
+                        });
+                      }}
                     />{' '}
                     Chrome Profile
                   </label>
                   {newProfileMode === 'chrome_profile' ? (
-                    <input
-                      type="text"
-                      placeholder="/home/user/.config/google-chrome"
-                      value={newProfileConfig}
-                      onChange={(e) => setNewProfileConfig(e.target.value)}
-                      style={{ marginLeft: '1.5rem' }}
-                    />
+                    renderChromeProfileSelection({
+                      currentPath: newProfileConfig,
+                      setPath: setNewProfileConfig,
+                      currentProfileDirectory: newProfileProfileDirectory,
+                      setProfileDirectory: setNewProfileProfileDirectory,
+                    })
                   ) : null}
                   <label>
                     <input
                       type="radio"
                       name="newMode"
                       checked={newProfileMode === 'cdp'}
-                      onChange={() => setNewProfileMode('cdp')}
+                      onChange={() => {
+                        setNewProfileMode('cdp');
+                        setNewProfileProfileDirectory('');
+                      }}
                     />{' '}
                     CDP
                   </label>
@@ -1193,7 +1589,15 @@ export function SettingsPage({ onUnauthorized, userRole }: Props) {
                       try {
                         const config =
                           newProfileMode === 'chrome_profile'
-                            ? { chromeProfilePath: newProfileConfig }
+                            ? {
+                                chromeProfilePath: newProfileConfig,
+                                ...(newProfileProfileDirectory.trim()
+                                  ? {
+                                      profileDirectory:
+                                        newProfileProfileDirectory.trim(),
+                                    }
+                                  : {}),
+                              }
                             : newProfileMode === 'cdp'
                               ? { endpointUrl: newProfileConfig }
                               : undefined;
@@ -1204,6 +1608,7 @@ export function SettingsPage({ onUnauthorized, userRole }: Props) {
                           connectionConfig: config,
                         });
                         setShowAddProfile(false);
+                        setNewProfileProfileDirectory('');
                         setBrowserProfileNotice('Profile created.');
                         await loadBrowserProfiles();
                       } catch (err) {
@@ -1226,7 +1631,10 @@ export function SettingsPage({ onUnauthorized, userRole }: Props) {
                   <button
                     type="button"
                     className="secondary-btn"
-                    onClick={() => setShowAddProfile(false)}
+                    onClick={() => {
+                      setShowAddProfile(false);
+                      setNewProfileProfileDirectory('');
+                    }}
                   >
                     Cancel
                   </button>
