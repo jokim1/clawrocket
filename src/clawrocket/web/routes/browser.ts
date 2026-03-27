@@ -187,10 +187,17 @@ function buildDiscoveryCandidates(input: {
   platform: NodeJS.Platform;
   homeDir: string;
   env: NodeJS.ProcessEnv;
-}): { defaultPathHint: string | null; candidates: ChromeUserDataDirectoryCandidate[] } {
+}): {
+  defaultPathHint: string | null;
+  candidates: ChromeUserDataDirectoryCandidate[];
+} {
   switch (input.platform) {
     case 'darwin': {
-      const libraryDir = path.join(input.homeDir, 'Library', 'Application Support');
+      const libraryDir = path.join(
+        input.homeDir,
+        'Library',
+        'Application Support',
+      );
       return {
         defaultPathHint: path.join(libraryDir, 'Google', 'Chrome'),
         candidates: [
@@ -232,7 +239,12 @@ function buildDiscoveryCandidates(input: {
         input.env.LOCALAPPDATA?.trim() ||
         path.join(input.homeDir, 'AppData', 'Local');
       return {
-        defaultPathHint: path.join(localAppData, 'Google', 'Chrome', 'User Data'),
+        defaultPathHint: path.join(
+          localAppData,
+          'Google',
+          'Chrome',
+          'User Data',
+        ),
         candidates: [
           {
             id: 'google-chrome',
@@ -416,7 +428,10 @@ export function discoverChromeSubprofiles(
     const configuredName = stringOrNull(profileInfo.name);
     const usesDefaultName = profileInfo.is_using_default_name === true;
     const displayName =
-      (usesDefaultName && fullName) || configuredName || fullName || directoryName;
+      (usesDefaultName && fullName) ||
+      configuredName ||
+      fullName ||
+      directoryName;
     const lastUsed = preferredDirectoryName === directoryName;
 
     candidates.push({
@@ -1156,7 +1171,9 @@ function validateConnectionConfig(
     }
     // Warn if user appears to have provided a profile subdirectory instead of user data dir
     const basename = path.basename(chromeProfilePath);
-    if (/^(Default|Profile \d+|Guest Profile|System Profile)$/i.test(basename)) {
+    if (
+      /^(Default|Profile \d+|Guest Profile|System Profile)$/i.test(basename)
+    ) {
       return {
         valid: false,
         error: `chromeProfilePath should be the Chrome user data directory, not the profile subdirectory. Use "${path.dirname(chromeProfilePath)}" instead of "${chromeProfilePath}".`,
@@ -1179,7 +1196,10 @@ function validateConnectionConfig(
         };
       }
 
-      const selectedProfilePath = path.join(chromeProfilePath, profileDirectory);
+      const selectedProfilePath = path.join(
+        chromeProfilePath,
+        profileDirectory,
+      );
       if (!isDirectory(selectedProfilePath)) {
         return {
           valid: false,

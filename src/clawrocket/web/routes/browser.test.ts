@@ -307,8 +307,7 @@ describe('browser routes', () => {
 
     expect(discovery).toEqual({
       platform: 'darwin',
-      defaultPathHint:
-        '/Users/alice/Library/Application Support/Google/Chrome',
+      defaultPathHint: '/Users/alice/Library/Application Support/Google/Chrome',
       candidates: [
         {
           id: 'google-chrome',
@@ -327,7 +326,8 @@ describe('browser routes', () => {
   });
 
   it('discovers Chrome subprofiles from Local State metadata', () => {
-    const userDataDir = '/Users/alice/Library/Application Support/Google/Chrome';
+    const userDataDir =
+      '/Users/alice/Library/Application Support/Google/Chrome';
     const discovery = discoverChromeSubprofiles({
       userDataDir,
       isDirectory: (targetPath) =>

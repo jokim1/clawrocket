@@ -261,7 +261,8 @@ describe('browser service helpers', () => {
         connectionMode: 'chrome_profile',
         connectionConfig: {
           mode: 'chrome_profile',
-          chromeProfilePath: '/Users/alice/Library/Application Support/Google/Chrome',
+          chromeProfilePath:
+            '/Users/alice/Library/Application Support/Google/Chrome',
           profileDirectory: 'Profile 4',
         },
         createdAt: '2026-03-27T00:00:00.000Z',
@@ -291,7 +292,8 @@ describe('browser service helpers', () => {
         connectionMode: 'chrome_profile',
         connectionConfig: {
           mode: 'chrome_profile',
-          chromeProfilePath: '/Users/alice/Library/Application Support/Google/Chrome',
+          chromeProfilePath:
+            '/Users/alice/Library/Application Support/Google/Chrome',
         },
         createdAt: '2026-03-27T00:00:00.000Z',
         updatedAt: '2026-03-27T00:00:00.000Z',
