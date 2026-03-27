@@ -27,11 +27,13 @@ import {
 import {
   cancelConflictingBrowserRunRoute,
   createBrowserProfileRoute,
+  deleteBrowserProfileRoute,
   discoverChromeSubprofiles,
   discoverChromeSubprofilesRoute,
   discoverChromeUserDataDirectories,
   discoverChromeUserDataDirectoriesRoute,
   getBrowserSessionStatusRoute,
+  listBrowserProfilesRoute,
   releaseBrowserProfileSessionsRoute,
   resumeBrowserBlockedRunRoute,
 } from './browser.js';
@@ -466,6 +468,136 @@ describe('browser routes', () => {
         'A browser profile for linkedin already exists and is using Managed.',
       );
       expect(result.body.error.message).toContain('Use Edit to change it');
+    }
+  });
+
+  it('lists browser profiles with in-use session state', () => {
+    const created = createBrowserProfileRoute({
+      auth: makeAuth('user-a'),
+      siteKey: 'linkedin',
+    });
+
+    expect(created.body.ok).toBe(true);
+    if (!created.body.ok) {
+      throw new Error('Expected profile creation to succeed');
+    }
+
+    getDb()
+      .prepare(
+        `
+        INSERT INTO browser_sessions (
+          id, user_id, profile_id, profile_key, site_key, account_label,
+          state, blocked_reason, owner_run_id, last_seen_at, last_live_context_at,
+          created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `,
+      )
+      .run(
+        'bs-linkedin-active',
+        'user-a',
+        created.body.data.profile.id,
+        'linkedin',
+        'linkedin',
+        null,
+        'blocked',
+        'phone_approval',
+        null,
+        '2026-03-27T22:10:00.000Z',
+        '2026-03-27T22:10:00.000Z',
+        '2026-03-27T22:10:00.000Z',
+        '2026-03-27T22:10:00.000Z',
+      );
+
+    const result = listBrowserProfilesRoute({
+      auth: makeAuth('user-a'),
+    });
+
+    expect(result.statusCode).toBe(200);
+    expect(result.body.ok).toBe(true);
+    if (result.body.ok) {
+      expect(result.body.data.profiles).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            id: created.body.data.profile.id,
+            inUseSessionCount: 1,
+            currentSessionState: 'blocked',
+          }),
+        ]),
+      );
+    }
+  });
+
+  it('deletes a browser profile when it is not in use', () => {
+    const created = createBrowserProfileRoute({
+      auth: makeAuth('user-a'),
+      siteKey: 'linkedin',
+    });
+
+    expect(created.body.ok).toBe(true);
+    if (!created.body.ok) {
+      throw new Error('Expected profile creation to succeed');
+    }
+
+    const result = deleteBrowserProfileRoute({
+      auth: makeAuth('user-a'),
+      profileId: created.body.data.profile.id,
+    });
+
+    expect(result.statusCode).toBe(200);
+    expect(result.body.ok).toBe(true);
+    if (result.body.ok) {
+      expect(result.body.data).toEqual({
+        profileId: created.body.data.profile.id,
+      });
+    }
+  });
+
+  it('rejects deleting a browser profile while it still has nonterminal sessions', () => {
+    const created = createBrowserProfileRoute({
+      auth: makeAuth('user-a'),
+      siteKey: 'linkedin',
+    });
+
+    expect(created.body.ok).toBe(true);
+    if (!created.body.ok) {
+      throw new Error('Expected profile creation to succeed');
+    }
+
+    getDb()
+      .prepare(
+        `
+        INSERT INTO browser_sessions (
+          id, user_id, profile_id, profile_key, site_key, account_label,
+          state, blocked_reason, owner_run_id, last_seen_at, last_live_context_at,
+          created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `,
+      )
+      .run(
+        'bs-linkedin-open',
+        'user-a',
+        created.body.data.profile.id,
+        'linkedin',
+        'linkedin',
+        null,
+        'active',
+        null,
+        null,
+        '2026-03-27T22:15:00.000Z',
+        '2026-03-27T22:15:00.000Z',
+        '2026-03-27T22:15:00.000Z',
+        '2026-03-27T22:15:00.000Z',
+      );
+
+    const result = deleteBrowserProfileRoute({
+      auth: makeAuth('user-a'),
+      profileId: created.body.data.profile.id,
+    });
+
+    expect(result.statusCode).toBe(409);
+    expect(result.body.ok).toBe(false);
+    if (!result.body.ok) {
+      expect(result.body.error.code).toBe('active_session_exists');
     }
   });
 

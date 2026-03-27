@@ -554,6 +554,7 @@ function buildAnthropicRequest(
  * Convert LlmMessage[] to OpenAI format.
  */
 function buildOpenAiRequest(
+  provider: LlmProviderConfig,
   modelId: string,
   messages: LlmMessage[],
   tools: LlmToolDefinition[] | undefined,
@@ -565,6 +566,7 @@ function buildOpenAiRequest(
   tools?: OpenAiToolDefinition[];
   stream: boolean;
   stream_options: { include_usage: boolean };
+  thinking?: { type: 'disabled' };
 } {
   const conversationMessages: OpenAiMessage[] = [];
 
@@ -635,6 +637,13 @@ function buildOpenAiRequest(
       : {}),
     stream: true,
     stream_options: { include_usage: true },
+    // NVIDIA-hosted Kimi defaults to "thinking" mode, which emits reasoning
+    // separately from the final assistant content. Disable that mode so the
+    // generic OpenAI-compatible parser receives normal assistant text deltas.
+    ...(provider.providerId === 'provider.nvidia' &&
+    modelId === 'moonshotai/kimi-k2.5'
+      ? { thinking: { type: 'disabled' as const } }
+      : {}),
   };
 }
 
@@ -1007,6 +1016,7 @@ export async function* streamLlmResponse(
       );
     } else if (provider.apiFormat === 'openai_chat_completions') {
       const requestBody = buildOpenAiRequest(
+        provider,
         modelId,
         messages,
         options?.tools,

@@ -393,7 +393,7 @@ function browserSetupCommand(input: {
   const mode = profile?.connectionMode ?? 'managed';
 
   if (mode === 'chrome_profile') {
-    return 'Close Chrome completely, then retry — your existing Chrome cookies will be used automatically.';
+    return 'Close Chrome completely, then retry — this reuses Chrome profile data and cookies, but it does not attach to your already-open trusted Chrome window. For live-session reuse, configure a CDP browser connection instead.';
   }
   if (mode === 'cdp') {
     const endpointUrl =

@@ -146,6 +146,7 @@ import {
   approveBrowserConfirmationRoute,
   cancelConflictingBrowserRunRoute,
   createBrowserProfileRoute,
+  deleteBrowserProfileRoute,
   discoverChromeSubprofilesRoute,
   discoverChromeUserDataDirectoriesRoute,
   getBrowserSessionStatusRoute,
@@ -1888,6 +1889,33 @@ function buildApp(opts: WebServerOptions): Hono {
       profileId: c.req.param('profileId'),
       connectionMode: payload.data.connectionMode,
       connectionConfig: payload.data.connectionConfig,
+    });
+    return c.json(result.body, result.statusCode as 200);
+  });
+
+  app.delete('/api/v1/browser/profiles/:profileId', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+    const rateResult = checkRateLimit({
+      principalId: auth.userId,
+      bucket: 'write',
+    });
+    if (!rateResult.allowed) return rateLimitedResponse(c, rateResult);
+    const csrf = validateCsrfToken({
+      method: c.req.method,
+      authType: auth.authType,
+      cookieHeader: c.req.header('cookie'),
+      csrfHeader: c.req.header('x-csrf-token'),
+    });
+    if (!csrf.ok) {
+      return c.json(
+        { ok: false, error: { code: 'csrf_failed', message: csrf.reason } },
+        403,
+      );
+    }
+    const result = deleteBrowserProfileRoute({
+      auth,
+      profileId: c.req.param('profileId'),
     });
     return c.json(result.body, result.statusCode as 200);
   });

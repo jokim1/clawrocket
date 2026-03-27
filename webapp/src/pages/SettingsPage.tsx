@@ -7,6 +7,7 @@ import {
   ChromeUserDataDirectoryDiscovery,
   BrowserProfileSummary,
   createBrowserProfile,
+  deleteBrowserProfile,
   discoverChromeSubprofiles,
   discoverChromeUserDataDirectories,
   ExecutorSettings,
@@ -83,6 +84,32 @@ function formatBrowserProfileLabel(profile: BrowserProfileSummary): string {
   return profile.accountLabel
     ? `${profile.siteKey} (${profile.accountLabel})`
     : profile.siteKey;
+}
+
+function formatBrowserProfileSessionState(
+  state: BrowserProfileSummary['currentSessionState'],
+): string | null {
+  switch (state) {
+    case 'active':
+      return 'In Use';
+    case 'blocked':
+      return 'Blocked';
+    case 'takeover':
+      return 'Takeover';
+    default:
+      return null;
+  }
+}
+
+function formatLastUsedAt(value: string | null): string {
+  if (!value) {
+    return 'Never used';
+  }
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.valueOf())) {
+    return value;
+  }
+  return parsed.toLocaleString();
 }
 
 function createRowId(): string {
@@ -1287,6 +1314,13 @@ export function SettingsPage({ onUnauthorized, userRole }: Props) {
           real Chrome profile (inherits cookies/login), or attach to a running
           Chrome instance via CDP.
         </p>
+        <p className="settings-copy" style={{ marginTop: '-0.25rem' }}>
+          Profiles are matched by exact site key plus account label, so
+          <code style={{ margin: '0 0.2rem' }}>linkedin</code>
+          and
+          <code style={{ margin: '0 0.2rem' }}>linkedin.com</code>
+          are different profiles.
+        </p>
 
         {browserProfileNotice ? (
           <div
@@ -1339,6 +1373,26 @@ export function SettingsPage({ onUnauthorized, userRole }: Props) {
                         ? 'Chrome Profile'
                         : 'CDP'}
                   </span>
+                  {profile.inUseSessionCount > 0 ? (
+                    <span
+                      style={{
+                        marginLeft: '0.5rem',
+                        fontSize: '0.8em',
+                        padding: '0.1em 0.4em',
+                        borderRadius: '3px',
+                        background:
+                          profile.currentSessionState === 'blocked'
+                            ? 'var(--badge-warn-bg, #fef3c7)'
+                            : profile.currentSessionState === 'takeover'
+                              ? 'var(--badge-active-bg, #dbeafe)'
+                              : 'var(--badge-success-bg, #dcfce7)',
+                      }}
+                    >
+                      {formatBrowserProfileSessionState(
+                        profile.currentSessionState,
+                      ) || 'In Use'}
+                    </span>
+                  ) : null}
                   {profile.connectionConfig.mode !== 'managed' ? (
                     <div style={{ marginTop: '0.25rem', fontSize: '0.9rem', opacity: 0.75 }}>
                       {profile.connectionConfig.mode === 'chrome_profile'
@@ -1348,6 +1402,9 @@ export function SettingsPage({ onUnauthorized, userRole }: Props) {
                         : profile.connectionConfig.endpointUrl}
                     </div>
                   ) : null}
+                  <div style={{ marginTop: '0.25rem', fontSize: '0.9rem', opacity: 0.7 }}>
+                    Last used: {formatLastUsedAt(profile.lastUsedAt)}
+                  </div>
                 </div>
                 {userRole === 'owner' ? (
                   <button
@@ -1520,6 +1577,14 @@ export function SettingsPage({ onUnauthorized, userRole }: Props) {
                 Disconnect Blocking Sessions
               </button>
             </div>
+            <div
+              className="settings-copy"
+              style={{ marginTop: '0.5rem' }}
+            >
+              Delete removes this saved browser profile and its local managed
+              browser/download cache. It does not delete your real Chrome
+              profile.
+            </div>
             <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.75rem' }}>
               <button
                 type="button"
@@ -1585,6 +1650,56 @@ export function SettingsPage({ onUnauthorized, userRole }: Props) {
                 }}
               >
                 Cancel
+              </button>
+              <button
+                type="button"
+                className="secondary-btn"
+                disabled={browserProfilesBusy || !editingBrowserProfile}
+                style={{
+                  marginLeft: 'auto',
+                  borderColor: 'var(--danger-color, #dc2626)',
+                  color: 'var(--danger-color, #dc2626)',
+                }}
+                onClick={async () => {
+                  if (!editingBrowserProfile) return;
+                  const confirmed = globalThis.confirm(
+                    `Delete browser profile ${formatBrowserProfileLabel(editingBrowserProfile)}? This keeps your real Chrome profile intact but removes this saved browser profile from Clawrocket.`,
+                  );
+                  if (!confirmed) {
+                    return;
+                  }
+
+                  setBrowserProfilesBusy(true);
+                  setBrowserProfileNotice(null);
+                  try {
+                    await deleteBrowserProfile(editingBrowserProfile.id);
+                    setBrowserProfileEditId(null);
+                    setBrowserProfileEditProfileDirectory('');
+                    setBrowserProfileNotice({
+                      tone: 'success',
+                      message: 'Browser profile deleted.',
+                    });
+                    await loadBrowserProfiles();
+                  } catch (err) {
+                    if (err instanceof UnauthorizedError) {
+                      onUnauthorized();
+                      return;
+                    }
+                    setBrowserProfileNotice({
+                      tone: 'error',
+                      message:
+                        err instanceof ApiError
+                          ? err.code === 'active_session_exists'
+                            ? `${err.message} Disconnect the blocking sessions below first.`
+                            : err.message
+                          : 'Failed to delete browser profile.',
+                    });
+                  } finally {
+                    setBrowserProfilesBusy(false);
+                  }
+                }}
+              >
+                {browserProfilesBusy ? 'Deleting…' : 'Delete Profile'}
               </button>
             </div>
           </div>
