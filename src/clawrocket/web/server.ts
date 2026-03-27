@@ -146,6 +146,8 @@ import {
   approveBrowserConfirmationRoute,
   cancelConflictingBrowserRunRoute,
   createBrowserProfileRoute,
+  discoverChromeSubprofilesRoute,
+  discoverChromeUserDataDirectoriesRoute,
   getBrowserSessionStatusRoute,
   listBrowserProfilesRoute,
   rejectBrowserConfirmationRoute,
@@ -1792,6 +1794,23 @@ function buildApp(opts: WebServerOptions): Hono {
     const auth = requireAuth(c);
     if (!auth) return unauthorized(c);
     const result = listBrowserProfilesRoute({ auth });
+    return c.json(result.body, result.statusCode as 200);
+  });
+
+  app.get('/api/v1/browser/discovery/chrome-user-data', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+    const result = discoverChromeUserDataDirectoriesRoute({ auth });
+    return c.json(result.body, result.statusCode as 200);
+  });
+
+  app.get('/api/v1/browser/discovery/chrome-profiles', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+    const result = discoverChromeSubprofilesRoute({
+      auth,
+      userDataDir: c.req.query('userDataDir'),
+    });
     return c.json(result.body, result.statusCode as 200);
   });
 

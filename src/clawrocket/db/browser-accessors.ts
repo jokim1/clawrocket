@@ -32,7 +32,11 @@ export type BrowserConnectionMode = 'managed' | 'chrome_profile' | 'cdp';
 
 export type BrowserConnectionConfig =
   | { mode: 'managed' }
-  | { mode: 'chrome_profile'; chromeProfilePath: string }
+  | {
+      mode: 'chrome_profile';
+      chromeProfilePath: string;
+      profileDirectory?: string;
+    }
   | { mode: 'cdp'; endpointUrl: string };
 
 export interface BrowserProfileSnapshot {
@@ -226,11 +230,17 @@ function parseConnectionConfig(
         connectionMode === 'chrome_profile' &&
         typeof parsed.chromeProfilePath === 'string'
       ) {
+        const profileDirectory =
+          typeof parsed.profileDirectory === 'string' &&
+          parsed.profileDirectory.trim()
+            ? parsed.profileDirectory.trim()
+            : undefined;
         return {
           connectionMode,
           connectionConfig: {
             mode: 'chrome_profile',
             chromeProfilePath: parsed.chromeProfilePath,
+            ...(profileDirectory ? { profileDirectory } : {}),
           },
         };
       }
@@ -590,6 +600,28 @@ export function updateBrowserProfileConnectionMode(
   return getBrowserProfileById(profileId);
 }
 
+function chromeProfileSelectionsConflict(input: {
+  leftPath: string;
+  leftProfileDirectory?: string | null;
+  rightPath: string;
+  rightProfileDirectory?: string | null;
+}): boolean {
+  if (input.leftPath !== input.rightPath) {
+    return false;
+  }
+
+  const leftProfileDirectory = input.leftProfileDirectory?.trim() || null;
+  const rightProfileDirectory = input.rightProfileDirectory?.trim() || null;
+
+  // A root-only selection is ambiguous and can overlap any specific subprofile
+  // under the same Chrome user-data directory.
+  if (!leftProfileDirectory || !rightProfileDirectory) {
+    return true;
+  }
+
+  return leftProfileDirectory === rightProfileDirectory;
+}
+
 export function checkBrowserProfileConnectionUniqueness(input: {
   mode: BrowserConnectionMode;
   configJson: string | null;
@@ -605,21 +637,25 @@ export function checkBrowserProfileConnectionUniqueness(input: {
 
   try {
     const parsed = JSON.parse(input.configJson) as Record<string, unknown>;
-    let matchValue: string | null = null;
-    let matchKey: string | null = null;
-
-    if (
+    const chromeProfilePath =
       input.mode === 'chrome_profile' &&
       typeof parsed.chromeProfilePath === 'string'
-    ) {
-      matchValue = parsed.chromeProfilePath;
-      matchKey = 'chromeProfilePath';
-    } else if (input.mode === 'cdp' && typeof parsed.endpointUrl === 'string') {
-      matchValue = parsed.endpointUrl;
-      matchKey = 'endpointUrl';
-    }
+        ? parsed.chromeProfilePath
+        : null;
+    const chromeProfileDirectory =
+      input.mode === 'chrome_profile' &&
+      typeof parsed.profileDirectory === 'string'
+        ? parsed.profileDirectory
+        : null;
+    const endpointUrl =
+      input.mode === 'cdp' && typeof parsed.endpointUrl === 'string'
+        ? parsed.endpointUrl
+        : null;
 
-    if (!matchValue || !matchKey) {
+    if (
+      (input.mode === 'chrome_profile' && !chromeProfilePath) ||
+      (input.mode === 'cdp' && !endpointUrl)
+    ) {
       return { conflict: false };
     }
 
@@ -646,7 +682,33 @@ export function checkBrowserProfileConnectionUniqueness(input: {
           string,
           unknown
         >;
-        if (existingConfig[matchKey] === matchValue) {
+
+        if (input.mode === 'chrome_profile') {
+          if (typeof existingConfig.chromeProfilePath !== 'string') {
+            continue;
+          }
+          const existingProfileDirectory =
+            typeof existingConfig.profileDirectory === 'string'
+              ? existingConfig.profileDirectory
+              : null;
+          if (
+            chromeProfileSelectionsConflict({
+              leftPath: existingConfig.chromeProfilePath,
+              leftProfileDirectory: existingProfileDirectory,
+              rightPath: chromeProfilePath!,
+              rightProfileDirectory: chromeProfileDirectory,
+            })
+          ) {
+            return {
+              conflict: true,
+              conflictProfileId: row.id,
+              conflictSiteKey: row.site_key,
+            };
+          }
+          continue;
+        }
+
+        if (existingConfig.endpointUrl === endpointUrl) {
           return {
             conflict: true,
             conflictProfileId: row.id,

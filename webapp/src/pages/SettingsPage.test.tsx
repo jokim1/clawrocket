@@ -1,4 +1,5 @@
 import { cleanup, render, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { SettingsPage } from './SettingsPage';
@@ -270,6 +271,128 @@ describe('SettingsPage', () => {
       ),
     ).toBeTruthy();
     expect(screen.queryByText(/Verification note:/i)).toBeNull();
+  });
+
+  it('auto-discovers Chrome user data directories for browser profiles', async () => {
+    const user = userEvent.setup();
+    mockFetch([
+      jsonResponse(200, {
+        ok: true,
+        data: {
+          configuredAliasMap: {},
+          effectiveAliasMap: {},
+          defaultAlias: 'Mock',
+          executorAuthMode: 'none',
+          hasApiKey: false,
+          hasOauthToken: false,
+          hasAuthToken: false,
+          activeCredentialConfigured: false,
+          verificationStatus: 'missing',
+          lastVerifiedAt: null,
+          lastVerificationError: null,
+          anthropicBaseUrl: '',
+          isConfigured: false,
+          configVersion: 0,
+          lastUpdatedAt: null,
+          lastUpdatedBy: null,
+          configErrors: [],
+        },
+      }),
+      jsonResponse(200, {
+        ok: true,
+        data: {
+          mode: 'mock',
+          restartSupported: false,
+          pendingRestartReasons: [],
+          activeRunCount: 0,
+          containerRuntimeAvailability: 'ready',
+          executorAuthMode: 'none',
+          activeCredentialConfigured: false,
+          verificationStatus: 'missing',
+          lastVerifiedAt: null,
+          lastVerificationError: null,
+          hasProviderAuth: false,
+          hasValidAliasMap: true,
+          configVersion: 0,
+          isConfigured: false,
+          bootId: 'boot-browser-detect',
+          configErrors: [],
+        },
+      }),
+      jsonResponse(200, {
+        ok: true,
+        data: {
+          profiles: [],
+        },
+      }),
+      jsonResponse(200, {
+        ok: true,
+        data: {
+          platform: 'darwin',
+          defaultPathHint:
+            '/Users/alice/Library/Application Support/Google/Chrome',
+          candidates: [
+            {
+              id: 'google-chrome',
+              label: 'Google Chrome',
+              path: '/Users/alice/Library/Application Support/Google/Chrome',
+              preferred: true,
+            },
+          ],
+        },
+      }),
+      jsonResponse(200, {
+        ok: true,
+        data: {
+          userDataDir:
+            '/Users/alice/Library/Application Support/Google/Chrome',
+          localStateFound: true,
+          candidates: [
+            {
+              directoryName: 'Profile 4',
+              displayName: 'Work',
+              email: 'alice@work.com',
+              fullName: 'Alice Example',
+              kind: 'profile',
+              preferred: true,
+              lastUsed: true,
+              path: '/Users/alice/Library/Application Support/Google/Chrome/Profile 4',
+            },
+            {
+              directoryName: 'Default',
+              displayName: 'Alice Example',
+              email: 'alice@gmail.com',
+              fullName: 'Alice Example',
+              kind: 'default',
+              preferred: false,
+              lastUsed: false,
+              path: '/Users/alice/Library/Application Support/Google/Chrome/Default',
+            },
+          ],
+        },
+      }),
+    ]);
+
+    render(<SettingsPage onUnauthorized={vi.fn()} userRole="owner" />);
+
+    await screen.findByRole('heading', { name: 'Browser Profiles' });
+    await user.click(screen.getByRole('button', { name: 'Add Profile' }));
+    await user.click(screen.getByLabelText('Chrome Profile'));
+
+    expect(
+      await screen.findByDisplayValue(
+        '/Users/alice/Library/Application Support/Google/Chrome',
+      ),
+    ).toBeTruthy();
+    expect(
+      await screen.findByRole('button', { name: 'Use Google Chrome' }),
+    ).toBeTruthy();
+    expect(
+      (
+        await screen.findByRole('combobox')
+      ) as HTMLSelectElement,
+    ).toHaveValue('Profile 4');
+    expect(screen.getByText(/Selected subprofile:/i)).toBeTruthy();
   });
 });
 
