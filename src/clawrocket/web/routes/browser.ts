@@ -1149,9 +1149,7 @@ function buildProfileExistsMessage(profile: BrowserProfileSnapshot): string {
   return `A browser profile for ${label} already exists and is using ${modeLabel}. Use Edit to change it, or add an account label to create another profile for the same site.`;
 }
 
-function isNonterminalProfileSession(
-  session: BrowserSessionSnapshot,
-): boolean {
+function isNonterminalProfileSession(session: BrowserSessionSnapshot): boolean {
   return (
     session.state === 'active' ||
     session.state === 'blocked' ||
@@ -1676,8 +1674,9 @@ export async function releaseBrowserProfileSessionsRoute(input: {
     };
   }
 
-  const sessions = listBrowserSessionsByProfile({ profileId: input.profileId })
-    .filter(isNonterminalProfileSession);
+  const sessions = listBrowserSessionsByProfile({
+    profileId: input.profileId,
+  }).filter(isNonterminalProfileSession);
   if (sessions.length === 0) {
     return {
       statusCode: 200,

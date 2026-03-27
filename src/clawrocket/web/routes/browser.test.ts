@@ -524,7 +524,9 @@ describe('browser routes', () => {
     }
 
     const session = getDb()
-      .prepare(`SELECT state, last_live_context_at FROM browser_sessions WHERE id = ?`)
+      .prepare(
+        `SELECT state, last_live_context_at FROM browser_sessions WHERE id = ?`,
+      )
       .get('bs-linkedin-stale') as
       | { state: string; last_live_context_at: string | null }
       | undefined;
