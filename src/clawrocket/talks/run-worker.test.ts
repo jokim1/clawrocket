@@ -247,6 +247,33 @@ class OrderedFailureExecutor implements TalkExecutor {
   }
 }
 
+class OrderedIncompleteExecutor implements TalkExecutor {
+  async execute(input: TalkExecutorInput): Promise<TalkExecutorOutput> {
+    if (input.runId === 'run-incomplete-1') {
+      return {
+        content: 'Phase one complete',
+        agentId: 'agent.main',
+        agentNickname: 'Nanoclaw',
+        providerId: 'builtin.mock',
+        modelId: 'mock-default',
+        responseSequenceInRun: 1,
+      };
+    }
+
+    throw new TalkExecutorError(
+      'incomplete_response',
+      'The model stopped before finishing its answer (provider stop reason: length).',
+      {
+        metadata: {
+          completionStatus: 'incomplete',
+          providerStopReason: 'length',
+          incompleteReason: 'truncated',
+        },
+      },
+    );
+  }
+}
+
 describe('TalkRunWorker', () => {
   beforeEach(() => {
     _initTestDatabase();
@@ -504,6 +531,49 @@ describe('TalkRunWorker', () => {
         event.payload.includes('"runIds":["run-ordered-3"]'),
     );
     expect(cancelledEvent).toBeDefined();
+
+    await worker.stop();
+  });
+
+  it('persists incomplete-response metadata on failed ordered runs', async () => {
+    const worker = new TalkRunWorker({
+      executor: new OrderedIncompleteExecutor(),
+      pollMs: 10_000,
+      maxConcurrency: 2,
+    });
+    await worker.start();
+
+    enqueueTalkRoundAtomic({
+      talkId: 'talk-1',
+      userId: 'owner-1',
+      content: 'ordered retry prompt',
+      messageId: 'msg-incomplete-1',
+      runIds: ['run-incomplete-1', 'run-incomplete-2', 'run-incomplete-3'],
+      responseGroupId: 'group-incomplete-1',
+      sequenceIndexes: [0, 1, 2],
+    });
+
+    worker.wake();
+
+    await waitFor(
+      () => getTalkRunById('run-incomplete-1')?.status === 'completed',
+    );
+    await waitFor(
+      () => getTalkRunById('run-incomplete-2')?.status === 'failed',
+    );
+    await waitFor(
+      () => getTalkRunById('run-incomplete-3')?.status === 'cancelled',
+    );
+
+    const failedRun = getTalkRunById('run-incomplete-2');
+    expect(failedRun?.cancel_reason).toContain('incomplete_response');
+    expect(JSON.parse(failedRun?.metadata_json || '{}')).toMatchObject({
+      responseMetadata: {
+        completionStatus: 'incomplete',
+        providerStopReason: 'length',
+        incompleteReason: 'truncated',
+      },
+    });
 
     await worker.stop();
   });

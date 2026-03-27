@@ -2,6 +2,16 @@
 
 All notable changes to NanoClaw will be documented in this file.
 
+## [1.2.4](https://github.com/jokim1/clawrocket/compare/v1.2.3...v1.2.4)
+
+- Fixed ordered multi-agent runs so ambiguous or truncated direct-HTTP provider
+  endings no longer persist partial text as a successful assistant response.
+- Persisted response-completion metadata on talk runs and exposed it to the Talk
+  API so incomplete agent failures can be classified and recovered explicitly.
+- Added persistent ordered-round status UI, per-message step badges, and Retry
+  agent actions so failed ordered runs are obvious and usable instead of looking
+  silently finished.
+
 ## [1.2.3](https://github.com/jokim1/clawrocket/compare/v1.2.2...v1.2.3)
 
 - Updated the repo and CI/deploy workflows to target Node.js 24 LTS.

@@ -307,6 +307,77 @@ describe('CleanTalkExecutor', () => {
     expect(llmAttempts.count).toBe(0);
   });
 
+  it('persists direct-http completion metadata into the response payload', async () => {
+    const now = new Date().toISOString();
+    createTalkMessage({
+      id: 'msg-user-completion',
+      talkId: TALK_ID,
+      threadId: THREAD_ID,
+      role: 'user',
+      content: 'Give me the final answer',
+      createdBy: 'owner-1',
+      createdAt: now,
+    });
+    createTalkRun({
+      id: 'run-talk-completion',
+      talk_id: TALK_ID,
+      thread_id: THREAD_ID,
+      requested_by: 'owner-1',
+      status: 'running',
+      trigger_message_id: 'msg-user-completion',
+      target_agent_id: 'agent.main',
+      idempotency_key: null,
+      response_group_id: null,
+      sequence_index: null,
+      executor_alias: null,
+      executor_model: null,
+      source_binding_id: null,
+      source_external_message_id: null,
+      source_thread_key: null,
+      created_at: now,
+      started_at: now,
+      ended_at: null,
+      cancel_reason: null,
+    });
+
+    vi.mocked(executeWithAgent).mockResolvedValue({
+      content: 'Final answer.',
+      agentId: 'agent.main',
+      providerId: 'provider.openai',
+      modelId: 'gpt-5-mini',
+      usage: {
+        inputTokens: 10,
+        outputTokens: 20,
+        estimatedCostUsd: 0,
+      },
+      completion: {
+        completionStatus: 'complete',
+        providerStopReason: 'stop',
+        incompleteReason: null,
+      },
+    });
+
+    const executor = new CleanTalkExecutor();
+    const result = await executor.execute(
+      {
+        runId: 'run-talk-completion',
+        talkId: TALK_ID,
+        threadId: THREAD_ID,
+        requestedBy: 'owner-1',
+        triggerMessageId: 'msg-user-completion',
+        triggerContent: 'Give me the final answer',
+      },
+      new AbortController().signal,
+    );
+
+    expect(JSON.parse(result.metadataJson || '{}')).toMatchObject({
+      completionStatus: 'complete',
+      providerStopReason: 'stop',
+      incompleteReason: null,
+      completedCleanly: true,
+    });
+  });
+
   it('injects channel context and recent Slack history for channel-triggered runs', async () => {
     const now = new Date().toISOString();
     const agent = createRegisteredAgent({

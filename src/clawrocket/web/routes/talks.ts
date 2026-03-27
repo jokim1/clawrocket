@@ -187,6 +187,9 @@ export interface TalkRunApiRecord {
   browserResume: BrowserResumeMetadata | null;
   carriedBrowserSessions: CarriedBrowserSessionMetadata[];
   executionDecision: ExecutionDecisionMetadata | null;
+  completionStatus?: 'complete' | 'incomplete' | null;
+  providerStopReason?: string | null;
+  incompleteReason?: 'truncated' | 'empty' | 'unknown' | null;
 }
 
 function parseTalkRunContextSnapshot(
@@ -226,6 +229,38 @@ function parseRunMetadata(
     // ignored
   }
   return {};
+}
+
+function parseRunResponseMetadata(metadataJson: string | null | undefined): {
+  completionStatus: 'complete' | 'incomplete' | null;
+  providerStopReason: string | null;
+  incompleteReason: 'truncated' | 'empty' | 'unknown' | null;
+} {
+  const metadata = parseRunMetadata(metadataJson);
+  const responseMetadata =
+    parseRunMetadataObject<Record<string, unknown>>(
+      metadata.responseMetadata,
+    ) || metadata;
+  const completionStatus =
+    responseMetadata.completionStatus === 'complete' ||
+    responseMetadata.completionStatus === 'incomplete'
+      ? (responseMetadata.completionStatus as 'complete' | 'incomplete')
+      : null;
+  const providerStopReason =
+    typeof responseMetadata.providerStopReason === 'string'
+      ? responseMetadata.providerStopReason
+      : null;
+  const incompleteReason =
+    responseMetadata.incompleteReason === 'truncated' ||
+    responseMetadata.incompleteReason === 'empty' ||
+    responseMetadata.incompleteReason === 'unknown'
+      ? (responseMetadata.incompleteReason as 'truncated' | 'empty' | 'unknown')
+      : null;
+  return {
+    completionStatus,
+    providerStopReason,
+    incompleteReason,
+  };
 }
 
 const DEFAULT_TALK_AGENTS = ['Claude'];
@@ -2234,6 +2269,7 @@ function toTalkRunApiRecord(
 ): TalkRunApiRecord {
   const parsedError = parseTalkRunError(run);
   const metadata = parseRunMetadata(run.metadata_json);
+  const responseMetadata = parseRunResponseMetadata(run.metadata_json);
   return {
     id: run.id,
     threadId: run.thread_id,
@@ -2270,6 +2306,9 @@ function toTalkRunApiRecord(
     executionDecision: parseRunMetadataObject<ExecutionDecisionMetadata>(
       metadata.executionDecision,
     ),
+    completionStatus: responseMetadata.completionStatus,
+    providerStopReason: responseMetadata.providerStopReason,
+    incompleteReason: responseMetadata.incompleteReason,
   };
 }
 

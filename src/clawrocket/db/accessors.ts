@@ -4030,14 +4030,22 @@ export function completeRunAndPromoteNextAtomic(input: {
         return { applied: false, talkId: run.talk_id, deliveryQueued: false };
       }
 
+      const currentMetadata = parseRunMetadataJson(run.metadata_json);
+      const responseMetadata = parseRunMetadataJson(
+        txInput.responseMetadataJson,
+      );
+      if (Object.keys(responseMetadata).length > 0) {
+        currentMetadata.responseMetadata = responseMetadata;
+      }
       if (run.source_binding_id) {
-        const currentMetadata = parseRunMetadataJson(run.metadata_json);
         currentMetadata.channelDelivery = {
           suppressed: suppressionActive,
           suppressionReason: suppressionActive
             ? txInput.suppressionReason || null
             : null,
         };
+      }
+      if (Object.keys(currentMetadata).length > 0 || run.metadata_json) {
         setTalkRunMetadataJson(
           run.id,
           Object.keys(currentMetadata).length > 0
@@ -4182,6 +4190,7 @@ export function failRunAndPromoteNextAtomic(input: {
   runId: string;
   errorCode: string;
   errorMessage: string;
+  metadataPatch?: Record<string, unknown> | null;
   now?: string;
 }): {
   applied: boolean;
@@ -4199,7 +4208,7 @@ export function failRunAndPromoteNextAtomic(input: {
         .prepare(
           `
           SELECT id, talk_id, thread_id, trigger_message_id, target_agent_id, executor_alias, executor_model,
-                 run_kind, response_group_id, sequence_index
+                 run_kind, response_group_id, sequence_index, metadata_json
           FROM talk_runs
           WHERE id = ? AND status = 'running'
           LIMIT 1
@@ -4217,6 +4226,7 @@ export function failRunAndPromoteNextAtomic(input: {
             run_kind: TalkRunKind | null;
             response_group_id: string | null;
             sequence_index: number | null;
+            metadata_json: string | null;
           }
         | undefined;
       if (!run) {
@@ -4240,6 +4250,12 @@ export function failRunAndPromoteNextAtomic(input: {
         );
       if (failed.changes !== 1) {
         return { applied: false, talkId: run.talk_id };
+      }
+
+      if (txInput.metadataPatch && Object.keys(txInput.metadataPatch).length) {
+        const currentMetadata = parseRunMetadataJson(run.metadata_json);
+        currentMetadata.responseMetadata = txInput.metadataPatch;
+        setTalkRunMetadataJson(run.id, JSON.stringify(currentMetadata));
       }
 
       appendOutboxEvent({

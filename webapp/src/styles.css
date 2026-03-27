@@ -2182,6 +2182,17 @@ a {
   font-weight: 700;
 }
 
+.message-sequence-badge {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 0.15rem 0.5rem;
+  background: #eef2f8;
+  color: #556681;
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+
 .message-error {
   border-color: #edb0b0;
   background: #fff8f8;
@@ -4130,6 +4141,119 @@ a {
   color: #2853a7;
   font-size: 0.84rem;
   font-weight: 600;
+}
+
+.talk-ordered-summary {
+  display: grid;
+  gap: 0.75rem;
+  border: 1px solid #dde7f7;
+  border-radius: 16px;
+  padding: 0.85rem 0.95rem;
+  background: linear-gradient(180deg, #fcfdff 0%, #f6f9ff 100%);
+}
+
+.talk-ordered-summary-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.talk-ordered-summary-title {
+  color: #234480;
+  font-size: 0.88rem;
+}
+
+.talk-ordered-summary-note {
+  color: #58709b;
+  font-size: 0.8rem;
+}
+
+.talk-ordered-summary-steps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.55rem;
+}
+
+.talk-ordered-step {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  min-height: 2rem;
+  border: 1px solid #d9e3f4;
+  border-radius: 999px;
+  padding: 0.3rem 0.7rem 0.3rem 0.4rem;
+  background: #ffffff;
+  color: #28436d;
+  font-size: 0.78rem;
+  font-weight: 600;
+}
+
+.talk-ordered-step-current {
+  border-color: #96b5f2;
+  box-shadow: 0 0 0 1px rgba(89, 135, 230, 0.12);
+}
+
+.talk-ordered-step-active {
+  background: #f5f9ff;
+  color: #2452a9;
+}
+
+.talk-ordered-step-success {
+  background: #f6fbf7;
+  border-color: #cfe2d5;
+  color: #285f39;
+}
+
+.talk-ordered-step-error {
+  background: #fff7f7;
+  border-color: #efc6c6;
+  color: #9b3131;
+}
+
+.talk-ordered-step-warning {
+  background: #fffaf1;
+  border-color: #ecdab0;
+  color: #8d6822;
+}
+
+.talk-ordered-step-muted {
+  background: #fbfbfd;
+  color: #5a677d;
+}
+
+.talk-ordered-step-index {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.35rem;
+  height: 1.35rem;
+  border-radius: 999px;
+  background: rgba(35, 68, 128, 0.08);
+  font-size: 0.72rem;
+  font-weight: 800;
+}
+
+.talk-ordered-step-label {
+  color: inherit;
+}
+
+.talk-ordered-step-tag {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 0.12rem 0.42rem;
+  background: #e7f1ff;
+  color: #285ab7;
+  font-size: 0.68rem;
+  font-weight: 700;
+}
+
+.talk-ordered-step-status {
+  color: inherit;
+  font-size: 0.74rem;
+  text-transform: lowercase;
 }
 
 .talk-thread-timeline {

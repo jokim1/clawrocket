@@ -1700,6 +1700,174 @@ describe('TalkDetailPage', () => {
     ).toBeTruthy();
   });
 
+  it('keeps the latest ordered round summary visible after grouped runs finish', async () => {
+    installTalkDetailFetch({
+      messages: [
+        buildMessage({
+          id: 'msg-1',
+          role: 'user',
+          content: 'Compare these options.',
+          createdAt: '2026-03-06T00:00:00.000Z',
+        }),
+        buildMessage({
+          id: 'msg-2',
+          role: 'assistant',
+          content: 'Option A is safer.',
+          createdAt: '2026-03-06T00:00:03.000Z',
+          runId: 'run-ordered-1',
+          agentId: 'agent-claude',
+          agentNickname: 'Claude Sonnet 4.6',
+        }),
+        buildMessage({
+          id: 'msg-3',
+          role: 'assistant',
+          content: 'Option A wins overall.',
+          createdAt: '2026-03-06T00:00:05.000Z',
+          runId: 'run-ordered-2',
+          agentId: 'agent-openai',
+          agentNickname: 'GPT-5 Mini',
+          metadata: { isSynthesis: true },
+        }),
+      ],
+      runs: [
+        buildRun({
+          id: 'run-ordered-1',
+          status: 'completed',
+          createdAt: '2026-03-06T00:00:01.000Z',
+          completedAt: '2026-03-06T00:00:03.000Z',
+          triggerMessageId: 'msg-1',
+          targetAgentId: 'agent-claude',
+          targetAgentNickname: 'Claude Sonnet 4.6',
+          responseGroupId: 'group-ordered-1',
+          sequenceIndex: 0,
+        }),
+        buildRun({
+          id: 'run-ordered-2',
+          status: 'completed',
+          createdAt: '2026-03-06T00:00:01.100Z',
+          completedAt: '2026-03-06T00:00:05.000Z',
+          triggerMessageId: 'msg-1',
+          targetAgentId: 'agent-openai',
+          targetAgentNickname: 'GPT-5 Mini',
+          responseGroupId: 'group-ordered-1',
+          sequenceIndex: 1,
+        }),
+      ],
+    });
+
+    renderDetailPage('/app/talks/talk-1');
+
+    await screen.findByText('Option A wins overall.');
+    const summary = screen.getByLabelText('Ordered round summary');
+    expect(within(summary).getByText('Ordered round finished')).toBeTruthy();
+    expect(
+      within(summary).getByText(
+        'Each agent in the latest ordered round finished and saved a response.',
+      ),
+    ).toBeTruthy();
+    expect(within(summary).getByText('Claude Sonnet 4.6')).toBeTruthy();
+    expect(within(summary).getByText('GPT-5 Mini')).toBeTruthy();
+    expect(within(summary).getByText('Synthesis')).toBeTruthy();
+  });
+
+  it('retries an incomplete ordered agent from the latest round summary', async () => {
+    const user = userEvent.setup();
+    const onSendMessage = vi.fn().mockImplementation((body) => ({
+      talkId: 'talk-1',
+      message: buildMessage({
+        id: 'msg-retry-user',
+        role: 'user',
+        content: body.content,
+        createdAt: '2026-03-06T00:00:06.000Z',
+      }),
+      runs: [
+        buildRun({
+          id: 'run-retry-agent',
+          status: 'queued',
+          createdAt: '2026-03-06T00:00:06.100Z',
+          triggerMessageId: 'msg-retry-user',
+          targetAgentId: body.targetAgentIds[0] ?? null,
+          targetAgentNickname: 'GPT-5 Mini',
+        }),
+      ],
+    }));
+
+    installTalkDetailFetch({
+      onSendMessage,
+      messages: [
+        buildMessage({
+          id: 'msg-1',
+          role: 'user',
+          content: 'Compare these options.',
+          createdAt: '2026-03-06T00:00:00.000Z',
+        }),
+        buildMessage({
+          id: 'msg-2',
+          role: 'assistant',
+          content: 'Option A is safer.',
+          createdAt: '2026-03-06T00:00:03.000Z',
+          runId: 'run-ordered-1',
+          agentId: 'agent-claude',
+          agentNickname: 'Claude Sonnet 4.6',
+        }),
+      ],
+      runs: [
+        buildRun({
+          id: 'run-ordered-1',
+          status: 'completed',
+          createdAt: '2026-03-06T00:00:01.000Z',
+          completedAt: '2026-03-06T00:00:03.000Z',
+          triggerMessageId: 'msg-1',
+          targetAgentId: 'agent-claude',
+          targetAgentNickname: 'Claude Sonnet 4.6',
+          responseGroupId: 'group-ordered-1',
+          sequenceIndex: 0,
+        }),
+        buildRun({
+          id: 'run-ordered-2',
+          status: 'failed',
+          createdAt: '2026-03-06T00:00:01.100Z',
+          completedAt: '2026-03-06T00:00:04.000Z',
+          triggerMessageId: 'msg-1',
+          targetAgentId: 'agent-openai',
+          targetAgentNickname: 'GPT-5 Mini',
+          responseGroupId: 'group-ordered-1',
+          sequenceIndex: 1,
+          errorCode: 'incomplete_response',
+          errorMessage:
+            'The model stopped before finishing its answer (provider stop reason: length).',
+          providerStopReason: 'length',
+          incompleteReason: 'truncated',
+          completionStatus: 'incomplete',
+        }),
+        buildRun({
+          id: 'run-ordered-3',
+          status: 'cancelled',
+          createdAt: '2026-03-06T00:00:01.200Z',
+          completedAt: '2026-03-06T00:00:04.000Z',
+          triggerMessageId: 'msg-1',
+          targetAgentId: 'agent-claude',
+          targetAgentNickname: 'Claude Sonnet 4.6',
+          responseGroupId: 'group-ordered-1',
+          sequenceIndex: 2,
+          cancelReason: 'blocked_by_prior_failure',
+        }),
+      ],
+    });
+
+    renderDetailPage('/app/talks/talk-1');
+
+    await screen.findByLabelText('Ordered round summary');
+    await user.click(screen.getByRole('button', { name: 'Retry agent' }));
+
+    expect(onSendMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        content: 'Compare these options.',
+        targetAgentIds: ['agent-openai'],
+      }),
+    );
+  });
+
   it('loads talk channels, saves binding edits, and manages failure queues from the Channels tab', async () => {
     const user = userEvent.setup();
 
@@ -3337,6 +3505,68 @@ describe('TalkDetailPage', () => {
 
     await screen.findByText('Here is the synthesized recommendation.');
     expect(screen.getByText('Synthesis')).toBeTruthy();
+  });
+
+  it('labels ordered assistant messages with their step number', async () => {
+    installTalkDetailFetch({
+      messages: [
+        buildMessage({
+          id: 'msg-1',
+          role: 'user',
+          content: 'Review the draft.',
+          createdAt: '2026-03-06T00:00:00.000Z',
+        }),
+        buildMessage({
+          id: 'msg-critic',
+          role: 'assistant',
+          content: 'The intro needs a stronger claim.',
+          createdAt: '2026-03-06T00:00:03.000Z',
+          runId: 'run-critic',
+          agentId: 'agent-claude',
+          agentNickname: 'Claude Sonnet 4.6',
+        }),
+        buildMessage({
+          id: 'msg-synthesis',
+          role: 'assistant',
+          content: 'Rewrite the intro, then keep the rest.',
+          createdAt: '2026-03-06T00:00:05.000Z',
+          runId: 'run-synthesis',
+          agentId: 'agent-openai',
+          agentNickname: 'GPT-5 Mini',
+          metadata: { isSynthesis: true },
+        }),
+      ],
+      runs: [
+        buildRun({
+          id: 'run-critic',
+          status: 'completed',
+          createdAt: '2026-03-06T00:00:01.000Z',
+          completedAt: '2026-03-06T00:00:03.000Z',
+          triggerMessageId: 'msg-1',
+          targetAgentId: 'agent-claude',
+          targetAgentNickname: 'Claude Sonnet 4.6',
+          responseGroupId: 'group-review-1',
+          sequenceIndex: 0,
+        }),
+        buildRun({
+          id: 'run-synthesis',
+          status: 'completed',
+          createdAt: '2026-03-06T00:00:01.100Z',
+          completedAt: '2026-03-06T00:00:05.000Z',
+          triggerMessageId: 'msg-1',
+          targetAgentId: 'agent-openai',
+          targetAgentNickname: 'GPT-5 Mini',
+          responseGroupId: 'group-review-1',
+          sequenceIndex: 1,
+        }),
+      ],
+    });
+
+    renderDetailPage('/app/talks/talk-1');
+
+    await screen.findByText('Rewrite the intro, then keep the rest.');
+    expect(screen.getByText('Step 1 of 2')).toBeTruthy();
+    expect(screen.getByText('Step 2 of 2')).toBeTruthy();
   });
 
   it('strips internal tags from live streamed assistant responses', async () => {

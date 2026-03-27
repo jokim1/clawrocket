@@ -18,6 +18,7 @@ import {
   LlmClientError,
 } from './llm-client.js';
 import { BrowserRunPausedError } from '../browser/run-paused-error.js';
+import { TalkExecutorError } from '../talks/executor.js';
 
 // ---------------------------------------------------------------------------
 // Types: Execution Context and Events
@@ -82,11 +83,21 @@ export type ExecutionEvent =
   | {
       type: 'completed';
       content: string;
+      completion?: {
+        completionStatus: 'complete' | 'incomplete';
+        providerStopReason?: string | null;
+        incompleteReason?: 'truncated' | 'empty' | 'unknown' | null;
+      };
     }
   | {
       type: 'failed';
       errorCode: string;
       errorMessage: string;
+      completion?: {
+        completionStatus: 'complete' | 'incomplete';
+        providerStopReason?: string | null;
+        incompleteReason?: 'truncated' | 'empty' | 'unknown' | null;
+      };
     }
   | {
       type: 'cancelled';
@@ -110,6 +121,11 @@ export interface AgentExecutionResult {
     outputTokens: number;
     estimatedCostUsd?: number;
   };
+  completion?: {
+    completionStatus: 'complete' | 'incomplete';
+    providerStopReason?: string | null;
+    incompleteReason?: 'truncated' | 'empty' | 'unknown' | null;
+  };
 }
 
 export const ALWAYS_ALLOWED_CONTEXT_TOOLS = new Set([
@@ -118,6 +134,59 @@ export const ALWAYS_ALLOWED_CONTEXT_TOOLS = new Set([
   'read_attachment',
   'read_state',
 ]);
+
+const CLEAN_PROVIDER_STOP_REASONS = new Set([
+  'stop',
+  'end_turn',
+  'stop_sequence',
+]);
+
+function normalizeProviderStopReason(value: string): string | null {
+  const normalized = value.trim();
+  return normalized.length > 0 ? normalized : null;
+}
+
+function buildIncompleteCompletion(input: {
+  content: string;
+  providerStopReason: string | null;
+}): {
+  completionStatus: 'incomplete';
+  providerStopReason?: string | null;
+  incompleteReason?: 'truncated' | 'empty' | 'unknown' | null;
+  errorMessage: string;
+} {
+  const hasVisibleText = input.content.trim().length > 0;
+  if (!hasVisibleText) {
+    return {
+      completionStatus: 'incomplete',
+      providerStopReason: input.providerStopReason,
+      incompleteReason: 'empty',
+      errorMessage:
+        'The model finished without producing a usable final response.',
+    };
+  }
+
+  if (
+    input.providerStopReason === 'length' ||
+    input.providerStopReason === 'max_tokens'
+  ) {
+    return {
+      completionStatus: 'incomplete',
+      providerStopReason: input.providerStopReason,
+      incompleteReason: 'truncated',
+      errorMessage: `The model stopped before finishing its answer (provider stop reason: ${input.providerStopReason}).`,
+    };
+  }
+
+  return {
+    completionStatus: 'incomplete',
+    providerStopReason: input.providerStopReason,
+    incompleteReason: 'unknown',
+    errorMessage: input.providerStopReason
+      ? `The model stopped without a clean completion signal (provider stop reason: ${input.providerStopReason}).`
+      : 'The model stopped without a clean completion signal.',
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Main Execution Function
@@ -321,6 +390,8 @@ export async function executeWithAgent(
     outputTokens: 0,
     estimatedCostUsd: 0,
   };
+  let lastProviderStopReason: string | null = null;
+  let usedToolIterationFallback = false;
 
   const maxToolIterations = Math.max(1, options.maxToolIterations ?? 10);
 
@@ -399,6 +470,7 @@ export async function executeWithAgent(
       }
 
       finalContent += turnTextContent;
+      lastProviderStopReason = normalizeProviderStopReason(stopReason);
       const reachedToolIterationLimit = iteration === maxToolIterations - 1;
 
       // If no tool calls or no executeToolCall callback, we're done.
@@ -533,6 +605,7 @@ export async function executeWithAgent(
       if (reachedToolIterationLimit) {
         if (options.toolIterationLimitFallback) {
           finalContent = options.toolIterationLimitFallback;
+          usedToolIterationFallback = true;
         }
         break;
       }
@@ -557,9 +630,45 @@ export async function executeWithAgent(
   // -----------
   // Step 6: Emit completion
   // -----------
+  if (!usedToolIterationFallback) {
+    const finalContentTrimmed = finalContent.trim();
+    const completedCleanly =
+      finalContentTrimmed.length > 0 &&
+      Boolean(
+        lastProviderStopReason &&
+        CLEAN_PROVIDER_STOP_REASONS.has(lastProviderStopReason),
+      );
+
+    if (!completedCleanly) {
+      const incomplete = buildIncompleteCompletion({
+        content: finalContent,
+        providerStopReason: lastProviderStopReason,
+      });
+      emit({
+        type: 'failed',
+        errorCode: 'incomplete_response',
+        errorMessage: incomplete.errorMessage,
+        completion: incomplete,
+      });
+      throw new TalkExecutorError(
+        'incomplete_response',
+        incomplete.errorMessage,
+        {
+          metadata: incomplete,
+        },
+      );
+    }
+  }
+
+  const completion = {
+    completionStatus: 'complete' as const,
+    providerStopReason: lastProviderStopReason,
+    incompleteReason: null,
+  };
   emit({
     type: 'completed',
     content: finalContent,
+    completion,
   });
 
   return {
@@ -568,5 +677,6 @@ export async function executeWithAgent(
     providerId: agent.provider_id,
     modelId: agent.model_id,
     usage: accumulatedTokens,
+    completion,
   };
 }

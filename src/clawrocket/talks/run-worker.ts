@@ -333,6 +333,7 @@ export class TalkRunWorker implements TalkRunWorkerControl {
         run,
         error instanceof TalkExecutorError ? error.code : 'execution_failed',
         errorMessage(error),
+        error instanceof TalkExecutorError ? error.metadata : null,
       );
     }
   }
@@ -421,11 +422,13 @@ export class TalkRunWorker implements TalkRunWorkerControl {
     run: TalkRunRecord,
     errorCode: string,
     errorMessageText: string,
+    metadataPatch?: Record<string, unknown> | null,
   ): void {
     const result = failRunAndPromoteNextAtomic({
       runId: run.id,
       errorCode,
       errorMessage: errorMessageText,
+      metadataPatch,
     });
     if (!result.applied) {
       logger.debug(
