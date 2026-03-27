@@ -206,6 +206,46 @@ function getOrchestrationModeLabel(mode: TalkOrchestrationMode): string {
   return mode === 'ordered' ? 'Ordered' : 'Parallel';
 }
 
+function getOrderedStepTone(run: RunView): OrderedRoundStepTone {
+  switch (run.status) {
+    case 'running':
+    case 'awaiting_confirmation':
+      return 'active';
+    case 'completed':
+      return 'success';
+    case 'failed':
+      return 'error';
+    case 'cancelled':
+      return 'warning';
+    case 'queued':
+    default:
+      return 'muted';
+  }
+}
+
+function getOrderedStepStatusLabel(run: RunView, totalSteps: number): string {
+  switch (run.status) {
+    case 'running':
+      return run.sequenceIndex === totalSteps - 1
+        ? 'synthesizing'
+        : 'responding';
+    case 'awaiting_confirmation':
+      return 'awaiting confirmation';
+    case 'queued':
+      return 'queued';
+    case 'completed':
+      return 'completed';
+    case 'failed':
+      return 'failed';
+    case 'cancelled':
+      return run.cancelReason === 'blocked_by_prior_failure'
+        ? 'blocked'
+        : 'cancelled';
+    default:
+      return run.status;
+  }
+}
+
 type RunView = TalkRun & {
   updatedAt: number;
 };
@@ -224,6 +264,31 @@ type LiveResponseView = {
   errorMessage?: string;
   startedAt: number;
   terminalStatus?: 'failed';
+};
+
+type OrderedRoundStepTone =
+  | 'active'
+  | 'success'
+  | 'error'
+  | 'warning'
+  | 'muted';
+
+type OrderedRoundStepSummary = {
+  runId: string;
+  stepNumber: number;
+  label: string;
+  statusLabel: string;
+  tone: OrderedRoundStepTone;
+  isCurrent: boolean;
+  isSynthesis: boolean;
+};
+
+type OrderedRoundSummary = {
+  heading: string;
+  note: string | null;
+  progressLabel: string | null;
+  steps: OrderedRoundStepSummary[];
+  retryRunId: string | null;
 };
 
 type RunContextPanelState = {
@@ -2683,6 +2748,11 @@ export function TalkDetailPage({
   const [searchLoading, setSearchLoading] = useState(false);
   const [searchError, setSearchError] = useState<string | null>(null);
   const [draft, setDraft] = useState('');
+  const [retryRunState, setRetryRunState] = useState<{
+    runId: string;
+    status: 'posting' | 'error';
+    message: string;
+  } | null>(null);
   const [pendingAttachments, setPendingAttachments] = useState<
     Array<{
       localId: string;
@@ -3407,6 +3477,7 @@ export function TalkDetailPage({
   useEffect(() => {
     setSearchResults([]);
     setSearchError(null);
+    setRetryRunState(null);
   }, [activeThreadId]);
 
   useEffect(() => {
@@ -4137,74 +4208,139 @@ export function TalkDetailPage({
     row.scrollIntoView({ behavior: 'smooth', block: 'center' });
     pendingRunHistoryScrollRef.current = null;
   }, [currentTab, runHistory]);
-  const activeOrderedProgress = useMemo(() => {
-    const orderedRuns = Object.values(state.runsById).filter(
-      (run) =>
-        run.threadId === activeThreadId &&
-        Boolean(run.responseGroupId) &&
-        run.sequenceIndex != null,
-    );
-    if (orderedRuns.length === 0) return null;
-
-    const groups = orderedRuns.reduce<Record<string, RunView[]>>((acc, run) => {
-      const groupId = run.responseGroupId!;
-      (acc[groupId] ||= []).push(run);
-      return acc;
-    }, {});
-
-    const activeGroups = Object.values(groups)
-      .filter((groupRuns) =>
-        groupRuns.some((run) =>
-          ['queued', 'running', 'awaiting_confirmation'].includes(run.status),
-        ),
-      )
+  const orderedRunsByGroup = useMemo(
+    () =>
+      Object.values(state.runsById)
+        .filter(
+          (run) =>
+            run.threadId === activeThreadId &&
+            Boolean(run.responseGroupId) &&
+            run.sequenceIndex != null,
+        )
+        .reduce<Record<string, RunView[]>>((acc, run) => {
+          const groupId = run.responseGroupId!;
+          (acc[groupId] ||= []).push(run);
+          return acc;
+        }, {}),
+    [activeThreadId, state.runsById],
+  );
+  const orderedGroupSizesById = useMemo(
+    () =>
+      Object.fromEntries(
+        Object.entries(orderedRunsByGroup).map(([groupId, groupRuns]) => [
+          groupId,
+          groupRuns.length,
+        ]),
+      ),
+    [orderedRunsByGroup],
+  );
+  const latestOrderedRound = useMemo<OrderedRoundSummary | null>(() => {
+    const groupRuns = Object.values(orderedRunsByGroup)
+      .filter((candidate) => candidate.length > 1)
       .sort((left, right) => {
         const leftAt = Math.max(...left.map((run) => run.updatedAt));
         const rightAt = Math.max(...right.map((run) => run.updatedAt));
         return rightAt - leftAt;
-      });
-
-    const groupRuns = activeGroups[0];
+      })[0];
     if (!groupRuns) return null;
 
     const orderedGroupRuns = [...groupRuns].sort(
       (left, right) => (left.sequenceIndex ?? 0) - (right.sequenceIndex ?? 0),
     );
+    const totalSteps = orderedGroupRuns.length;
     const currentRun =
       orderedGroupRuns.find((run) => run.status === 'running') ||
       orderedGroupRuns.find((run) => run.status === 'awaiting_confirmation') ||
       orderedGroupRuns.find((run) => run.status === 'queued');
-    if (!currentRun || currentRun.sequenceIndex == null) return null;
+    const completedCount = orderedGroupRuns.filter(
+      (run) => run.status === 'completed',
+    ).length;
+    const failedRun = orderedGroupRuns.find((run) => run.status === 'failed');
+    const cancelledRun = orderedGroupRuns.find(
+      (run) => run.status === 'cancelled',
+    );
 
-    const liveResponse = state.liveResponsesByRunId[currentRun.id];
-    const label =
-      currentRun.targetAgentNickname ||
-      (currentRun.targetAgentId
-        ? agentLabelById[currentRun.targetAgentId]
-        : null) ||
-      liveResponse?.agentNickname ||
-      'Agent';
-    const statusText =
-      currentRun.status === 'awaiting_confirmation'
-        ? 'awaiting confirmation…'
-        : currentRun.status === 'queued'
-          ? 'queued…'
-          : currentRun.sequenceIndex === orderedGroupRuns.length - 1
-            ? 'synthesizing…'
-            : 'responding…';
+    let heading = 'Ordered round';
+    if (currentRun) {
+      heading = `Ordered round in progress · ${completedCount} of ${totalSteps} finished`;
+    } else if (failedRun) {
+      heading = 'Ordered round failed';
+    } else if (cancelledRun) {
+      heading = 'Ordered round cancelled';
+    } else if (orderedGroupRuns.every((run) => run.status === 'completed')) {
+      heading = 'Ordered round finished';
+    }
+
+    const currentLabel =
+      currentRun &&
+      (currentRun.targetAgentNickname ||
+        (currentRun.targetAgentId
+          ? agentLabelById[currentRun.targetAgentId]
+          : null) ||
+        state.liveResponsesByRunId[currentRun.id]?.agentNickname ||
+        'Agent');
+    const progressStatus =
+      currentRun && currentRun.sequenceIndex != null
+        ? currentRun.status === 'awaiting_confirmation'
+          ? 'awaiting confirmation…'
+          : currentRun.status === 'queued'
+            ? 'queued…'
+            : currentRun.sequenceIndex === totalSteps - 1
+              ? 'synthesizing…'
+              : 'responding…'
+        : null;
+    const progressLabel =
+      currentRun && currentRun.sequenceIndex != null && currentLabel
+        ? `Agent ${currentRun.sequenceIndex + 1} of ${totalSteps} · ${currentLabel} ${progressStatus}`
+        : null;
+
+    let note: string | null = null;
+    if (failedRun) {
+      const failedLabel =
+        failedRun.targetAgentNickname ||
+        (failedRun.targetAgentId
+          ? agentLabelById[failedRun.targetAgentId]
+          : null) ||
+        'Agent';
+      note = `${failedLabel} failed. Open Run History for diagnostics.`;
+    } else if (cancelledRun?.cancelReason === 'blocked_by_prior_failure') {
+      note = 'Later agents were blocked after an earlier step failed.';
+    } else if (orderedGroupRuns.every((run) => run.status === 'completed')) {
+      note = 'Each agent in the latest ordered round finished and saved a response.';
+    }
 
     return {
-      responseGroupId: currentRun.responseGroupId,
-      currentStep: currentRun.sequenceIndex + 1,
-      totalSteps: orderedGroupRuns.length,
-      label: `Agent ${currentRun.sequenceIndex + 1} of ${orderedGroupRuns.length} · ${label} ${statusText}`,
+      heading,
+      note,
+      progressLabel,
+      retryRunId:
+        failedRun?.errorCode === 'incomplete_response' &&
+        failedRun.targetAgentId &&
+        failedRun.triggerMessageId
+          ? failedRun.id
+          : null,
+      steps: orderedGroupRuns.map((run, index) => {
+        const liveResponse = state.liveResponsesByRunId[run.id];
+        const label =
+          run.targetAgentNickname ||
+          (run.targetAgentId ? agentLabelById[run.targetAgentId] : null) ||
+          liveResponse?.agentNickname ||
+          'Agent';
+        return {
+          runId: run.id,
+          stepNumber: index + 1,
+          label,
+          statusLabel: getOrderedStepStatusLabel(run, totalSteps),
+          tone: getOrderedStepTone(run),
+          isCurrent: run.id === currentRun?.id,
+          isSynthesis: index === totalSteps - 1,
+        };
+      }),
     };
-  }, [
-    activeThreadId,
-    agentLabelById,
-    state.liveResponsesByRunId,
-    state.runsById,
-  ]);
+  }, [agentLabelById, orderedRunsByGroup, state.liveResponsesByRunId]);
+  const activeOrderedProgress = latestOrderedRound?.progressLabel
+    ? { label: latestOrderedRound.progressLabel }
+    : null;
   const talkTimeline = useMemo<TalkTimelineEntry[]>(
     () =>
       [
@@ -4257,7 +4393,13 @@ export function TalkDetailPage({
         (left, right) =>
           left.timestamp - right.timestamp || left.sortOrder - right.sortOrder,
       ),
-    [activeThreadId, liveResponses, state.messages, state.runsById],
+    [
+      activeThreadId,
+      liveResponses,
+      orderedGroupSizesById,
+      state.messages,
+      state.runsById,
+    ],
   );
   const activeRound = useMemo(
     () =>
@@ -6957,6 +7099,49 @@ export function TalkDetailPage({
     }
   };
 
+  const queueTalkMessage = useCallback(
+    async (input: {
+      content: string;
+      targetAgentIds: string[];
+      attachmentIds?: string[];
+    }) => {
+      if (state.kind !== 'ready' || !state.talk || !activeThreadId) {
+        throw new Error('Thread unavailable.');
+      }
+
+      const result = await sendTalkMessage({
+        talkId: state.talk.id,
+        content: input.content,
+        targetAgentIds: input.targetAgentIds,
+        attachmentIds: input.attachmentIds,
+        threadId: activeThreadId,
+      });
+      const nearBottom = isNearBottom();
+      dispatch({
+        type: 'MESSAGE_APPENDED',
+        wasNearBottom: nearBottom,
+        message: result.message,
+      });
+      for (const run of result.runs) {
+        dispatch({
+          type: 'RUN_QUEUED',
+          runId: run.id,
+          threadId: run.threadId,
+          triggerMessageId: run.triggerMessageId,
+          createdAt: run.createdAt,
+          targetAgentId: run.targetAgentId,
+          targetAgentNickname: run.targetAgentNickname,
+          responseGroupId: run.responseGroupId,
+          sequenceIndex: run.sequenceIndex,
+          executorAlias: run.executorAlias,
+          executorModel: run.executorModel,
+        });
+      }
+      return result;
+    },
+    [activeThreadId, isNearBottom, state.kind, state.talk],
+  );
+
   const submitDraft = async () => {
     if (state.kind !== 'ready' || !state.talk || !activeThreadId) return;
 
@@ -7026,34 +7211,11 @@ export function TalkDetailPage({
 
     dispatch({ type: 'SEND_STARTED' });
     try {
-      const result = await sendTalkMessage({
-        talkId: state.talk.id,
+      await queueTalkMessage({
         content,
         targetAgentIds,
         attachmentIds: readyAttachments.map((a) => a.attachmentId!),
-        threadId: activeThreadId,
       });
-      const nearBottom = isNearBottom();
-      dispatch({
-        type: 'MESSAGE_APPENDED',
-        wasNearBottom: nearBottom,
-        message: result.message,
-      });
-      for (const run of result.runs) {
-        dispatch({
-          type: 'RUN_QUEUED',
-          runId: run.id,
-          threadId: run.threadId,
-          triggerMessageId: run.triggerMessageId,
-          createdAt: run.createdAt,
-          targetAgentId: run.targetAgentId,
-          targetAgentNickname: run.targetAgentNickname,
-          responseGroupId: run.responseGroupId,
-          sequenceIndex: run.sequenceIndex,
-          executorAlias: run.executorAlias,
-          executorModel: run.executorModel,
-        });
-      }
       pendingAttachments.forEach((attachment) => {
         if (attachment.previewUrl) {
           URL.revokeObjectURL(attachment.previewUrl);
@@ -7074,6 +7236,80 @@ export function TalkDetailPage({
       });
     }
   };
+
+  const handleRetryAgentRun = useCallback(
+    async (runId: string) => {
+      if (state.kind !== 'ready' || !state.talk || !activeThreadId) return;
+      if (activeRound) {
+        setRetryRunState({
+          runId,
+          status: 'error',
+          message: 'Wait for the current round to finish or cancel it first.',
+        });
+        return;
+      }
+      if (hasUnsavedAgentChanges) {
+        setRetryRunState({
+          runId,
+          status: 'error',
+          message: 'Save agent changes before retrying this agent.',
+        });
+        return;
+      }
+
+      const run = state.runsById[runId];
+      const triggerMessage = state.messages.find(
+        (message) => message.id === run?.triggerMessageId && message.role === 'user',
+      );
+      if (!run?.targetAgentId || !triggerMessage?.content.trim()) {
+        setRetryRunState({
+          runId,
+          status: 'error',
+          message: 'The original prompt is unavailable for this retry.',
+        });
+        return;
+      }
+
+      setRetryRunState({
+        runId,
+        status: 'posting',
+        message: 'Retrying this agent from the original prompt…',
+      });
+      try {
+        await queueTalkMessage({
+          content: triggerMessage.content,
+          targetAgentIds: [run.targetAgentId],
+        });
+        setRetryRunState(null);
+        dispatch({ type: 'SEND_CLEARED' });
+      } catch (error) {
+        if (error instanceof UnauthorizedError) {
+          setRetryRunState(null);
+          handleUnauthorized();
+          return;
+        }
+        setRetryRunState({
+          runId,
+          status: 'error',
+          message:
+            error instanceof Error
+              ? error.message
+              : 'Unable to retry this agent.',
+        });
+      }
+    },
+    [
+      activeRound,
+      activeThreadId,
+      handleUnauthorized,
+      hasUnsavedAgentChanges,
+      queueTalkMessage,
+      state.kind,
+      state.messages,
+      state.runsById,
+      state.talk,
+    ],
+  );
 
   const handleSend = (event: FormEvent) => {
     event.preventDefault();
@@ -12876,6 +13112,80 @@ export function TalkDetailPage({
                       {activeOrderedProgress.label}
                     </div>
                   ) : null}
+                  {latestOrderedRound ? (
+                    <section
+                      className="talk-ordered-summary"
+                      aria-label="Ordered round summary"
+                    >
+                      <div className="talk-ordered-summary-header">
+                        <strong className="talk-ordered-summary-title">
+                          {latestOrderedRound.heading}
+                        </strong>
+                        {latestOrderedRound.note ? (
+                          <span className="talk-ordered-summary-note">
+                            {latestOrderedRound.note}
+                          </span>
+                        ) : null}
+                        {latestOrderedRound.retryRunId ? (
+                          <button
+                            type="button"
+                            className="run-history-link"
+                            onClick={() =>
+                              void handleRetryAgentRun(
+                                latestOrderedRound.retryRunId!,
+                              )
+                            }
+                            disabled={
+                              retryRunState?.runId ===
+                                latestOrderedRound.retryRunId &&
+                              retryRunState.status === 'posting'
+                            }
+                          >
+                            {retryRunState?.runId ===
+                              latestOrderedRound.retryRunId &&
+                            retryRunState.status === 'posting'
+                              ? 'Retrying…'
+                              : 'Retry agent'}
+                          </button>
+                        ) : null}
+                      </div>
+                      <div className="talk-ordered-summary-steps">
+                        {latestOrderedRound.steps.map((step) => (
+                          <span
+                            key={step.runId}
+                            className={`talk-ordered-step talk-ordered-step-${step.tone}${
+                              step.isCurrent
+                                ? ' talk-ordered-step-current'
+                                : ''
+                            }`}
+                            aria-current={step.isCurrent ? 'step' : undefined}
+                          >
+                            <span className="talk-ordered-step-index">
+                              {step.stepNumber}
+                            </span>
+                            <span className="talk-ordered-step-label">
+                              {step.label}
+                            </span>
+                            {step.isSynthesis ? (
+                              <span className="talk-ordered-step-tag">
+                                Synthesis
+                              </span>
+                            ) : null}
+                            <span className="talk-ordered-step-status">
+                              {step.statusLabel}
+                            </span>
+                          </span>
+                        ))}
+                      </div>
+                      {latestOrderedRound.retryRunId &&
+                      retryRunState?.runId === latestOrderedRound.retryRunId &&
+                      retryRunState.status === 'error' ? (
+                        <p className="run-history-error">
+                          {retryRunState.message}
+                        </p>
+                      ) : null}
+                    </section>
+                  ) : null}
 
                   <div className="timeline talk-thread-timeline">
                     {state.messagesLoading ? (
@@ -12902,6 +13212,21 @@ export function TalkDetailPage({
                           const { message } = entry;
                           const isSynthesis =
                             message.metadata?.isSynthesis === true;
+                          const orderedRun = message.runId
+                            ? state.runsById[message.runId]
+                            : null;
+                          const orderedGroupSize =
+                            orderedRun?.responseGroupId
+                              ? orderedGroupSizesById[
+                                  orderedRun.responseGroupId
+                                ] ?? null
+                              : null;
+                          const orderedStepLabel =
+                            orderedRun?.sequenceIndex != null &&
+                            orderedGroupSize &&
+                            orderedGroupSize > 1
+                              ? `Step ${orderedRun.sequenceIndex + 1} of ${orderedGroupSize}`
+                              : null;
                           const agentLabel =
                             (message.agentId &&
                               agentLabelById[message.agentId]) ||
@@ -12923,6 +13248,11 @@ export function TalkDetailPage({
                                   {agentLabel ? `${agentLabel} · ` : ''}
                                   {message.role}
                                 </strong>
+                                {orderedStepLabel ? (
+                                  <span className="message-sequence-badge">
+                                    {orderedStepLabel}
+                                  </span>
+                                ) : null}
                                 {isSynthesis ? (
                                   <span className="message-synthesis-badge">
                                     Synthesis
@@ -13024,6 +13354,22 @@ export function TalkDetailPage({
                             agentLabelById[response.agentId]) ||
                           response.agentNickname ||
                           'Assistant';
+                        const failedRun = state.runsById[response.runId];
+                        const canRetryAgent =
+                          response.terminalStatus === 'failed' &&
+                          failedRun?.errorCode === 'incomplete_response' &&
+                          Boolean(
+                            failedRun.triggerMessageId &&
+                              failedRun.targetAgentId,
+                          );
+                        const retryPosting =
+                          retryRunState?.runId === response.runId &&
+                          retryRunState.status === 'posting';
+                        const retryError =
+                          retryRunState?.runId === response.runId &&
+                          retryRunState.status === 'error'
+                            ? retryRunState.message
+                            : null;
                         return (
                           <article
                             key={entry.key}
@@ -13061,6 +13407,20 @@ export function TalkDetailPage({
                             ) : null}
                             {response.terminalStatus === 'failed' ? (
                               <div className="run-history-links">
+                                {canRetryAgent ? (
+                                  <button
+                                    type="button"
+                                    className="run-history-link"
+                                    onClick={() =>
+                                      void handleRetryAgentRun(response.runId)
+                                    }
+                                    disabled={retryPosting}
+                                  >
+                                    {retryPosting
+                                      ? 'Retrying…'
+                                      : 'Retry agent'}
+                                  </button>
+                                ) : null}
                                 <button
                                   type="button"
                                   className="run-history-link"
@@ -13071,6 +13431,9 @@ export function TalkDetailPage({
                                   Open Run History
                                 </button>
                               </div>
+                            ) : null}
+                            {retryError ? (
+                              <p className="run-history-error">{retryError}</p>
                             ) : null}
                           </article>
                         );

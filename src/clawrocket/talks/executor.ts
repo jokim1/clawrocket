@@ -27,6 +27,12 @@ export interface TalkExecutionUsage {
   estimatedCostUsd?: number;
 }
 
+export interface TalkResponseCompletionMetadata {
+  completionStatus: 'complete' | 'incomplete';
+  providerStopReason?: string | null;
+  incompleteReason?: 'truncated' | 'empty' | 'unknown' | null;
+}
+
 export type TalkExecutionEvent =
   | {
       type: 'talk_response_started';
@@ -95,6 +101,7 @@ export type TalkExecutionEvent =
       routeStepPosition?: number | null;
       providerId?: string | null;
       modelId?: string | null;
+      completion?: TalkResponseCompletionMetadata;
     }
   | {
       type: 'talk_response_failed';
@@ -109,6 +116,7 @@ export type TalkExecutionEvent =
       modelId?: string | null;
       errorCode: string;
       errorMessage: string;
+      completion?: TalkResponseCompletionMetadata;
     }
   | {
       type: 'talk_response_cancelled';
@@ -129,20 +137,26 @@ export interface TalkExecutorOutput {
   modelId?: string | null;
   usage?: TalkExecutionUsage;
   responseSequenceInRun?: number | null;
+  completion?: TalkResponseCompletionMetadata | null;
 }
 
 export class TalkExecutorError extends Error {
   readonly code: string;
   readonly sourceMessage: string;
+  readonly metadata: Record<string, unknown> | null;
 
   constructor(
     code: string,
     message: string,
-    options?: { sourceMessage?: string },
+    options?: {
+      sourceMessage?: string;
+      metadata?: Record<string, unknown> | null;
+    },
   ) {
     super(message);
     this.code = code;
     this.sourceMessage = options?.sourceMessage || message;
+    this.metadata = options?.metadata ?? null;
     this.name = 'TalkExecutorError';
   }
 }

@@ -133,6 +133,7 @@ function mapExecutionEvent(
       return {
         type: 'talk_response_completed',
         ...shared,
+        completion: event.completion,
       };
 
     case 'failed':
@@ -141,6 +142,7 @@ function mapExecutionEvent(
         ...shared,
         errorCode: event.errorCode,
         errorMessage: event.errorMessage,
+        completion: event.completion,
       };
 
     case 'cancelled':
@@ -1680,6 +1682,7 @@ function buildResponseMetadataJson(input: {
   responseGroupId?: string | null;
   sequenceIndex?: number | null;
   isSynthesis: boolean;
+  completion?: TalkExecutorOutput['completion'] | null;
 }): string {
   return JSON.stringify({
     runId: input.runId,
@@ -1688,6 +1691,10 @@ function buildResponseMetadataJson(input: {
     contextTokens: input.estimatedContextTokens,
     responseGroupId: input.responseGroupId ?? null,
     sequenceIndex: input.sequenceIndex ?? null,
+    completionStatus: input.completion?.completionStatus ?? 'complete',
+    providerStopReason: input.completion?.providerStopReason ?? null,
+    incompleteReason: input.completion?.incompleteReason ?? null,
+    completedCleanly: input.completion?.completionStatus !== 'incomplete',
     ...(input.isSynthesis ? { isSynthesis: true } : {}),
   });
 }
@@ -1873,6 +1880,11 @@ export class CleanTalkExecutor implements TalkExecutor {
             responseGroupId: input.responseGroupId,
             sequenceIndex: input.sequenceIndex,
             isSynthesis: orderedStep.isSynthesis,
+            completion: {
+              completionStatus: 'complete',
+              providerStopReason: null,
+              incompleteReason: null,
+            },
           }),
         };
       }
@@ -2011,6 +2023,11 @@ export class CleanTalkExecutor implements TalkExecutor {
             responseGroupId: input.responseGroupId,
             sequenceIndex: input.sequenceIndex,
             isSynthesis: orderedStep.isSynthesis,
+            completion: {
+              completionStatus: 'complete',
+              providerStopReason: null,
+              incompleteReason: null,
+            },
           }),
         };
       }
@@ -2103,7 +2120,9 @@ export class CleanTalkExecutor implements TalkExecutor {
           responseGroupId: input.responseGroupId,
           sequenceIndex: input.sequenceIndex,
           isSynthesis: orderedStep.isSynthesis,
+          completion: result.completion,
         }),
+        completion: result.completion,
       };
     } catch (error) {
       const errorCode =
