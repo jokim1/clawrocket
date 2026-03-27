@@ -223,6 +223,70 @@ describe('App', () => {
     expect(screen.getByLabelText('3 unread messages')).toBeTruthy();
   });
 
+  it('does not show unread badges when only the stored count is stale', async () => {
+    window.localStorage.setItem(
+      'clawtalk.talkReadMarkers',
+      JSON.stringify({
+        'talk-1': {
+          messageCount: 2,
+          lastMessageAt: '2026-03-18T10:00:00.000Z',
+        },
+      }),
+    );
+
+    mockFetchByPath({
+      '/api/v1/session/me': [
+        jsonResponse(200, {
+          ok: true,
+          data: {
+            user: {
+              id: 'u1',
+              email: 'owner@example.com',
+              displayName: 'Owner',
+              role: 'owner',
+            },
+          },
+        }),
+      ],
+      '/api/v1/talks/sidebar': [
+        jsonResponse(200, {
+          ok: true,
+          data: {
+            items: [
+              {
+                id: 'talk-1',
+                type: 'talk',
+                title: 'Family Planning',
+                status: 'active',
+                sortOrder: 0,
+                lastMessageAt: '2026-03-18T10:00:00.000Z',
+                messageCount: 5,
+                hasActiveRun: false,
+              },
+            ],
+          },
+        }),
+      ],
+    });
+
+    renderWithRouter('/app/talks');
+    await screen.findByRole('heading', { name: 'Talks' });
+    expect(screen.queryByLabelText(/unread messages/i)).toBeNull();
+
+    await waitFor(() =>
+      expect(
+        JSON.parse(
+          window.localStorage.getItem('clawtalk.talkReadMarkers') || '{}',
+        ),
+      ).toMatchObject({
+        'talk-1': {
+          messageCount: 5,
+          lastMessageAt: '2026-03-18T10:00:00.000Z',
+        },
+      }),
+    );
+  });
+
   it('returns to sign-in when a later API call returns 401', async () => {
     mockFetchByPath({
       '/api/v1/session/me': [

@@ -105,15 +105,53 @@ function findSidebarTalk(
   return flattenSidebarTalks(items).find((talk) => talk.id === talkId) ?? null;
 }
 
+function getTalkReadSnapshot(talk: TalkSidebarTalk): TalkReadMarker {
+  return {
+    messageCount: talk.messageCount ?? 0,
+    lastMessageAt: talk.lastMessageAt ?? null,
+  };
+}
+
+function parseTimestamp(value: string | null | undefined): number | null {
+  if (!value) return null;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function hasNewerTalkMessage(
+  talk: TalkSidebarTalk,
+  marker: TalkReadMarker | undefined,
+): boolean {
+  if (!marker) return false;
+  const talkLastMessageAt = parseTimestamp(talk.lastMessageAt);
+  const markerLastMessageAt = parseTimestamp(marker.lastMessageAt);
+  if (talkLastMessageAt !== null && markerLastMessageAt !== null) {
+    return talkLastMessageAt > markerLastMessageAt;
+  }
+  if (talkLastMessageAt === null) return false;
+  return (talk.messageCount ?? 0) > marker.messageCount;
+}
+
+function reconcileTalkReadMarker(
+  talk: TalkSidebarTalk,
+  marker: TalkReadMarker | undefined,
+  isActive: boolean,
+): TalkReadMarker {
+  const snapshot = getTalkReadSnapshot(talk);
+  if (isActive || !marker) return snapshot;
+  return hasNewerTalkMessage(talk, marker) ? marker : snapshot;
+}
+
 function computeUnreadCount(
   talk: TalkSidebarTalk,
   marker: TalkReadMarker | undefined,
   isActive: boolean,
 ): number {
   if (isActive) return 0;
+  if (!hasNewerTalkMessage(talk, marker)) return 0;
   const messageCount = talk.messageCount ?? 0;
-  if (!marker) return 0;
-  return Math.max(0, messageCount - marker.messageCount);
+  const unreadCount = messageCount - (marker?.messageCount ?? 0);
+  return unreadCount > 0 ? unreadCount : 1;
 }
 
 function buildSidebarViewItems(
@@ -608,38 +646,23 @@ export function App() {
       let changed = false;
       const next = { ...current };
       for (const talk of flattenSidebarTalks(sidebarItems)) {
-        if (next[talk.id]) continue;
-        next[talk.id] = {
-          messageCount: talk.messageCount ?? 0,
-          lastMessageAt: talk.lastMessageAt ?? null,
-        };
+        const nextMarker = reconcileTalkReadMarker(
+          talk,
+          current[talk.id],
+          talk.id === currentTalkId,
+        );
+        const previous = current[talk.id];
+        if (
+          previous &&
+          previous.messageCount === nextMarker.messageCount &&
+          previous.lastMessageAt === nextMarker.lastMessageAt
+        ) {
+          continue;
+        }
+        next[talk.id] = nextMarker;
         changed = true;
       }
       return changed ? next : current;
-    });
-  }, [sidebarItems]);
-
-  useEffect(() => {
-    if (!currentTalkId) return;
-    const talk = findSidebarTalk(sidebarItems, currentTalkId);
-    if (!talk) return;
-    setTalkReadMarkers((current) => {
-      const nextMarker = {
-        messageCount: talk.messageCount ?? 0,
-        lastMessageAt: talk.lastMessageAt ?? null,
-      };
-      const previous = current[currentTalkId];
-      if (
-        previous &&
-        previous.messageCount === nextMarker.messageCount &&
-        previous.lastMessageAt === nextMarker.lastMessageAt
-      ) {
-        return current;
-      }
-      return {
-        ...current,
-        [currentTalkId]: nextMarker,
-      };
     });
   }, [currentTalkId, sidebarItems]);
 
