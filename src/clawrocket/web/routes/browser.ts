@@ -2,6 +2,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 
+import { DATA_DIR } from '../../../config.js';
 import type { ApiEnvelope, AuthContext } from '../types.js';
 import {
   getBrowserService,
@@ -10,15 +11,18 @@ import {
 } from '../../browser/service.js';
 import {
   checkBrowserProfileConnectionUniqueness,
+  deleteBrowserProfile,
   ensureBrowserProfile,
   getBrowserProfile,
   getBrowserProfileById,
+  getBrowserProfileUsage,
   hasNonterminalBrowserSessions,
   listBrowserSessionsByProfile,
   listAllBrowserProfiles,
   markBrowserSessionDisconnected,
   updateBrowserProfileConnectionMode,
   type BrowserConnectionMode,
+  type BrowserPersistedSessionState,
   type BrowserProfileSnapshot,
   type BrowserSessionSnapshot,
 } from '../../db/browser-accessors.js';
@@ -68,6 +72,11 @@ export interface ChromeSubprofileDiscovery {
   candidates: ChromeSubprofileCandidate[];
 }
 
+export interface BrowserProfileSummary extends BrowserProfileSnapshot {
+  inUseSessionCount: number;
+  currentSessionState: BrowserPersistedSessionState | null;
+}
+
 type ChromeUserDataDirectoryDiscoveryInput = {
   platform?: NodeJS.Platform;
   homeDir?: string;
@@ -106,6 +115,41 @@ function readDirNames(targetPath: string): string[] {
 
 function readFile(targetPath: string): string {
   return fs.readFileSync(targetPath, 'utf8');
+}
+
+function isDescendantPath(rootPath: string, targetPath: string): boolean {
+  const relative = path.relative(
+    path.resolve(rootPath),
+    path.resolve(targetPath),
+  );
+  return (
+    Boolean(relative) &&
+    !relative.startsWith('..') &&
+    !path.isAbsolute(relative)
+  );
+}
+
+function deleteOwnedBrowserProfileArtifacts(
+  profile: BrowserProfileSnapshot,
+): void {
+  const ownedRoots = [
+    path.join(DATA_DIR, 'browser-profiles'),
+    path.join(DATA_DIR, 'browser-downloads'),
+  ];
+
+  for (const artifactPath of [profile.profilePath, profile.downloadDir]) {
+    if (!artifactPath) {
+      continue;
+    }
+    if (!ownedRoots.some((root) => isDescendantPath(root, artifactPath))) {
+      continue;
+    }
+    try {
+      fs.rmSync(artifactPath, { recursive: true, force: true });
+    } catch {
+      // Best-effort cleanup only.
+    }
+  }
 }
 
 function stringOrNull(value: unknown): string | null {
@@ -1157,6 +1201,15 @@ function isNonterminalProfileSession(session: BrowserSessionSnapshot): boolean {
   );
 }
 
+function summarizeBrowserProfile(
+  profile: BrowserProfileSnapshot,
+): BrowserProfileSummary {
+  return {
+    ...profile,
+    ...getBrowserProfileUsage(profile.id),
+  };
+}
+
 function validateConnectionConfig(
   mode: BrowserConnectionMode,
   config: unknown,
@@ -1284,9 +1337,9 @@ function validateConnectionConfig(
 
 export function listBrowserProfilesRoute(input: { auth: AuthContext }): {
   statusCode: number;
-  body: ApiEnvelope<{ profiles: BrowserProfileSnapshot[] }>;
+  body: ApiEnvelope<{ profiles: BrowserProfileSummary[] }>;
 } {
-  const profiles = listAllBrowserProfiles();
+  const profiles = listAllBrowserProfiles().map(summarizeBrowserProfile);
   return {
     statusCode: 200,
     body: { ok: true, data: { profiles } },
@@ -1637,6 +1690,70 @@ export function updateBrowserProfileConnectionModeRoute(input: {
   }
 
   return { statusCode: 200, body: { ok: true, data: { profile: updated } } };
+}
+
+export function deleteBrowserProfileRoute(input: {
+  auth: AuthContext;
+  profileId: string;
+}): {
+  statusCode: number;
+  body: ApiEnvelope<{ profileId: string }>;
+} {
+  if (input.auth.role !== 'owner') {
+    return {
+      statusCode: 403,
+      body: {
+        ok: false,
+        error: { code: 'forbidden', message: 'Owner role required.' },
+      },
+    };
+  }
+
+  const profile = getBrowserProfileById(input.profileId);
+  if (!profile) {
+    return {
+      statusCode: 404,
+      body: {
+        ok: false,
+        error: {
+          code: 'profile_not_found',
+          message: 'Browser profile not found.',
+        },
+      },
+    };
+  }
+
+  if (hasNonterminalBrowserSessions(input.profileId)) {
+    return {
+      statusCode: 409,
+      body: {
+        ok: false,
+        error: {
+          code: 'active_session_exists',
+          message:
+            'Cannot delete a browser profile while active, blocked, or takeover sessions exist for it.',
+        },
+      },
+    };
+  }
+
+  const deleted = deleteBrowserProfile(input.profileId);
+  if (!deleted) {
+    return {
+      statusCode: 500,
+      body: {
+        ok: false,
+        error: { code: 'delete_failed', message: 'Failed to delete profile.' },
+      },
+    };
+  }
+
+  deleteOwnedBrowserProfileArtifacts(profile);
+
+  return {
+    statusCode: 200,
+    body: { ok: true, data: { profileId: input.profileId } },
+  };
 }
 
 export async function releaseBrowserProfileSessionsRoute(input: {

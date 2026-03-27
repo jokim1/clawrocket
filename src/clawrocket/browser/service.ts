@@ -215,16 +215,38 @@ function isLinkedInSurface(url: string, bodyText?: string | null): boolean {
   return /linkedin\.com/i.test(url) || /\blinkedin\b/i.test(bodyText || '');
 }
 
+function compactSurfaceText(value: string | null | undefined): string | null {
+  if (typeof value !== 'string') {
+    return null;
+  }
+  const compacted = value.replace(/\s+/g, ' ').trim();
+  return compacted.length > 0 ? compacted : null;
+}
+
+function mergeSurfaceText(...values: Array<string | null | undefined>): string {
+  return values
+    .map((value) => compactSurfaceText(value))
+    .filter((value): value is string => Boolean(value))
+    .join('\n');
+}
+
 function buildLinkedInBlockedReason(input: {
   url: string;
   bodyText?: string | null;
+  titleText?: string | null;
+  visibleText?: string | null;
   passwordFieldCount?: number;
   urlSuggestsAuth?: boolean;
 }): { kind: BrowserBlockedKind; reason: string } | null {
-  if (!isLinkedInSurface(input.url, input.bodyText)) {
+  const surfaceText = mergeSurfaceText(
+    input.titleText,
+    input.visibleText,
+    input.bodyText,
+  );
+  if (!isLinkedInSurface(input.url, surfaceText)) {
     return null;
   }
-  const bodyText = input.bodyText || '';
+  const bodyText = surfaceText;
   if (HUMAN_ONLY_CHECKPOINT_REGEX.test(bodyText)) {
     return {
       kind: 'human_step_required',
@@ -276,6 +298,38 @@ function buildLinkedInBlockedReason(input: {
     };
   }
   return null;
+}
+
+async function readOptionalPageTitle(page: Page): Promise<string | null> {
+  try {
+    return compactSurfaceText(await page.title());
+  } catch {
+    return null;
+  }
+}
+
+async function readOptionalInnerText(
+  page: Page,
+  selector: string,
+): Promise<string | null> {
+  try {
+    return compactSurfaceText(await page.locator(selector).innerText());
+  } catch {
+    return null;
+  }
+}
+
+async function readOptionalAllInnerTexts(
+  page: Page,
+  selector: string,
+): Promise<string | null> {
+  try {
+    return compactSurfaceText(
+      (await page.locator(selector).allInnerTexts()).join('\n'),
+    );
+  } catch {
+    return null;
+  }
 }
 
 function buildReusePrefix(siteKey: string): string {
@@ -515,49 +569,57 @@ async function detectBlockedState(page: Page): Promise<{
     };
   }
 
+  let passwordFieldCount = 0;
   try {
-    const passwordFieldCount = await page
-      .locator('input[type="password"]')
-      .count();
-    if (passwordFieldCount > 0) {
-      const passwordLinkedInBlocked = buildLinkedInBlockedReason({
-        url,
-        passwordFieldCount,
-        urlSuggestsAuth,
-      });
-      if (passwordLinkedInBlocked) {
-        return passwordLinkedInBlocked;
-      }
-      return {
-        kind: 'auth_required',
-        reason: 'Page contains a password field.',
-      };
-    }
-
-    const bodyText = await page.locator('body').innerText();
-    const linkedInBlocked = buildLinkedInBlockedReason({
+    passwordFieldCount = await page.locator('input[type="password"]').count();
+  } catch {
+    passwordFieldCount = 0;
+  }
+  if (passwordFieldCount > 0) {
+    const passwordLinkedInBlocked = buildLinkedInBlockedReason({
       url,
-      bodyText,
+      passwordFieldCount,
       urlSuggestsAuth,
     });
-    if (linkedInBlocked) {
-      return linkedInBlocked;
+    if (passwordLinkedInBlocked) {
+      return passwordLinkedInBlocked;
     }
-    if (HUMAN_ONLY_CHECKPOINT_REGEX.test(bodyText)) {
-      return {
-        kind: 'human_step_required',
-        reason: 'Page content suggests a human-only verification step.',
-      };
-    }
-    if (INTERACTIVE_AUTH_CHECKPOINT_REGEX.test(bodyText)) {
-      return {
-        kind: 'auth_required',
-        reason:
-          'Page content suggests interactive authentication or device verification.',
-      };
-    }
-  } catch {
-    // Ignore auth detection failures and fall back to the page state we have.
+    return {
+      kind: 'auth_required',
+      reason: 'Page contains a password field.',
+    };
+  }
+
+  const titleText = await readOptionalPageTitle(page);
+  const visibleText = await readOptionalAllInnerTexts(
+    page,
+    'h1, h2, [role="heading"], button, [role="button"], label',
+  );
+  const bodyText = await readOptionalInnerText(page, 'body');
+  const linkedInBlocked = buildLinkedInBlockedReason({
+    url,
+    bodyText,
+    titleText,
+    visibleText,
+    urlSuggestsAuth,
+  });
+  if (linkedInBlocked) {
+    return linkedInBlocked;
+  }
+
+  const surfaceText = mergeSurfaceText(titleText, visibleText, bodyText);
+  if (HUMAN_ONLY_CHECKPOINT_REGEX.test(surfaceText)) {
+    return {
+      kind: 'human_step_required',
+      reason: 'Page content suggests a human-only verification step.',
+    };
+  }
+  if (INTERACTIVE_AUTH_CHECKPOINT_REGEX.test(surfaceText)) {
+    return {
+      kind: 'auth_required',
+      reason:
+        'Page content suggests interactive authentication or device verification.',
+    };
   }
 
   if (urlSuggestsAuth) {

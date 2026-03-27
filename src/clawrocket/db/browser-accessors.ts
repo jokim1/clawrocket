@@ -58,6 +58,11 @@ export interface BrowserProfileSnapshot {
   lastUsedAt: string | null;
 }
 
+export interface BrowserProfileUsageSnapshot {
+  inUseSessionCount: number;
+  currentSessionState: BrowserPersistedSessionState | null;
+}
+
 export type BrowserPersistedSessionState =
   | 'active'
   | 'blocked'
@@ -599,6 +604,27 @@ export function listAllBrowserProfiles(): BrowserProfileSnapshot[] {
   return rows.map(toSnapshot);
 }
 
+export function getBrowserProfileUsage(
+  profileId: string,
+): BrowserProfileUsageSnapshot {
+  const rows = getDb()
+    .prepare(
+      `
+      SELECT state
+      FROM browser_sessions
+      WHERE profile_id = ?
+        AND state IN ('active', 'blocked', 'takeover')
+      ORDER BY updated_at DESC, id DESC
+    `,
+    )
+    .all(profileId) as Array<{ state: BrowserPersistedSessionState }>;
+
+  return {
+    inUseSessionCount: rows.length,
+    currentSessionState: rows[0]?.state ?? null,
+  };
+}
+
 export function updateBrowserProfileConnectionMode(
   profileId: string,
   mode: BrowserConnectionMode,
@@ -617,6 +643,18 @@ export function updateBrowserProfileConnectionMode(
     )
     .run(mode, configJson, now, profileId);
   return getBrowserProfileById(profileId);
+}
+
+export function deleteBrowserProfile(profileId: string): boolean {
+  const result = getDb()
+    .prepare(
+      `
+      DELETE FROM browser_profiles
+      WHERE id = ?
+    `,
+    )
+    .run(profileId);
+  return result.changes > 0;
 }
 
 function chromeProfileSelectionsConflict(input: {

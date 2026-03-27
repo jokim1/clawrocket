@@ -6,11 +6,18 @@ function makePage(input?: {
   url?: string;
   passwordCount?: number;
   bodyText?: string;
+  title?: string;
+  visibleTexts?: string[];
   throwOnPasswordCount?: boolean;
   throwOnBodyText?: boolean;
+  throwOnTitle?: boolean;
+  throwOnVisibleTexts?: boolean;
 }): any {
   return {
     url: vi.fn(() => input?.url ?? 'https://example.com/account'),
+    title: input?.throwOnTitle
+      ? vi.fn().mockRejectedValue(new Error('title failed'))
+      : vi.fn().mockResolvedValue(input?.title ?? ''),
     locator: vi.fn((selector: string) => {
       if (selector === 'input[type="password"]') {
         return {
@@ -24,6 +31,15 @@ function makePage(input?: {
           innerText: input?.throwOnBodyText
             ? vi.fn().mockRejectedValue(new Error('innerText failed'))
             : vi.fn().mockResolvedValue(input?.bodyText ?? ''),
+        };
+      }
+      if (
+        selector === 'h1, h2, [role="heading"], button, [role="button"], label'
+      ) {
+        return {
+          allInnerTexts: input?.throwOnVisibleTexts
+            ? vi.fn().mockRejectedValue(new Error('allInnerTexts failed'))
+            : vi.fn().mockResolvedValue(input?.visibleTexts ?? []),
         };
       }
       throw new Error(`Unexpected selector: ${selector}`);
@@ -101,6 +117,36 @@ describe('browser service helpers', () => {
     expect(result).toEqual({
       kind: 'auth_required',
       reason: 'LinkedIn requires a verification code to continue.',
+    });
+  });
+
+  it('detects LinkedIn phone approval checkpoints from the page title even when the body text is sparse', async () => {
+    const result = await _testOnly.detectBlockedState(
+      makePage({
+        url: 'https://www.linkedin.com/checkpoint/challenge',
+        title: 'Check your phone | LinkedIn',
+      }),
+    );
+
+    expect(result).toEqual({
+      kind: 'auth_required',
+      reason:
+        'LinkedIn is waiting for phone or app approval on a trusted device.',
+    });
+  });
+
+  it('detects LinkedIn approval checkpoints from visible heading and button copy', async () => {
+    const result = await _testOnly.detectBlockedState(
+      makePage({
+        url: 'https://www.linkedin.com/checkpoint/challenge',
+        visibleTexts: ['Approve sign in', 'Open the LinkedIn app'],
+      }),
+    );
+
+    expect(result).toEqual({
+      kind: 'auth_required',
+      reason:
+        'LinkedIn is waiting for phone or app approval on a trusted device.',
     });
   });
 

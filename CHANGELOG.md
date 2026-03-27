@@ -2,6 +2,18 @@
 
 All notable changes to NanoClaw will be documented in this file.
 
+## [1.2.5](https://github.com/jokim1/clawrocket/compare/v1.2.4...v1.2.5)
+
+- Added browser-profile usage visibility and deletion controls in Settings,
+  including server-side cleanup for managed ClawRocket browser and download
+  directories.
+- Tightened browser auth-block detection by checking page titles and visible
+  headings/buttons, which improves LinkedIn detection even when full body text
+  is sparse or delayed.
+- Disabled NVIDIA-hosted Kimi 2.5 thinking mode for streamed chat completions
+  so Main runs receive normal assistant text instead of failing with an empty
+  final response.
+
 ## [1.2.4](https://github.com/jokim1/clawrocket/compare/v1.2.3...v1.2.4)
 
 - Fixed ordered multi-agent runs so ambiguous or truncated direct-HTTP provider

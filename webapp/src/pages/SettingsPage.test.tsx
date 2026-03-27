@@ -454,6 +454,8 @@ describe('SettingsPage', () => {
               createdAt: '2026-03-27T21:40:00.000Z',
               updatedAt: '2026-03-27T21:40:00.000Z',
               lastUsedAt: null,
+              inUseSessionCount: 0,
+              currentSessionState: null,
             },
           ],
         },
@@ -621,6 +623,8 @@ describe('SettingsPage', () => {
                 createdAt: '2026-03-27T21:40:00.000Z',
                 updatedAt: '2026-03-27T21:40:00.000Z',
                 lastUsedAt: null,
+                inUseSessionCount: 1,
+                currentSessionState: 'blocked',
               },
             ],
           },
@@ -655,6 +659,116 @@ describe('SettingsPage', () => {
       '/api/v1/browser/profiles/bp-linkedin/release-sessions',
       expect.objectContaining({
         method: 'POST',
+      }),
+    );
+  });
+
+  it('shows profile usage and deletes a browser profile from the edit form', async () => {
+    const user = userEvent.setup();
+    const fetchMock = vi.fn<
+      (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>
+    >();
+    fetchMock
+      .mockResolvedValueOnce(
+        jsonResponse(200, {
+          ok: true,
+          data: {
+            configuredAliasMap: {},
+            effectiveAliasMap: {},
+            defaultAlias: 'Mock',
+            executorAuthMode: 'none',
+            hasApiKey: false,
+            hasOauthToken: false,
+            hasAuthToken: false,
+            activeCredentialConfigured: false,
+            verificationStatus: 'missing',
+            lastVerifiedAt: null,
+            lastVerificationError: null,
+            anthropicBaseUrl: '',
+            isConfigured: false,
+            configVersion: 0,
+            lastUpdatedAt: null,
+            lastUpdatedBy: null,
+            configErrors: [],
+          },
+        }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse(200, {
+          ok: true,
+          data: {
+            mode: 'mock',
+            restartSupported: false,
+            pendingRestartReasons: [],
+            activeRunCount: 0,
+            containerRuntimeAvailability: 'ready',
+            executorAuthMode: 'none',
+            activeCredentialConfigured: false,
+            verificationStatus: 'missing',
+            lastVerifiedAt: null,
+            lastVerificationError: null,
+            hasProviderAuth: false,
+            hasValidAliasMap: true,
+            configVersion: 0,
+            isConfigured: false,
+            bootId: 'boot-browser-delete',
+            configErrors: [],
+          },
+        }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse(200, {
+          ok: true,
+          data: {
+            profiles: [
+              {
+                id: 'bp-linkedin',
+                siteKey: 'linkedin',
+                accountLabel: null,
+                connectionMode: 'managed',
+                connectionConfig: { mode: 'managed' },
+                createdAt: '2026-03-27T21:40:00.000Z',
+                updatedAt: '2026-03-27T21:40:00.000Z',
+                lastUsedAt: '2026-03-27T22:45:00.000Z',
+                inUseSessionCount: 1,
+                currentSessionState: 'active',
+              },
+            ],
+          },
+        }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse(200, {
+          ok: true,
+          data: { profileId: 'bp-linkedin' },
+        }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse(200, {
+          ok: true,
+          data: {
+            profiles: [],
+          },
+        }),
+      );
+    vi.stubGlobal('fetch', fetchMock);
+    vi.stubGlobal('confirm', vi.fn(() => true));
+
+    render(<SettingsPage onUnauthorized={vi.fn()} userRole="owner" />);
+
+    await screen.findByRole('heading', { name: 'Browser Profiles' });
+    expect(screen.getByText('In Use')).toBeTruthy();
+    expect(screen.getByText(/Last used:/i)).toBeTruthy();
+
+    await user.click(screen.getByRole('button', { name: 'Edit' }));
+    await user.click(screen.getByRole('button', { name: 'Delete Profile' }));
+
+    expect(await screen.findByText('Browser profile deleted.')).toBeTruthy();
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      4,
+      '/api/v1/browser/profiles/bp-linkedin',
+      expect.objectContaining({
+        method: 'DELETE',
       }),
     );
   });

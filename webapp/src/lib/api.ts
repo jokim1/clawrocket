@@ -3743,6 +3743,8 @@ export type BrowserProfileSummary = {
   createdAt: string;
   updatedAt: string;
   lastUsedAt: string | null;
+  inUseSessionCount: number;
+  currentSessionState: 'active' | 'blocked' | 'takeover' | null;
 };
 
 export async function listBrowserProfiles(): Promise<BrowserProfileSummary[]> {
@@ -3796,6 +3798,17 @@ export async function updateBrowserProfileConnectionMode(
     },
   );
   return envelope.profile;
+}
+
+export async function deleteBrowserProfile(
+  profileId: string,
+): Promise<{ profileId: string }> {
+  return apiMutationRequest<{ profileId: string }>(
+    `/api/v1/browser/profiles/${encodeURIComponent(profileId)}`,
+    {
+      method: 'DELETE',
+    },
+  );
 }
 
 export async function releaseBrowserProfileSessions(profileId: string): Promise<{

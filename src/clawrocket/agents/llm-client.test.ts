@@ -147,4 +147,41 @@ describe('llm-client multimodal request building', () => {
       },
     ]);
   });
+
+  it('disables thinking mode for NVIDIA-hosted Kimi chat completions', async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue(
+        makeSseResponse([
+          'data: {"choices":[{"delta":{"content":"ok"},"finish_reason":null}]}\n\n',
+          'data: {"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}\n\n',
+          'data: [DONE]\n\n',
+        ]),
+      );
+
+    const provider: LlmProviderConfig = {
+      providerId: 'provider.nvidia',
+      baseUrl: 'https://integrate.api.nvidia.com/v1',
+      apiFormat: 'openai_chat_completions',
+      authScheme: 'bearer',
+    };
+    const messages: LlmMessage[] = [
+      {
+        role: 'user',
+        content: 'Review this slide deck.',
+      },
+    ];
+
+    await callLlm(
+      provider,
+      { apiKey: 'test-key' },
+      'moonshotai/kimi-k2.5',
+      messages,
+    );
+
+    const request = fetchMock.mock.calls[0]?.[1];
+    expect(request).toBeTruthy();
+    const body = JSON.parse(String(request?.body)) as any;
+    expect(body.thinking).toEqual({ type: 'disabled' });
+  });
 });
