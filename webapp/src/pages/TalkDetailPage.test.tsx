@@ -1810,6 +1810,16 @@ describe('TalkDetailPage', () => {
           agentId: 'agent-claude',
           agentNickname: 'Claude Sonnet 4.6',
         }),
+        buildMessage({
+          id: 'msg-3',
+          role: 'assistant',
+          content: 'Option A still wins overall.',
+          createdAt: '2026-03-06T00:00:05.000Z',
+          runId: 'run-ordered-3',
+          agentId: 'agent-claude',
+          agentNickname: 'Claude Sonnet 4.6',
+          metadata: { isSynthesis: true },
+        }),
       ],
       runs: [
         buildRun({
@@ -1842,22 +1852,29 @@ describe('TalkDetailPage', () => {
         }),
         buildRun({
           id: 'run-ordered-3',
-          status: 'cancelled',
+          status: 'completed',
           createdAt: '2026-03-06T00:00:01.200Z',
-          completedAt: '2026-03-06T00:00:04.000Z',
+          completedAt: '2026-03-06T00:00:05.000Z',
           triggerMessageId: 'msg-1',
           targetAgentId: 'agent-claude',
           targetAgentNickname: 'Claude Sonnet 4.6',
           responseGroupId: 'group-ordered-1',
           sequenceIndex: 2,
-          cancelReason: 'blocked_by_prior_failure',
         }),
       ],
     });
 
     renderDetailPage('/app/talks/talk-1');
 
-    await screen.findByLabelText('Ordered round summary');
+    const summary = await screen.findByLabelText('Ordered round summary');
+    expect(
+      within(summary).getByText('Ordered round finished with a failed step'),
+    ).toBeTruthy();
+    expect(
+      within(summary).getByText(
+        'GPT-5 Mini failed, so later agents continued without using its unfinished output.',
+      ),
+    ).toBeTruthy();
     await user.click(screen.getByRole('button', { name: 'Retry agent' }));
 
     expect(onSendMessage).toHaveBeenCalledWith(

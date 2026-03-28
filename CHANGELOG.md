@@ -2,6 +2,15 @@
 
 All notable changes to NanoClaw will be documented in this file.
 
+## [1.2.6](https://github.com/jokim1/clawrocket/compare/v1.2.5...v1.2.6)
+
+- Allowed ordered Talk rounds to continue after an earlier agent fails, instead
+  of auto-cancelling later queued steps.
+- Updated ordered-agent prompt construction so downstream agents are told when
+  earlier steps failed and unfinished perspectives were omitted from context.
+- Clarified ordered-round Talk UI states so users can distinguish "blocked by a
+  prior failure" from "failed, but later agents continued."
+
 ## [1.2.5](https://github.com/jokim1/clawrocket/compare/v1.2.4...v1.2.5)
 
 - Added browser-profile usage visibility and deletion controls in Settings,

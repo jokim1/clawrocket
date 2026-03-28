@@ -65,6 +65,7 @@ import { executeContainerAgentTurn } from '../agents/container-turn-executor.js'
 import { executeCodexAgentTurn } from '../agents/codex-turn-executor.js';
 import { modelSupportsVision } from '../llm/capabilities.js';
 import type { TalkPersonaRole } from '../llm/types.js';
+import type { TalkRunStatus } from '../types.js';
 import { executeWebFetch, executeWebSearch } from '../tools/web-tools.js';
 import { executeBrowserTool } from '../tools/browser-tools.js';
 import { buildBrowserResumeSection } from '../browser/run-context.js';
@@ -985,6 +986,13 @@ type PriorOrderedOutput = {
   content: string;
 };
 
+type PriorOrderedGap = {
+  sequenceIndex: number;
+  agentId: string | null;
+  agentNickname: string | null;
+  status: TalkRunStatus;
+};
+
 function listPriorOrderedOutputs(
   responseGroupId: string,
   currentSequenceIndex: number,
@@ -1027,6 +1035,30 @@ function listPriorOrderedOutputs(
     `,
     )
     .all(responseGroupId, currentSequenceIndex) as PriorOrderedOutput[];
+}
+
+function listPriorOrderedGaps(
+  responseGroupId: string,
+  currentSequenceIndex: number,
+): PriorOrderedGap[] {
+  return getDb()
+    .prepare(
+      `
+      SELECT
+        r.sequence_index AS sequenceIndex,
+        r.target_agent_id AS agentId,
+        COALESCE(ra.name, 'Agent') AS agentNickname,
+        r.status AS status
+      FROM talk_runs r
+      LEFT JOIN registered_agents ra ON ra.id = r.target_agent_id
+      WHERE r.response_group_id = ?
+        AND r.sequence_index IS NOT NULL
+        AND r.sequence_index < ?
+        AND r.status <> 'completed'
+      ORDER BY r.sequence_index ASC
+    `,
+    )
+    .all(responseGroupId, currentSequenceIndex) as PriorOrderedGap[];
 }
 
 function getOrderedGroupMaxSequence(responseGroupId: string): number | null {
@@ -1108,16 +1140,46 @@ function formatPriorOutputs(
     .join('\n\n');
 }
 
+function formatPriorGaps(priorGaps: PriorOrderedGap[]): string {
+  return priorGaps
+    .map((gap) => {
+      const label =
+        gap.agentNickname || gap.agentId || `Agent ${gap.sequenceIndex + 1}`;
+      const statusText =
+        gap.status === 'failed'
+          ? 'failed to finish'
+          : gap.status === 'cancelled'
+            ? 'was cancelled'
+            : gap.status === 'awaiting_confirmation'
+              ? 'is waiting for confirmation'
+              : gap.status === 'running'
+                ? 'is still running'
+                : 'is unavailable';
+      return `[${label}] ${statusText}; its output is omitted.`;
+    })
+    .join('\n');
+}
+
 function buildOrderedUserMessage(input: {
   originalQuestion: string;
   priorOutputs: PriorOrderedOutput[];
+  priorGaps: PriorOrderedGap[];
   isSynthesis: boolean;
   maxPriorOutputChars: number;
 }): string {
-  const sections = [
-    `Original user request:\n${input.originalQuestion}`,
-    `Prior analyses from other agents:\n${formatPriorOutputs(input.priorOutputs, input.maxPriorOutputChars)}`,
-  ];
+  const sections = [`Original user request:\n${input.originalQuestion}`];
+
+  if (input.priorOutputs.length > 0) {
+    sections.push(
+      `Prior analyses from other agents:\n${formatPriorOutputs(input.priorOutputs, input.maxPriorOutputChars)}`,
+    );
+  }
+
+  if (input.priorGaps.length > 0) {
+    sections.push(
+      `Unavailable earlier ordered steps:\n${formatPriorGaps(input.priorGaps)}`,
+    );
+  }
 
   if (input.isSynthesis) {
     sections.push(
@@ -1126,6 +1188,7 @@ function buildOrderedUserMessage(input: {
         'Identify areas of agreement, resolve tensions between differing viewpoints,',
         'and produce a unified recommendation that captures the strongest insights from each perspective.',
         "Treat the prior analyses as other agents' work, not as your own previous statements.",
+        'Do not assume every earlier ordered step is represented if some analyses are marked unavailable.',
       ].join(' '),
     );
   } else {
@@ -1134,6 +1197,7 @@ function buildOrderedUserMessage(input: {
         'Provide your own analysis from your role and perspective.',
         'Use the prior analyses as context from other agents, not as your own previous statements.',
         'Do not merely restate them; add your independent reasoning.',
+        'Do not assume every earlier ordered step is represented if some analyses are marked unavailable.',
       ].join(' '),
     );
   }
@@ -1160,7 +1224,11 @@ function buildStepUserMessageText(input: {
     input.responseGroupId,
     input.sequenceIndex,
   );
-  if (priorOutputs.length === 0) {
+  const priorGaps = listPriorOrderedGaps(
+    input.responseGroupId,
+    input.sequenceIndex,
+  );
+  if (priorOutputs.length === 0 && priorGaps.length === 0) {
     return { userMessageText: input.triggerContent, isSynthesis: false };
   }
 
@@ -1179,6 +1247,7 @@ function buildStepUserMessageText(input: {
     userMessageText: buildOrderedUserMessage({
       originalQuestion: input.triggerContent,
       priorOutputs,
+      priorGaps,
       isSynthesis,
       maxPriorOutputChars,
     }),

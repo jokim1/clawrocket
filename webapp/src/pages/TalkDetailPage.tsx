@@ -239,7 +239,7 @@ function getOrderedStepStatusLabel(run: RunView, totalSteps: number): string {
       return 'failed';
     case 'cancelled':
       return run.cancelReason === 'blocked_by_prior_failure'
-        ? 'blocked'
+        ? 'blocked by prior failure'
         : 'cancelled';
     default:
       return run.status;
@@ -4256,18 +4256,41 @@ export function TalkDetailPage({
       (run) => run.status === 'completed',
     ).length;
     const failedRun = orderedGroupRuns.find((run) => run.status === 'failed');
+    const failedSequenceIndex = failedRun?.sequenceIndex ?? null;
     const cancelledRun = orderedGroupRuns.find(
       (run) => run.status === 'cancelled',
+    );
+    const runsAfterFailure =
+      failedSequenceIndex == null
+        ? []
+        : orderedGroupRuns.filter(
+            (run) =>
+              (run.sequenceIndex ?? Number.NEGATIVE_INFINITY) >
+              failedSequenceIndex,
+          );
+    const continuedAfterFailure = runsAfterFailure.some(
+      (run) =>
+        run.status === 'queued' ||
+        run.status === 'running' ||
+        run.status === 'awaiting_confirmation' ||
+        run.status === 'completed',
+    );
+    const allCompleted = orderedGroupRuns.every(
+      (run) => run.status === 'completed',
     );
 
     let heading = 'Ordered round';
     if (currentRun) {
-      heading = `Ordered round in progress · ${completedCount} of ${totalSteps} finished`;
+      heading = failedRun
+        ? `Ordered round continuing after a failed step · ${completedCount} of ${totalSteps} finished`
+        : `Ordered round in progress · ${completedCount} of ${totalSteps} finished`;
+    } else if (failedRun && continuedAfterFailure) {
+      heading = 'Ordered round finished with a failed step';
     } else if (failedRun) {
       heading = 'Ordered round failed';
     } else if (cancelledRun) {
       heading = 'Ordered round cancelled';
-    } else if (orderedGroupRuns.every((run) => run.status === 'completed')) {
+    } else if (allCompleted) {
       heading = 'Ordered round finished';
     }
 
@@ -4302,10 +4325,12 @@ export function TalkDetailPage({
           ? agentLabelById[failedRun.targetAgentId]
           : null) ||
         'Agent';
-      note = `${failedLabel} failed. Open Run History for diagnostics.`;
+      note = continuedAfterFailure
+        ? `${failedLabel} failed, so later agents continued without using its unfinished output.`
+        : `${failedLabel} failed. Open Run History for diagnostics.`;
     } else if (cancelledRun?.cancelReason === 'blocked_by_prior_failure') {
       note = 'Later agents were blocked after an earlier step failed.';
-    } else if (orderedGroupRuns.every((run) => run.status === 'completed')) {
+    } else if (allCompleted) {
       note = 'Each agent in the latest ordered round finished and saved a response.';
     }
 

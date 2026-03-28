@@ -3881,7 +3881,7 @@ export function claimQueuedTalkRuns(
                 WHERE prior.response_group_id = r.response_group_id
                   AND prior.sequence_index IS NOT NULL
                   AND prior.sequence_index < r.sequence_index
-                  AND prior.status <> 'completed'
+                  AND prior.status NOT IN ('completed', 'failed')
               )
             )
           ORDER BY r.created_at ASC, COALESCE(r.sequence_index, -1) ASC, r.id ASC
@@ -4275,65 +4275,6 @@ export function failRunAndPromoteNextAtomic(input: {
           executorModel: run.executor_model,
         }),
       });
-
-      if (
-        run.response_group_id &&
-        typeof run.sequence_index === 'number' &&
-        Number.isInteger(run.sequence_index)
-      ) {
-        const queuedLaterRuns = getDb()
-          .prepare(
-            `
-            SELECT id, thread_id
-            FROM talk_runs
-            WHERE response_group_id = ?
-              AND sequence_index IS NOT NULL
-              AND sequence_index > ?
-              AND status = 'queued'
-            ORDER BY sequence_index ASC
-          `,
-          )
-          .all(run.response_group_id, run.sequence_index) as Array<{
-          id: string;
-          thread_id: string;
-        }>;
-
-        if (queuedLaterRuns.length > 0) {
-          const cancelStmt = getDb().prepare(
-            `
-            UPDATE talk_runs
-            SET status = 'cancelled',
-                ended_at = ?,
-                cancel_reason = ?
-            WHERE id = ? AND status = 'queued'
-          `,
-          );
-          const cancelledRunIds: string[] = [];
-          for (const queuedRun of queuedLaterRuns) {
-            const cancelled = cancelStmt.run(
-              now,
-              'blocked_by_prior_failure',
-              queuedRun.id,
-            );
-            if (cancelled.changes === 1) {
-              cancelledRunIds.push(queuedRun.id);
-            }
-          }
-
-          if (cancelledRunIds.length > 0) {
-            appendOutboxEvent({
-              topic: `talk:${run.talk_id}`,
-              eventType: 'talk_run_cancelled',
-              payload: JSON.stringify({
-                talkId: run.talk_id,
-                cancelledBy: 'system',
-                runIds: cancelledRunIds,
-                threadIds: [run.thread_id],
-              }),
-            });
-          }
-        }
-      }
 
       return {
         applied: true,
