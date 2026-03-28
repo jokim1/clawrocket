@@ -258,11 +258,13 @@ export async function executeWithAgent(
   // -----------
   let providerConfig: LlmProviderConfig;
   let secret: LlmSecret;
+  let defaultMaxOutputTokens: number | undefined;
 
   try {
     const binding = resolveExecution(agent);
     providerConfig = binding.providerConfig;
     secret = binding.secret;
+    defaultMaxOutputTokens = binding.defaultMaxOutputTokens;
   } catch (err) {
     if (err instanceof ExecutionResolverError) {
       emit({ type: 'failed', errorCode: err.code, errorMessage: err.message });
@@ -404,6 +406,7 @@ export async function executeWithAgent(
         messages,
         {
           tools,
+          maxOutputTokens: defaultMaxOutputTokens,
           signal: options.signal,
         },
       );

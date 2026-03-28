@@ -86,21 +86,26 @@ import {
   type TalkExecutorOutput,
 } from './executor.js';
 
+type ResolvedTalkAgentExecution = {
+  agent: RegisteredAgentRecord;
+  nickname: string;
+};
+
 function mapExecutionEvent(
   event: ExecutionEvent,
   input: TalkExecutorInput,
-  agent: RegisteredAgentRecord,
+  resolved: ResolvedTalkAgentExecution,
 ): TalkExecutionEvent | null {
   const shared = {
     runId: input.runId,
     talkId: input.talkId,
     threadId: input.threadId,
-    agentId: agent.id,
-    agentNickname: agent.name,
+    agentId: resolved.agent.id,
+    agentNickname: resolved.nickname,
     responseGroupId: input.responseGroupId ?? null,
     sequenceIndex: input.sequenceIndex ?? null,
-    providerId: agent.provider_id,
-    modelId: agent.model_id,
+    providerId: resolved.agent.provider_id,
+    modelId: resolved.agent.model_id,
   };
 
   switch (event.type) {
@@ -931,15 +936,45 @@ function filterEffectiveToolsForJob(
 function resolveTalkAgent(
   talkId: string,
   targetAgentId?: string | null,
-): RegisteredAgentRecord {
-  const targeted = targetAgentId ? getRegisteredAgent(targetAgentId) : null;
-  if (targeted) return targeted;
+): ResolvedTalkAgentExecution {
+  const assignments = listTalkAgents(talkId);
+  if (targetAgentId) {
+    const targetedAssignment = assignments.find(
+      (assignment) => assignment.agentId === targetAgentId,
+    );
+    const targetedAgent = getRegisteredAgent(targetAgentId);
+    if (targetedAssignment && targetedAgent) {
+      return {
+        agent: targetedAgent,
+        nickname: targetedAssignment.nickname || targetedAssignment.agentName,
+      };
+    }
+    if (targetedAgent) {
+      return { agent: targetedAgent, nickname: targetedAgent.name };
+    }
+  }
+
+  const primaryAssignment =
+    assignments.find((assignment) => assignment.isPrimary) || assignments[0];
+  if (primaryAssignment) {
+    const primaryAgent = getRegisteredAgent(primaryAssignment.agentId);
+    if (primaryAgent) {
+      return {
+        agent: primaryAgent,
+        nickname: primaryAssignment.nickname || primaryAssignment.agentName,
+      };
+    }
+  }
 
   const primary = resolvePrimaryAgent(talkId);
-  if (primary) return primary;
+  if (primary) {
+    return { agent: primary, nickname: primary.name };
+  }
 
   const main = getMainAgent();
-  if (main) return main;
+  if (main) {
+    return { agent: main, nickname: main.name };
+  }
 
   throw new TalkExecutorError(
     'NO_AGENT_AVAILABLE',
@@ -962,6 +997,23 @@ function getModelContextWindow(agent: RegisteredAgentRecord): number {
     | undefined;
 
   return row?.context_window_tokens || 128000;
+}
+
+function buildMultiAgentExecutionNote(input: {
+  responseGroupId?: string | null;
+  currentAgentNickname: string;
+}): string {
+  if (!input.responseGroupId) {
+    return '';
+  }
+
+  return [
+    'Multi-agent routing note:',
+    `You are ${input.currentAgentNickname}.`,
+    'The system is routing each selected agent separately.',
+    'If the user mentions other agent nicknames with @mentions, treat that as addressing/routing context only.',
+    "Do not say you cannot invoke the other agents, and do not present another agent's work as your own previous turn.",
+  ].join(' ');
 }
 
 const CHARS_TO_TOKENS = 0.25;
@@ -1022,7 +1074,18 @@ function listPriorOrderedOutputs(
       SELECT
         r.sequence_index AS sequenceIndex,
         r.target_agent_id AS agentId,
-        COALESCE(ra.name, 'Agent') AS agentNickname,
+        COALESCE(
+          (
+            SELECT ta.nickname
+            FROM talk_agents ta
+            WHERE ta.talk_id = r.talk_id
+              AND ta.registered_agent_id = r.target_agent_id
+            ORDER BY ta.sort_order ASC, ta.created_at ASC
+            LIMIT 1
+          ),
+          ra.name,
+          'Agent'
+        ) AS agentNickname,
         ao.content AS content
       FROM talk_runs r
       JOIN assistant_outputs ao ON ao.run_id = r.id
@@ -1047,7 +1110,18 @@ function listPriorOrderedGaps(
       SELECT
         r.sequence_index AS sequenceIndex,
         r.target_agent_id AS agentId,
-        COALESCE(ra.name, 'Agent') AS agentNickname,
+        COALESCE(
+          (
+            SELECT ta.nickname
+            FROM talk_agents ta
+            WHERE ta.talk_id = r.talk_id
+              AND ta.registered_agent_id = r.target_agent_id
+            ORDER BY ta.sort_order ASC, ta.created_at ASC
+            LIMIT 1
+          ),
+          ra.name,
+          'Agent'
+        ) AS agentNickname,
         r.status AS status
       FROM talk_runs r
       LEFT JOIN registered_agents ra ON ra.id = r.target_agent_id
@@ -1188,6 +1262,7 @@ function buildOrderedUserMessage(input: {
         'Identify areas of agreement, resolve tensions between differing viewpoints,',
         'and produce a unified recommendation that captures the strongest insights from each perspective.',
         "Treat the prior analyses as other agents' work, not as your own previous statements.",
+        'Even if a prior excerpt resembles your provider or a generic assistant label, it still belongs to the cited agent label above, not to you.',
         'Do not assume every earlier ordered step is represented if some analyses are marked unavailable.',
       ].join(' '),
     );
@@ -1196,6 +1271,7 @@ function buildOrderedUserMessage(input: {
       [
         'Provide your own analysis from your role and perspective.',
         'Use the prior analyses as context from other agents, not as your own previous statements.',
+        'Even if a prior excerpt resembles your provider or a generic assistant label, it still belongs to the cited agent label above, not to you.',
         'Do not merely restate them; add your independent reasoning.',
         'Do not assume every earlier ordered step is represented if some analyses are marked unavailable.',
       ].join(' '),
@@ -1776,7 +1852,7 @@ export class CleanTalkExecutor implements TalkExecutor {
   ): Promise<TalkExecutorOutput> {
     const emitEvent = emit || (() => {});
     let failureEmitted = false;
-    let resolvedAgent: RegisteredAgentRecord | null = null;
+    let resolvedAgent: ResolvedTalkAgentExecution | null = null;
 
     const emitTalkEvent = (event: TalkExecutionEvent) => {
       if (event.type === 'talk_response_failed') {
@@ -1797,9 +1873,14 @@ export class CleanTalkExecutor implements TalkExecutor {
       });
 
       resolvedAgent = resolveTalkAgent(input.talkId, input.targetAgentId);
-      const modelContextWindow = getModelContextWindow(resolvedAgent);
+      const activeAgent = resolvedAgent.agent;
+      const modelContextWindow = getModelContextWindow(activeAgent);
       const jobPolicy = buildTalkJobExecutionPolicy(input.jobId);
-      const plan = planExecution(resolvedAgent, input.requestedBy);
+      const plan = planExecution(activeAgent, input.requestedBy);
+      const multiAgentExecutionNote = buildMultiAgentExecutionNote({
+        responseGroupId: input.responseGroupId,
+        currentAgentNickname: resolvedAgent.nickname,
+      });
       const channelExecutionContext = await loadChannelExecutionContext({
         trigger: channelTriggerContext.trigger,
         binding: channelTriggerContext.binding,
@@ -1815,7 +1896,7 @@ export class CleanTalkExecutor implements TalkExecutor {
         input.triggerMessageId,
         input.requestedBy,
         {
-          personaRole: resolvedAgent.persona_role as TalkPersonaRole | null,
+          personaRole: activeAgent.persona_role as TalkPersonaRole | null,
           retrievalQuery: input.triggerContent,
           jobPolicy,
           effectiveTools: scopedEffectiveTools,
@@ -1827,14 +1908,20 @@ export class CleanTalkExecutor implements TalkExecutor {
         JSON.stringify({
           ...runMetadata,
           ...contextPackage.contextSnapshot,
-          executionDecision: buildExecutionDecision(resolvedAgent, plan),
+          executionDecision: buildExecutionDecision(activeAgent, plan),
         }),
       );
 
       const context: ExecutionContext = {
-        systemPrompt: browserResumeSection
-          ? `${contextPackage.systemPrompt}\n\n# Browser Resume Context\n\n${browserResumeSection}`
-          : contextPackage.systemPrompt,
+        systemPrompt: [
+          contextPackage.systemPrompt,
+          multiAgentExecutionNote,
+          browserResumeSection
+            ? `# Browser Resume Context\n\n${browserResumeSection}`
+            : '',
+        ]
+          .filter(Boolean)
+          .join('\n\n'),
         contextTools: contextPackage.contextTools,
         connectorTools: contextPackage.connectorTools,
         history: contextPackage.history,
@@ -1877,18 +1964,18 @@ export class CleanTalkExecutor implements TalkExecutor {
           runId: input.runId,
           talkId: input.talkId,
           threadId: input.threadId,
-          agentId: resolvedAgent.id,
-          agentNickname: resolvedAgent.name,
+          agentId: activeAgent.id,
+          agentNickname: resolvedAgent.nickname,
           responseGroupId: input.responseGroupId ?? null,
           sequenceIndex: input.sequenceIndex ?? null,
-          providerId: resolvedAgent.provider_id,
-          modelId: resolvedAgent.model_id,
+          providerId: activeAgent.provider_id,
+          modelId: activeAgent.model_id,
         });
 
         const containerResult = await executeContainerAgentTurn({
           runId: input.runId,
           userId: input.requestedBy,
-          agent: resolvedAgent,
+          agent: activeAgent,
           promptLabel: 'talk',
           userMessage: orderedStep.userMessageText,
           signal,
@@ -1898,11 +1985,8 @@ export class CleanTalkExecutor implements TalkExecutor {
           }),
           context: {
             systemPrompt: [
-              contextPackage.systemPrompt,
-              browserResumeSection
-                ? `# Browser Resume Context\n\n${browserResumeSection}`
-                : '',
-              resolvedAgent.system_prompt?.trim() || '',
+              context.systemPrompt,
+              activeAgent.system_prompt?.trim() || '',
             ]
               .filter(Boolean)
               .join('\n\n'),
@@ -1926,25 +2010,25 @@ export class CleanTalkExecutor implements TalkExecutor {
           runId: input.runId,
           talkId: input.talkId,
           threadId: input.threadId,
-          agentId: resolvedAgent.id,
-          agentNickname: resolvedAgent.name,
+          agentId: activeAgent.id,
+          agentNickname: resolvedAgent.nickname,
           responseGroupId: input.responseGroupId ?? null,
           sequenceIndex: input.sequenceIndex ?? null,
-          providerId: resolvedAgent.provider_id,
-          modelId: resolvedAgent.model_id,
+          providerId: activeAgent.provider_id,
+          modelId: activeAgent.model_id,
         });
 
         return {
           content: containerResult.content,
-          agentId: resolvedAgent.id,
-          agentNickname: resolvedAgent.name,
-          providerId: resolvedAgent.provider_id,
-          modelId: resolvedAgent.model_id,
+          agentId: activeAgent.id,
+          agentNickname: resolvedAgent.nickname,
+          providerId: activeAgent.provider_id,
+          modelId: activeAgent.model_id,
           responseSequenceInRun: 1,
           metadataJson: buildResponseMetadataJson({
             runId: input.runId,
-            providerId: resolvedAgent.provider_id,
-            modelId: resolvedAgent.model_id,
+            providerId: activeAgent.provider_id,
+            modelId: activeAgent.model_id,
             estimatedContextTokens: contextPackage.estimatedTokens,
             responseGroupId: input.responseGroupId,
             sequenceIndex: input.sequenceIndex,
@@ -1969,28 +2053,25 @@ export class CleanTalkExecutor implements TalkExecutor {
           runId: input.runId,
           talkId: input.talkId,
           threadId: input.threadId,
-          agentId: resolvedAgent.id,
-          agentNickname: resolvedAgent.name,
+          agentId: activeAgent.id,
+          agentNickname: resolvedAgent.nickname,
           responseGroupId: input.responseGroupId ?? null,
           sequenceIndex: input.sequenceIndex ?? null,
-          providerId: resolvedAgent.provider_id,
-          modelId: resolvedAgent.model_id,
+          providerId: activeAgent.provider_id,
+          modelId: activeAgent.model_id,
         });
 
         const codexResult = await executeCodexAgentTurn({
           runId: input.runId,
           userId: input.requestedBy,
-          agent: resolvedAgent,
+          agent: activeAgent,
           promptLabel: 'talk',
           userMessage: orderedStep.userMessageText,
           signal,
           context: {
             systemPrompt: [
-              contextPackage.systemPrompt,
-              browserResumeSection
-                ? `# Browser Resume Context\n\n${browserResumeSection}`
-                : '',
-              resolvedAgent.system_prompt?.trim() || '',
+              context.systemPrompt,
+              activeAgent.system_prompt?.trim() || '',
             ]
               .filter(Boolean)
               .join('\n\n'),
@@ -2010,18 +2091,18 @@ export class CleanTalkExecutor implements TalkExecutor {
             (tool) => tool.toolFamily === 'browser' && tool.enabled,
           ),
           onProgressUpdate: (message) => {
-            const activeAgent = resolvedAgent!;
+            const currentAgent = resolvedAgent!;
             emitTalkEvent({
               type: 'talk_progress_update',
               runId: input.runId,
               talkId: input.talkId,
               threadId: input.threadId,
-              agentId: activeAgent.id,
-              agentNickname: activeAgent.name,
+              agentId: currentAgent.agent.id,
+              agentNickname: currentAgent.nickname,
               responseGroupId: input.responseGroupId ?? null,
               sequenceIndex: input.sequenceIndex ?? null,
-              providerId: activeAgent.provider_id,
-              modelId: activeAgent.model_id,
+              providerId: currentAgent.agent.provider_id,
+              modelId: currentAgent.agent.model_id,
               message,
             });
           },
@@ -2037,11 +2118,11 @@ export class CleanTalkExecutor implements TalkExecutor {
             runId: input.runId,
             talkId: input.talkId,
             threadId: input.threadId,
-            agentId: resolvedAgent.id,
+            agentId: activeAgent.id,
             responseGroupId: input.responseGroupId ?? null,
             sequenceIndex: input.sequenceIndex ?? null,
-            providerId: resolvedAgent.provider_id,
-            modelId: resolvedAgent.model_id,
+            providerId: activeAgent.provider_id,
+            modelId: activeAgent.model_id,
             usage: {
               inputTokens: codexResult.usage.inputTokens,
               cachedInputTokens: codexResult.usage.cachedInputTokens,
@@ -2055,12 +2136,12 @@ export class CleanTalkExecutor implements TalkExecutor {
           runId: input.runId,
           talkId: input.talkId,
           threadId: input.threadId,
-          agentId: resolvedAgent.id,
-          agentNickname: resolvedAgent.name,
+          agentId: activeAgent.id,
+          agentNickname: resolvedAgent.nickname,
           responseGroupId: input.responseGroupId ?? null,
           sequenceIndex: input.sequenceIndex ?? null,
-          providerId: resolvedAgent.provider_id,
-          modelId: resolvedAgent.model_id,
+          providerId: activeAgent.provider_id,
+          modelId: activeAgent.model_id,
           usage: codexResult.usage
             ? {
                 inputTokens: codexResult.usage.inputTokens,
@@ -2072,10 +2153,10 @@ export class CleanTalkExecutor implements TalkExecutor {
 
         return {
           content: codexResult.content,
-          agentId: resolvedAgent.id,
-          agentNickname: resolvedAgent.name,
-          providerId: resolvedAgent.provider_id,
-          modelId: resolvedAgent.model_id,
+          agentId: activeAgent.id,
+          agentNickname: resolvedAgent.nickname,
+          providerId: activeAgent.provider_id,
+          modelId: activeAgent.model_id,
           usage: codexResult.usage
             ? {
                 inputTokens: codexResult.usage.inputTokens,
@@ -2086,8 +2167,8 @@ export class CleanTalkExecutor implements TalkExecutor {
           responseSequenceInRun: 1,
           metadataJson: buildResponseMetadataJson({
             runId: input.runId,
-            providerId: resolvedAgent.provider_id,
-            modelId: resolvedAgent.model_id,
+            providerId: activeAgent.provider_id,
+            modelId: activeAgent.model_id,
             estimatedContextTokens: contextPackage.estimatedTokens,
             responseGroupId: input.responseGroupId,
             sequenceIndex: input.sequenceIndex,
@@ -2126,7 +2207,7 @@ export class CleanTalkExecutor implements TalkExecutor {
         });
 
       assertVisionSupportForConversationImages({
-        agent: resolvedAgent,
+        agent: activeAgent,
         currentAttachmentRows,
         historyImageMessageIdsToHydrate,
       });
@@ -2147,7 +2228,7 @@ export class CleanTalkExecutor implements TalkExecutor {
         attachmentHeading: 'Current message attachments:',
       });
       const result = await executeWithAgent(
-        resolvedAgent.id,
+        activeAgent.id,
         {
           ...context,
           history: directHistory,
@@ -2170,7 +2251,7 @@ export class CleanTalkExecutor implements TalkExecutor {
       return {
         content: result.content,
         agentId: result.agentId,
-        agentNickname: resolvedAgent.name,
+        agentNickname: resolvedAgent.nickname,
         providerId: result.providerId,
         modelId: result.modelId,
         usage: result.usage
@@ -2209,11 +2290,12 @@ export class CleanTalkExecutor implements TalkExecutor {
           runId: input.runId,
           talkId: input.talkId,
           threadId: input.threadId,
-          agentId: resolvedAgent?.id,
+          agentId: resolvedAgent?.agent.id,
+          agentNickname: resolvedAgent?.nickname,
           responseGroupId: input.responseGroupId ?? null,
           sequenceIndex: input.sequenceIndex ?? null,
-          providerId: resolvedAgent?.provider_id,
-          modelId: resolvedAgent?.model_id,
+          providerId: resolvedAgent?.agent.provider_id,
+          modelId: resolvedAgent?.agent.model_id,
           errorCode,
           errorMessage,
         });

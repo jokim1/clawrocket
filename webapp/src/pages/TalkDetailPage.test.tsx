@@ -3586,6 +3586,39 @@ describe('TalkDetailPage', () => {
     expect(screen.getByText('Step 2 of 2')).toBeTruthy();
   });
 
+  it('uses the agent nickname as the assistant message header when available', async () => {
+    installTalkDetailFetch({
+      messages: [
+        buildMessage({
+          id: 'msg-1',
+          role: 'user',
+          content: 'Review this.',
+          createdAt: '2026-03-06T00:00:00.000Z',
+        }),
+        buildMessage({
+          id: 'msg-gem',
+          role: 'assistant',
+          content: 'Independent review.',
+          createdAt: '2026-03-06T00:00:03.000Z',
+          runId: 'run-gem',
+          agentId: 'agent-openai',
+          agentNickname: 'Gem',
+        }),
+      ],
+    });
+
+    renderDetailPage('/app/talks/talk-1');
+
+    const messageBody = await screen.findByText('Independent review.');
+    const article = messageBody.closest('article');
+    if (!article) {
+      throw new Error('Expected assistant article wrapper');
+    }
+
+    expect(within(article).getByText('GPT-5 Mini (Critic)')).toBeTruthy();
+    expect(within(article).queryByText(/^assistant$/i)).toBeNull();
+  });
+
   it('strips internal tags from live streamed assistant responses', async () => {
     installTalkDetailFetch();
 

@@ -13257,6 +13257,12 @@ export function TalkDetailPage({
                               agentLabelById[message.agentId]) ||
                             message.agentNickname ||
                             null;
+                          const headerActorLabel =
+                            message.role === 'assistant' && agentLabel
+                              ? agentLabel
+                              : agentLabel
+                                ? `${agentLabel} · ${message.role}`
+                                : message.role;
                           return (
                             <article
                               key={entry.key}
@@ -13269,10 +13275,7 @@ export function TalkDetailPage({
                               }`}
                             >
                               <header>
-                                <strong>
-                                  {agentLabel ? `${agentLabel} · ` : ''}
-                                  {message.role}
-                                </strong>
+                                <strong>{headerActorLabel}</strong>
                                 {orderedStepLabel ? (
                                   <span className="message-sequence-badge">
                                     {orderedStepLabel}

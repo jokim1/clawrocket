@@ -109,6 +109,7 @@ export type TalkExecutionEvent =
       talkId: string;
       threadId?: string | null;
       agentId?: string | null;
+      agentNickname?: string | null;
       responseGroupId?: string | null;
       sequenceIndex?: number | null;
       routeStepPosition?: number | null;

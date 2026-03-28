@@ -378,6 +378,102 @@ describe('CleanTalkExecutor', () => {
     });
   });
 
+  it('injects a multi-agent routing note and keeps the Talk nickname for grouped direct runs', async () => {
+    const kimiAgent = createRegisteredAgent({
+      name: 'Moonshot Kimi',
+      providerId: 'provider.nvidia',
+      modelId: 'moonshotai/kimi-k2.5',
+      toolPermissionsJson: '{}',
+    });
+    const gemAgent = createRegisteredAgent({
+      name: 'Gemini Flash',
+      providerId: 'provider.gemini',
+      modelId: 'gemini-2.5-flash',
+      toolPermissionsJson: '{}',
+    });
+    getDb()
+      .prepare(
+        `
+      INSERT INTO talk_agents (id, talk_id, registered_agent_id, nickname, is_primary, sort_order, created_at, updated_at)
+      VALUES (?, ?, ?, ?, 1, 0, datetime('now'), datetime('now'))
+    `,
+      )
+      .run('ta-kimi', TALK_ID, kimiAgent.id, 'Kimi');
+    getDb()
+      .prepare(
+        `
+      INSERT INTO talk_agents (id, talk_id, registered_agent_id, nickname, is_primary, sort_order, created_at, updated_at)
+      VALUES (?, ?, ?, ?, 0, 1, datetime('now'), datetime('now'))
+    `,
+      )
+      .run('ta-gem', TALK_ID, gemAgent.id, 'Gem');
+    createTalkMessage({
+      id: 'msg-user-grouped',
+      talkId: TALK_ID,
+      threadId: THREAD_ID,
+      role: 'user',
+      content: '@kimi and @gem please review this.',
+      createdBy: 'owner-1',
+      createdAt: '2026-03-27T00:00:00.000Z',
+    });
+    createTalkRun({
+      id: 'run-grouped-kimi',
+      talk_id: TALK_ID,
+      thread_id: THREAD_ID,
+      requested_by: 'owner-1',
+      status: 'running',
+      trigger_message_id: 'msg-user-grouped',
+      target_agent_id: kimiAgent.id,
+      idempotency_key: null,
+      response_group_id: 'group-kimi-gem',
+      sequence_index: 0,
+      executor_alias: null,
+      executor_model: null,
+      source_binding_id: null,
+      source_external_message_id: null,
+      source_thread_key: null,
+      created_at: '2026-03-27T00:00:00.100Z',
+      started_at: '2026-03-27T00:00:00.100Z',
+      ended_at: null,
+      cancel_reason: null,
+    });
+
+    vi.mocked(executeWithAgent).mockImplementation(
+      async (agentId, context, userMessage) => {
+        expect(agentId).toBe(kimiAgent.id);
+        expect(userMessage).toBe('@kimi and @gem please review this.');
+        expect(context?.systemPrompt).toContain('Multi-agent routing note:');
+        expect(context?.systemPrompt).toContain('You are Kimi.');
+        expect(context?.systemPrompt).toContain(
+          'Do not say you cannot invoke the other agents',
+        );
+        return {
+          content: 'I will handle only my own perspective.',
+          agentId: kimiAgent.id,
+          providerId: 'provider.nvidia',
+          modelId: 'moonshotai/kimi-k2.5',
+        };
+      },
+    );
+
+    const result = await new CleanTalkExecutor().execute(
+      {
+        runId: 'run-grouped-kimi',
+        talkId: TALK_ID,
+        threadId: THREAD_ID,
+        requestedBy: 'owner-1',
+        triggerMessageId: 'msg-user-grouped',
+        triggerContent: '@kimi and @gem please review this.',
+        targetAgentId: kimiAgent.id,
+        responseGroupId: 'group-kimi-gem',
+        sequenceIndex: 0,
+      },
+      new AbortController().signal,
+    );
+
+    expect(result.agentNickname).toBe('Kimi');
+  });
+
   it('injects channel context and recent Slack history for channel-triggered runs', async () => {
     const now = new Date().toISOString();
     const agent = createRegisteredAgent({

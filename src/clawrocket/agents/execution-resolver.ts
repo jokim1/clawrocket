@@ -48,6 +48,8 @@ export interface ExecutionBinding {
   providerConfig: LlmProviderConfig;
   /** Credential to send with the request. */
   secret: LlmSecret;
+  /** Default output budget configured for this provider/model pair. */
+  defaultMaxOutputTokens?: number;
 }
 
 export class ExecutionResolverError extends Error {
@@ -110,7 +112,24 @@ export function resolveExecution(
     absoluteTimeoutMs: providerRecord.absolute_timeout_ms ?? undefined,
   };
 
-  return { providerConfig, secret };
+  const modelRecord = db
+    .prepare(
+      `
+        SELECT default_max_output_tokens
+        FROM llm_provider_models
+        WHERE provider_id = ? AND model_id = ?
+        LIMIT 1
+      `,
+    )
+    .get(agent.provider_id, agent.model_id) as
+    | { default_max_output_tokens: number }
+    | undefined;
+
+  return {
+    providerConfig,
+    secret,
+    defaultMaxOutputTokens: modelRecord?.default_max_output_tokens,
+  };
 }
 
 /**

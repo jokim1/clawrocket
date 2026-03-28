@@ -111,6 +111,7 @@ export interface TalkAgentAssignment {
   assignmentId: string;
   agentId: string;
   agentName: string;
+  nickname: string;
   personaRole: string | null;
   isPrimary: boolean;
   sortOrder: number;
@@ -128,6 +129,7 @@ export function listTalkAgents(talkId: string): TalkAgentAssignment[] {
       ta.id AS assignment_id,
       ta.registered_agent_id AS agent_id,
       ra.name AS agent_name,
+      COALESCE(ta.nickname, ra.name, 'Agent') AS nickname,
       ta.persona_role,
       ta.is_primary,
       ta.sort_order
@@ -142,6 +144,7 @@ export function listTalkAgents(talkId: string): TalkAgentAssignment[] {
     assignment_id: string;
     agent_id: string;
     agent_name: string;
+    nickname: string;
     persona_role: string | null;
     is_primary: number;
     sort_order: number;
@@ -150,6 +153,7 @@ export function listTalkAgents(talkId: string): TalkAgentAssignment[] {
     assignmentId: row.assignment_id,
     agentId: row.agent_id,
     agentName: row.agent_name,
+    nickname: row.nickname,
     personaRole: row.persona_role,
     isPrimary: !!row.is_primary,
     sortOrder: row.sort_order,
@@ -197,14 +201,93 @@ export function resolveAgentByName(
     FROM talk_agents ta
     JOIN registered_agents ra ON ra.id = ta.registered_agent_id
     WHERE ta.talk_id = ?
-      AND LOWER(ra.name) = LOWER(?)
+      AND (
+        LOWER(COALESCE(ta.nickname, '')) = LOWER(?)
+        OR LOWER(ra.name) = LOWER(?)
+      )
       AND ra.enabled = 1
     LIMIT 1
   `,
     )
-    .get(talkId, agentName) as RegisteredAgentRecord | undefined;
+    .get(talkId, agentName, agentName) as RegisteredAgentRecord | undefined;
 
   return row;
+}
+
+function normalizeMentionAlias(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, '');
+}
+
+function buildMentionAliases(value: string | null | undefined): string[] {
+  if (!value) return [];
+  const trimmed = value.trim();
+  if (!trimmed) return [];
+
+  const aliases = new Set<string>();
+  const normalized = normalizeMentionAlias(trimmed);
+  if (normalized.length >= 2) {
+    aliases.add(normalized);
+  }
+
+  const firstToken = trimmed
+    .toLowerCase()
+    .split(/[^a-z0-9]+/g)
+    .find((token) => token.length >= 2);
+  if (firstToken) {
+    aliases.add(firstToken);
+  }
+
+  return [...aliases];
+}
+
+function extractMentionTokens(content: string): string[] {
+  const mentions: string[] = [];
+  const pattern = /(^|[\s([{"'`])@([A-Za-z0-9][A-Za-z0-9._-]*)/g;
+  for (const match of content.matchAll(pattern)) {
+    const token = normalizeMentionAlias(match[2] || '');
+    if (token.length >= 2) {
+      mentions.push(token);
+    }
+  }
+  return mentions;
+}
+
+export function resolveTalkAgentMentions(
+  talkId: string,
+  content: string,
+): TalkAgentAssignment[] {
+  const mentionTokens = extractMentionTokens(content);
+  if (mentionTokens.length === 0) return [];
+
+  const talkAgents = listTalkAgents(talkId);
+  if (talkAgents.length === 0) return [];
+
+  const aliasToAgentIds = new Map<string, Set<string>>();
+  for (const agent of talkAgents) {
+    const aliases = new Set<string>([
+      ...buildMentionAliases(agent.nickname),
+      ...buildMentionAliases(agent.agentName),
+    ]);
+    for (const alias of aliases) {
+      const next = aliasToAgentIds.get(alias) || new Set<string>();
+      next.add(agent.agentId);
+      aliasToAgentIds.set(alias, next);
+    }
+  }
+
+  const matchedAgentIds = new Set<string>();
+  for (const token of mentionTokens) {
+    const matches = aliasToAgentIds.get(token);
+    if (matches && matches.size === 1) {
+      matchedAgentIds.add([...matches][0]!);
+    }
+  }
+
+  if (matchedAgentIds.size === 0) {
+    return [];
+  }
+
+  return talkAgents.filter((agent) => matchedAgentIds.has(agent.agentId));
 }
 
 // ---------------------------------------------------------------------------

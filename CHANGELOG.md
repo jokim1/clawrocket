@@ -2,6 +2,17 @@
 
 All notable changes to NanoClaw will be documented in this file.
 
+## [1.2.7](https://github.com/jokim1/clawrocket/compare/v1.2.6...v1.2.7)
+
+- Fixed direct Talk provider runs so they honor each model's configured output
+  budget instead of silently falling back to a 1024-token cap, which was
+  truncating long Kimi and Gemini responses.
+- Added Talk nickname mention routing, so typed mentions like `@kimi` and
+  `@gem` target the matching assigned agents instead of being ignored.
+- Persisted and recovered Talk agent attribution for assistant messages, and
+  updated the Talk UI to show agent nicknames directly instead of ambiguous
+  generic `assistant` labels when the actor is known.
+
 ## [1.2.6](https://github.com/jokim1/clawrocket/compare/v1.2.5...v1.2.6)
 
 - Allowed ordered Talk rounds to continue after an earlier agent fails, instead

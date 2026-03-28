@@ -92,4 +92,33 @@ describe('agent-router', () => {
     });
     expect(events.some((event) => event.type === 'completed')).toBe(false);
   });
+
+  it('passes the model default output budget through to the direct HTTP client', async () => {
+    vi.mocked(resolveExecution).mockReturnValue({
+      providerConfig: {
+        providerId: 'provider.openai',
+        baseUrl: 'https://api.openai.com/v1',
+        apiFormat: 'openai_chat_completions',
+        authScheme: 'bearer',
+      },
+      secret: {
+        apiKey: 'sk-test',
+      },
+      defaultMaxOutputTokens: 8192,
+    } as never);
+    vi.mocked(streamLlmResponse).mockImplementation(
+      async function* (_provider, _secret, _modelId, _messages, options) {
+        expect(options?.maxOutputTokens).toBe(8192);
+        yield { type: 'text_delta', text: 'Ready.' };
+        yield { type: 'done', stopReason: 'stop' };
+      } as typeof streamLlmResponse,
+    );
+
+    const result = await executeWithAgent('agent-1', null, 'Review both docs', {
+      runId: 'run-2',
+      userId: 'owner-1',
+    });
+
+    expect(result.content).toBe('Ready.');
+  });
 });
