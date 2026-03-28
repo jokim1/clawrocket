@@ -526,7 +526,9 @@ describe('TalkRunWorker', () => {
       () => getTalkRunById('run-ordered-1')?.status === 'completed',
     );
     await waitFor(() => getTalkRunById('run-ordered-2')?.status === 'failed');
-    await waitFor(() => getTalkRunById('run-ordered-3')?.status === 'completed');
+    await waitFor(
+      () => getTalkRunById('run-ordered-3')?.status === 'completed',
+    );
 
     expect(executor.startedRuns).toEqual([
       'run-ordered-1',

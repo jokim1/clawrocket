@@ -1568,11 +1568,11 @@ describe('CleanTalkExecutor', () => {
         expect(userMessage).toContain(
           'Original user request:\nEvaluate this launch plan.',
         );
-        expect(userMessage).not.toContain(
-          'Prior analyses from other agents:',
-        );
+        expect(userMessage).not.toContain('Prior analyses from other agents:');
         expect(userMessage).toContain('Unavailable earlier ordered steps:');
-        expect(userMessage).toContain('failed to finish; its output is omitted.');
+        expect(userMessage).toContain(
+          'failed to finish; its output is omitted.',
+        );
         expect(userMessage).toContain(
           'Do not assume every earlier ordered step is represented if some analyses are marked unavailable.',
         );
