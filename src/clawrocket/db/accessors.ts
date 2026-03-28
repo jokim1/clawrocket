@@ -3756,15 +3756,11 @@ export function appendAssistantMessageWithOutbox(input: {
     const parsedMetadata = parseMessageMetadataJson(txInput.metadataJson);
     const mergedMetadata: Record<string, unknown> | null =
       parsedMetadata ||
-      (!txInput.metadataJson &&
-      (txInput.agentId || txInput.agentNickname)
+      (!txInput.metadataJson && (txInput.agentId || txInput.agentNickname)
         ? {}
         : null);
     if (mergedMetadata) {
-      if (
-        txInput.agentId &&
-        typeof mergedMetadata.agentId !== 'string'
-      ) {
+      if (txInput.agentId && typeof mergedMetadata.agentId !== 'string') {
         mergedMetadata.agentId = txInput.agentId;
       }
       if (

@@ -17,9 +17,9 @@ import {
   updateTask,
 } from './db.js';
 import {
-    _initClawrocketTestSchema,
-    appendAssistantMessageWithOutbox,
-    appendRuntimeTalkMessage,
+  _initClawrocketTestSchema,
+  appendAssistantMessageWithOutbox,
+  appendRuntimeTalkMessage,
   appendOutboxEvent,
   canUserEditTalk,
   claimNextChannelDeliveryRow,

@@ -2094,16 +2094,16 @@ export function enqueueTalkChat(input: {
           nickname: agent.nickname || agent.agentName,
         }))
       : requestedTargetIds.length > 0
-      ? talkAgents
-          .filter((a) => requestedTargetIds.includes(a.agentId))
-          .map((a) => ({
+        ? talkAgents
+            .filter((a) => requestedTargetIds.includes(a.agentId))
+            .map((a) => ({
+              id: a.agentId,
+              nickname: a.nickname || a.agentName,
+            }))
+        : talkAgents.map((a) => ({
             id: a.agentId,
             nickname: a.nickname || a.agentName,
-          }))
-      : talkAgents.map((a) => ({
-          id: a.agentId,
-          nickname: a.nickname || a.agentName,
-        }));
+          }));
   const orderedRunSet =
     talk.orchestration_mode === 'ordered' && selectedAgents.length > 1;
 

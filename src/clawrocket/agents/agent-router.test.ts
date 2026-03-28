@@ -106,13 +106,17 @@ describe('agent-router', () => {
       },
       defaultMaxOutputTokens: 8192,
     } as never);
-    vi.mocked(streamLlmResponse).mockImplementation(
-      async function* (_provider, _secret, _modelId, _messages, options) {
-        expect(options?.maxOutputTokens).toBe(8192);
-        yield { type: 'text_delta', text: 'Ready.' };
-        yield { type: 'done', stopReason: 'stop' };
-      } as typeof streamLlmResponse,
-    );
+    vi.mocked(streamLlmResponse).mockImplementation(async function* (
+      _provider,
+      _secret,
+      _modelId,
+      _messages,
+      options,
+    ) {
+      expect(options?.maxOutputTokens).toBe(8192);
+      yield { type: 'text_delta', text: 'Ready.' };
+      yield { type: 'done', stopReason: 'stop' };
+    } as typeof streamLlmResponse);
 
     const result = await executeWithAgent('agent-1', null, 'Review both docs', {
       runId: 'run-2',

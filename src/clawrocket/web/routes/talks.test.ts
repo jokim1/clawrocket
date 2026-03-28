@@ -1512,9 +1512,10 @@ describe('talk routes', () => {
       kimiAgent.id,
       gemAgent.id,
     ]);
-    expect(
-      body.data.runs.map((run: any) => run.targetAgentNickname),
-    ).toEqual(['Kimi', 'Gem Heavy']);
+    expect(body.data.runs.map((run: any) => run.targetAgentNickname)).toEqual([
+      'Kimi',
+      'Gem Heavy',
+    ]);
   });
 
   it('returns real run error codes and target nicknames in run history', async () => {
