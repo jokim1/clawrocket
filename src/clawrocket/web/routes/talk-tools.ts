@@ -349,7 +349,7 @@ function buildTalkToolsRecord(input: {
     const snapshot = getRegisteredAgentSnapshot(assignment.agentId);
     return {
       agentId: assignment.agentId,
-      nickname: assignment.agentName,
+      nickname: assignment.nickname,
       sourceKind: 'provider' as const,
       providerId: snapshot?.providerId || null,
       modelId: snapshot?.modelId || null,

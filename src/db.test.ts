@@ -18,6 +18,7 @@ import {
 } from './db.js';
 import {
   _initClawrocketTestSchema,
+  appendAssistantMessageWithOutbox,
   appendRuntimeTalkMessage,
   appendOutboxEvent,
   canUserEditTalk,
@@ -1264,6 +1265,53 @@ describe('phase 0 schema and reliability tables', () => {
     expect(toolEvent?.metadata).toMatchObject({
       kind: 'tool_result',
       toolName: 'connector_posthog__query',
+    });
+  });
+
+  it('persists assistant actor metadata when appending final assistant messages', () => {
+    createTalkRun({
+      id: 'run-assistant-metadata',
+      talk_id: 'talk-1',
+      thread_id: TALK_THREAD_ID,
+      requested_by: 'owner-1',
+      status: 'running',
+      trigger_message_id: null,
+      target_agent_id: 'agent-default',
+      idempotency_key: null,
+      executor_alias: null,
+      executor_model: null,
+      created_at: '2024-01-01T00:00:03.000Z',
+      started_at: '2024-01-01T00:00:03.500Z',
+      ended_at: null,
+      cancel_reason: null,
+    });
+
+    const message = appendAssistantMessageWithOutbox({
+      talkId: 'talk-1',
+      threadId: TALK_THREAD_ID,
+      runId: 'run-assistant-metadata',
+      messageId: 'msg-assistant-metadata',
+      content: 'Final answer',
+      metadataJson: JSON.stringify({ completionStatus: 'complete' }),
+      agentId: 'agent-default',
+      agentNickname: 'Claude Opus 4.6',
+      createdAt: '2024-01-01T00:00:04.000Z',
+    });
+
+    expect(JSON.parse(message.metadata_json || '{}')).toMatchObject({
+      completionStatus: 'complete',
+      agentId: 'agent-default',
+      agentNickname: 'Claude Opus 4.6',
+    });
+    expect(
+      JSON.parse(
+        listTalkMessages({ talkId: 'talk-1', limit: 20 }).find(
+          (candidate) => candidate.id === 'msg-assistant-metadata',
+        )?.metadata_json || '{}',
+      ),
+    ).toMatchObject({
+      agentId: 'agent-default',
+      agentNickname: 'Claude Opus 4.6',
     });
   });
 

@@ -1455,6 +1455,69 @@ describe('talk routes', () => {
     expect(wakeCalls).toBe(1);
   });
 
+  it('routes explicit @nickname mentions using Talk nicknames and narrows an over-selected round', async () => {
+    const kimiAgent = createRegisteredAgent({
+      name: 'Moonshot Kimi',
+      providerId: 'provider.nvidia',
+      modelId: 'moonshotai/kimi-k2.5',
+      toolPermissionsJson: '{}',
+    });
+    const gemAgent = createRegisteredAgent({
+      name: 'Gemini Flash',
+      providerId: 'provider.gemini',
+      modelId: 'gemini-2.5-flash',
+      toolPermissionsJson: '{}',
+    });
+    getDb()
+      .prepare(
+        `
+      INSERT INTO talk_agents (id, talk_id, registered_agent_id, nickname, is_primary, sort_order, created_at, updated_at)
+      VALUES (?, ?, ?, ?, 0, 1, datetime('now'), datetime('now'))
+    `,
+      )
+      .run('ta-talk-owner-kimi', 'talk-owner', kimiAgent.id, 'Kimi');
+    getDb()
+      .prepare(
+        `
+      INSERT INTO talk_agents (id, talk_id, registered_agent_id, nickname, is_primary, sort_order, created_at, updated_at)
+      VALUES (?, ?, ?, ?, 0, 2, datetime('now'), datetime('now'))
+    `,
+      )
+      .run('ta-talk-owner-gem', 'talk-owner', gemAgent.id, 'Gem Heavy');
+    const agentsRes = await server.request('/api/v1/talks/talk-owner/agents', {
+      headers: {
+        Authorization: 'Bearer owner-token',
+      },
+    });
+    expect(agentsRes.status).toBe(200);
+    const agentsBody = (await agentsRes.json()) as any;
+    const primaryAgentId = agentsBody.data.agents[0].id;
+
+    const res = await server.request('/api/v1/talks/talk-owner/chat', {
+      method: 'POST',
+      headers: {
+        Authorization: 'Bearer owner-token',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        content: '@kimi and @gem please review this.',
+        targetAgentIds: [primaryAgentId, kimiAgent.id, gemAgent.id],
+      }),
+    });
+
+    expect(res.status).toBe(202);
+    const body = (await res.json()) as any;
+    expect(body.ok).toBe(true);
+    expect(body.data.runs.map((run: any) => run.targetAgentId)).toEqual([
+      kimiAgent.id,
+      gemAgent.id,
+    ]);
+    expect(body.data.runs.map((run: any) => run.targetAgentNickname)).toEqual([
+      'Kimi',
+      'Gem Heavy',
+    ]);
+  });
+
   it('returns real run error codes and target nicknames in run history', async () => {
     const agentsRes = await server.request('/api/v1/talks/talk-owner/agents', {
       headers: {
@@ -1505,6 +1568,65 @@ describe('talk routes', () => {
     expect(failedRun.errorCode).toBe('trigger_message_missing');
     expect(failedRun.errorMessage).toBe('Trigger message not found');
     expect(failedRun.targetAgentNickname).toBe(targetAgent.nickname);
+  });
+
+  it('falls back to the run target nickname for assistant messages missing actor metadata', async () => {
+    const agentsRes = await server.request('/api/v1/talks/talk-owner/agents', {
+      headers: {
+        Authorization: 'Bearer owner-token',
+      },
+    });
+    expect(agentsRes.status).toBe(200);
+    const agentsBody = (await agentsRes.json()) as any;
+    const targetAgent = agentsBody.data.agents[0];
+
+    createTalkRun({
+      id: 'run-message-fallback',
+      talk_id: 'talk-owner',
+      thread_id: 'thread-talk-owner',
+      requested_by: 'owner-1',
+      status: 'completed',
+      trigger_message_id: null,
+      target_agent_id: targetAgent.id,
+      idempotency_key: null,
+      executor_alias: 'claude',
+      executor_model: 'claude-sonnet-4-6',
+      created_at: '2026-03-07T00:20:00.000Z',
+      started_at: '2026-03-07T00:20:00.500Z',
+      ended_at: '2026-03-07T00:20:01.000Z',
+      cancel_reason: null,
+    });
+    createTalkMessage({
+      id: 'msg-message-fallback',
+      talkId: 'talk-owner',
+      threadId: 'thread-talk-owner',
+      role: 'assistant',
+      content: 'Recovered from the run actor.',
+      createdBy: null,
+      runId: 'run-message-fallback',
+      metadataJson: null,
+      createdAt: '2026-03-07T00:20:01.000Z',
+    });
+
+    const messagesRes = await server.request(
+      '/api/v1/talks/talk-owner/messages',
+      {
+        headers: {
+          Authorization: 'Bearer owner-token',
+        },
+      },
+    );
+    expect(messagesRes.status).toBe(200);
+    const messagesBody = (await messagesRes.json()) as any;
+    const fallbackMessage = messagesBody.data.messages.find(
+      (message: any) => message.id === 'msg-message-fallback',
+    );
+
+    expect(fallbackMessage).toMatchObject({
+      id: 'msg-message-fallback',
+      agentId: targetAgent.id,
+      agentNickname: targetAgent.nickname,
+    });
   });
 
   it('returns the saved context snapshot for a talk run', async () => {

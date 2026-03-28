@@ -3707,7 +3707,19 @@ export function listTalkRunsForTalk(
   return getDb()
     .prepare(
       `
-      SELECT r.*, ra.name AS target_agent_nickname
+      SELECT
+        r.*,
+        COALESCE(
+          (
+            SELECT ta.nickname
+            FROM talk_agents ta
+            WHERE ta.talk_id = r.talk_id
+              AND ta.registered_agent_id = r.target_agent_id
+            ORDER BY ta.sort_order ASC, ta.created_at ASC
+            LIMIT 1
+          ),
+          ra.name
+        ) AS target_agent_nickname
       FROM talk_runs r
       LEFT JOIN registered_agents ra ON ra.id = r.target_agent_id
       WHERE r.talk_id = ?
@@ -3741,7 +3753,27 @@ export function appendAssistantMessageWithOutbox(input: {
 }): TalkMessageRecord {
   const tx = getDb().transaction((txInput: typeof input): TalkMessageRecord => {
     const createdAt = txInput.createdAt || new Date().toISOString();
-    const metadata = parseMessageMetadataJson(txInput.metadataJson);
+    const parsedMetadata = parseMessageMetadataJson(txInput.metadataJson);
+    const mergedMetadata: Record<string, unknown> | null =
+      parsedMetadata ||
+      (!txInput.metadataJson && (txInput.agentId || txInput.agentNickname)
+        ? {}
+        : null);
+    if (mergedMetadata) {
+      if (txInput.agentId && typeof mergedMetadata.agentId !== 'string') {
+        mergedMetadata.agentId = txInput.agentId;
+      }
+      if (
+        txInput.agentNickname &&
+        typeof mergedMetadata.agentNickname !== 'string'
+      ) {
+        mergedMetadata.agentNickname = txInput.agentNickname;
+      }
+    }
+    const metadataJson =
+      mergedMetadata && Object.keys(mergedMetadata).length > 0
+        ? JSON.stringify(mergedMetadata)
+        : txInput.metadataJson || null;
     const message: TalkMessageRecord = {
       id: txInput.messageId,
       talk_id: txInput.talkId,
@@ -3751,7 +3783,7 @@ export function appendAssistantMessageWithOutbox(input: {
       created_by: null,
       created_at: createdAt,
       run_id: txInput.runId,
-      metadata_json: txInput.metadataJson || null,
+      metadata_json: metadataJson,
       sequence_in_run: txInput.sequenceInRun ?? null,
     };
 
@@ -3783,7 +3815,7 @@ export function appendAssistantMessageWithOutbox(input: {
         createdAt,
         agentId: txInput.agentId || null,
         agentNickname: txInput.agentNickname || null,
-        metadata,
+        metadata: mergedMetadata,
       }),
     });
 

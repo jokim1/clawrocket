@@ -1,5 +1,6 @@
 import { randomUUID } from 'crypto';
 
+import { getDb } from '../../../db.js';
 import { getContainerRuntimeStatus } from '../../../container-runtime.js';
 import {
   AttachmentValidationError,
@@ -51,6 +52,7 @@ import {
   getDefaultTalkAgentId,
   ensureTalkUsesUsableDefaultAgent,
   listTalkAgents,
+  resolveTalkAgentMentions,
   setTalkAgents,
   getTalkAgentRows,
   type TalkAgentInput,
@@ -441,6 +443,44 @@ function toTalkMessageApiRecord(
       }
     } catch {
       // Ignore metadata parse failures for UI response shaping.
+    }
+  }
+  if ((!agentId || !agentNickname) && message.run_id) {
+    const fallback = getDb()
+      .prepare(
+        `
+          SELECT
+            r.target_agent_id AS agent_id,
+            COALESCE(
+              (
+                SELECT ta.nickname
+                FROM talk_agents ta
+                WHERE ta.talk_id = r.talk_id
+                  AND ta.registered_agent_id = r.target_agent_id
+                ORDER BY ta.sort_order ASC, ta.created_at ASC
+                LIMIT 1
+              ),
+              ra.name
+            ) AS agent_nickname
+          FROM talk_runs r
+          LEFT JOIN registered_agents ra ON ra.id = r.target_agent_id
+          WHERE r.id = ?
+          LIMIT 1
+        `,
+      )
+      .get(message.run_id) as
+      | {
+          agent_id: string | null;
+          agent_nickname: string | null;
+        }
+      | undefined;
+    if (fallback) {
+      if (!agentId && typeof fallback.agent_id === 'string') {
+        agentId = fallback.agent_id;
+      }
+      if (!agentNickname && typeof fallback.agent_nickname === 'string') {
+        agentNickname = fallback.agent_nickname;
+      }
     }
   }
 
@@ -2046,12 +2086,24 @@ export function enqueueTalkChat(input: {
     : [];
   ensureTalkUsesUsableDefaultAgent(input.talkId);
   const talkAgents = listTalkAgents(input.talkId);
-  const selectedAgents: Array<{ id: string; name: string }> =
-    requestedTargetIds.length > 0
-      ? talkAgents
-          .filter((a) => requestedTargetIds.includes(a.agentId))
-          .map((a) => ({ id: a.agentId, name: a.agentName }))
-      : talkAgents.map((a) => ({ id: a.agentId, name: a.agentName }));
+  const mentionedAgents = resolveTalkAgentMentions(input.talkId, content);
+  const selectedAgents: Array<{ id: string; nickname: string }> =
+    mentionedAgents.length > 0
+      ? mentionedAgents.map((agent) => ({
+          id: agent.agentId,
+          nickname: agent.nickname || agent.agentName,
+        }))
+      : requestedTargetIds.length > 0
+        ? talkAgents
+            .filter((a) => requestedTargetIds.includes(a.agentId))
+            .map((a) => ({
+              id: a.agentId,
+              nickname: a.nickname || a.agentName,
+            }))
+        : talkAgents.map((a) => ({
+            id: a.agentId,
+            nickname: a.nickname || a.agentName,
+          }));
   const orderedRunSet =
     talk.orchestration_mode === 'ordered' && selectedAgents.length > 1;
 
@@ -2157,7 +2209,7 @@ export function enqueueTalkChat(input: {
   }
 
   const agentNicknameById = new Map(
-    selectedAgents.map((agent) => [agent.id, agent.name]),
+    selectedAgents.map((agent) => [agent.id, agent.nickname]),
   );
 
   return {
