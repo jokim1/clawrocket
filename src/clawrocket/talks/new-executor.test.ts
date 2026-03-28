@@ -1489,6 +1489,124 @@ describe('CleanTalkExecutor', () => {
     expect(JSON.parse(result.metadataJson!)).not.toHaveProperty('isSynthesis');
   });
 
+  it('tells later ordered agents when an earlier step failed even without prior completed outputs', async () => {
+    createTalkMessage({
+      id: 'msg-user-gap-only',
+      talkId: TALK_ID,
+      threadId: THREAD_ID,
+      role: 'user',
+      content: 'Evaluate this launch plan.',
+      createdBy: 'owner-1',
+      createdAt: '2024-01-01T00:01:00.000Z',
+    });
+    createTalkRun({
+      id: 'run-gap-only-1',
+      talk_id: TALK_ID,
+      thread_id: THREAD_ID,
+      requested_by: 'owner-1',
+      status: 'failed',
+      trigger_message_id: 'msg-user-gap-only',
+      target_agent_id: 'agent.main',
+      idempotency_key: null,
+      response_group_id: 'group-gap-only',
+      sequence_index: 0,
+      executor_alias: null,
+      executor_model: null,
+      source_binding_id: null,
+      source_external_message_id: null,
+      source_thread_key: null,
+      created_at: '2024-01-01T00:01:00.100Z',
+      started_at: '2024-01-01T00:01:00.100Z',
+      ended_at: '2024-01-01T00:01:00.900Z',
+      cancel_reason: 'incomplete_response: truncated',
+    });
+    createTalkRun({
+      id: 'run-gap-only-2',
+      talk_id: TALK_ID,
+      thread_id: THREAD_ID,
+      requested_by: 'owner-1',
+      status: 'running',
+      trigger_message_id: 'msg-user-gap-only',
+      target_agent_id: 'agent.main',
+      idempotency_key: null,
+      response_group_id: 'group-gap-only',
+      sequence_index: 1,
+      executor_alias: null,
+      executor_model: null,
+      source_binding_id: null,
+      source_external_message_id: null,
+      source_thread_key: null,
+      created_at: '2024-01-01T00:01:01.000Z',
+      started_at: '2024-01-01T00:01:01.000Z',
+      ended_at: null,
+      cancel_reason: null,
+    });
+    createTalkRun({
+      id: 'run-gap-only-3',
+      talk_id: TALK_ID,
+      thread_id: THREAD_ID,
+      requested_by: 'owner-1',
+      status: 'queued',
+      trigger_message_id: 'msg-user-gap-only',
+      target_agent_id: 'agent.main',
+      idempotency_key: null,
+      response_group_id: 'group-gap-only',
+      sequence_index: 2,
+      executor_alias: null,
+      executor_model: null,
+      source_binding_id: null,
+      source_external_message_id: null,
+      source_thread_key: null,
+      created_at: '2024-01-01T00:01:01.100Z',
+      started_at: null,
+      ended_at: null,
+      cancel_reason: null,
+    });
+
+    vi.mocked(executeWithAgent).mockImplementation(
+      async (_agentId, _context, userMessage) => {
+        expect(userMessage).toContain(
+          'Original user request:\nEvaluate this launch plan.',
+        );
+        expect(userMessage).not.toContain('Prior analyses from other agents:');
+        expect(userMessage).toContain('Unavailable earlier ordered steps:');
+        expect(userMessage).toContain(
+          'failed to finish; its output is omitted.',
+        );
+        expect(userMessage).toContain(
+          'Do not assume every earlier ordered step is represented if some analyses are marked unavailable.',
+        );
+
+        return {
+          content: 'Proceed, but tighten the rollout controls.',
+          agentId: 'agent.main',
+          providerId: 'provider.anthropic',
+          modelId: 'claude-sonnet-4-6',
+        };
+      },
+    );
+
+    const result = await new CleanTalkExecutor().execute(
+      {
+        runId: 'run-gap-only-2',
+        talkId: TALK_ID,
+        threadId: THREAD_ID,
+        requestedBy: 'owner-1',
+        triggerMessageId: 'msg-user-gap-only',
+        triggerContent: 'Evaluate this launch plan.',
+        responseGroupId: 'group-gap-only',
+        sequenceIndex: 1,
+      },
+      new AbortController().signal,
+    );
+
+    expect(JSON.parse(result.metadataJson!)).toMatchObject({
+      responseGroupId: 'group-gap-only',
+      sequenceIndex: 1,
+    });
+    expect(JSON.parse(result.metadataJson!)).not.toHaveProperty('isSynthesis');
+  });
+
   it('marks the final ordered phase as synthesis and injects synthesis instructions', async () => {
     createTalkMessage({
       id: 'msg-user-synth',

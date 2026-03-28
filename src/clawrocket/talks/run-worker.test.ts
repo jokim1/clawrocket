@@ -260,6 +260,17 @@ class OrderedIncompleteExecutor implements TalkExecutor {
       };
     }
 
+    if (input.runId === 'run-incomplete-3') {
+      return {
+        content: 'Phase three completed after a truncated earlier step',
+        agentId: 'agent.main',
+        agentNickname: 'Nanoclaw',
+        providerId: 'builtin.mock',
+        modelId: 'mock-default',
+        responseSequenceInRun: 1,
+      };
+    }
+
     throw new TalkExecutorError(
       'incomplete_response',
       'The model stopped before finishing its answer (provider stop reason: length).',
@@ -482,7 +493,7 @@ describe('TalkRunWorker', () => {
     await worker.stop();
   });
 
-  it('only claims the next eligible ordered run and cancels later queued phases after failure', async () => {
+  it('only claims the next eligible ordered run and continues after an earlier failure', async () => {
     const executor = new OrderedFailureExecutor();
     const worker = new TalkRunWorker({
       executor,
@@ -516,13 +527,15 @@ describe('TalkRunWorker', () => {
     );
     await waitFor(() => getTalkRunById('run-ordered-2')?.status === 'failed');
     await waitFor(
-      () => getTalkRunById('run-ordered-3')?.status === 'cancelled',
+      () => getTalkRunById('run-ordered-3')?.status === 'completed',
     );
 
-    expect(executor.startedRuns).toEqual(['run-ordered-1', 'run-ordered-2']);
-    expect(getTalkRunById('run-ordered-3')?.cancel_reason).toBe(
-      'blocked_by_prior_failure',
-    );
+    expect(executor.startedRuns).toEqual([
+      'run-ordered-1',
+      'run-ordered-2',
+      'run-ordered-3',
+    ]);
+    expect(getTalkRunById('run-ordered-3')?.cancel_reason).toBeNull();
 
     const events = getOutboxEventsForTopics(['talk:talk-1'], 0, 100);
     const cancelledEvent = events.find(
@@ -530,7 +543,7 @@ describe('TalkRunWorker', () => {
         event.event_type === 'talk_run_cancelled' &&
         event.payload.includes('"runIds":["run-ordered-3"]'),
     );
-    expect(cancelledEvent).toBeDefined();
+    expect(cancelledEvent).toBeUndefined();
 
     await worker.stop();
   });
@@ -562,7 +575,7 @@ describe('TalkRunWorker', () => {
       () => getTalkRunById('run-incomplete-2')?.status === 'failed',
     );
     await waitFor(
-      () => getTalkRunById('run-incomplete-3')?.status === 'cancelled',
+      () => getTalkRunById('run-incomplete-3')?.status === 'completed',
     );
 
     const failedRun = getTalkRunById('run-incomplete-2');
@@ -574,6 +587,7 @@ describe('TalkRunWorker', () => {
         incompleteReason: 'truncated',
       },
     });
+    expect(getTalkRunById('run-incomplete-3')?.cancel_reason).toBeNull();
 
     await worker.stop();
   });
