@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import {
   BubbleMenu,
   EditorContent,
+  FloatingMenu,
   useEditor,
   type Content,
   type Editor,
@@ -1992,6 +1993,110 @@ export function DraftWorkspacePage(_props: Props) {
                   <option value="justify">≣ Justify</option>
                 </select>
               </BubbleMenu>
+            ) : null}
+            {editor ? (
+              <FloatingMenu
+                editor={editor}
+                className="editorial-po-draft-floating"
+                shouldShow={({ editor: e, state }) => {
+                  const { $from } = state.selection;
+                  const isEmptyParagraph =
+                    $from.parent.type.name === 'paragraph' &&
+                    $from.parent.content.size === 0;
+                  if (!isEmptyParagraph) return false;
+                  if (e.isActive('codeBlock')) return false;
+                  if (e.isActive('blockquote')) return false;
+                  return true;
+                }}
+              >
+                <span className="editorial-po-draft-floating-label">
+                  + INSERT
+                </span>
+                <button
+                  type="button"
+                  className="editorial-po-draft-floating-btn"
+                  onClick={() =>
+                    editor.chain().focus().toggleHeading({ level: 1 }).run()
+                  }
+                  title="Heading 1"
+                >
+                  H1
+                </button>
+                <button
+                  type="button"
+                  className="editorial-po-draft-floating-btn"
+                  onClick={() =>
+                    editor.chain().focus().toggleHeading({ level: 2 }).run()
+                  }
+                  title="Heading 2"
+                >
+                  H2
+                </button>
+                <button
+                  type="button"
+                  className="editorial-po-draft-floating-btn"
+                  onClick={() =>
+                    editor.chain().focus().toggleHeading({ level: 3 }).run()
+                  }
+                  title="Heading 3"
+                >
+                  H3
+                </button>
+                <span className="editorial-po-draft-floating-divider" />
+                <button
+                  type="button"
+                  className="editorial-po-draft-floating-btn"
+                  onClick={() =>
+                    editor.chain().focus().toggleBulletList().run()
+                  }
+                  title="Bullet list"
+                  aria-label="Bullet list"
+                >
+                  •
+                </button>
+                <button
+                  type="button"
+                  className="editorial-po-draft-floating-btn"
+                  onClick={() =>
+                    editor.chain().focus().toggleOrderedList().run()
+                  }
+                  title="Numbered list"
+                  aria-label="Numbered list"
+                >
+                  1.
+                </button>
+                <button
+                  type="button"
+                  className="editorial-po-draft-floating-btn"
+                  onClick={() =>
+                    editor.chain().focus().toggleBlockquote().run()
+                  }
+                  title="Blockquote"
+                  aria-label="Blockquote"
+                >
+                  ❝
+                </button>
+                <button
+                  type="button"
+                  className="editorial-po-draft-floating-btn"
+                  onClick={() => editor.chain().focus().toggleCodeBlock().run()}
+                  title="Code block"
+                  aria-label="Code block"
+                >
+                  &lt;/&gt;
+                </button>
+                <button
+                  type="button"
+                  className="editorial-po-draft-floating-btn"
+                  onClick={() =>
+                    editor.chain().focus().setHorizontalRule().run()
+                  }
+                  title="Divider"
+                  aria-label="Divider"
+                >
+                  ―
+                </button>
+              </FloatingMenu>
             ) : null}
             <EditorContent editor={editor} />
           </div>
