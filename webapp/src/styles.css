@@ -6807,6 +6807,99 @@ a.editorial-phase-pill:hover {
   gap: 0.6rem;
 }
 
+/* Versions tab content */
+
+.editorial-po-draft-versions-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+
+.editorial-po-draft-version-item {
+  background: #fff;
+  border: 1px solid #ddd6c8;
+  border-radius: 5px;
+  padding: 0.45rem 0.55rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.editorial-po-draft-version-item-auto {
+  background: #f7f3e8;
+  border-color: #e5dcc4;
+}
+
+.editorial-po-draft-version-header {
+  display: flex;
+  align-items: baseline;
+  gap: 0.4rem;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.6rem;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: #6c6655;
+}
+
+.editorial-po-draft-version-trigger {
+  margin-left: auto;
+  color: #b7372a;
+  font-weight: 500;
+}
+
+.editorial-po-draft-version-item-auto .editorial-po-draft-version-trigger {
+  color: #6c6655;
+  font-weight: 400;
+}
+
+.editorial-po-draft-version-preview {
+  margin: 0;
+  font-size: 0.74rem;
+  color: #1f1c14;
+  line-height: 1.35;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  font-family: 'IBM Plex Serif', Georgia, serif;
+}
+
+.editorial-po-draft-version-restore {
+  align-self: flex-end;
+  background: none;
+  border: 0;
+  padding: 0.1rem 0;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.6rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #b7372a;
+  cursor: pointer;
+}
+
+.editorial-po-draft-version-restore:hover {
+  text-decoration: underline;
+}
+
+.editorial-po-draft-versions-toggle {
+  background: none;
+  border: 0;
+  border-top: 1px dashed #c9c0a8;
+  padding: 0.55rem 0 0.4rem;
+  margin-top: 0.2rem;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.6rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #6c6655;
+  cursor: pointer;
+  text-align: left;
+}
+
+.editorial-po-draft-versions-toggle:hover {
+  color: #1f1c14;
+}
+
 @media (max-width: 1280px) {
   .editorial-po-draft-grid {
     grid-template-columns: 200px minmax(0, 1fr) 240px;
