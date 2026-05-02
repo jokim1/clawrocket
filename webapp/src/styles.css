@@ -6611,13 +6611,64 @@ a.editorial-phase-pill:hover {
 }
 
 .editorial-po-draft-outline-item {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.editorial-po-draft-outline-button {
+  display: flex;
+  flex-direction: column;
+  gap: 0.18rem;
+  width: 100%;
+  text-align: left;
   background: #fff;
   border: 1px solid #ddd6c8;
   border-radius: 5px;
   padding: 0.4rem 0.5rem;
-  display: flex;
-  flex-direction: column;
-  gap: 0.18rem;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  transition:
+    background 80ms ease,
+    border-color 80ms ease,
+    box-shadow 80ms ease;
+}
+
+.editorial-po-draft-outline-button:hover {
+  background: #fffaee;
+  border-color: #c9c0a8;
+}
+
+.editorial-po-draft-outline-button:focus-visible {
+  outline: none;
+  border-color: #b7372a;
+  box-shadow: 0 0 0 1px #b7372a;
+}
+
+.editorial-po-draft-outline-item-active .editorial-po-draft-outline-button {
+  background: #fff8e7;
+  border-color: #b7372a;
+  box-shadow: 0 0 0 1px #b7372a;
+}
+
+.editorial-po-draft-outline-indicator {
+  font-size: 0.85rem;
+  line-height: 1;
+  color: #b7372a;
+  width: 0.85rem;
+  display: inline-block;
+  text-align: center;
+}
+
+.editorial-po-draft-outline-paracount {
+  margin-left: auto;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.6rem;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: #6c6655;
+  white-space: nowrap;
 }
 
 .editorial-po-draft-outline-row {
@@ -6636,10 +6687,28 @@ a.editorial-phase-pill:hover {
 
 .editorial-po-draft-center {
   overflow-y: auto;
-  padding: 1.2rem 1.6rem 3rem;
   background: #fbf8f2;
-  display: flex;
-  justify-content: center;
+}
+
+.editorial-po-draft-status-bar {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: rgba(251, 248, 242, 0.94);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  border-bottom: 1px solid #e2dccc;
+  padding: 0.45rem 1.6rem;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.62rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #5b5644;
+}
+
+.editorial-po-draft-center > .editorial-po-draft-editor {
+  margin: 0 auto;
+  padding: 1.2rem 1.6rem 3rem;
 }
 
 .editorial-po-draft-editor {
