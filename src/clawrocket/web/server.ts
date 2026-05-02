@@ -133,6 +133,12 @@ import {
   submitAnthropicOAuthRoute,
 } from './routes/llm-oauth.js';
 import {
+  disconnectOpenAIOAuthRoute,
+  getOpenAIOAuthStatusRoute,
+  initiateOpenAIOAuthRoute,
+  pollOpenAIOAuthRoute,
+} from './routes/llm-oauth-openai.js';
+import {
   listUserToolPermissionsRoute,
   updateUserToolPermissionRoute,
   getEffectiveToolsRoute,
@@ -1181,6 +1187,49 @@ function buildApp(opts: WebServerOptions): Hono {
     const auth = requireAuth(c);
     if (!auth) return unauthorized(c);
     const result = await disconnectAnthropicOAuthRoute(auth);
+    return new Response(JSON.stringify(result.body), {
+      status: result.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
+  });
+
+  // ── /api/v1/agents/providers/openai/oauth/* ─ ChatGPT subscription ───────
+
+  app.post('/api/v1/agents/providers/openai/oauth/initiate', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+    const result = await initiateOpenAIOAuthRoute(auth);
+    return new Response(JSON.stringify(result.body), {
+      status: result.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
+  });
+
+  app.post('/api/v1/agents/providers/openai/oauth/poll', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+    const body = await c.req.json();
+    const result = await pollOpenAIOAuthRoute(auth, body);
+    return new Response(JSON.stringify(result.body), {
+      status: result.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
+  });
+
+  app.get('/api/v1/agents/providers/openai/oauth/status', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+    const result = await getOpenAIOAuthStatusRoute(auth);
+    return new Response(JSON.stringify(result.body), {
+      status: result.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
+  });
+
+  app.post('/api/v1/agents/providers/openai/oauth/disconnect', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+    const result = await disconnectOpenAIOAuthRoute(auth);
     return new Response(JSON.stringify(result.body), {
       status: result.statusCode,
       headers: { 'content-type': 'application/json; charset=utf-8' },

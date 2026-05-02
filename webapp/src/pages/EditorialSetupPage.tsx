@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 
 import { EditorialPhaseStrip } from '../components/EditorialPhaseStrip';
 import {
@@ -944,6 +944,309 @@ function AnthropicOAuthCard() {
   );
 }
 
+type OpenAIStatus = {
+  connected: boolean;
+  kind: 'oauth_subscription' | 'api_key' | 'none';
+  expiresAt: string | null;
+};
+
+function OpenAICodexOAuthCard() {
+  const [status, setStatus] = useState<OpenAIStatus | null>(null);
+  const [loading, setLoading] = useState<boolean>(true);
+  const [working, setWorking] = useState<boolean>(false);
+  const [error, setError] = useState<string | null>(null);
+  // Active device-code flow state.
+  const [pending, setPending] = useState<{
+    state: string;
+    userCode: string;
+    verificationUrl: string;
+    intervalMs: number;
+    expiresAtMs: number;
+  } | null>(null);
+  const [pollMessage, setPollMessage] = useState<string>('');
+  const pollTimerRef = useRef<number | null>(null);
+
+  const refresh = async (): Promise<void> => {
+    try {
+      const res = await fetch('/api/v1/agents/providers/openai/oauth/status', {
+        credentials: 'include',
+      });
+      const json = (await res.json()) as
+        | { ok: true; data: OpenAIStatus }
+        | { ok: false; error: { message: string } };
+      if (json.ok) setStatus(json.data);
+    } catch {
+      // best-effort
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    void refresh();
+    return () => {
+      if (pollTimerRef.current !== null) {
+        window.clearTimeout(pollTimerRef.current);
+      }
+    };
+  }, []);
+
+  const stopPolling = (): void => {
+    if (pollTimerRef.current !== null) {
+      window.clearTimeout(pollTimerRef.current);
+      pollTimerRef.current = null;
+    }
+  };
+
+  const startPolling = (
+    state: string,
+    intervalMs: number,
+    expiresAtMs: number,
+  ): void => {
+    const tick = async (): Promise<void> => {
+      if (Date.now() > expiresAtMs) {
+        setError('OpenAI device code expired before authorization. Try again.');
+        setPending(null);
+        setPollMessage('');
+        return;
+      }
+      try {
+        const res = await fetch('/api/v1/agents/providers/openai/oauth/poll', {
+          method: 'POST',
+          credentials: 'include',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ state }),
+        });
+        const json = (await res.json()) as
+          | {
+              ok: true;
+              data:
+                | { status: 'pending' }
+                | { status: 'authorized'; expiresAt: string }
+                | { status: 'expired' }
+                | { status: 'error'; message: string };
+            }
+          | { ok: false; error: { message: string } };
+        if (!json.ok) {
+          setError(json.error.message);
+          setPending(null);
+          setPollMessage('');
+          return;
+        }
+        if (json.data.status === 'pending') {
+          setPollMessage('Waiting for browser authorization…');
+          pollTimerRef.current = window.setTimeout(() => {
+            void tick();
+          }, intervalMs);
+          return;
+        }
+        if (json.data.status === 'expired') {
+          setError(
+            'OpenAI device code expired or not found. Try Sign in again.',
+          );
+          setPending(null);
+          setPollMessage('');
+          return;
+        }
+        if (json.data.status === 'error') {
+          setError(json.data.message);
+          setPending(null);
+          setPollMessage('');
+          return;
+        }
+        // authorized
+        setPending(null);
+        setPollMessage('');
+        setError(null);
+        await refresh();
+      } catch (err) {
+        setError(
+          err instanceof Error
+            ? err.message
+            : 'Failed to poll OpenAI for authorization status.',
+        );
+        setPending(null);
+        setPollMessage('');
+      }
+    };
+    pollTimerRef.current = window.setTimeout(() => {
+      void tick();
+    }, intervalMs);
+  };
+
+  const handleSignIn = async (): Promise<void> => {
+    setError(null);
+    setWorking(true);
+    stopPolling();
+    try {
+      const res = await fetch(
+        '/api/v1/agents/providers/openai/oauth/initiate',
+        {
+          method: 'POST',
+          credentials: 'include',
+          headers: { 'Content-Type': 'application/json' },
+        },
+      );
+      const json = (await res.json()) as
+        | {
+            ok: true;
+            data: {
+              state: string;
+              userCode: string;
+              verificationUrl: string;
+              intervalMs: number;
+              expiresAtMs: number;
+            };
+          }
+        | { ok: false; error: { message: string } };
+      if (!json.ok) {
+        setError(json.error.message);
+        return;
+      }
+      setPending(json.data);
+      setPollMessage('Open the link below + enter the code…');
+      window.open(json.data.verificationUrl, '_blank', 'noopener,noreferrer');
+      startPolling(
+        json.data.state,
+        json.data.intervalMs,
+        json.data.expiresAtMs,
+      );
+    } catch (err) {
+      setError(
+        err instanceof Error
+          ? err.message
+          : 'Failed to start the ChatGPT sign-in flow.',
+      );
+    } finally {
+      setWorking(false);
+    }
+  };
+
+  const handleCancel = (): void => {
+    stopPolling();
+    setPending(null);
+    setPollMessage('');
+    setError(null);
+  };
+
+  const handleDisconnect = async (): Promise<void> => {
+    setError(null);
+    setWorking(true);
+    try {
+      const res = await fetch(
+        '/api/v1/agents/providers/openai/oauth/disconnect',
+        { method: 'POST', credentials: 'include' },
+      );
+      const json = (await res.json()) as
+        | { ok: true; data: OpenAIStatus }
+        | { ok: false; error: { message: string } };
+      if (json.ok) setStatus(json.data);
+      else setError(json.error.message);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to disconnect.');
+    } finally {
+      setWorking(false);
+    }
+  };
+
+  const expiresLabel = (() => {
+    if (!status?.expiresAt) return null;
+    const ms = Date.parse(status.expiresAt);
+    if (Number.isNaN(ms)) return null;
+    const minutes = Math.round((ms - Date.now()) / 60000);
+    if (minutes < 0) return 'expired';
+    if (minutes < 60) return `expires in ${minutes}m`;
+    const hours = Math.round(minutes / 60);
+    return `expires in ${hours}h`;
+  })();
+
+  const isConnectedOAuth =
+    status?.connected && status.kind === 'oauth_subscription';
+
+  return (
+    <div className="editorial-oauth-card">
+      <div className="editorial-oauth-row">
+        <div className="editorial-oauth-row-text">
+          <span className="editorial-oauth-label">OPENAI AUTH</span>
+          <span
+            className={`editorial-oauth-status${
+              isConnectedOAuth ? ' editorial-oauth-status-connected' : ''
+            }`}
+          >
+            {loading
+              ? 'CHECKING…'
+              : isConnectedOAuth
+                ? `● CONNECTED (ChatGPT subscription${expiresLabel ? ` · ${expiresLabel}` : ''})`
+                : status?.kind === 'api_key'
+                  ? '● CONNECTED (API key)'
+                  : '○ NOT CONNECTED — OpenAI agents will fail without a credential'}
+          </span>
+        </div>
+        <div className="editorial-oauth-actions">
+          {!isConnectedOAuth && !pending ? (
+            <button
+              type="button"
+              className="editorial-chip-button editorial-chip-button-primary"
+              onClick={() => {
+                void handleSignIn();
+              }}
+              disabled={working}
+            >
+              {working ? 'STARTING…' : 'SIGN IN WITH CHATGPT'}
+            </button>
+          ) : null}
+          {isConnectedOAuth ? (
+            <button
+              type="button"
+              className="editorial-chip-button"
+              onClick={() => {
+                void handleDisconnect();
+              }}
+              disabled={working}
+            >
+              DISCONNECT
+            </button>
+          ) : null}
+          {pending ? (
+            <button
+              type="button"
+              className="editorial-chip-button"
+              onClick={handleCancel}
+            >
+              CANCEL
+            </button>
+          ) : null}
+        </div>
+      </div>
+
+      {pending ? (
+        <div className="editorial-oauth-paste">
+          <p className="editorial-oauth-paste-blurb">
+            A new tab opened to <strong>auth.openai.com/codex/device</strong>.
+            Sign in with your ChatGPT account, then enter this code:
+          </p>
+          <div className="editorial-oauth-usercode">
+            <code>{pending.userCode}</code>
+            <a
+              href={pending.verificationUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="editorial-chip-button"
+            >
+              OPEN VERIFICATION URL ↗
+            </a>
+          </div>
+          {pollMessage ? (
+            <p className="editorial-oauth-poll-message">⌛ {pollMessage}</p>
+          ) : null}
+        </div>
+      ) : null}
+
+      {error ? <p className="editorial-oauth-error">{error}</p> : null}
+    </div>
+  );
+}
+
 function LLMRoomSection({
   setup,
   update,
@@ -1001,6 +1304,7 @@ function LLMRoomSection({
       />
 
       <AnthropicOAuthCard />
+      <OpenAICodexOAuthCard />
 
       <div className="editorial-agents-selected">
         <h3 className="editorial-personas-section-label">
