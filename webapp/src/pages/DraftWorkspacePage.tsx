@@ -10,6 +10,7 @@ import StarterKit from '@tiptap/starter-kit';
 
 import { EditorialPhaseStrip } from '../components/EditorialPhaseStrip';
 import { serializeDocToMarkdown, type JSONNode } from '../lib/markdown-export';
+import { parseMarkdownToDoc } from '../lib/markdown-import';
 
 // ───────────────────────────────────────────────────────────────────────────
 // Phase 04 DRAFT — Panel chat right rail (mock turns).
@@ -906,9 +907,13 @@ export function DraftWorkspacePage(_props: Props) {
   const [exportState, setExportState] = useState<'idle' | 'copied' | 'error'>(
     'idle',
   );
+  const [importState, setImportState] = useState<'idle' | 'pasted' | 'error'>(
+    'idle',
+  );
   const [optimizeOpen, setOptimizeOpen] = useState<boolean>(false);
   const saveTimerRef = useRef<number | null>(null);
   const exportResetTimerRef = useRef<number | null>(null);
+  const importResetTimerRef = useRef<number | null>(null);
   const optimizeAnchorRef = useRef<HTMLDivElement | null>(null);
   // Bumped on every editor onUpdate. Compared against `lastSnapshotVersionRef`
   // by the auto-snapshot interval to skip no-op snapshots.
@@ -948,6 +953,9 @@ export function DraftWorkspacePage(_props: Props) {
       }
       if (exportResetTimerRef.current !== null) {
         window.clearTimeout(exportResetTimerRef.current);
+      }
+      if (importResetTimerRef.current !== null) {
+        window.clearTimeout(importResetTimerRef.current);
       }
     };
   }, []);
@@ -1149,6 +1157,46 @@ export function DraftWorkspacePage(_props: Props) {
     }
   };
 
+  const handleImportMarkdown = async (): Promise<void> => {
+    if (!editor) return;
+    const finish = (state: 'pasted' | 'error'): void => {
+      setImportState(state);
+      if (importResetTimerRef.current !== null) {
+        window.clearTimeout(importResetTimerRef.current);
+      }
+      importResetTimerRef.current = window.setTimeout(() => {
+        setImportState('idle');
+        importResetTimerRef.current = null;
+      }, 1500);
+    };
+    try {
+      if (
+        typeof navigator === 'undefined' ||
+        !navigator.clipboard ||
+        typeof navigator.clipboard.readText !== 'function'
+      ) {
+        finish('error');
+        return;
+      }
+      const md = await navigator.clipboard.readText();
+      if (!md.trim()) {
+        finish('error');
+        return;
+      }
+      // Capture pre-import snapshot so the user can recover via Versions.
+      const preImport = createVersionEntry(editor, 'named', 'manual_save');
+      setVersions((prev) => pruneAutoVersions([...prev, preImport]));
+      const parsed = parseMarkdownToDoc(md);
+      editor.commands.setContent(parsed as Content);
+      saveDraftContent(parsed);
+      setLastSavedAt(new Date());
+      lastSnapshotVersionRef.current = editorVersionRef.current;
+      finish('pasted');
+    } catch {
+      finish('error');
+    }
+  };
+
   const handleRestoreVersion = (version: VersionEntry): void => {
     if (!editor) return;
     // Per design/04_draft.md §10.4: capture pre-restore state as a named
@@ -1250,6 +1298,24 @@ export function DraftWorkspacePage(_props: Props) {
           {exportState === 'copied' && 'COPIED ✓'}
           {exportState === 'error' && 'COPY FAILED'}
           {exportState === 'idle' && '↑ COPY MD'}
+        </button>
+        <button
+          type="button"
+          className={`editorial-po-draft-import${
+            importState === 'pasted' ? ' editorial-po-draft-import-pasted' : ''
+          }${
+            importState === 'error' ? ' editorial-po-draft-import-error' : ''
+          }`}
+          onClick={() => {
+            void handleImportMarkdown();
+          }}
+          disabled={!editor}
+          aria-live="polite"
+          title="Replace the draft with markdown from your clipboard (a pre-paste snapshot is captured to Versions)"
+        >
+          {importState === 'pasted' && 'PASTED ✓'}
+          {importState === 'error' && 'PASTE FAILED'}
+          {importState === 'idle' && '↓ PASTE MD'}
         </button>
         <Link
           to="/editorial/points-outline"
