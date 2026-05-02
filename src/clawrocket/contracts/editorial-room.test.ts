@@ -32,6 +32,7 @@ function loadJson(path: string): unknown {
 const schemaFilenames = readdirSync(schemaDir).filter((f) =>
   f.endsWith('.schema.json'),
 );
+const SCHEMA_SET: ReadonlySet<string> = new Set(schemaFilenames);
 for (const file of schemaFilenames) {
   ajv.addSchema(loadJson(resolve(schemaDir, file)) as AnySchemaObject);
 }
@@ -49,13 +50,16 @@ function validatorFor(schemaFile: string): ValidateFunction {
   return validate;
 }
 
-// Convention: a fixture named `<base>.<variant>.json` validates against
-// `<base>.schema.json`. e.g., `theme.derived_from_pcp.json` →
-// `theme.schema.json`; `setup_state.minimal.json` → `setup_state.schema.json`.
-// A few fixtures in EDITORIAL_ROOM_CONTRACT.md §9.1 use a different shape
-// (e.g., `point_with_evidence.example.json` for the `point` schema, or
-// `point_note_blocks.example.json` plural-named for the singular schema);
-// those are listed in `FIXTURE_SCHEMA_OVERRIDES`.
+// Resolution rule for fixture → schema:
+// 1. Explicit override map (for fixtures whose name doesn't decompose to the
+//    target schema, e.g., `point_with_evidence` for `point`, or plural-named
+//    `point_note_blocks` for singular `point_note_block`).
+// 2. Longest-prefix match on the dotted stem against the actual schema set.
+//    e.g., `run_skill.input.score.json` tries `run_skill.input.schema.json`
+//    before falling back to shorter prefixes. This handles multi-dot bases
+//    like `run_skill.input` and `get_run.output` automatically.
+// 3. Fallback to first-token convention if no prefix matches; the resulting
+//    schema lookup will throw with a clear "not registered" message.
 const FIXTURE_SCHEMA_OVERRIDES: Record<string, string> = {
   'point_with_evidence.example.json': 'point.schema.json',
   'point_note_blocks.example.json': 'point_note_block.schema.json',
@@ -75,8 +79,15 @@ function schemaFileForFixture(fixtureFile: string): string {
   if (fixtureFile in FIXTURE_SCHEMA_OVERRIDES) {
     return FIXTURE_SCHEMA_OVERRIDES[fixtureFile];
   }
-  const base = fixtureFile.split('.')[0];
-  return `${base}.schema.json`;
+  const stem = fixtureFile.replace(/\.json$/, '');
+  const parts = stem.split('.');
+  for (let n = parts.length; n >= 1; n--) {
+    const candidate = `${parts.slice(0, n).join('.')}.schema.json`;
+    if (SCHEMA_SET.has(candidate)) {
+      return candidate;
+    }
+  }
+  return `${parts[0]}.schema.json`;
 }
 
 function sortKeys(value: unknown): unknown {
