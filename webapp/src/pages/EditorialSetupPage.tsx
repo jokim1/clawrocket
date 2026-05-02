@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { EditorialPhaseStrip } from '../components/EditorialPhaseStrip';
 import {
@@ -21,6 +21,11 @@ import {
   type Destination,
   type SetupState,
 } from '../lib/editorial-setup';
+import {
+  catalogIdForFixtureProvider,
+  PROVIDER_CATALOG,
+  type ProviderEntry,
+} from '../lib/llm-providers';
 
 // SetupState mirrors docs/contracts/editorial-room/v0/setup_state.schema.json
 // (also in EDITORIAL_ROOM_CONTRACT.md §2.1). Persisted to localStorage via
@@ -689,7 +694,7 @@ type OAuthStatus = {
   expiringSoon: boolean;
 };
 
-function AnthropicOAuthCard() {
+function AnthropicOAuthCard({ onChange }: { onChange?: () => void } = {}) {
   const [status, setStatus] = useState<OAuthStatus | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
   const [pasteOpen, setPasteOpen] = useState<boolean>(false);
@@ -804,6 +809,7 @@ function AnthropicOAuthCard() {
       setPasteOpen(false);
       setPendingState(null);
       setPasteValue('');
+      onChange?.();
     } catch (err) {
       setError(
         err instanceof Error ? err.message : 'Failed to submit the OAuth code.',
@@ -827,8 +833,10 @@ function AnthropicOAuthCard() {
       const json = (await res.json()) as
         | { ok: true; data: OAuthStatus }
         | { ok: false; error: { message: string } };
-      if (json.ok) setStatus(json.data);
-      else setError(json.error.message);
+      if (json.ok) {
+        setStatus(json.data);
+        onChange?.();
+      } else setError(json.error.message);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to disconnect.');
     } finally {
@@ -950,7 +958,7 @@ type OpenAIStatus = {
   expiresAt: string | null;
 };
 
-function OpenAICodexOAuthCard() {
+function OpenAICodexOAuthCard({ onChange }: { onChange?: () => void } = {}) {
   const [status, setStatus] = useState<OpenAIStatus | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
   const [working, setWorking] = useState<boolean>(false);
@@ -1059,6 +1067,7 @@ function OpenAICodexOAuthCard() {
         setPollMessage('');
         setError(null);
         await refresh();
+        onChange?.();
       } catch (err) {
         setError(
           err instanceof Error
@@ -1140,8 +1149,10 @@ function OpenAICodexOAuthCard() {
       const json = (await res.json()) as
         | { ok: true; data: OpenAIStatus }
         | { ok: false; error: { message: string } };
-      if (json.ok) setStatus(json.data);
-      else setError(json.error.message);
+      if (json.ok) {
+        setStatus(json.data);
+        onChange?.();
+      } else setError(json.error.message);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to disconnect.');
     } finally {
@@ -1274,6 +1285,308 @@ function OpenAICodexOAuthCard() {
   );
 }
 
+// ─── Generic API-key auth card ──────────────────────────────────────────────
+// Backs api_key entries in the provider catalog (Gemini, NVIDIA, …) by
+// POSTing to the existing PUT /api/v1/agents/providers/:providerId route.
+// Provider state (hasCredential, credentialHint) comes from GET /api/v1/agents.
+
+type AdditionalProviderCard = {
+  id: string;
+  hasCredential: boolean;
+  credentialHint: string | null;
+  verificationStatus:
+    | 'verified'
+    | 'invalid'
+    | 'unavailable'
+    | 'missing'
+    | 'not_verified';
+};
+
+function ApiKeyAuthCard({
+  entry,
+  card,
+  onChange,
+}: {
+  entry: ProviderEntry;
+  card: AdditionalProviderCard | null;
+  onChange?: () => void;
+}) {
+  const [pasteOpen, setPasteOpen] = useState(false);
+  const [pasteValue, setPasteValue] = useState('');
+  const [working, setWorking] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const connected = !!card?.hasCredential;
+
+  const handleSave = async (): Promise<void> => {
+    setError(null);
+    const apiKey = pasteValue.trim();
+    if (!apiKey) {
+      setError('Paste an API key.');
+      return;
+    }
+    setWorking(true);
+    try {
+      const res = await fetch(
+        `/api/v1/agents/providers/${encodeURIComponent(entry.id)}`,
+        {
+          method: 'PUT',
+          credentials: 'include',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ apiKey }),
+        },
+      );
+      const json = (await res.json()) as
+        | { ok: true; data: unknown }
+        | { ok: false; error: { message: string } };
+      if (!json.ok) {
+        setError(json.error.message);
+        return;
+      }
+      setPasteOpen(false);
+      setPasteValue('');
+      onChange?.();
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : 'Failed to save the API key.',
+      );
+    } finally {
+      setWorking(false);
+    }
+  };
+
+  const handleDisconnect = async (): Promise<void> => {
+    setError(null);
+    setWorking(true);
+    try {
+      const res = await fetch(
+        `/api/v1/agents/providers/${encodeURIComponent(entry.id)}`,
+        {
+          method: 'PUT',
+          credentials: 'include',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ apiKey: null }),
+        },
+      );
+      const json = (await res.json()) as
+        | { ok: true; data: unknown }
+        | { ok: false; error: { message: string } };
+      if (!json.ok) {
+        setError(json.error.message);
+        return;
+      }
+      onChange?.();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to disconnect.');
+    } finally {
+      setWorking(false);
+    }
+  };
+
+  return (
+    <div className="editorial-oauth-card">
+      <div className="editorial-oauth-row">
+        <div className="editorial-oauth-row-text">
+          <span className="editorial-oauth-label">{entry.name} AUTH</span>
+          <span
+            className={`editorial-oauth-status${
+              connected ? ' editorial-oauth-status-connected' : ''
+            }`}
+          >
+            {connected
+              ? `● CONNECTED (API key${card?.credentialHint ? ` · ${card.credentialHint}` : ''})`
+              : '○ NOT CONNECTED — agents will fail without a key'}
+          </span>
+        </div>
+        <div className="editorial-oauth-actions">
+          {!connected ? (
+            <button
+              type="button"
+              className="editorial-chip-button editorial-chip-button-primary"
+              onClick={() => setPasteOpen((open) => !open)}
+              disabled={working}
+            >
+              {pasteOpen ? '✕ CANCEL' : '+ ADD API KEY'}
+            </button>
+          ) : (
+            <button
+              type="button"
+              className="editorial-chip-button"
+              onClick={() => {
+                void handleDisconnect();
+              }}
+              disabled={working}
+            >
+              {working ? 'DISCONNECTING…' : 'DISCONNECT'}
+            </button>
+          )}
+        </div>
+      </div>
+
+      {pasteOpen && !connected ? (
+        <div className="editorial-oauth-paste">
+          {entry.apiKeyHelp ? (
+            <p className="editorial-oauth-paste-blurb">{entry.apiKeyHelp}</p>
+          ) : null}
+          <textarea
+            className="editorial-oauth-paste-textarea"
+            placeholder="Paste API key…"
+            value={pasteValue}
+            onChange={(e) => setPasteValue(e.target.value)}
+            rows={2}
+            spellCheck={false}
+          />
+          <div className="editorial-oauth-paste-actions">
+            <button
+              type="button"
+              className="editorial-chip-button"
+              onClick={() => {
+                setPasteOpen(false);
+                setPasteValue('');
+                setError(null);
+              }}
+              disabled={working}
+            >
+              CANCEL
+            </button>
+            <button
+              type="button"
+              className="editorial-chip-button editorial-chip-button-primary"
+              onClick={() => {
+                void handleSave();
+              }}
+              disabled={working || !pasteValue.trim()}
+            >
+              {working ? 'SAVING…' : 'SAVE KEY'}
+            </button>
+          </div>
+        </div>
+      ) : null}
+
+      {error ? <p className="editorial-oauth-error">{error}</p> : null}
+    </div>
+  );
+}
+
+// ─── Provider auth list + status hook ────────────────────────────────────────
+
+type ProviderAuthMap = Record<string, boolean>;
+
+type AdditionalProviderCardMap = Record<string, AdditionalProviderCard>;
+
+function useProviderAuth(): {
+  authed: ProviderAuthMap;
+  cards: AdditionalProviderCardMap;
+  refresh: () => Promise<void>;
+} {
+  const [authed, setAuthed] = useState<ProviderAuthMap>({});
+  const [cards, setCards] = useState<AdditionalProviderCardMap>({});
+
+  const refresh = useCallback(async (): Promise<void> => {
+    const next: ProviderAuthMap = {};
+    const nextCards: AdditionalProviderCardMap = {};
+
+    const oauthEntries = PROVIDER_CATALOG.filter((p) => p.oauthStatusEndpoint);
+    const apiKeyEntries = PROVIDER_CATALOG.filter(
+      (p) => p.authType === 'api_key',
+    );
+
+    await Promise.all([
+      ...oauthEntries.map(async (p) => {
+        try {
+          const res = await fetch(p.oauthStatusEndpoint!, {
+            credentials: 'include',
+          });
+          const json = (await res.json()) as
+            | { ok: true; data: { connected: boolean } }
+            | { ok: false };
+          next[p.id] = !!(
+            'ok' in json &&
+            json.ok &&
+            (json.data as { connected?: boolean }).connected
+          );
+        } catch {
+          next[p.id] = false;
+        }
+      }),
+      apiKeyEntries.length > 0
+        ? (async () => {
+            try {
+              const res = await fetch('/api/v1/agents', {
+                credentials: 'include',
+              });
+              const json = (await res.json()) as
+                | {
+                    ok: true;
+                    data: {
+                      additionalProviders: AdditionalProviderCard[];
+                    };
+                  }
+                | { ok: false };
+              if ('ok' in json && json.ok) {
+                for (const p of apiKeyEntries) {
+                  const found = json.data.additionalProviders.find(
+                    (ap) => ap.id === p.id,
+                  );
+                  next[p.id] = !!found?.hasCredential;
+                  if (found) nextCards[p.id] = found;
+                }
+              } else {
+                for (const p of apiKeyEntries) next[p.id] = false;
+              }
+            } catch {
+              for (const p of apiKeyEntries) next[p.id] = false;
+            }
+          })()
+        : Promise.resolve(),
+    ]);
+
+    setAuthed(next);
+    setCards(nextCards);
+  }, []);
+
+  useEffect(() => {
+    void refresh();
+  }, [refresh]);
+
+  return { authed, cards, refresh };
+}
+
+function ProviderAuthList({
+  cards,
+  onChange,
+}: {
+  cards: AdditionalProviderCardMap;
+  onChange: () => void;
+}) {
+  return (
+    <>
+      {PROVIDER_CATALOG.map((entry) => {
+        if (entry.authType === 'oauth_anthropic') {
+          return <AnthropicOAuthCard key={entry.id} onChange={onChange} />;
+        }
+        if (entry.authType === 'oauth_openai_codex') {
+          return <OpenAICodexOAuthCard key={entry.id} onChange={onChange} />;
+        }
+        return (
+          <ApiKeyAuthCard
+            key={entry.id}
+            entry={entry}
+            card={cards[entry.id] ?? null}
+            onChange={onChange}
+          />
+        );
+      })}
+    </>
+  );
+}
+
+function isAgentAuthed(a: AgentProfile, authed: ProviderAuthMap): boolean {
+  const catalogId = catalogIdForFixtureProvider(a.provider);
+  if (!catalogId) return false;
+  return !!authed[catalogId];
+}
+
 function LLMRoomSection({
   setup,
   update,
@@ -1284,6 +1597,7 @@ function LLMRoomSection({
   nav: SectionNavProps;
 }) {
   const [pickerOpen, setPickerOpen] = useState(false);
+  const { authed, cards, refresh } = useProviderAuth();
 
   const selected = useMemo<AgentProfile[]>(
     () =>
@@ -1293,12 +1607,19 @@ function LLMRoomSection({
     [setup.llm_room_agent_profile_ids],
   );
 
+  // Picker shows only agents whose provider is currently authed — the picker
+  // is a "what can run right now" list, not a "what could exist" list. Agents
+  // already in `selected` whose provider lost auth get a ⚠ AUTH MISSING
+  // warning below (they stay in the active list so the user can see the
+  // regression and re-auth or remove them).
   const available = useMemo<AgentProfile[]>(
     () =>
       FIXTURE_AGENT_PROFILES.filter(
-        (a) => !setup.llm_room_agent_profile_ids.includes(a.id),
+        (a) =>
+          !setup.llm_room_agent_profile_ids.includes(a.id) &&
+          isAgentAuthed(a, authed),
       ),
-    [setup.llm_room_agent_profile_ids],
+    [setup.llm_room_agent_profile_ids, authed],
   );
 
   const totalCostPerTurn = useMemo(
@@ -1330,8 +1651,12 @@ function LLMRoomSection({
         nav={nav}
       />
 
-      <AnthropicOAuthCard />
-      <OpenAICodexOAuthCard />
+      <ProviderAuthList
+        cards={cards}
+        onChange={() => {
+          void refresh();
+        }}
+      />
 
       <div className="editorial-agents-selected">
         <h3 className="editorial-personas-section-label">
@@ -1344,36 +1669,44 @@ function LLMRoomSection({
           </p>
         ) : (
           <ul className="editorial-agents-list">
-            {selected.map((a) => (
-              <li key={a.id} className="editorial-agent-row">
-                <span
-                  className={`editorial-persona-avatar editorial-persona-avatar-${a.color}`}
-                  aria-hidden="true"
-                >
-                  {a.monogram}
-                </span>
-                <div className="editorial-agent-row-text">
-                  <div className="editorial-agent-headline">
-                    <span className="editorial-persona-name">{a.name}</span>
-                    <span className="editorial-agent-role">{a.role}</span>
+            {selected.map((a) => {
+              const authMissing = !isAgentAuthed(a, authed);
+              return (
+                <li key={a.id} className="editorial-agent-row">
+                  <span
+                    className={`editorial-persona-avatar editorial-persona-avatar-${a.color}`}
+                    aria-hidden="true"
+                  >
+                    {a.monogram}
+                  </span>
+                  <div className="editorial-agent-row-text">
+                    <div className="editorial-agent-headline">
+                      <span className="editorial-persona-name">{a.name}</span>
+                      <span className="editorial-agent-role">{a.role}</span>
+                      {authMissing ? (
+                        <span className="editorial-agent-auth-missing">
+                          ⚠ AUTH MISSING
+                        </span>
+                      ) : null}
+                    </div>
+                    <p className="editorial-agent-stance">{a.stance}</p>
                   </div>
-                  <p className="editorial-agent-stance">{a.stance}</p>
-                </div>
-                <span className="editorial-agent-model">
-                  {a.model} · {a.provider}
-                </span>
-                <span className="editorial-agent-cost">
-                  ~${a.costPerTurnUsd.toFixed(2)}/TURN
-                </span>
-                <button
-                  type="button"
-                  className="editorial-chip-button"
-                  onClick={() => removeAgent(a.id)}
-                >
-                  REMOVE
-                </button>
-              </li>
-            ))}
+                  <span className="editorial-agent-model">
+                    {a.model} · {a.provider}
+                  </span>
+                  <span className="editorial-agent-cost">
+                    ~${a.costPerTurnUsd.toFixed(2)}/TURN
+                  </span>
+                  <button
+                    type="button"
+                    className="editorial-chip-button"
+                    onClick={() => removeAgent(a.id)}
+                  >
+                    REMOVE
+                  </button>
+                </li>
+              );
+            })}
           </ul>
         )}
       </div>

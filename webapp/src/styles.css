@@ -5454,6 +5454,18 @@ a {
   color: #6c6655;
 }
 
+.editorial-agent-auth-missing {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.6rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #b7372a;
+  background: #fff0eb;
+  border: 1px solid #b7372a;
+  border-radius: 3px;
+  padding: 0.05rem 0.35rem;
+}
+
 .editorial-agent-stance {
   margin: 0;
   font-family: 'IBM Plex Serif', Georgia, serif;
