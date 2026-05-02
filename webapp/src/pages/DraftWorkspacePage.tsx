@@ -12,38 +12,34 @@ import { EditorialPhaseStrip } from '../components/EditorialPhaseStrip';
 import { serializeDocToMarkdown, type JSONNode } from '../lib/markdown-export';
 
 // ───────────────────────────────────────────────────────────────────────────
-// Phase 04 DRAFT — sub-meta bar polish.
-// Adds the eyebrow row (`UNDER OUTLINE: <title> · N POINTS`), SSR aggregate +
-// GATES indicator on the main meta row, and a `← BACK` chip linking back to
-// the Points + Outline workspace per design/04_draft.md §3.
+// Phase 04 DRAFT — Panel chat right rail (mock turns).
+// Fills the right rail per design/04_draft.md §8: scoped panel discussion
+// with turns from the personas the user already met in Points + Outline
+// (Ankit / Ravi / Mei). v0p ships fixture-only turns scoped to each
+// outline point — composer is disabled until LLM wiring lands. Continuity
+// summary line at the top echoes the resolved Points-phase discussion so
+// the user doesn't feel a discontinuity advancing into Draft.
 //
-// Outline title is hardcoded to the Embracer fixture for v0p; once the
-// Outline workspace stores a topic title in localStorage, plumb it through
-// here.
-//
-// SSR aggregate is computed as the mean of outline-point scores (no real
-// scoring pipeline at v0p). GATES indicator is heuristic at v0p: ✓ when the
-// SSR mean ≥ 6.0 and no point dips below 5.0; ⚠ otherwise. Real gate logic
-// replaces this once gate thresholds land in Setup.
-//
-// Earlier cuts in this page:
+// Earlier cuts in this page (most recent at bottom):
 //   • PR #269: three-column shell + Tiptap editor + outline rail + word count
 //   • PR #270: cursor-aware status bar + scope chip + outline jump-to-segment
 //   • PR #271: Versions tab + ⌘S manual save + 60s autosave snapshots
 //   • PR #272: ↑ COPY MD export (Tiptap-JSON → markdown serializer)
 //   • PR #273: Sources tab — fixture-only cite tracker
 //   • PR #274: + OPTIMIZE popover UI shell (RUN disabled at v0p)
+//   • PR #275: sub-meta polish — eyebrow + SSR + GATES + ← BACK
 //
 // Still deferred (per design/04_draft.md):
-// - Panel chat scoped to active segment (right rail)
-// - Quick-action chips wired to handlers (FULL DRAFT / POLISH / etc.)
+// - Real panel turns from the editorial-scoped DiscussionSession
+// - Composer wired to actually queue an LLM run (`+ ASK`)
+// - Action chips (`+ JUMP TO §2`, `+ ADD A PERSON`) wired to real handlers
+// - Quick-action chips wired (FULL DRAFT / POLISH / etc.)
 // - + OPTIMIZE actually runs an optimization round (LLM wiring)
 // - CUSTOMIZE: per-stage provider/threshold/anchor-bundle config
 // - Voice-lock banner, mechanical scorer, suggestion overlay
-// - Markdown round-trip + source-map (0p-b1 spike: Tiptap → MD → Tiptap)
-// - Compressed-diff snapshot storage (currently full JSON per snapshot)
-// - Real Sources data: currently fixture-only; cite-on-click into editor
-//   + per-segment source filter deferred to autoresearch wiring
+// - Markdown round-trip + source-map (0p-b1 spike)
+// - Compressed-diff snapshot storage
+// - Real Sources data: currently fixture-only
 // - Real outline title + real GATES thresholds from Setup
 //
 // NOTE on the Outline-rail data source: the Points workspace owns its
@@ -171,6 +167,137 @@ const FIXTURE_SOURCES: ReadonlyArray<SourceEntry> = [
     citation: 'Personal communication',
   },
 ];
+
+// ─── Panel chat fixtures (right rail) ───────────────────────────────────────
+
+type PanelTurn = {
+  id: string;
+  scopePointIndex: number;
+  personaInitial: string;
+  personaName: string;
+  personaRole: string;
+  body: string;
+  actionLabel?: string;
+  timestamp: string;
+};
+
+const PANEL_TURNS: ReadonlyArray<PanelTurn> = [
+  // Point 0 — HOOK
+  {
+    id: 't0a',
+    scopePointIndex: 0,
+    personaInitial: 'A',
+    personaName: 'ANKIT',
+    personaRole: 'STRATEGIST',
+    body: 'the lede works. but §2 needs a person — Ravi called this in POINTS too.',
+    actionLabel: '+ JUMP TO §2',
+    timestamp: '11:54',
+  },
+  {
+    id: 't0b',
+    scopePointIndex: 0,
+    personaInitial: 'R',
+    personaName: 'RAVI',
+    personaRole: 'NARRATIVE',
+    body: 'the second paragraph is bloodless. who is signing? name them.',
+    actionLabel: '+ ADD A PERSON',
+    timestamp: '11:53',
+  },
+  {
+    id: 't0c',
+    scopePointIndex: 0,
+    personaInitial: 'M',
+    personaName: 'MEI',
+    personaRole: 'ANALYST',
+    body: "8-K cite is correct. ¶3 is where I'd put pp.14–16.",
+    timestamp: '11:51',
+  },
+  // Point 1 — ARG (MG conditional liability)
+  {
+    id: 't1a',
+    scopePointIndex: 1,
+    personaInitial: 'M',
+    personaName: 'MEI',
+    personaRole: 'ANALYST',
+    body: 'the accounting framing is solid. consider citing ASC 810 directly so the reader can verify.',
+    timestamp: '11:48',
+  },
+  {
+    id: 't1b',
+    scopePointIndex: 1,
+    personaInitial: 'A',
+    personaName: 'ANKIT',
+    personaRole: 'STRATEGIST',
+    body: "this is the load-bearing paragraph. don't soften it — the reclassification IS the story.",
+    timestamp: '11:46',
+  },
+  // Point 2 — ARG (cohort split)
+  {
+    id: 't2a',
+    scopePointIndex: 2,
+    personaInitial: 'R',
+    personaName: 'RAVI',
+    personaRole: 'NARRATIVE',
+    body: 'the cohort split needs a name — pick someone who got squeezed and someone who got the tailwind.',
+    actionLabel: '+ ADD A PERSON',
+    timestamp: '11:42',
+  },
+  {
+    id: 't2b',
+    scopePointIndex: 2,
+    personaInitial: 'M',
+    personaName: 'MEI',
+    personaRole: 'ANALYST',
+    body: '10-person cutoff — empirical or arbitrary? cite a source if you have one, otherwise hedge.',
+    timestamp: '11:40',
+  },
+  // Point 3 — ARG (18-month lock-in)
+  {
+    id: 't3a',
+    scopePointIndex: 3,
+    personaInitial: 'A',
+    personaName: 'ANKIT',
+    personaRole: 'STRATEGIST',
+    body: 'this is your strongest counter-cyclical argument. lead the section with it.',
+    timestamp: '11:35',
+  },
+  {
+    id: 't3b',
+    scopePointIndex: 3,
+    personaInitial: 'R',
+    personaName: 'RAVI',
+    personaRole: 'NARRATIVE',
+    body: 'tighten this — "structural, not cyclical" is the headline phrase. use it.',
+    timestamp: '11:33',
+  },
+  // Point 4 — CLOSE (recoupment creep)
+  {
+    id: 't4a',
+    scopePointIndex: 4,
+    personaInitial: 'M',
+    personaName: 'MEI',
+    personaRole: 'ANALYST',
+    body: 'you\'re forecasting here. say so explicitly: "next 6 months, watch for…" — readers value the framing.',
+    timestamp: '11:28',
+  },
+  {
+    id: 't4b',
+    scopePointIndex: 4,
+    personaInitial: 'A',
+    personaName: 'ANKIT',
+    personaRole: 'STRATEGIST',
+    body: "good closer. don't pad it — end on the question.",
+    timestamp: '11:25',
+  },
+];
+
+const PANEL_PRIOR_PHASE_SUMMARIES: Record<number, string> = {
+  0: 'Earlier in Points + Outline: panel debated 4 turns; resolved with "open with reclassification."',
+  1: 'Earlier in Points + Outline: panel debated 3 turns; resolved with "MG-as-conditional-liability is the load-bearing thread."',
+  2: 'Earlier in Points + Outline: panel debated 5 turns; resolved with "cohort split is real, not anecdotal."',
+  3: 'Earlier in Points + Outline: panel debated 2 turns; resolved with "18-month lock-in is structural."',
+  4: 'Earlier in Points + Outline: panel debated 3 turns; resolved with "recoupment creep is the next shoe."',
+};
 
 const SECTION_ORDER: ReadonlyArray<OutlineSection> = ['HOOK', 'BODY', 'CLOSE'];
 
@@ -955,6 +1082,11 @@ export function DraftWorkspacePage(_props: Props) {
     () => computeGateStatus(orderedOutline, ssrAggregate),
     [orderedOutline, ssrAggregate],
   );
+  const scopedPanelTurns = useMemo<PanelTurn[]>(() => {
+    if (activePoint < 0) return [];
+    return PANEL_TURNS.filter((t) => t.scopePointIndex === activePoint);
+  }, [activePoint]);
+
   const scopeText = scopeChipText(cursor);
   const statusText = activeStatusText(cursor, orderedOutline, activePoint);
 
@@ -1519,14 +1651,88 @@ export function DraftWorkspacePage(_props: Props) {
           </div>
         </main>
 
-        {/* RIGHT RAIL — PANEL CHAT (placeholder) */}
+        {/* RIGHT RAIL — PANEL CHAT */}
         <aside className="editorial-po-draft-panel">
-          <h2 className="editorial-rail-heading">PANEL CHAT</h2>
-          <p className="editorial-tt-empty">
-            Panel chat scoped to the active draft segment lands in a follow-up
-            PR. Use 03 POINTS + OUTLINE to discuss a Point with the panel for
-            now.
-          </p>
+          <header className="editorial-po-draft-panel-header">
+            <span className="editorial-po-draft-panel-title">PANEL</span>
+            <span className="editorial-po-draft-panel-scope">
+              {activePoint >= 0 ? `@POINT ${activePoint + 1}` : '@DRAFT'}
+            </span>
+            {scopedPanelTurns.length > 0 ? (
+              <span className="editorial-po-draft-panel-last">
+                LAST {scopedPanelTurns[0].timestamp}
+              </span>
+            ) : null}
+          </header>
+
+          {activePoint >= 0 && PANEL_PRIOR_PHASE_SUMMARIES[activePoint] ? (
+            <div className="editorial-po-draft-panel-summary">
+              {PANEL_PRIOR_PHASE_SUMMARIES[activePoint]}
+            </div>
+          ) : null}
+
+          <div className="editorial-po-draft-panel-turns">
+            {scopedPanelTurns.length === 0 ? (
+              <p className="editorial-tt-empty">
+                {activePoint >= 0
+                  ? 'No panel turns for this point yet.'
+                  : 'Click into a paragraph to see panel turns scoped to that segment.'}
+              </p>
+            ) : (
+              scopedPanelTurns.map((turn) => (
+                <article
+                  key={turn.id}
+                  className="editorial-po-draft-panel-turn"
+                >
+                  <header className="editorial-po-draft-panel-turn-head">
+                    <span
+                      className={`editorial-po-draft-panel-avatar editorial-po-draft-panel-avatar-${turn.personaInitial.toLowerCase()}`}
+                      aria-hidden="true"
+                    >
+                      {turn.personaInitial}
+                    </span>
+                    <span className="editorial-po-draft-panel-name">
+                      {turn.personaName}
+                    </span>
+                    <span className="editorial-po-draft-panel-role">
+                      {turn.personaRole}
+                    </span>
+                    <span className="editorial-po-draft-panel-time">
+                      {turn.timestamp}
+                    </span>
+                  </header>
+                  <p className="editorial-po-draft-panel-body">{turn.body}</p>
+                  {turn.actionLabel ? (
+                    <button
+                      type="button"
+                      className="editorial-po-draft-panel-action"
+                      disabled
+                      title="Action chip wiring lands with LLM panel turns"
+                    >
+                      {turn.actionLabel}
+                    </button>
+                  ) : null}
+                </article>
+              ))
+            )}
+          </div>
+
+          <div className="editorial-po-draft-panel-composer">
+            <textarea
+              className="editorial-po-draft-panel-input"
+              placeholder="Ask the panel… (LLM wiring required at v0p)"
+              disabled
+              rows={2}
+            />
+            <button
+              type="button"
+              className="editorial-po-draft-panel-ask"
+              disabled
+              title="Composer wiring lands with the editorial-scoped DiscussionSession"
+            >
+              + ASK
+            </button>
+          </div>
         </aside>
       </div>
     </div>
