@@ -65,6 +65,22 @@ const DESTINATION_LABELS: Record<Destination, string> = {
   other: 'Other',
 };
 
+// Voice library shown in the Deliverable section's voice picker. In production
+// this list comes from rocketorchestra's voice page library; for 0p we
+// hardcode the seeded voice plus a few plausible siblings so the dropdown
+// has options to choose from. The first slug matches `seeds/voice/
+// gamemakers_2026.md`; the rest are placeholders that will resolve once
+// rocketorchestra is wired up.
+const AVAILABLE_VOICES: ReadonlyArray<{ slug: string; label: string }> = [
+  { slug: 'voice/gamemakers-2026', label: 'GameMakers (2026)' },
+  { slug: 'voice/longform-essay-2026', label: 'Longform Essay (2026)' },
+  {
+    slug: 'voice/podcast-conversational-2026',
+    label: 'Podcast · Conversational (2026)',
+  },
+  { slug: 'voice/memo-tight-2026', label: 'Memo · Tight (2026)' },
+];
+
 function defaultSetupState(): SetupState {
   return {
     schema_version: '0',
@@ -120,6 +136,27 @@ export function EditorialSetupPage(_props: Props) {
     () => SECTIONS.filter((s) => sectionStatus(s.id, setup) === 'done').length,
     [setup],
   );
+
+  const sectionIdx = SECTIONS.findIndex((s) => s.id === activeSection);
+  const prevSection = sectionIdx > 0 ? SECTIONS[sectionIdx - 1] : null;
+  const nextSection =
+    sectionIdx >= 0 && sectionIdx < SECTIONS.length - 1
+      ? SECTIONS[sectionIdx + 1]
+      : null;
+  const navProps = {
+    prev: prevSection
+      ? {
+          name: prevSection.name,
+          onClick: () => setActiveSection(prevSection.id),
+        }
+      : null,
+    next: nextSection
+      ? {
+          name: nextSection.name,
+          onClick: () => setActiveSection(nextSection.id),
+        }
+      : null,
+  };
 
   return (
     <div className="editorial-room">
@@ -230,7 +267,7 @@ export function EditorialSetupPage(_props: Props) {
 
         <main className="editorial-setup-content">
           {activeSection === 'deliverable' && (
-            <DeliverableSection setup={setup} update={update} />
+            <DeliverableSection setup={setup} update={update} nav={navProps} />
           )}
           {activeSection === 'audience' && (
             <StubSection
@@ -238,6 +275,7 @@ export function EditorialSetupPage(_props: Props) {
               title="Who is this for?"
               copy="Add personas from your library. Each one becomes a scoring perspective at every layer."
               note="Persona library picker, suggestions, weight editing — coming next slice."
+              nav={navProps}
             />
           )}
           {activeSection === 'llm-room' && (
@@ -246,6 +284,7 @@ export function EditorialSetupPage(_props: Props) {
               title="Who is in the LLM Room?"
               copy="Pick agent profiles that critique, propose, and score during the run."
               note="Agent library + per-agent stance/cost — coming next slice."
+              nav={navProps}
             />
           )}
           {activeSection === 'scoring' && (
@@ -254,6 +293,7 @@ export function EditorialSetupPage(_props: Props) {
               title="What scoring system governs gates?"
               copy="Pick a scoring pipeline. Tune scorer weights and budget caps inline."
               note="Pipeline picker · weighted-scorer editor · budget caps — coming next slice."
+              nav={navProps}
             />
           )}
         </main>
@@ -310,22 +350,78 @@ export function EditorialSetupPage(_props: Props) {
   );
 }
 
+type SectionNavProps = {
+  prev: { name: string; onClick: () => void } | null;
+  next: { name: string; onClick: () => void } | null;
+};
+
+function SectionNav({ prev, next }: SectionNavProps) {
+  if (!prev && !next) return null;
+  return (
+    <div className="editorial-section-nav">
+      {prev ? (
+        <button
+          type="button"
+          className="editorial-chip-button"
+          onClick={prev.onClick}
+        >
+          ← {prev.name.toUpperCase()}
+        </button>
+      ) : null}
+      {next ? (
+        <button
+          type="button"
+          className="editorial-chip-button editorial-chip-button-primary"
+          onClick={next.onClick}
+        >
+          {next.name.toUpperCase()} →
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
+function SectionHeader({
+  num,
+  title,
+  copy,
+  nav,
+}: {
+  num: string;
+  title: string;
+  copy: string;
+  nav: SectionNavProps;
+}) {
+  return (
+    <header className="editorial-section-header">
+      <div className="editorial-section-header-text">
+        <p className="editorial-section-eyebrow">SECTION {num} · OF 04</p>
+        <h1 className="editorial-section-heading">{title}</h1>
+        <p className="editorial-section-subhead">{copy}</p>
+      </div>
+      <SectionNav prev={nav.prev} next={nav.next} />
+    </header>
+  );
+}
+
 function DeliverableSection({
   setup,
   update,
+  nav,
 }: {
   setup: SetupState;
   update: (patch: Partial<SetupState>) => void;
+  nav: SectionNavProps;
 }) {
   const target = setup.length_target;
   return (
     <section className="editorial-section-workspace">
-      <p className="editorial-section-eyebrow">SECTION 01 · OF 04</p>
-      <h1 className="editorial-section-heading">What are you producing?</h1>
-      <p className="editorial-section-subhead">
-        Define the deliverable, voice, length, and destination. These four
-        fields flow into every downstream phase.
-      </p>
+      <SectionHeader
+        num="01"
+        title="What are you producing?"
+        copy="Define the deliverable, voice, length, and destination. These four fields flow into every downstream phase."
+        nav={nav}
+      />
 
       <div className="editorial-field-grid">
         <label className="editorial-field">
@@ -346,12 +442,21 @@ function DeliverableSection({
 
         <label className="editorial-field">
           <span className="editorial-field-label">VOICE</span>
-          <input
-            type="text"
+          <select
             value={setup.voice_page_slug}
-            placeholder="voice/gamemakers-2026"
             onChange={(e) => update({ voice_page_slug: e.target.value })}
-          />
+          >
+            {AVAILABLE_VOICES.map((v) => (
+              <option key={v.slug} value={v.slug}>
+                {v.label}
+              </option>
+            ))}
+            {AVAILABLE_VOICES.every((v) => v.slug !== setup.voice_page_slug) ? (
+              <option value={setup.voice_page_slug}>
+                {setup.voice_page_slug} (custom)
+              </option>
+            ) : null}
+          </select>
         </label>
 
         <label className="editorial-field">
@@ -429,17 +534,17 @@ function StubSection({
   title,
   copy,
   note,
+  nav,
 }: {
   num: string;
   title: string;
   copy: string;
   note: string;
+  nav: SectionNavProps;
 }) {
   return (
     <section className="editorial-section-workspace">
-      <p className="editorial-section-eyebrow">SECTION {num} · OF 04</p>
-      <h1 className="editorial-section-heading">{title}</h1>
-      <p className="editorial-section-subhead">{copy}</p>
+      <SectionHeader num={num} title={title} copy={copy} nav={nav} />
       <div className="editorial-stub-callout">
         <strong>NEXT SLICE.</strong> {note}
       </div>
