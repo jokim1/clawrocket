@@ -6379,6 +6379,65 @@ a.editorial-phase-pill:hover {
   box-shadow: 0 4px 12px rgba(31, 28, 20, 0.18);
 }
 
+/* ─── Outline tab — in-outline toggle + assembly view ─────────────────── */
+
+.editorial-po-point-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 0.1rem;
+  gap: 0.4rem;
+}
+
+.editorial-po-point-outline-toggle {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.58rem;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  padding: 0.04rem 0.35rem;
+  border-radius: 3px;
+  cursor: pointer;
+  user-select: none;
+  border: 1px solid transparent;
+  transition:
+    background-color 120ms ease,
+    border-color 120ms ease,
+    color 120ms ease;
+}
+
+.editorial-po-point-outline-toggle-in {
+  color: #2e7d62;
+  border-color: #2e7d62;
+}
+
+.editorial-po-point-outline-toggle-in:hover {
+  background: #2e7d62;
+  color: #fff;
+}
+
+.editorial-po-point-outline-toggle-out {
+  color: #8a8268;
+  border-color: #c9c0a8;
+}
+
+.editorial-po-point-outline-toggle-out:hover {
+  border-color: #1f1c14;
+  color: #1f1c14;
+  background: #efe9d8;
+}
+
+.editorial-po-outline-hint {
+  margin-top: 0.6rem;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.62rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #6c6655;
+  padding: 0.3rem 0.4rem;
+  border-top: 1px dashed #ddd6c8;
+  text-align: center;
+}
+
 .editorial-po-note-timestamp {
   margin-left: auto;
   font-family: 'IBM Plex Mono', monospace;
