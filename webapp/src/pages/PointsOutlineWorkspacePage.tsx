@@ -124,7 +124,18 @@ type DetailState = {
   scoreRow: ScoreCell[];
   aggregate: { score: number; ssr: number; gatesPass: boolean };
   notes: Note[];
+  // Whether this Point is selected for the Outline. Optional for back-compat
+  // with v1-shaped storage; undefined defaults to true for main Points and
+  // false for counters (counters are argued against, never in the outline).
+  inOutline?: boolean;
 };
+
+// Outline target range — design/03_points_outline.md §13.6 says "5–7" is the
+// guide range for Points in the outline; the tab label shows current/range.
+const OUTLINE_TARGET_MIN = 5;
+const OUTLINE_TARGET_MAX = 7;
+
+type LeftRailTab = 'points' | 'outline';
 
 // State machine for adding a new note: `idle` → click `+` → `picking-type`
 // (filter chips become type-pickers) → click chip → `editing` (textarea
@@ -738,6 +749,27 @@ function saveLayoutState(s: LayoutState): void {
   }
 }
 
+const LEFT_RAIL_TAB_KEY = 'editorial-room.points-outline.left-rail-tab-v0';
+
+function loadLeftRailTab(): LeftRailTab {
+  if (typeof window === 'undefined') return 'points';
+  try {
+    const raw = window.localStorage.getItem(LEFT_RAIL_TAB_KEY);
+    return raw === 'outline' ? 'outline' : 'points';
+  } catch {
+    return 'points';
+  }
+}
+
+function saveLeftRailTab(t: LeftRailTab): void {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.setItem(LEFT_RAIL_TAB_KEY, t);
+  } catch {
+    // ignore
+  }
+}
+
 const ADDED_COUNTERS_KEY = 'editorial-room.points-outline.added-counters-v0';
 
 function isValidPoint(p: unknown): p is Point {
@@ -995,6 +1027,33 @@ export function PointsOutlineWorkspacePage(_props: Props) {
   function toggleLayout() {
     setLayoutState((s) => (s === 'a' ? 'b' : 'a'));
   }
+
+  const [leftRailTab, setLeftRailTab] = useState<LeftRailTab>(loadLeftRailTab);
+
+  useEffect(() => {
+    saveLeftRailTab(leftRailTab);
+  }, [leftRailTab]);
+
+  function isInOutline(slug: string, type: PointType): boolean {
+    if (type === 'COUNTER') return false;
+    const s = detailStates[slug];
+    return s?.inOutline ?? true;
+  }
+
+  function toggleInOutline(slug: string) {
+    setDetailStates((prev) => {
+      const cur = prev[slug];
+      if (!cur) return prev;
+      const current = cur.inOutline ?? true;
+      return { ...prev, [slug]: { ...cur, inOutline: !current } };
+    });
+  }
+
+  const outlinePoints = useMemo(
+    () => orderedMainPoints.filter((p) => isInOutline(p.slug, p.type)),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [orderedMainPoints, detailStates],
+  );
 
   function selectPoint(slug: string) {
     if (editing && editing.slug !== slug) {
@@ -1307,15 +1366,33 @@ export function PointsOutlineWorkspacePage(_props: Props) {
           <div className="editorial-po-rail-tabs">
             <button
               type="button"
-              className="editorial-po-rail-tab editorial-po-rail-tab-active"
+              className={
+                'editorial-po-rail-tab' +
+                (leftRailTab === 'points'
+                  ? ' editorial-po-rail-tab-active'
+                  : '')
+              }
+              onClick={() => setLeftRailTab('points')}
             >
               Points{' '}
               <span className="editorial-po-rail-tab-count">
                 {allPoints.length}
               </span>
             </button>
-            <button type="button" className="editorial-po-rail-tab" disabled>
-              Outline <span className="editorial-po-rail-tab-count">5/5–7</span>
+            <button
+              type="button"
+              className={
+                'editorial-po-rail-tab' +
+                (leftRailTab === 'outline'
+                  ? ' editorial-po-rail-tab-active'
+                  : '')
+              }
+              onClick={() => setLeftRailTab('outline')}
+            >
+              Outline{' '}
+              <span className="editorial-po-rail-tab-count">
+                {outlinePoints.length}/{OUTLINE_TARGET_MIN}–{OUTLINE_TARGET_MAX}
+              </span>
             </button>
             <button
               type="button"
@@ -1333,69 +1410,117 @@ export function PointsOutlineWorkspacePage(_props: Props) {
             </button>
           </div>
 
-          <DndContext
-            sensors={sensors}
-            collisionDetection={closestCenter}
-            onDragEnd={handlePointDragEnd}
-          >
-            <SortableContext
-              items={pointsOrder}
-              strategy={verticalListSortingStrategy}
-            >
-              <ul className="editorial-po-point-list">
-                {orderedMainPoints.map((p, idx) => (
-                  <SortablePointWrapper key={p.slug} slug={p.slug}>
-                    <PointCard
-                      point={{
-                        ...p,
-                        position: String(idx + 1).padStart(2, '0'),
-                      }}
-                      state={detailStates[p.slug]}
-                      isActive={p.slug === activePointSlug}
-                      onSelect={() => selectPoint(p.slug)}
-                    />
-                  </SortablePointWrapper>
-                ))}
-              </ul>
-            </SortableContext>
-          </DndContext>
-
-          {orderedCounters.length > 0 ? (
+          {leftRailTab === 'points' ? (
             <>
-              <h2 className="editorial-rail-heading editorial-rail-heading-spaced editorial-rail-heading-counter">
-                COUNTER-POINTS · {orderedCounters.length}
-              </h2>
               <DndContext
                 sensors={sensors}
                 collisionDetection={closestCenter}
-                onDragEnd={handleCounterDragEnd}
+                onDragEnd={handlePointDragEnd}
               >
                 <SortableContext
-                  items={counterOrder}
+                  items={pointsOrder}
                   strategy={verticalListSortingStrategy}
                 >
                   <ul className="editorial-po-point-list">
-                    {orderedCounters.map((p, idx) => (
+                    {orderedMainPoints.map((p, idx) => (
                       <SortablePointWrapper key={p.slug} slug={p.slug}>
                         <PointCard
                           point={{
                             ...p,
-                            position: String(
-                              orderedMainPoints.length + 1 + idx,
-                            ).padStart(2, '0'),
+                            position: String(idx + 1).padStart(2, '0'),
                           }}
                           state={detailStates[p.slug]}
                           isActive={p.slug === activePointSlug}
-                          isCounter
                           onSelect={() => selectPoint(p.slug)}
+                          inOutline={isInOutline(p.slug, p.type)}
+                          onToggleOutline={() => toggleInOutline(p.slug)}
                         />
                       </SortablePointWrapper>
                     ))}
                   </ul>
                 </SortableContext>
               </DndContext>
+
+              {orderedCounters.length > 0 ? (
+                <>
+                  <h2 className="editorial-rail-heading editorial-rail-heading-spaced editorial-rail-heading-counter">
+                    COUNTER-POINTS · {orderedCounters.length}
+                  </h2>
+                  <DndContext
+                    sensors={sensors}
+                    collisionDetection={closestCenter}
+                    onDragEnd={handleCounterDragEnd}
+                  >
+                    <SortableContext
+                      items={counterOrder}
+                      strategy={verticalListSortingStrategy}
+                    >
+                      <ul className="editorial-po-point-list">
+                        {orderedCounters.map((p, idx) => (
+                          <SortablePointWrapper key={p.slug} slug={p.slug}>
+                            <PointCard
+                              point={{
+                                ...p,
+                                position: String(
+                                  orderedMainPoints.length + 1 + idx,
+                                ).padStart(2, '0'),
+                              }}
+                              state={detailStates[p.slug]}
+                              isActive={p.slug === activePointSlug}
+                              isCounter
+                              onSelect={() => selectPoint(p.slug)}
+                            />
+                          </SortablePointWrapper>
+                        ))}
+                      </ul>
+                    </SortableContext>
+                  </DndContext>
+                </>
+              ) : null}
             </>
-          ) : null}
+          ) : (
+            // Outline tab: filtered, non-sortable list of inOutline main
+            // Points only. Drag-reorder happens in Points tab; Outline
+            // reflects that order.
+            <>
+              {outlinePoints.length === 0 ? (
+                <p className="editorial-tt-empty">
+                  No Points in the Outline yet — add some from the Points tab.
+                </p>
+              ) : (
+                <ul className="editorial-po-point-list">
+                  {outlinePoints.map((p) => {
+                    const idx = orderedMainPoints.findIndex(
+                      (m) => m.slug === p.slug,
+                    );
+                    return (
+                      <li key={p.slug} className="editorial-po-point-li">
+                        <PointCard
+                          point={{
+                            ...p,
+                            position: String(idx + 1).padStart(2, '0'),
+                          }}
+                          state={detailStates[p.slug]}
+                          isActive={p.slug === activePointSlug}
+                          onSelect={() => selectPoint(p.slug)}
+                          inOutline
+                          onToggleOutline={() => toggleInOutline(p.slug)}
+                        />
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+              <p className="editorial-po-outline-hint">
+                Target {OUTLINE_TARGET_MIN}–{OUTLINE_TARGET_MAX} Points.{' '}
+                {outlinePoints.length < OUTLINE_TARGET_MIN
+                  ? `Add ${OUTLINE_TARGET_MIN - outlinePoints.length} more.`
+                  : outlinePoints.length > OUTLINE_TARGET_MAX
+                    ? `${outlinePoints.length - OUTLINE_TARGET_MAX} over target.`
+                    : 'On target.'}
+              </p>
+            </>
+          )}
         </aside>
 
         {/* CENTER — ACTIVE POINT DETAIL + PANEL DISCUSSION */}
@@ -1442,12 +1567,16 @@ function PointCard({
   isActive,
   isCounter,
   onSelect,
+  inOutline,
+  onToggleOutline,
 }: {
   point: Point;
   state: DetailState | undefined;
   isActive: boolean;
   isCounter?: boolean;
   onSelect: () => void;
+  inOutline?: boolean;
+  onToggleOutline?: () => void;
 }) {
   const claim = state?.claim ?? point.claim;
   const stake = state?.stake ?? point.stake;
@@ -1472,10 +1601,38 @@ function PointCard({
       </div>
       <p className="editorial-po-point-claim">{claim}</p>
       {stake ? <p className="editorial-po-point-stake">{stake}</p> : null}
-      <span className="editorial-po-point-notes">
-        {state?.notes.length ?? point.noteCount} NOTES
-        {cardStale ? ' · STALE' : ''}
-      </span>
+      <div className="editorial-po-point-footer">
+        <span className="editorial-po-point-notes">
+          {state?.notes.length ?? point.noteCount} NOTES
+          {cardStale ? ' · STALE' : ''}
+        </span>
+        {!isCounter && onToggleOutline ? (
+          <span
+            role="button"
+            tabIndex={0}
+            className={
+              'editorial-po-point-outline-toggle' +
+              (inOutline
+                ? ' editorial-po-point-outline-toggle-in'
+                : ' editorial-po-point-outline-toggle-out')
+            }
+            onClick={(e) => {
+              e.stopPropagation();
+              onToggleOutline();
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                e.stopPropagation();
+                onToggleOutline();
+              }
+            }}
+            aria-label={inOutline ? 'Remove from outline' : 'Add to outline'}
+          >
+            {inOutline ? '✓ IN' : '+ ADD'}
+          </span>
+        ) : null}
+      </div>
     </button>
   );
 }
