@@ -6357,3 +6357,214 @@ a.editorial-phase-pill:hover {
     display: none;
   }
 }
+
+/* ─── Editorial Room · Points + Outline · inline edit + revision history ── */
+
+.editorial-po-stale-banner {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  align-self: flex-start;
+  padding: 0.32rem 0.6rem;
+  border: 1px solid #c98a2c;
+  background: #fdf3df;
+  color: #7a4a08;
+  border-radius: 4px;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.66rem;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.editorial-po-stale-icon {
+  font-size: 0.85rem;
+  line-height: 1;
+}
+
+.editorial-po-score-row-stale .editorial-tt-score-cell-number,
+.editorial-po-score-row-stale .editorial-tt-score-cell-note {
+  opacity: 0.5;
+}
+
+.editorial-po-point-card-stale .editorial-po-point-score {
+  opacity: 0.5;
+}
+
+.editorial-po-point-card-stale .editorial-po-point-notes {
+  color: #c98a2c;
+}
+
+.editorial-po-section-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.editorial-po-edit-trigger {
+  border: 1px solid #c9c0a8;
+  background: transparent;
+  padding: 0.1rem 0.45rem;
+  border-radius: 3px;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.6rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #6c6655;
+  cursor: pointer;
+  opacity: 0.8;
+}
+
+.editorial-po-edit-trigger:hover {
+  opacity: 1;
+  border-color: #1f1c14;
+  color: #1f1c14;
+}
+
+.editorial-po-claim-body-clickable,
+.editorial-po-stake-body-clickable {
+  cursor: text;
+  border-radius: 3px;
+  padding: 0.15rem 0.25rem;
+  margin-left: -0.25rem;
+  transition: background-color 120ms ease;
+}
+
+.editorial-po-claim-body-clickable:hover,
+.editorial-po-stake-body-clickable:hover {
+  background-color: #f4ecd8;
+}
+
+.editorial-po-claim-body-clickable:focus-visible,
+.editorial-po-stake-body-clickable:focus-visible {
+  outline: 2px solid #1f1c14;
+  outline-offset: 2px;
+  background-color: #f4ecd8;
+}
+
+.editorial-po-edit {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.editorial-po-edit-inline {
+  flex: 1;
+}
+
+.editorial-po-edit-textarea-multiline,
+.editorial-po-edit-textarea-inline {
+  font-family: 'IBM Plex Serif', serif;
+  font-size: 1.1rem;
+  font-weight: 600;
+  line-height: 1.4;
+  color: #1f1c14;
+  background: #fff;
+  border: 1px solid #1f1c14;
+  border-radius: 4px;
+  padding: 0.4rem 0.55rem;
+  resize: vertical;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.editorial-po-edit-textarea-inline {
+  font-family: inherit;
+  font-size: 0.85rem;
+  font-weight: 400;
+  font-style: italic;
+  resize: none;
+}
+
+.editorial-po-edit-textarea-multiline:focus,
+.editorial-po-edit-textarea-inline:focus {
+  outline: none;
+  border-color: #b7372a;
+  box-shadow: 0 0 0 2px rgba(183, 55, 42, 0.18);
+}
+
+.editorial-po-edit-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.4rem;
+}
+
+.editorial-po-edit-save {
+  border: 1px solid #1f1c14;
+  background: #1f1c14;
+  color: #f7f3e8;
+  padding: 0.22rem 0.6rem;
+  border-radius: 4px;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.66rem;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.editorial-po-edit-save:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.editorial-po-edit-save:hover:not(:disabled) {
+  background: #2e7d62;
+  border-color: #2e7d62;
+}
+
+.editorial-po-edit-cancel {
+  border: 1px solid #c9c0a8;
+  background: transparent;
+  color: #6c6655;
+  padding: 0.22rem 0.6rem;
+  border-radius: 4px;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.66rem;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.editorial-po-edit-cancel:hover {
+  border-color: #1f1c14;
+  color: #1f1c14;
+}
+
+.editorial-po-revision-turn {
+  background: #f7f3e8;
+  border: 1px dashed #b9b09c;
+}
+
+.editorial-po-revision-head {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.editorial-po-revision-icon {
+  font-size: 0.95rem;
+  color: #6c6655;
+  line-height: 1;
+}
+
+.editorial-po-revision-label {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.62rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #6c6655;
+  font-weight: 600;
+}
+
+.editorial-po-revision-prev {
+  margin: 0;
+  padding: 0.4rem 0.55rem 0.4rem 0.7rem;
+  border-left: 2px solid #c9c0a8;
+  font-style: italic;
+  font-size: 0.82rem;
+  color: #4a4738;
+  background: rgba(255, 255, 255, 0.55);
+  border-radius: 0 3px 3px 0;
+  line-height: 1.45;
+}
