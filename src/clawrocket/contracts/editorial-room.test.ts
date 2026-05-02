@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Ajv } from 'ajv';
@@ -28,10 +28,43 @@ function loadJson(path: string): unknown {
   return JSON.parse(readFileSync(path, 'utf-8'));
 }
 
-function compile(schemaFile: string): ValidateFunction {
-  return ajv.compile(
-    loadJson(resolve(schemaDir, schemaFile)) as AnySchemaObject,
-  );
+// Auto-load all schemas in v0/ so $refs across files resolve at compile time.
+const schemaFilenames = readdirSync(schemaDir).filter((f) =>
+  f.endsWith('.schema.json'),
+);
+for (const file of schemaFilenames) {
+  ajv.addSchema(loadJson(resolve(schemaDir, file)) as AnySchemaObject);
+}
+
+function validatorFor(schemaFile: string): ValidateFunction {
+  const schema = loadJson(resolve(schemaDir, schemaFile)) as AnySchemaObject;
+  const id = schema.$id;
+  if (typeof id !== 'string') {
+    throw new Error(`${schemaFile} is missing $id`);
+  }
+  const validate = ajv.getSchema(id);
+  if (!validate) {
+    throw new Error(`No validator registered for ${schemaFile} (id ${id})`);
+  }
+  return validate;
+}
+
+// Convention: a fixture named `<base>.<variant>.json` validates against
+// `<base>.schema.json`. e.g., `theme.derived_from_pcp.json` →
+// `theme.schema.json`; `setup_state.minimal.json` → `setup_state.schema.json`.
+// A few fixtures in EDITORIAL_ROOM_CONTRACT.md §9.1 use a different shape
+// (e.g., `point_with_evidence.example.json` for the `point` schema); those
+// are listed in `FIXTURE_SCHEMA_OVERRIDES`.
+const FIXTURE_SCHEMA_OVERRIDES: Record<string, string> = {
+  'point_with_evidence.example.json': 'point.schema.json',
+};
+
+function schemaFileForFixture(fixtureFile: string): string {
+  if (fixtureFile in FIXTURE_SCHEMA_OVERRIDES) {
+    return FIXTURE_SCHEMA_OVERRIDES[fixtureFile];
+  }
+  const base = fixtureFile.split('.')[0];
+  return `${base}.schema.json`;
 }
 
 function sortKeys(value: unknown): unknown {
@@ -64,31 +97,31 @@ function expectValid(
   expect(ok).toBe(true);
 }
 
-describe('editorial-room v0 — SetupState contract', () => {
-  const validateSetupState = compile('setup_state.schema.json');
+const ALL_FIXTURES = readdirSync(fixtureDir).filter((f) => f.endsWith('.json'));
 
-  describe('schema validation', () => {
-    it.each([['setup_state.minimal.json'], ['setup_state.full.json']])(
-      '%s validates against the schema',
-      (filename) => {
-        const fixture = loadJson(resolve(fixtureDir, filename));
-        expectValid(validateSetupState, fixture, filename);
+describe('editorial-room v0 contracts', () => {
+  describe('all fixtures validate against their schemas', () => {
+    it.each(ALL_FIXTURES.map((f) => [f, schemaFileForFixture(f)]))(
+      '%s validates against %s',
+      (fixtureFile, schemaFile) => {
+        const validate = validatorFor(schemaFile);
+        const fixture = loadJson(resolve(fixtureDir, fixtureFile));
+        expectValid(validate, fixture, fixtureFile);
       },
     );
   });
 
-  describe('round-trip under key-sort normalization', () => {
-    it.each([['setup_state.minimal.json'], ['setup_state.full.json']])(
-      '%s round-trips byte-equivalent',
-      (filename) => {
-        const original = loadJson(resolve(fixtureDir, filename));
-        const roundTripped = JSON.parse(JSON.stringify(original));
-        expect(canonical(roundTripped)).toBe(canonical(original));
-      },
-    );
+  describe('all fixtures round-trip byte-equivalent under key-sort', () => {
+    it.each(ALL_FIXTURES.map((f) => [f]))('%s', (fixtureFile) => {
+      const original = loadJson(resolve(fixtureDir, fixtureFile));
+      const roundTripped = JSON.parse(JSON.stringify(original));
+      expect(canonical(roundTripped)).toBe(canonical(original));
+    });
   });
 
-  describe('schema rejects malformed input', () => {
+  describe('SetupState — schema rejects malformed input', () => {
+    const validateSetupState = validatorFor('setup_state.schema.json');
+
     function baseValid(): Record<string, unknown> {
       return {
         schema_version: '0',
@@ -164,6 +197,24 @@ describe('editorial-room v0 — SetupState contract', () => {
     it('rejects length_target with min_words missing', () => {
       const invalid = { ...baseValid(), length_target: { max_words: 2500 } };
       expect(validateSetupState(invalid)).toBe(false);
+    });
+  });
+
+  describe('Theme — cross-schema $ref resolution', () => {
+    const validateTheme = validatorFor('theme.schema.json');
+
+    it('rejects malformed pcp_provenance via $ref (missing required field)', () => {
+      const fixture = loadJson(
+        resolve(fixtureDir, 'theme.derived_from_pcp.json'),
+      ) as Record<string, unknown>;
+      const provenance = fixture.pcp_provenance as Record<string, unknown>;
+      delete provenance.derived_at;
+      expect(validateTheme(fixture)).toBe(false);
+    });
+
+    it('accepts theme with both pcp_provenance and panel_provenance null', () => {
+      const fixture = loadJson(resolve(fixtureDir, 'theme.example.json'));
+      expectValid(validateTheme, fixture, 'theme.example.json');
     });
   });
 });
