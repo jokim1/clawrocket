@@ -1,28 +1,35 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { useEditor, EditorContent, type Content } from '@tiptap/react';
+import {
+  useEditor,
+  EditorContent,
+  type Content,
+  type Editor,
+} from '@tiptap/react';
 import StarterKit from '@tiptap/starter-kit';
 
 import { EditorialPhaseStrip } from '../components/EditorialPhaseStrip';
 
 // ───────────────────────────────────────────────────────────────────────────
-// Phase 04 DRAFT — first cut.
-// Three-column shell + a basic Tiptap editor (StarterKit only). The Outline
-// rail (left) reads the same localStorage written by the Points + Outline
-// workspace, so the user's claims/stakes show up here automatically. Editor
-// content autosaves to its own localStorage key; word count and a fake
-// "LAST AUTOSAVE" timestamp render in the sub-meta bar.
+// Phase 04 DRAFT — cursor-aware navigation cut.
+// Builds on the first-cut three-column shell (PR #269) by wiring the editor's
+// selection state into:
+//   • a sticky active-paragraph header above the prose
+//     (`PARAGRAPH N OF M · POINT P · TYPE`)
+//   • the SCOPE chip in the toolbar (live SELECTION / PARAGRAPH N / WHOLE DRAFT)
+//   • the Outline rail (◉/◌ active indicator, `N ¶` count, click-to-jump)
 //
-// Deferred to follow-up PRs (per kickoff item 17 + design/04_draft.md):
-// - Tabs in left rail (Outline / Sources / Versions); right now only Outline
-// - Per-segment scoring inside the editor
-// - Active segment selection + Panel chat scoped to it (right rail is a
-//   placeholder card for now)
-// - Top action toolbar's quick chips (FULL DRAFT / POLISH / EXPAND / →
-//   CONTINUE / ? MISSING) — rendered but disabled
+// Segment-binding is heuristic: we evenly distribute the doc's top-level
+// paragraphs across the ordered Outline points (HOOK → BODY → CLOSE). True
+// segment markers (custom Tiptap nodes that pin paragraphs to specific Points)
+// land in a follow-up PR.
+//
+// Still deferred (per design/04_draft.md):
+// - Sources + Versions tabs in left rail
+// - Panel chat scoped to active segment (right rail)
+// - Quick-action chips wired to handlers (FULL DRAFT / POLISH / etc.)
 // - + OPTIMIZE popover with cost preview + customize panel + run
-// - Voice-lock banner, mechanical scorer, suggestion overlay, source-map
-// - Markdown export (Substack/Google Doc), revision history
-// - Tiptap → Markdown round-trip + canonical subset (0p-b1 spike)
+// - Voice-lock banner, mechanical scorer, suggestion overlay
+// - Markdown export, revision history, source-map round-trip
 //
 // NOTE on the Outline-rail data source: the Points workspace owns its
 // state in its own localStorage envelope. To avoid threading a shared
@@ -48,6 +55,24 @@ type OutlineEntry = {
 };
 
 type OutlineGroups = Record<OutlineSection, OutlineEntry[]>;
+
+type ParagraphRange = {
+  start: number;
+  end: number;
+};
+
+type CursorState = {
+  activeParaIndex: number;
+  totalParas: number;
+  inHeading: boolean;
+  hasSelection: boolean;
+};
+
+type Bucket = {
+  start: number;
+  end: number;
+  count: number;
+};
 
 const SECTION_ORDER: ReadonlyArray<OutlineSection> = ['HOOK', 'BODY', 'CLOSE'];
 
@@ -120,7 +145,6 @@ function pointTypeToSection(t: PointType): OutlineSection | null {
 function loadOutlineGroups(): OutlineGroups {
   const groups: OutlineGroups = { HOOK: [], BODY: [], CLOSE: [] };
   if (typeof window === 'undefined') {
-    // SSR fallback — seed from fixture so the rail isn't empty.
     for (const slug of FIXTURE_SLUGS_IN_ORDER) {
       const t = FIXTURE_POINT_TYPES[slug];
       const def = FIXTURE_POINT_DEFAULTS[slug];
@@ -262,6 +286,149 @@ function countWords(text: string): number {
   return trimmed.split(/\s+/).filter(Boolean).length;
 }
 
+// ─── cursor + paragraph helpers ─────────────────────────────────────────────
+
+function getDocParagraphs(editor: Editor): ParagraphRange[] {
+  const result: ParagraphRange[] = [];
+  editor.state.doc.content.forEach((node, offset) => {
+    if (node.type.name === 'paragraph') {
+      result.push({ start: offset, end: offset + node.nodeSize });
+    }
+  });
+  return result;
+}
+
+function computeCursorState(editor: Editor): CursorState {
+  const { state } = editor;
+  const { from, to } = state.selection;
+  const hasSelection = from !== to;
+  const paragraphs = getDocParagraphs(editor);
+  let activeParaIndex = -1;
+  for (let i = 0; i < paragraphs.length; i++) {
+    const p = paragraphs[i];
+    if (from >= p.start && from <= p.end) {
+      activeParaIndex = i;
+      break;
+    }
+  }
+  let inHeading = false;
+  state.doc.content.forEach((node, offset) => {
+    if (
+      node.type.name === 'heading' &&
+      from >= offset &&
+      from <= offset + node.nodeSize
+    ) {
+      inHeading = true;
+    }
+  });
+  return {
+    activeParaIndex,
+    totalParas: paragraphs.length,
+    inHeading,
+    hasSelection,
+  };
+}
+
+// Heuristic paragraph → Outline-Point binding: evenly distribute paragraphs
+// across the ordered Outline list (HOOK → BODY → CLOSE), giving extra
+// paragraphs to the earliest buckets when the divide isn't even. This is a
+// stand-in until custom Tiptap node markers pin paragraphs to specific
+// Points (deferred PR). For 12 paragraphs / 5 Points the heuristic happens
+// to match the design's example allocation (3,3,2,2,2).
+function distributeParagraphs(
+  totalParas: number,
+  pointCount: number,
+): Bucket[] {
+  if (pointCount === 0) return [];
+  if (totalParas === 0) {
+    return Array.from({ length: pointCount }, () => ({
+      start: 0,
+      end: 0,
+      count: 0,
+    }));
+  }
+  const base = Math.floor(totalParas / pointCount);
+  const remainder = totalParas % pointCount;
+  const buckets: Bucket[] = [];
+  let cursor = 0;
+  for (let i = 0; i < pointCount; i++) {
+    const count = base + (i < remainder ? 1 : 0);
+    buckets.push({ start: cursor, end: cursor + count, count });
+    cursor += count;
+  }
+  return buckets;
+}
+
+function findActivePoint(activeParaIndex: number, buckets: Bucket[]): number {
+  if (activeParaIndex < 0) return -1;
+  for (let i = 0; i < buckets.length; i++) {
+    const b = buckets[i];
+    if (b.count > 0 && activeParaIndex >= b.start && activeParaIndex < b.end) {
+      return i;
+    }
+  }
+  return -1;
+}
+
+function jumpToPointParagraph(
+  editor: Editor,
+  pointIndex: number,
+  buckets: Bucket[],
+): void {
+  const bucket = buckets[pointIndex];
+  if (!bucket) return;
+  const paragraphs = getDocParagraphs(editor);
+  if (bucket.count === 0 || bucket.start >= paragraphs.length) {
+    const endPos = editor.state.doc.content.size;
+    editor.chain().focus().setTextSelection(endPos).scrollIntoView().run();
+    return;
+  }
+  const para = paragraphs[bucket.start];
+  if (!para) return;
+  // Position cursor inside the paragraph (offset + 1 enters the node).
+  editor
+    .chain()
+    .focus()
+    .setTextSelection(para.start + 1)
+    .scrollIntoView()
+    .run();
+}
+
+function scopeChipText(cursor: CursorState): string {
+  if (cursor.hasSelection) return 'SELECTION';
+  if (cursor.activeParaIndex >= 0) {
+    return `PARAGRAPH ${cursor.activeParaIndex + 1}`;
+  }
+  return 'WHOLE DRAFT';
+}
+
+function activeStatusText(
+  cursor: CursorState,
+  orderedOutline: OutlineEntry[],
+  activePoint: number,
+): string {
+  if (cursor.hasSelection) {
+    return 'SELECTION · OPTIMIZE WILL TARGET HIGHLIGHTED TEXT';
+  }
+  if (cursor.activeParaIndex < 0) {
+    if (cursor.inHeading) {
+      return cursor.totalParas > 0
+        ? `TITLE · ${cursor.totalParas} ¶ TOTAL`
+        : 'TITLE · NO PARAGRAPHS YET';
+    }
+    return cursor.totalParas > 0
+      ? `${cursor.totalParas} ¶ TOTAL · NO ACTIVE PARAGRAPH`
+      : 'EMPTY DRAFT';
+  }
+  const base = `PARAGRAPH ${cursor.activeParaIndex + 1} OF ${cursor.totalParas}`;
+  if (activePoint < 0 || !orderedOutline[activePoint]) {
+    return base;
+  }
+  const point = orderedOutline[activePoint];
+  const typeLabel = point.type === 'ARG' ? 'ARGUMENT' : point.type;
+  return `${base} · POINT ${activePoint + 1} · ${typeLabel}`;
+}
+
 const WORD_TARGET_MIN = 1200;
 const WORD_TARGET_MAX = 1400;
 
@@ -275,6 +442,12 @@ export function DraftWorkspacePage(_props: Props) {
   const [outlineGroups] = useState<OutlineGroups>(loadOutlineGroups);
   const [wordCount, setWordCount] = useState<number>(0);
   const [lastSavedAt, setLastSavedAt] = useState<Date | null>(null);
+  const [cursor, setCursor] = useState<CursorState>({
+    activeParaIndex: -1,
+    totalParas: 0,
+    inHeading: false,
+    hasSelection: false,
+  });
   const saveTimerRef = useRef<number | null>(null);
 
   const editor = useEditor({
@@ -282,10 +455,11 @@ export function DraftWorkspacePage(_props: Props) {
     content: loadDraftContent(),
     onCreate: ({ editor }) => {
       setWordCount(countWords(editor.state.doc.textContent));
+      setCursor(computeCursorState(editor));
     },
     onUpdate: ({ editor }) => {
       setWordCount(countWords(editor.state.doc.textContent));
-      // Debounced save
+      setCursor(computeCursorState(editor));
       if (saveTimerRef.current !== null) {
         window.clearTimeout(saveTimerRef.current);
       }
@@ -294,6 +468,9 @@ export function DraftWorkspacePage(_props: Props) {
         setLastSavedAt(new Date());
         saveTimerRef.current = null;
       }, 500);
+    },
+    onSelectionUpdate: ({ editor }) => {
+      setCursor(computeCursorState(editor));
     },
   });
 
@@ -305,13 +482,33 @@ export function DraftWorkspacePage(_props: Props) {
     };
   }, []);
 
-  const totalOutlinePoints = useMemo(
-    () =>
-      outlineGroups.HOOK.length +
-      outlineGroups.BODY.length +
-      outlineGroups.CLOSE.length,
+  const orderedOutline = useMemo<OutlineEntry[]>(
+    () => [
+      ...outlineGroups.HOOK,
+      ...outlineGroups.BODY,
+      ...outlineGroups.CLOSE,
+    ],
     [outlineGroups],
   );
+
+  const buckets = useMemo(
+    () => distributeParagraphs(cursor.totalParas, orderedOutline.length),
+    [cursor.totalParas, orderedOutline.length],
+  );
+
+  const activePoint = useMemo(
+    () => findActivePoint(cursor.activeParaIndex, buckets),
+    [cursor.activeParaIndex, buckets],
+  );
+
+  const totalOutlinePoints = orderedOutline.length;
+  const scopeText = scopeChipText(cursor);
+  const statusText = activeStatusText(cursor, orderedOutline, activePoint);
+
+  const handleOutlineClick = (pointIndex: number): void => {
+    if (!editor) return;
+    jumpToPointParagraph(editor, pointIndex, buckets);
+  };
 
   const wordTargetStatus = (() => {
     if (wordCount < WORD_TARGET_MIN) return 'editorial-po-draft-words-under';
@@ -360,7 +557,7 @@ export function DraftWorkspacePage(_props: Props) {
         >
           + OPTIMIZE ⌘O
         </button>
-        <span className="editorial-po-draft-scope">SCOPE: WHOLE DRAFT</span>
+        <span className="editorial-po-draft-scope">SCOPE: {scopeText}</span>
       </div>
 
       <div className="editorial-po-draft-grid">
@@ -395,7 +592,7 @@ export function DraftWorkspacePage(_props: Props) {
               let runningPos = 0;
               return SECTION_ORDER.map((section) => {
                 const points = outlineGroups[section];
-                const startPos = runningPos + 1;
+                const startPos = runningPos;
                 runningPos += points.length;
                 if (points.length === 0) return null;
                 return (
@@ -409,30 +606,55 @@ export function DraftWorkspacePage(_props: Props) {
                       </span>
                     </h3>
                     <ul className="editorial-po-draft-outline-list">
-                      {points.map((p, idx) => (
-                        <li
-                          key={p.slug}
-                          className="editorial-po-draft-outline-item"
-                        >
-                          <div className="editorial-po-draft-outline-row">
-                            <span className="editorial-po-point-position">
-                              {String(startPos + idx).padStart(2, '0')}
-                            </span>
-                            <span
-                              className={`editorial-po-point-type editorial-po-point-type-${p.type.toLowerCase()}`}
+                      {points.map((p, idx) => {
+                        const orderIndex = startPos + idx;
+                        const isActive = orderIndex === activePoint;
+                        const paraCount = buckets[orderIndex]?.count ?? 0;
+                        return (
+                          <li
+                            key={p.slug}
+                            className={`editorial-po-draft-outline-item${
+                              isActive
+                                ? ' editorial-po-draft-outline-item-active'
+                                : ''
+                            }`}
+                          >
+                            <button
+                              type="button"
+                              className="editorial-po-draft-outline-button"
+                              onClick={() => handleOutlineClick(orderIndex)}
+                              aria-pressed={isActive}
                             >
-                              {p.type === 'ARG' ? 'ARGUMENT' : p.type}
-                            </span>
-                            <span className="editorial-po-point-score">
-                              {p.score.toFixed(1)}
-                              {p.stale ? '·' : ''}
-                            </span>
-                          </div>
-                          <p className="editorial-po-draft-outline-claim">
-                            {p.claim}
-                          </p>
-                        </li>
-                      ))}
+                              <div className="editorial-po-draft-outline-row">
+                                <span
+                                  className="editorial-po-draft-outline-indicator"
+                                  aria-hidden="true"
+                                >
+                                  {isActive ? '◉' : '◌'}
+                                </span>
+                                <span className="editorial-po-point-position">
+                                  {String(orderIndex + 1).padStart(2, '0')}
+                                </span>
+                                <span
+                                  className={`editorial-po-point-type editorial-po-point-type-${p.type.toLowerCase()}`}
+                                >
+                                  {p.type === 'ARG' ? 'ARGUMENT' : p.type}
+                                </span>
+                                <span className="editorial-po-point-score">
+                                  {p.score.toFixed(1)}
+                                  {p.stale ? '·' : ''}
+                                </span>
+                                <span className="editorial-po-draft-outline-paracount">
+                                  {paraCount} ¶
+                                </span>
+                              </div>
+                              <p className="editorial-po-draft-outline-claim">
+                                {p.claim}
+                              </p>
+                            </button>
+                          </li>
+                        );
+                      })}
                     </ul>
                   </section>
                 );
@@ -443,6 +665,7 @@ export function DraftWorkspacePage(_props: Props) {
 
         {/* CENTER — TIPTAP EDITOR */}
         <main className="editorial-po-draft-center">
+          <div className="editorial-po-draft-status-bar">{statusText}</div>
           <div className="editorial-po-draft-editor">
             <EditorContent editor={editor} />
           </div>
