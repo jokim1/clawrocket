@@ -7191,6 +7191,58 @@ a.editorial-phase-pill:hover {
   color: #f7f3e8;
 }
 
+/* Floating menu (empty-line block insert) */
+
+.editorial-po-draft-floating {
+  display: flex;
+  align-items: center;
+  gap: 0.15rem;
+  background: #fbf8f2;
+  border: 1px solid #c9c0a8;
+  border-radius: 5px;
+  padding: 0.2rem 0.35rem;
+  box-shadow: 0 4px 12px rgba(31, 28, 20, 0.08);
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.66rem;
+  color: #5b5644;
+  z-index: 35;
+}
+
+.editorial-po-draft-floating-label {
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #8a8268;
+  padding-right: 0.2rem;
+}
+
+.editorial-po-draft-floating-divider {
+  width: 1px;
+  height: 0.95rem;
+  background: #d8cfb6;
+  margin: 0 0.05rem;
+}
+
+.editorial-po-draft-floating-btn {
+  background: none;
+  border: 0;
+  color: #5b5644;
+  padding: 0.2rem 0.4rem;
+  margin: 0;
+  cursor: pointer;
+  border-radius: 3px;
+  font-size: 0.7rem;
+  font-weight: 500;
+  font-family: inherit;
+  letter-spacing: 0.04em;
+  min-width: 1.4rem;
+  line-height: 1;
+}
+
+.editorial-po-draft-floating-btn:hover {
+  background: #fff8e7;
+  color: #b7372a;
+}
+
 /* Tiptap link styling inside the editor */
 
 .editorial-po-draft-editor .ProseMirror a {
