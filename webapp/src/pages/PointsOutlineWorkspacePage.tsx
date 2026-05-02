@@ -105,7 +105,16 @@ type DetailState = {
   stale: boolean;
   scoreRow: ScoreCell[];
   aggregate: { score: number; ssr: number; gatesPass: boolean };
+  notes: Note[];
 };
+
+// State machine for adding a new note: `idle` → click `+` → `picking-type`
+// (filter chips become type-pickers) → click chip → `editing` (textarea
+// appears at top of notes list) → SAVE / CANCEL → `idle`.
+type NoteAddState =
+  | { kind: 'idle' }
+  | { kind: 'picking-type'; slug: string }
+  | { kind: 'editing'; slug: string; type: NoteType; body: string };
 
 type EditField = 'claim' | 'stake';
 type EditingTarget = { slug: string; field: EditField } | null;
@@ -116,6 +125,15 @@ type EditingTarget = { slug: string; field: EditField } | null;
 // ⌘] / ⌘[, or by ⌘O (which always returns to state 'a' so the panel is
 // fully visible when the user wants to talk to it).
 type LayoutState = 'a' | 'b';
+
+type NoteAddProps = {
+  state: NoteAddState;
+  onStart: () => void;
+  onCancel: () => void;
+  onPickType: (t: NoteType) => void;
+  onSetBody: (b: string) => void;
+  onSave: () => void;
+};
 
 const PRIMARY_PERSONAS: ReadonlyArray<Persona> = [
   {
@@ -550,9 +568,14 @@ function buildInitialDetailStates(): Record<string, DetailState> {
       stale: false,
       scoreRow: d.scoreRow.map((c) => ({ ...c })),
       aggregate: { ...d.aggregate },
+      notes: d.notes.map((n) => ({ ...n })),
     };
   }
   return out;
+}
+
+function makeNoteId(slug: string): string {
+  return `note-${slug}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
 }
 
 // Deterministic small drift on claim/stake content so RESCORE produces
@@ -596,7 +619,11 @@ const RESCORE_LATENCY_MS = 600;
 // localStorage persistence for the per-Point editable+scored state.
 // Bump the version suffix when DetailState gains required fields so older
 // stored shapes get discarded instead of merged into a partial value.
-const STORAGE_KEY = 'editorial-room.points-outline.detail-states-v0';
+// v1 = adds Note[] to DetailState. Older stored shapes from v0 fail
+// per-slug validation and fall back to the fixture defaults for that slug,
+// which is acceptable in v0p prototyping (CLAUDE.md treats stored data as
+// disposable).
+const STORAGE_KEY = 'editorial-room.points-outline.detail-states-v1';
 
 function isValidStoredState(s: unknown): s is DetailState {
   if (!s || typeof s !== 'object') return false;
@@ -608,7 +635,8 @@ function isValidStoredState(s: unknown): s is DetailState {
     typeof o.stale === 'boolean' &&
     Array.isArray(o.scoreRow) &&
     !!o.aggregate &&
-    typeof o.aggregate === 'object'
+    typeof o.aggregate === 'object' &&
+    Array.isArray(o.notes)
   );
 }
 
@@ -702,6 +730,9 @@ export function PointsOutlineWorkspacePage(_props: Props) {
   const [draft, setDraft] = useState<string>('');
   const [rescoringSlug, setRescoringSlug] = useState<string | null>(null);
   const [layoutState, setLayoutState] = useState<LayoutState>(loadLayoutState);
+  const [noteAddState, setNoteAddState] = useState<NoteAddState>({
+    kind: 'idle',
+  });
 
   useEffect(() => {
     saveLayoutState(layoutState);
@@ -741,8 +772,66 @@ export function PointsOutlineWorkspacePage(_props: Props) {
       setEditing(null);
       setDraft('');
     }
+    if (noteAddState.kind !== 'idle' && noteAddState.slug !== slug) {
+      setNoteAddState({ kind: 'idle' });
+    }
     setActivePointSlug(slug);
   }
+
+  function startAddingNote() {
+    setNoteAddState({ kind: 'picking-type', slug: activePoint.slug });
+  }
+
+  function cancelAddingNote() {
+    setNoteAddState({ kind: 'idle' });
+  }
+
+  function pickNoteType(type: NoteType) {
+    if (noteAddState.kind !== 'picking-type') return;
+    setNoteAddState({
+      kind: 'editing',
+      slug: noteAddState.slug,
+      type,
+      body: '',
+    });
+  }
+
+  function setNoteDraftBody(body: string) {
+    setNoteAddState((prev) =>
+      prev.kind === 'editing' ? { ...prev, body } : prev,
+    );
+  }
+
+  function saveNewNote() {
+    if (noteAddState.kind !== 'editing') return;
+    const text = noteAddState.body.trim();
+    if (!text) return;
+    const slug = noteAddState.slug;
+    const newNote: Note = {
+      id: makeNoteId(slug),
+      type: noteAddState.type,
+      timestamp: nowHHMM(),
+      body: text,
+    };
+    setDetailStates((prev) => {
+      const cur = prev[slug];
+      if (!cur) return prev;
+      return {
+        ...prev,
+        [slug]: { ...cur, notes: [newNote, ...cur.notes] },
+      };
+    });
+    setNoteAddState({ kind: 'idle' });
+  }
+
+  const noteAddProps: NoteAddProps = {
+    state: noteAddState,
+    onStart: startAddingNote,
+    onCancel: cancelAddingNote,
+    onPickType: pickNoteType,
+    onSetBody: setNoteDraftBody,
+    onSave: saveNewNote,
+  };
 
   const fixture = POINT_DETAILS[activePoint.slug];
   const state = detailStates[activePoint.slug];
@@ -755,6 +844,7 @@ export function PointsOutlineWorkspacePage(_props: Props) {
           discussion: state.discussion,
           scoreRow: state.scoreRow,
           aggregate: state.aggregate,
+          notes: state.notes,
         }
       : null;
   const stale = state?.stale ?? false;
@@ -932,6 +1022,7 @@ export function PointsOutlineWorkspacePage(_props: Props) {
               onRescore={() => rescorePoint(activePoint.slug)}
               layoutState={layoutState}
               onToggleLayout={toggleLayout}
+              noteAdd={noteAddProps}
             />
           ) : null}
         </main>
@@ -939,7 +1030,7 @@ export function PointsOutlineWorkspacePage(_props: Props) {
         {/* RIGHT RAIL — NOTES (state `a` only; in state `b` notes move to center) */}
         {layoutState === 'a' ? (
           <aside className="editorial-po-notes-rail">
-            <NotesRail notes={detail?.notes ?? []} />
+            <NotesRail notes={detail?.notes ?? []} noteAdd={noteAddProps} />
           </aside>
         ) : null}
       </div>
@@ -985,7 +1076,7 @@ function PointCard({
         <p className="editorial-po-point-claim">{claim}</p>
         {stake ? <p className="editorial-po-point-stake">{stake}</p> : null}
         <span className="editorial-po-point-notes">
-          {point.noteCount} NOTES
+          {state?.notes.length ?? point.noteCount} NOTES
           {cardStale ? ' · STALE' : ''}
         </span>
       </button>
@@ -1006,6 +1097,7 @@ function PointDetailView({
   onRescore,
   layoutState,
   onToggleLayout,
+  noteAdd,
 }: {
   detail: PointDetail;
   stale: boolean;
@@ -1019,6 +1111,7 @@ function PointDetailView({
   onRescore: () => void;
   layoutState: LayoutState;
   onToggleLayout: () => void;
+  noteAdd: NoteAddProps;
 }) {
   const editingClaim =
     editing?.slug === detail.slug && editing.field === 'claim';
@@ -1257,7 +1350,7 @@ function PointDetailView({
       ) : (
         <>
           <section className="editorial-po-notes-center">
-            <NotesRail notes={detail.notes} />
+            <NotesRail notes={detail.notes} noteAdd={noteAdd} />
           </section>
           <DiscussionDrawer
             lastTurnAt={lastTurnAt}
@@ -1411,7 +1504,20 @@ function ClaimStakeEditor({
   );
 }
 
-function NotesRail({ notes }: { notes: ReadonlyArray<Note> }) {
+function NotesRail({
+  notes,
+  noteAdd,
+}: {
+  notes: ReadonlyArray<Note>;
+  noteAdd: NoteAddProps;
+}) {
+  const isPicking = noteAdd.state.kind === 'picking-type';
+  const isEditing = noteAdd.state.kind === 'editing';
+  const editingType =
+    noteAdd.state.kind === 'editing' ? noteAdd.state.type : null;
+  const editingBody =
+    noteAdd.state.kind === 'editing' ? noteAdd.state.body : '';
+
   return (
     <>
       <div className="editorial-po-notes-rail-header">
@@ -1419,29 +1525,96 @@ function NotesRail({ notes }: { notes: ReadonlyArray<Note> }) {
         <span className="editorial-po-notes-sort">↓ CHRONO</span>
       </div>
 
-      <div className="editorial-po-notes-filter">
+      <div
+        className={
+          'editorial-po-notes-filter' +
+          (isPicking ? ' editorial-po-notes-filter-picking' : '')
+        }
+      >
         {NOTE_FILTER_ORDER.map((nt) => (
           <button
             key={nt}
             type="button"
             className={`editorial-po-notes-filter-chip editorial-po-notes-filter-chip-${nt}`}
-            disabled
-            title={NOTE_TYPE_LABEL[nt]}
+            disabled={!isPicking}
+            onClick={isPicking ? () => noteAdd.onPickType(nt) : undefined}
+            title={
+              isPicking
+                ? `Add a ${NOTE_TYPE_LABEL[nt]} note`
+                : NOTE_TYPE_LABEL[nt]
+            }
           >
             {NOTE_TYPE_CODE[nt]}
           </button>
         ))}
         <button
           type="button"
-          className="editorial-po-notes-filter-chip editorial-po-notes-filter-chip-add"
-          disabled
-          aria-label="Add note"
+          className={
+            'editorial-po-notes-filter-chip editorial-po-notes-filter-chip-add' +
+            (isPicking ? ' editorial-po-notes-filter-chip-add-active' : '')
+          }
+          onClick={isPicking ? noteAdd.onCancel : noteAdd.onStart}
+          disabled={isEditing}
+          aria-label={isPicking ? 'Cancel add note' : 'Add note'}
         >
-          +
+          {isPicking ? '×' : '+'}
         </button>
       </div>
 
-      {notes.length === 0 ? (
+      {isEditing && editingType ? (
+        <div
+          className={`editorial-po-note-card editorial-po-note-card-new editorial-po-note-card-${editingType}`}
+        >
+          <div className="editorial-po-note-head">
+            <span
+              className={`editorial-po-note-code editorial-po-note-code-${editingType}`}
+            >
+              {NOTE_TYPE_CODE[editingType]}
+            </span>
+            <span className="editorial-po-note-type">
+              {NOTE_TYPE_LABEL[editingType]}
+            </span>
+            <span className="editorial-po-note-timestamp">NEW</span>
+          </div>
+          <textarea
+            autoFocus
+            value={editingBody}
+            onChange={(e) => noteAdd.onSetBody(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Escape') {
+                e.preventDefault();
+                noteAdd.onCancel();
+              } else if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+                e.preventDefault();
+                noteAdd.onSave();
+              }
+            }}
+            placeholder={`New ${NOTE_TYPE_LABEL[editingType]} note…`}
+            rows={3}
+            className="editorial-po-note-edit-textarea"
+            aria-label={`New ${NOTE_TYPE_LABEL[editingType]} note`}
+          />
+          <div className="editorial-po-edit-actions">
+            <button
+              type="button"
+              className="editorial-po-edit-save"
+              onClick={noteAdd.onSave}
+              disabled={!editingBody.trim()}
+            >
+              SAVE ⌘↵
+            </button>
+            <button
+              type="button"
+              className="editorial-po-edit-cancel"
+              onClick={noteAdd.onCancel}
+            >
+              CANCEL · ESC
+            </button>
+          </div>
+        </div>
+      ) : null}
+
+      {notes.length === 0 && !isEditing ? (
         <p className="editorial-tt-empty">
           No notes yet — pick a type to start.
         </p>
@@ -1483,8 +1656,18 @@ function NotesRail({ notes }: { notes: ReadonlyArray<Note> }) {
         </ul>
       )}
 
-      <button type="button" className="editorial-po-note-add" disabled>
-        + NOTE · PICK TYPE ABOVE
+      <button
+        type="button"
+        className={
+          'editorial-po-note-add' +
+          (isPicking ? ' editorial-po-note-add-picking' : '')
+        }
+        onClick={isPicking ? noteAdd.onCancel : noteAdd.onStart}
+        disabled={isEditing}
+      >
+        {isPicking
+          ? '× CANCEL · PICK A TYPE ABOVE'
+          : '+ NOTE · PICK TYPE ABOVE'}
       </button>
     </>
   );
