@@ -2,9 +2,13 @@ import { useEffect, useMemo, useState } from 'react';
 
 import { EditorialPhaseStrip } from '../components/EditorialPhaseStrip';
 import {
+  FIXTURE_PERSONAS,
+  getPersonaBySlug,
+  type Persona,
+} from '../lib/editorial-fixtures';
+import {
   DELIVERABLE_LABELS,
   DESTINATION_LABELS,
-  defaultSetupState,
   loadSetupState,
   saveSetupState,
   type DeliverableType,
@@ -193,13 +197,7 @@ export function EditorialSetupPage(_props: Props) {
             <DeliverableSection setup={setup} update={update} nav={navProps} />
           )}
           {activeSection === 'audience' && (
-            <StubSection
-              num="02"
-              title="Who is this for?"
-              copy="Add personas from your library. Each one becomes a scoring perspective at every layer."
-              note="Persona library picker, suggestions, weight editing — coming next slice."
-              nav={navProps}
-            />
+            <AudienceSection setup={setup} update={update} nav={navProps} />
           )}
           {activeSection === 'llm-room' && (
             <StubSection
@@ -442,6 +440,244 @@ function DeliverableSection({
           </button>
         </fieldset>
       </div>
+
+      <div className="editorial-section-footer">
+        <span className="editorial-section-footer-meta">
+          setup_version {setup.setup_version} · changes stale dependent scores
+        </span>
+      </div>
+    </section>
+  );
+}
+
+function matchesPersonaSearch(p: Persona, query: string): boolean {
+  const q = query.toLowerCase().trim();
+  if (q === '') return true;
+  return (
+    p.name.toLowerCase().includes(q) ||
+    p.occupation.toLowerCase().includes(q) ||
+    p.cohortTag.toLowerCase().includes(q) ||
+    p.location.toLowerCase().includes(q)
+  );
+}
+
+function AudienceSection({
+  setup,
+  update,
+  nav,
+}: {
+  setup: SetupState;
+  update: (patch: Partial<SetupState>) => void;
+  nav: SectionNavProps;
+}) {
+  const [search, setSearch] = useState('');
+
+  const selected = useMemo<Persona[]>(
+    () =>
+      setup.audience_persona_slugs
+        .map((slug) => getPersonaBySlug(slug))
+        .filter((p): p is Persona => p !== null),
+    [setup.audience_persona_slugs],
+  );
+
+  const available = useMemo<Persona[]>(
+    () =>
+      FIXTURE_PERSONAS.filter(
+        (p) =>
+          !setup.audience_persona_slugs.includes(p.slug) &&
+          matchesPersonaSearch(p, search),
+      ),
+    [setup.audience_persona_slugs, search],
+  );
+
+  const suggested = useMemo<Persona | null>(
+    () =>
+      available.find(
+        (p) => p.suggested === 'yellow' || p.suggested === 'red',
+      ) ?? null,
+    [available],
+  );
+
+  const addPersona = (slug: string): void => {
+    if (setup.audience_persona_slugs.includes(slug)) return;
+    update({
+      audience_persona_slugs: [...setup.audience_persona_slugs, slug],
+    });
+  };
+
+  const removePersona = (slug: string): void => {
+    update({
+      audience_persona_slugs: setup.audience_persona_slugs.filter(
+        (s) => s !== slug,
+      ),
+    });
+  };
+
+  return (
+    <section className="editorial-section-workspace">
+      <SectionHeader
+        num="02"
+        title="Who is this for?"
+        copy="Add personas from your library. Each one becomes a scoring perspective at every layer."
+        nav={nav}
+      />
+
+      <div className="editorial-personas-selected">
+        <h3 className="editorial-personas-section-label">
+          SELECTED · {selected.length}
+        </h3>
+        {selected.length === 0 ? (
+          <p className="editorial-personas-empty">
+            No personas added yet — pick from the library below.
+          </p>
+        ) : (
+          <ul className="editorial-personas-selected-list">
+            {selected.map((p) => (
+              <li key={p.slug} className="editorial-persona-row">
+                <span
+                  className={`editorial-persona-avatar editorial-persona-avatar-${p.color}`}
+                  aria-hidden="true"
+                >
+                  {p.monogram}
+                </span>
+                <div className="editorial-persona-row-text">
+                  <div className="editorial-persona-row-headline">
+                    <span className="editorial-persona-name">{p.name}</span>
+                    <span className="editorial-persona-cohort">
+                      {p.cohortTag}
+                    </span>
+                  </div>
+                  <span className="editorial-persona-subtitle">
+                    {p.occupation} · {p.location}
+                  </span>
+                </div>
+                <span className="editorial-persona-weight">PRIMARY</span>
+                <div className="editorial-persona-row-actions">
+                  <button
+                    type="button"
+                    className="editorial-chip-button"
+                    disabled
+                    title="Per-persona weight editing coming next slice"
+                  >
+                    EDIT WEIGHT
+                  </button>
+                  <button
+                    type="button"
+                    className="editorial-chip-button"
+                    onClick={() => removePersona(p.slug)}
+                  >
+                    REMOVE
+                  </button>
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+
+      <div className="editorial-personas-library">
+        <header className="editorial-personas-library-header">
+          <h3 className="editorial-personas-section-label">
+            ADD FROM PERSONA LIBRARY
+          </h3>
+          <p className="editorial-personas-library-blurb">
+            {FIXTURE_PERSONAS.length} personas in library · suggested by
+            deliverable + theme tag
+          </p>
+          <input
+            type="search"
+            className="editorial-personas-search"
+            placeholder="search personas…"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            aria-label="Search persona library"
+          />
+        </header>
+
+        {available.length === 0 ? (
+          <p className="editorial-personas-empty">
+            {search.trim() === ''
+              ? 'All personas already added.'
+              : `No personas match "${search}".`}
+          </p>
+        ) : (
+          <ul className="editorial-personas-library-grid">
+            {available.map((p) => (
+              <li
+                key={p.slug}
+                className={`editorial-persona-card${
+                  p.suggested ? ' editorial-persona-card-suggested' : ''
+                }`}
+              >
+                {p.suggested ? (
+                  <span
+                    className={`editorial-persona-suggested editorial-persona-suggested-${p.suggested}`}
+                  >
+                    ● SUGGESTED
+                  </span>
+                ) : null}
+                <div className="editorial-persona-card-body">
+                  <span
+                    className={`editorial-persona-avatar editorial-persona-avatar-${p.color}`}
+                    aria-hidden="true"
+                  >
+                    {p.monogram}
+                  </span>
+                  <h4 className="editorial-persona-name">{p.name}</h4>
+                  <p className="editorial-persona-subtitle">
+                    {p.occupation} · {p.location}
+                  </p>
+                  <span className="editorial-persona-cohort">
+                    {p.cohortTag}
+                  </span>
+                  <p className="editorial-persona-quote">“{p.voiceQuote}”</p>
+                </div>
+                <footer className="editorial-persona-card-footer">
+                  <span className="editorial-persona-lastedit">
+                    LAST EDIT · {p.lastEditDays}D
+                  </span>
+                  <button
+                    type="button"
+                    className={`editorial-chip-button${
+                      p.suggested ? ' editorial-chip-button-primary' : ''
+                    }`}
+                    onClick={() => addPersona(p.slug)}
+                  >
+                    + ADD
+                  </button>
+                </footer>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+
+      {suggested ? (
+        <div className="editorial-personas-suggestion">
+          <p className="editorial-personas-suggestion-text">
+            <strong>{suggested.name}</strong> is suggested — your deliverable
+            tags include <code>publishing_economics</code> and your library has
+            a <code>{suggested.cohortTag}</code> persona.
+          </p>
+          <div className="editorial-personas-suggestion-actions">
+            <button
+              type="button"
+              className="editorial-chip-button"
+              disabled
+              title="Persona authoring lands when rocketorchestra wires up"
+            >
+              + NEW PERSONA
+            </button>
+            <button
+              type="button"
+              className="editorial-chip-button editorial-chip-button-primary"
+              onClick={() => addPersona(suggested.slug)}
+            >
+              ADD SUGGESTED
+            </button>
+          </div>
+        </div>
+      ) : null}
 
       <div className="editorial-section-footer">
         <span className="editorial-section-footer-meta">
