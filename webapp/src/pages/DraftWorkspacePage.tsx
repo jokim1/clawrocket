@@ -11,22 +11,26 @@ import { EditorialPhaseStrip } from '../components/EditorialPhaseStrip';
 import { serializeDocToMarkdown, type JSONNode } from '../lib/markdown-export';
 
 // ───────────────────────────────────────────────────────────────────────────
-// Phase 04 DRAFT — Sources tab cut.
-// Wires the Sources rail tab per design/04_draft.md §6.1: a draft-scoped
-// view of the source_blocks the panel can cite. Fixture-only at v0p; real
-// `clawrocket.source_blocks filtered by Outline ancestry` lookup lands when
-// the autoresearch pipeline plugs in.
+// Phase 04 DRAFT — + OPTIMIZE popover UI shell.
+// Wires the popover per design/04_draft.md §5: scope-aware description,
+// 4-stage list (AUTORESEARCH / AUTONOVEL / PANEL PASS / PROPOSE 2–3), mock
+// cost preview, CUSTOMIZE / RUN footer. RUN is visible-but-disabled at v0p
+// because no LLM provider is wired into Draft yet — the popover establishes
+// the UX surface and keyboard shortcut (⌘O) so the run flow can drop in
+// later without re-litigating the visual design.
 //
 // Earlier cuts in this page:
 //   • PR #269: three-column shell + Tiptap editor + outline rail + word count
 //   • PR #270: cursor-aware status bar + scope chip + outline jump-to-segment
 //   • PR #271: Versions tab + ⌘S manual save + 60s autosave snapshots
 //   • PR #272: ↑ COPY MD export (Tiptap-JSON → markdown serializer)
+//   • PR #273: Sources tab — fixture-only cite tracker
 //
 // Still deferred (per design/04_draft.md):
 // - Panel chat scoped to active segment (right rail)
 // - Quick-action chips wired to handlers (FULL DRAFT / POLISH / etc.)
-// - + OPTIMIZE popover with cost preview + customize panel + run
+// - + OPTIMIZE actually runs an optimization round (LLM wiring)
+// - CUSTOMIZE: per-stage provider/threshold/anchor-bundle config
 // - Voice-lock banner, mechanical scorer, suggestion overlay
 // - Markdown round-trip + source-map (0p-b1 spike: Tiptap → MD → Tiptap)
 // - Compressed-diff snapshot storage (currently full JSON per snapshot)
@@ -632,6 +636,91 @@ function activeStatusText(
   return `${base} · POINT ${activePoint + 1} · ${typeLabel}`;
 }
 
+// ─── + OPTIMIZE popover content ─────────────────────────────────────────────
+
+type OptimizeStageId = 'autoresearch' | 'autonovel' | 'panel_pass' | 'propose';
+
+type OptimizeStage = {
+  id: OptimizeStageId;
+  label: string;
+  description: string;
+  active: boolean;
+};
+
+type OptimizeCostEstimate = {
+  tokens: string;
+  wall: string;
+  dollars: string;
+};
+
+function optimizeScopeLabel(cursor: CursorState): string {
+  if (cursor.hasSelection) return 'SELECTION';
+  if (cursor.activeParaIndex >= 0) {
+    return `PARAGRAPH ${cursor.activeParaIndex + 1}`;
+  }
+  return 'WHOLE DRAFT';
+}
+
+function optimizeDescription(cursor: CursorState): string {
+  if (cursor.hasSelection) {
+    return 'Optimize selection: 2–3 alternative phrasings of the highlighted text, panel-rate, return top.';
+  }
+  if (cursor.activeParaIndex >= 0) {
+    return `Targeted optimize on ¶${cursor.activeParaIndex + 1}: 2–3 alternative phrasings, panel-rate, return top.`;
+  }
+  return 'Multi-pass: research supporting + counter angles, propose 2–3 alternatives, panel-rate, return top.';
+}
+
+// Stage activity per design §5.3:
+//   AUTORESEARCH — skipped when scope is paragraph or short selection
+//   AUTONOVEL    — always active
+//   PANEL PASS   — always active for whole-draft / point; skippable for
+//                  paragraph / selection
+//   PROPOSE 2–3  — always active
+function getOptimizeStages(cursor: CursorState): OptimizeStage[] {
+  const isWholeDraft = !cursor.hasSelection && cursor.activeParaIndex < 0;
+  return [
+    {
+      id: 'autoresearch',
+      label: 'AUTORESEARCH',
+      description: 'gather supporting + counter sources',
+      active: isWholeDraft,
+    },
+    {
+      id: 'autonovel',
+      label: 'AUTONOVEL',
+      description: 'draft 2–3 alternative versions',
+      active: true,
+    },
+    {
+      id: 'panel_pass',
+      label: 'PANEL PASS',
+      description: 'score with full panel + SSR',
+      active: isWholeDraft,
+    },
+    {
+      id: 'propose',
+      label: 'PROPOSE 2–3',
+      description: 'pick top by aggregate; show side-by-side',
+      active: true,
+    },
+  ];
+}
+
+// Mock cost preview by scope. Real estimate uses scoring-pipeline metadata
+// + per-stage multipliers from the optimization_cost_calibration ledger
+// (design §10.1). Numbers below are rough order-of-magnitude defaults so the
+// popover doesn't render blank.
+function optimizeCostEstimate(cursor: CursorState): OptimizeCostEstimate {
+  if (cursor.hasSelection) {
+    return { tokens: '≈2K TOKENS', wall: '2S WALL', dollars: '≈$0.01' };
+  }
+  if (cursor.activeParaIndex >= 0) {
+    return { tokens: '≈3K TOKENS', wall: '3S WALL', dollars: '≈$0.01' };
+  }
+  return { tokens: '≈28K TOKENS', wall: '12S WALL', dollars: '≈$0.08' };
+}
+
 const WORD_TARGET_MIN = 1200;
 const WORD_TARGET_MAX = 1400;
 
@@ -657,8 +746,10 @@ export function DraftWorkspacePage(_props: Props) {
   const [exportState, setExportState] = useState<'idle' | 'copied' | 'error'>(
     'idle',
   );
+  const [optimizeOpen, setOptimizeOpen] = useState<boolean>(false);
   const saveTimerRef = useRef<number | null>(null);
   const exportResetTimerRef = useRef<number | null>(null);
+  const optimizeAnchorRef = useRef<HTMLDivElement | null>(null);
   // Bumped on every editor onUpdate. Compared against `lastSnapshotVersionRef`
   // by the auto-snapshot interval to skip no-op snapshots.
   const editorVersionRef = useRef<number>(0);
@@ -765,6 +856,43 @@ export function DraftWorkspacePage(_props: Props) {
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
   }, [editor]);
+
+  // ⌘O / Ctrl+O toggles the + OPTIMIZE popover. Esc closes it. Cmd+O is the
+  // browser default for "open file" — we preventDefault to claim the key.
+  useEffect(() => {
+    const handler = (e: KeyboardEvent): void => {
+      if (e.key === 'Escape' && optimizeOpen) {
+        e.preventDefault();
+        setOptimizeOpen(false);
+        return;
+      }
+      if (
+        (e.key === 'o' || e.key === 'O') &&
+        (e.metaKey || e.ctrlKey) &&
+        !e.shiftKey &&
+        !e.altKey
+      ) {
+        e.preventDefault();
+        setOptimizeOpen((open) => !open);
+      }
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [optimizeOpen]);
+
+  // Click outside the popover closes it. Anchor-relative; we ignore clicks
+  // inside the anchor wrapper (which contains both the button and popover).
+  useEffect(() => {
+    if (!optimizeOpen) return;
+    const handler = (e: MouseEvent): void => {
+      const anchor = optimizeAnchorRef.current;
+      if (!anchor) return;
+      if (e.target instanceof Node && anchor.contains(e.target)) return;
+      setOptimizeOpen(false);
+    };
+    window.addEventListener('mousedown', handler);
+    return () => window.removeEventListener('mousedown', handler);
+  }, [optimizeOpen]);
 
   const orderedOutline = useMemo<OutlineEntry[]>(
     () => [
@@ -927,13 +1055,111 @@ export function DraftWorkspacePage(_props: Props) {
           ? MISSING ⌘M
         </button>
         <span className="editorial-po-draft-toolbar-sep">┃</span>
-        <button
-          type="button"
-          className="editorial-chip-button editorial-chip-button-primary"
-          disabled
+        <div
+          ref={optimizeAnchorRef}
+          className="editorial-po-draft-optimize-anchor"
         >
-          + OPTIMIZE ⌘O
-        </button>
+          <button
+            type="button"
+            className="editorial-chip-button editorial-chip-button-primary"
+            onClick={() => setOptimizeOpen((open) => !open)}
+            aria-haspopup="dialog"
+            aria-expanded={optimizeOpen}
+            disabled={!editor}
+          >
+            + OPTIMIZE ⌘O
+          </button>
+          {optimizeOpen ? (
+            <div
+              className="editorial-po-draft-optimize-popover"
+              role="dialog"
+              aria-label="Optimize draft"
+            >
+              <header className="editorial-po-draft-optimize-header">
+                <span className="editorial-po-draft-optimize-title">
+                  OPTIMIZE
+                </span>
+                <span className="editorial-po-draft-optimize-scope">
+                  · scope: {optimizeScopeLabel(cursor)}
+                </span>
+                <button
+                  type="button"
+                  className="editorial-po-draft-optimize-close"
+                  onClick={() => setOptimizeOpen(false)}
+                  aria-label="Close popover"
+                >
+                  ✕
+                </button>
+              </header>
+              <p className="editorial-po-draft-optimize-description">
+                {optimizeDescription(cursor)}
+              </p>
+              <section className="editorial-po-draft-optimize-stages">
+                <h4 className="editorial-po-draft-optimize-section-title">
+                  STAGES
+                </h4>
+                <ul className="editorial-po-draft-optimize-stage-list">
+                  {getOptimizeStages(cursor).map((stage) => (
+                    <li
+                      key={stage.id}
+                      className={`editorial-po-draft-optimize-stage${
+                        stage.active
+                          ? ''
+                          : ' editorial-po-draft-optimize-stage-inactive'
+                      }`}
+                    >
+                      <span
+                        className="editorial-po-draft-optimize-stage-mark"
+                        aria-hidden="true"
+                      >
+                        {stage.active ? '✓' : '◌'}
+                      </span>
+                      <span className="editorial-po-draft-optimize-stage-label">
+                        {stage.label}
+                      </span>
+                      <span className="editorial-po-draft-optimize-stage-desc">
+                        {stage.description}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </section>
+              <section className="editorial-po-draft-optimize-cost">
+                <h4 className="editorial-po-draft-optimize-section-title">
+                  COST PREVIEW
+                </h4>
+                <p className="editorial-po-draft-optimize-cost-line">
+                  {(() => {
+                    const c = optimizeCostEstimate(cursor);
+                    return `${c.tokens} · ${c.wall} · ${c.dollars}`;
+                  })()}
+                </p>
+                <p className="editorial-po-draft-optimize-cost-note">
+                  Estimates only — real numbers replace these once the
+                  scoring-pipeline metadata is wired up.
+                </p>
+              </section>
+              <footer className="editorial-po-draft-optimize-footer">
+                <button
+                  type="button"
+                  className="editorial-po-draft-optimize-customize"
+                  disabled
+                  title="Per-stage provider/threshold config — coming soon"
+                >
+                  CUSTOMIZE
+                </button>
+                <button
+                  type="button"
+                  className="editorial-po-draft-optimize-run"
+                  disabled
+                  title="LLM provider not yet wired into Draft at v0p"
+                >
+                  RUN ⌥↵
+                </button>
+              </footer>
+            </div>
+          ) : null}
+        </div>
         <span className="editorial-po-draft-scope">SCOPE: {scopeText}</span>
       </div>
 
