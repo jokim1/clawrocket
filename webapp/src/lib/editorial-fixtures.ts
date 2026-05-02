@@ -218,6 +218,28 @@ export const FIXTURE_AGENT_PROFILES: ReadonlyArray<AgentProfile> = [
     stance: 'argues the opposite case · finds blind spots',
     costPerTurnUsd: 0.04,
   },
+  {
+    id: 'agent/lyra',
+    name: 'Lyra',
+    role: 'context summarizer',
+    monogram: 'L',
+    color: 'blue',
+    model: 'GEMINI-2.5-FLASH',
+    provider: 'GEMINI',
+    stance: 'long-context recall · pulls back what the panel forgot',
+    costPerTurnUsd: 0.01,
+  },
+  {
+    id: 'agent/nyx',
+    name: 'Nyx',
+    role: 'tone critic',
+    monogram: 'N',
+    color: 'purple',
+    model: 'KIMI-2.5',
+    provider: 'NVIDIA',
+    stance: 'flags weasel words and hedges · low-cost open-weight backstop',
+    costPerTurnUsd: 0.01,
+  },
 ];
 
 export function getAgentProfileById(id: string): AgentProfile | null {
