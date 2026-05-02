@@ -812,6 +812,38 @@ function savePointsOrder(order: string[]): void {
   }
 }
 
+const COUNTER_ORDER_KEY = 'editorial-room.points-outline.counter-order-v0';
+
+function loadCounterOrder(addedCounterSlugs: string[]): string[] {
+  const fixtureSlugs = COUNTER_POINTS.map((p) => p.slug);
+  const allKnown = [...fixtureSlugs, ...addedCounterSlugs];
+  if (typeof window === 'undefined') return allKnown;
+  try {
+    const raw = window.localStorage.getItem(COUNTER_ORDER_KEY);
+    if (!raw) return allKnown;
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return allKnown;
+    const knownSet = new Set(allKnown);
+    const filtered = parsed.filter(
+      (s): s is string => typeof s === 'string' && knownSet.has(s),
+    );
+    const inStored = new Set(filtered);
+    const missing = allKnown.filter((s) => !inStored.has(s));
+    return [...filtered, ...missing];
+  } catch {
+    return allKnown;
+  }
+}
+
+function saveCounterOrder(order: string[]): void {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.setItem(COUNTER_ORDER_KEY, JSON.stringify(order));
+  } catch {
+    // ignore
+  }
+}
+
 type Props = {
   onUnauthorized?: () => void;
 };
@@ -838,6 +870,14 @@ export function PointsOutlineWorkspacePage(_props: Props) {
     savePointsOrder(pointsOrder);
   }, [pointsOrder]);
 
+  const [counterOrder, setCounterOrder] = useState<string[]>(() =>
+    loadCounterOrder(addedCounters.map((p) => p.slug)),
+  );
+
+  useEffect(() => {
+    saveCounterOrder(counterOrder);
+  }, [counterOrder]);
+
   const orderedMainPoints = useMemo(
     () =>
       pointsOrder
@@ -846,15 +886,33 @@ export function PointsOutlineWorkspacePage(_props: Props) {
     [pointsOrder],
   );
 
-  const allCounters = useMemo(
-    () => [...COUNTER_POINTS, ...addedCounters],
-    [addedCounters],
-  );
+  const orderedCounters = useMemo(() => {
+    const bySlug = new Map<string, Point>();
+    for (const p of COUNTER_POINTS) bySlug.set(p.slug, p);
+    for (const p of addedCounters) bySlug.set(p.slug, p);
+    return counterOrder
+      .map((slug) => bySlug.get(slug))
+      .filter((p): p is Point => !!p);
+  }, [counterOrder, addedCounters]);
 
   const allPoints = useMemo(
-    () => [...orderedMainPoints, ...allCounters],
-    [orderedMainPoints, allCounters],
+    () => [...orderedMainPoints, ...orderedCounters],
+    [orderedMainPoints, orderedCounters],
   );
+
+  const activePosition = useMemo(() => {
+    const mainIdx = orderedMainPoints.findIndex(
+      (p) => p.slug === activePointSlug,
+    );
+    if (mainIdx >= 0) return String(mainIdx + 1).padStart(2, '0');
+    const counterIdx = orderedCounters.findIndex(
+      (p) => p.slug === activePointSlug,
+    );
+    if (counterIdx >= 0) {
+      return String(orderedMainPoints.length + 1 + counterIdx).padStart(2, '0');
+    }
+    return null;
+  }, [activePointSlug, orderedMainPoints, orderedCounters]);
 
   // PointerSensor with a small activation distance so a click selects the
   // Point (no movement) but a drag past 5px triggers reorder.
@@ -866,6 +924,17 @@ export function PointsOutlineWorkspacePage(_props: Props) {
     const { active, over } = event;
     if (!over || active.id === over.id) return;
     setPointsOrder((prev) => {
+      const oldIndex = prev.indexOf(String(active.id));
+      const newIndex = prev.indexOf(String(over.id));
+      if (oldIndex < 0 || newIndex < 0) return prev;
+      return arrayMove(prev, oldIndex, newIndex);
+    });
+  }
+
+  function handleCounterDragEnd(event: DragEndEvent) {
+    const { active, over } = event;
+    if (!over || active.id === over.id) return;
+    setCounterOrder((prev) => {
       const oldIndex = prev.indexOf(String(active.id));
       const newIndex = prev.indexOf(String(over.id));
       if (oldIndex < 0 || newIndex < 0) return prev;
@@ -1047,6 +1116,7 @@ export function PointsOutlineWorkspacePage(_props: Props) {
       };
     });
     setAddedCounters((prev) => [...prev, newCounter]);
+    setCounterOrder((prev) => [...prev, counterSlug]);
     // Activate the new Counter so the user can see + rescore it.
     setActivePointSlug(counterSlug);
     // Clear any in-flight CLAIM/STAKE / note edit on the prior Point.
@@ -1290,29 +1360,40 @@ export function PointsOutlineWorkspacePage(_props: Props) {
             </SortableContext>
           </DndContext>
 
-          {allCounters.length > 0 ? (
+          {orderedCounters.length > 0 ? (
             <>
               <h2 className="editorial-rail-heading editorial-rail-heading-spaced editorial-rail-heading-counter">
-                COUNTER-POINTS · {allCounters.length}
+                COUNTER-POINTS · {orderedCounters.length}
               </h2>
-              <ul className="editorial-po-point-list">
-                {allCounters.map((p, idx) => (
-                  <li key={p.slug} className="editorial-po-point-li">
-                    <PointCard
-                      point={{
-                        ...p,
-                        position: String(
-                          orderedMainPoints.length + 1 + idx,
-                        ).padStart(2, '0'),
-                      }}
-                      state={detailStates[p.slug]}
-                      isActive={p.slug === activePointSlug}
-                      isCounter
-                      onSelect={() => selectPoint(p.slug)}
-                    />
-                  </li>
-                ))}
-              </ul>
+              <DndContext
+                sensors={sensors}
+                collisionDetection={closestCenter}
+                onDragEnd={handleCounterDragEnd}
+              >
+                <SortableContext
+                  items={counterOrder}
+                  strategy={verticalListSortingStrategy}
+                >
+                  <ul className="editorial-po-point-list">
+                    {orderedCounters.map((p, idx) => (
+                      <SortablePointWrapper key={p.slug} slug={p.slug}>
+                        <PointCard
+                          point={{
+                            ...p,
+                            position: String(
+                              orderedMainPoints.length + 1 + idx,
+                            ).padStart(2, '0'),
+                          }}
+                          state={detailStates[p.slug]}
+                          isActive={p.slug === activePointSlug}
+                          isCounter
+                          onSelect={() => selectPoint(p.slug)}
+                        />
+                      </SortablePointWrapper>
+                    ))}
+                  </ul>
+                </SortableContext>
+              </DndContext>
             </>
           ) : null}
         </aside>
@@ -1335,6 +1416,7 @@ export function PointsOutlineWorkspacePage(_props: Props) {
               onToggleLayout={toggleLayout}
               noteAdd={noteAddProps}
               noteEdit={noteEditProps}
+              activePosition={activePosition}
             />
           ) : null}
         </main>
@@ -1457,6 +1539,7 @@ function PointDetailView({
   onToggleLayout,
   noteAdd,
   noteEdit,
+  activePosition,
 }: {
   detail: PointDetail;
   stale: boolean;
@@ -1472,6 +1555,7 @@ function PointDetailView({
   onToggleLayout: () => void;
   noteAdd: NoteAddProps;
   noteEdit: NoteEditProps;
+  activePosition: string | null;
 }) {
   const editingClaim =
     editing?.slug === detail.slug && editing.field === 'claim';
@@ -1485,10 +1569,21 @@ function PointDetailView({
     .reverse()
     .find((t): t is AgentTurn => t.kind === 'agent');
 
+  // Rewrite the fixture eyebrow's "POINT N" prefix with the live display
+  // position so reordering keeps the center detail label honest.
+  const eyebrowText = (() => {
+    if (!activePosition) return detail.eyebrow;
+    const parts = detail.eyebrow.split(' · ');
+    if (parts.length >= 1 && /^POINT\b/.test(parts[0])) {
+      parts[0] = `POINT ${Number(activePosition)}`;
+    }
+    return parts.join(' · ');
+  })();
+
   return (
     <article className="editorial-po-detail">
       <header className="editorial-po-detail-header">
-        <span className="editorial-po-detail-eyebrow">{detail.eyebrow}</span>
+        <span className="editorial-po-detail-eyebrow">{eyebrowText}</span>
         <button
           type="button"
           className="editorial-po-layout-toggle"
