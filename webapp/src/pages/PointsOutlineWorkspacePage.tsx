@@ -135,6 +135,16 @@ type NoteAddProps = {
   onSave: () => void;
 };
 
+type NoteEditProps = {
+  editingId: { slug: string; noteId: string } | null;
+  draft: string;
+  onStart: (noteId: string) => void;
+  onCancel: () => void;
+  onSave: () => void;
+  onSetDraft: (v: string) => void;
+  onDelete: (noteId: string) => void;
+};
+
 const PRIMARY_PERSONAS: ReadonlyArray<Persona> = [
   {
     slug: 'persona/ankit-indie-dev',
@@ -733,6 +743,11 @@ export function PointsOutlineWorkspacePage(_props: Props) {
   const [noteAddState, setNoteAddState] = useState<NoteAddState>({
     kind: 'idle',
   });
+  const [editingNoteId, setEditingNoteId] = useState<{
+    slug: string;
+    noteId: string;
+  } | null>(null);
+  const [noteEditDraft, setNoteEditDraft] = useState<string>('');
 
   useEffect(() => {
     saveLayoutState(layoutState);
@@ -775,7 +790,66 @@ export function PointsOutlineWorkspacePage(_props: Props) {
     if (noteAddState.kind !== 'idle' && noteAddState.slug !== slug) {
       setNoteAddState({ kind: 'idle' });
     }
+    if (editingNoteId && editingNoteId.slug !== slug) {
+      setEditingNoteId(null);
+      setNoteEditDraft('');
+    }
     setActivePointSlug(slug);
+  }
+
+  function startEditNote(noteId: string) {
+    const cur = detailStates[activePoint.slug];
+    if (!cur) return;
+    const note = cur.notes.find((n) => n.id === noteId);
+    if (!note) return;
+    setNoteEditDraft(note.body);
+    setEditingNoteId({ slug: activePoint.slug, noteId });
+  }
+
+  function cancelEditNote() {
+    setEditingNoteId(null);
+    setNoteEditDraft('');
+  }
+
+  function saveEditNote() {
+    if (!editingNoteId) return;
+    const text = noteEditDraft.trim();
+    if (!text) return;
+    const { slug, noteId } = editingNoteId;
+    setDetailStates((prev) => {
+      const cur = prev[slug];
+      if (!cur) return prev;
+      return {
+        ...prev,
+        [slug]: {
+          ...cur,
+          notes: cur.notes.map((n) =>
+            n.id === noteId ? { ...n, body: text } : n,
+          ),
+        },
+      };
+    });
+    setEditingNoteId(null);
+    setNoteEditDraft('');
+  }
+
+  function deleteNote(noteId: string) {
+    const slug = activePoint.slug;
+    setDetailStates((prev) => {
+      const cur = prev[slug];
+      if (!cur) return prev;
+      return {
+        ...prev,
+        [slug]: {
+          ...cur,
+          notes: cur.notes.filter((n) => n.id !== noteId),
+        },
+      };
+    });
+    if (editingNoteId?.slug === slug && editingNoteId.noteId === noteId) {
+      setEditingNoteId(null);
+      setNoteEditDraft('');
+    }
   }
 
   function startAddingNote() {
@@ -831,6 +905,16 @@ export function PointsOutlineWorkspacePage(_props: Props) {
     onPickType: pickNoteType,
     onSetBody: setNoteDraftBody,
     onSave: saveNewNote,
+  };
+
+  const noteEditProps: NoteEditProps = {
+    editingId: editingNoteId,
+    draft: noteEditDraft,
+    onStart: startEditNote,
+    onCancel: cancelEditNote,
+    onSave: saveEditNote,
+    onSetDraft: setNoteEditDraft,
+    onDelete: deleteNote,
   };
 
   const fixture = POINT_DETAILS[activePoint.slug];
@@ -1023,6 +1107,7 @@ export function PointsOutlineWorkspacePage(_props: Props) {
               layoutState={layoutState}
               onToggleLayout={toggleLayout}
               noteAdd={noteAddProps}
+              noteEdit={noteEditProps}
             />
           ) : null}
         </main>
@@ -1030,7 +1115,11 @@ export function PointsOutlineWorkspacePage(_props: Props) {
         {/* RIGHT RAIL — NOTES (state `a` only; in state `b` notes move to center) */}
         {layoutState === 'a' ? (
           <aside className="editorial-po-notes-rail">
-            <NotesRail notes={detail?.notes ?? []} noteAdd={noteAddProps} />
+            <NotesRail
+              notes={detail?.notes ?? []}
+              noteAdd={noteAddProps}
+              noteEdit={noteEditProps}
+            />
           </aside>
         ) : null}
       </div>
@@ -1098,6 +1187,7 @@ function PointDetailView({
   layoutState,
   onToggleLayout,
   noteAdd,
+  noteEdit,
 }: {
   detail: PointDetail;
   stale: boolean;
@@ -1112,6 +1202,7 @@ function PointDetailView({
   layoutState: LayoutState;
   onToggleLayout: () => void;
   noteAdd: NoteAddProps;
+  noteEdit: NoteEditProps;
 }) {
   const editingClaim =
     editing?.slug === detail.slug && editing.field === 'claim';
@@ -1350,7 +1441,11 @@ function PointDetailView({
       ) : (
         <>
           <section className="editorial-po-notes-center">
-            <NotesRail notes={detail.notes} noteAdd={noteAdd} />
+            <NotesRail
+              notes={detail.notes}
+              noteAdd={noteAdd}
+              noteEdit={noteEdit}
+            />
           </section>
           <DiscussionDrawer
             lastTurnAt={lastTurnAt}
@@ -1507,9 +1602,11 @@ function ClaimStakeEditor({
 function NotesRail({
   notes,
   noteAdd,
+  noteEdit,
 }: {
   notes: ReadonlyArray<Note>;
   noteAdd: NoteAddProps;
+  noteEdit: NoteEditProps;
 }) {
   const isPicking = noteAdd.state.kind === 'picking-type';
   const isEditing = noteAdd.state.kind === 'editing';
@@ -1517,6 +1614,7 @@ function NotesRail({
     noteAdd.state.kind === 'editing' ? noteAdd.state.type : null;
   const editingBody =
     noteAdd.state.kind === 'editing' ? noteAdd.state.body : '';
+  const editingNoteId = noteEdit.editingId?.noteId ?? null;
 
   return (
     <>
@@ -1620,39 +1718,103 @@ function NotesRail({
         </p>
       ) : (
         <ul className="editorial-po-note-list">
-          {notes.map((n) => (
-            <li
-              key={n.id}
-              className={
-                `editorial-po-note-card editorial-po-note-card-${n.type}` +
-                (n.highlighted ? ' editorial-po-note-card-highlighted' : '')
-              }
-            >
-              <div className="editorial-po-note-head">
-                <span
-                  className={`editorial-po-note-code editorial-po-note-code-${n.type}`}
-                >
-                  {NOTE_TYPE_CODE[n.type]}
-                </span>
-                <span className="editorial-po-note-type">
-                  {NOTE_TYPE_LABEL[n.type]}
-                </span>
-                {n.promotable ? (
-                  <button
-                    type="button"
-                    className="editorial-po-note-promote"
-                    disabled
+          {notes.map((n) => {
+            const isEditingThis = editingNoteId === n.id;
+            const className =
+              `editorial-po-note-card editorial-po-note-card-${n.type}` +
+              (n.highlighted ? ' editorial-po-note-card-highlighted' : '') +
+              (isEditingThis ? ' editorial-po-note-card-editing' : '');
+            return (
+              <li key={n.id} className={className}>
+                <div className="editorial-po-note-head">
+                  <span
+                    className={`editorial-po-note-code editorial-po-note-code-${n.type}`}
                   >
-                    PROMOTE ›
-                  </button>
-                ) : null}
-                <span className="editorial-po-note-timestamp">
-                  {n.timestamp}
-                </span>
-              </div>
-              <p className="editorial-po-note-body">{n.body}</p>
-            </li>
-          ))}
+                    {NOTE_TYPE_CODE[n.type]}
+                  </span>
+                  <span className="editorial-po-note-type">
+                    {NOTE_TYPE_LABEL[n.type]}
+                  </span>
+                  {n.promotable ? (
+                    <button
+                      type="button"
+                      className="editorial-po-note-promote"
+                      disabled
+                    >
+                      PROMOTE ›
+                    </button>
+                  ) : null}
+                  <span className="editorial-po-note-timestamp">
+                    {n.timestamp}
+                  </span>
+                </div>
+                {isEditingThis ? (
+                  <>
+                    <textarea
+                      autoFocus
+                      value={noteEdit.draft}
+                      onChange={(e) => noteEdit.onSetDraft(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Escape') {
+                          e.preventDefault();
+                          noteEdit.onCancel();
+                        } else if (
+                          e.key === 'Enter' &&
+                          (e.metaKey || e.ctrlKey)
+                        ) {
+                          e.preventDefault();
+                          noteEdit.onSave();
+                        }
+                      }}
+                      rows={3}
+                      className="editorial-po-note-edit-textarea"
+                      aria-label={`Edit ${NOTE_TYPE_LABEL[n.type]} note`}
+                    />
+                    <div className="editorial-po-edit-actions editorial-po-edit-actions-with-delete">
+                      <button
+                        type="button"
+                        className="editorial-po-note-delete"
+                        onClick={() => noteEdit.onDelete(n.id)}
+                      >
+                        DELETE
+                      </button>
+                      <span className="editorial-po-edit-actions-spacer" />
+                      <button
+                        type="button"
+                        className="editorial-po-edit-save"
+                        onClick={noteEdit.onSave}
+                        disabled={!noteEdit.draft.trim()}
+                      >
+                        SAVE ⌘↵
+                      </button>
+                      <button
+                        type="button"
+                        className="editorial-po-edit-cancel"
+                        onClick={noteEdit.onCancel}
+                      >
+                        CANCEL · ESC
+                      </button>
+                    </div>
+                  </>
+                ) : (
+                  <p
+                    className="editorial-po-note-body editorial-po-note-body-clickable"
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => noteEdit.onStart(n.id)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        noteEdit.onStart(n.id);
+                      }
+                    }}
+                  >
+                    {n.body}
+                  </p>
+                )}
+              </li>
+            );
+          })}
         </ul>
       )}
 
