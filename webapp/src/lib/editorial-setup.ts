@@ -79,6 +79,10 @@ export type ToolbarCapabilities = {
   exportFormat: 'markdown' | 'html';
   exportButtonLabel: string;
   exportSuccessLabel: string;
+  // Whether to surface the `↓ PASTE MD` button. False for destinations
+  // where the natural paste-in source is rich text (Google Doc), since
+  // Tiptap handles HTML paste directly into the editor body.
+  showPasteMarkdown: boolean;
 };
 
 export const DESTINATION_CAPABILITIES: Record<
@@ -92,6 +96,7 @@ export const DESTINATION_CAPABILITIES: Record<
     exportFormat: 'markdown',
     exportButtonLabel: '↑ COPY MD',
     exportSuccessLabel: 'COPIED MD ✓',
+    showPasteMarkdown: true,
   },
   google_doc: {
     underline: true,
@@ -100,6 +105,7 @@ export const DESTINATION_CAPABILITIES: Record<
     exportFormat: 'html',
     exportButtonLabel: '↑ COPY RICH',
     exportSuccessLabel: 'COPIED RICH ✓',
+    showPasteMarkdown: false,
   },
   plain_md: {
     underline: false,
@@ -108,6 +114,7 @@ export const DESTINATION_CAPABILITIES: Record<
     exportFormat: 'markdown',
     exportButtonLabel: '↑ COPY MD',
     exportSuccessLabel: 'COPIED MD ✓',
+    showPasteMarkdown: true,
   },
   youtube_script: {
     underline: false,
@@ -116,6 +123,7 @@ export const DESTINATION_CAPABILITIES: Record<
     exportFormat: 'markdown',
     exportButtonLabel: '↑ COPY MD',
     exportSuccessLabel: 'COPIED MD ✓',
+    showPasteMarkdown: true,
   },
   other: {
     underline: true,
@@ -124,6 +132,7 @@ export const DESTINATION_CAPABILITIES: Record<
     exportFormat: 'markdown',
     exportButtonLabel: '↑ COPY MD',
     exportSuccessLabel: 'COPIED MD ✓',
+    showPasteMarkdown: true,
   },
 };
 
