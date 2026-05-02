@@ -26,7 +26,7 @@ const PHASES: ReadonlyArray<Phase> = [
     label: '03 POINTS + OUTLINE',
     path: '/editorial/points-outline',
   },
-  { id: 'draft', label: '04 DRAFT', path: null },
+  { id: 'draft', label: '04 DRAFT', path: '/editorial/draft' },
   { id: 'polish', label: '05 POLISH', path: null },
   { id: 'ship', label: '06 SHIP', path: null },
 ];
