@@ -5387,6 +5387,22 @@ a {
   font-style: italic;
 }
 
+.editorial-oauth-prereq {
+  margin: 0;
+  padding: 0.5rem 0.65rem;
+  background: #fff8e7;
+  border: 1px solid #c98a2c;
+  border-radius: 5px;
+  font-family: 'IBM Plex Serif', Georgia, serif;
+  font-size: 0.82rem;
+  color: #4a4738;
+  line-height: 1.45;
+}
+
+.editorial-oauth-prereq a {
+  color: #b7372a;
+}
+
 /* Setup · LLM Room section */
 
 .editorial-agents-selected {
