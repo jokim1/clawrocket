@@ -6808,3 +6808,54 @@ a.editorial-phase-pill:hover {
   color: #b7372a;
   border-style: solid;
 }
+
+.editorial-po-note-body-clickable {
+  cursor: text;
+  border-radius: 3px;
+  padding: 0.15rem 0.25rem;
+  margin: 0;
+  margin-left: -0.25rem;
+  transition: background-color 120ms ease;
+}
+
+.editorial-po-note-body-clickable:hover {
+  background-color: #f4ecd8;
+}
+
+.editorial-po-note-body-clickable:focus-visible {
+  outline: 2px solid #1f1c14;
+  outline-offset: 2px;
+  background-color: #f4ecd8;
+}
+
+.editorial-po-note-card-editing {
+  border-color: #1f1c14;
+  border-width: 1.5px;
+  background: #fffdf5;
+}
+
+.editorial-po-edit-actions-with-delete {
+  justify-content: flex-start;
+}
+
+.editorial-po-edit-actions-spacer {
+  flex: 1;
+}
+
+.editorial-po-note-delete {
+  border: 1px solid transparent;
+  background: transparent;
+  color: #b7372a;
+  padding: 0.18rem 0.45rem;
+  border-radius: 3px;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.62rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.editorial-po-note-delete:hover {
+  border-color: #b7372a;
+  background: #fbeae6;
+}
