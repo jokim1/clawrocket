@@ -5238,6 +5238,181 @@ a {
   gap: 0.4rem;
 }
 
+/* Setup · LLM Room section */
+
+.editorial-agents-selected {
+  margin-top: 1.4rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.editorial-agents-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.editorial-agent-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto auto;
+  align-items: center;
+  gap: 0.7rem;
+  background: #fff;
+  border: 1px solid #ddd6c8;
+  border-radius: 6px;
+  padding: 0.55rem 0.75rem;
+}
+
+.editorial-agent-row-text {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  min-width: 0;
+}
+
+.editorial-agent-headline {
+  display: flex;
+  align-items: baseline;
+  gap: 0.45rem;
+  flex-wrap: wrap;
+}
+
+.editorial-agent-role {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.62rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #6c6655;
+}
+
+.editorial-agent-stance {
+  margin: 0;
+  font-family: 'IBM Plex Serif', Georgia, serif;
+  font-style: italic;
+  font-size: 0.82rem;
+  color: #4a4738;
+  line-height: 1.4;
+}
+
+.editorial-agent-model {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.6rem;
+  letter-spacing: 0.06em;
+  color: #5b5644;
+  border: 1px solid #c9c0a8;
+  border-radius: 3px;
+  padding: 0.12rem 0.45rem;
+  white-space: nowrap;
+  text-transform: uppercase;
+}
+
+.editorial-agent-cost {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.62rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #6c6655;
+  white-space: nowrap;
+}
+
+.editorial-agents-footer {
+  margin-top: 1rem;
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  flex-wrap: wrap;
+}
+
+.editorial-agents-footer-meta {
+  flex: 1;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.62rem;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: #6c6655;
+  min-width: 0;
+}
+
+.editorial-agents-footer-actions {
+  display: flex;
+  gap: 0.4rem;
+}
+
+.editorial-agents-picker {
+  margin-top: 1.2rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.editorial-agents-picker-grid {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.7rem;
+}
+
+@media (max-width: 880px) {
+  .editorial-agents-picker-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .editorial-agent-row {
+    grid-template-columns: auto minmax(0, 1fr);
+    grid-template-rows: auto auto auto;
+    row-gap: 0.4rem;
+  }
+}
+
+.editorial-agent-card {
+  position: relative;
+  background: #fff;
+  border: 1px solid #ddd6c8;
+  border-radius: 6px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.editorial-agent-card-suggested {
+  border-color: #b7372a;
+  box-shadow: 0 0 0 1px rgba(183, 55, 42, 0.1);
+}
+
+.editorial-agent-card-body {
+  padding: 0.8rem 0.85rem 0.6rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.editorial-agent-card-headline {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+}
+
+.editorial-agent-card-headline > div {
+  display: flex;
+  flex-direction: column;
+  gap: 0.05rem;
+}
+
+.editorial-agent-card-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.5rem 0.85rem;
+  border-top: 1px solid #efe9d8;
+  background: #fbf8f2;
+}
+
 .editorial-setup-preview {
   border-left: 1px solid #ddd6c8;
   padding: 1.1rem 1rem;
