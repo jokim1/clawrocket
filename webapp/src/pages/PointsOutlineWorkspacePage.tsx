@@ -110,6 +110,13 @@ type DetailState = {
 type EditField = 'claim' | 'stake';
 type EditingTarget = { slug: string; field: EditField } | null;
 
+// Layout state per design/03_points_outline.md §1: 'a' = Notes-as-right-rail
+// + Discussion-in-center (default), 'b' = Notes-as-center + Discussion in a
+// quiet bottom drawer. Toggled by the chevron control on the divider, by
+// ⌘] / ⌘[, or by ⌘O (which always returns to state 'a' so the panel is
+// fully visible when the user wants to talk to it).
+type LayoutState = 'a' | 'b';
+
 const PRIMARY_PERSONAS: ReadonlyArray<Persona> = [
   {
     slug: 'persona/ankit-indie-dev',
@@ -646,6 +653,27 @@ function saveDetailStates(states: Record<string, DetailState>): void {
   }
 }
 
+const LAYOUT_STORAGE_KEY = 'editorial-room.points-outline.layout-state-v0';
+
+function loadLayoutState(): LayoutState {
+  if (typeof window === 'undefined') return 'a';
+  try {
+    const raw = window.localStorage.getItem(LAYOUT_STORAGE_KEY);
+    return raw === 'b' ? 'b' : 'a';
+  } catch {
+    return 'a';
+  }
+}
+
+function saveLayoutState(s: LayoutState): void {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.setItem(LAYOUT_STORAGE_KEY, s);
+  } catch {
+    // ignore
+  }
+}
+
 type Props = {
   onUnauthorized?: () => void;
 };
@@ -673,6 +701,39 @@ export function PointsOutlineWorkspacePage(_props: Props) {
   const [editing, setEditing] = useState<EditingTarget>(null);
   const [draft, setDraft] = useState<string>('');
   const [rescoringSlug, setRescoringSlug] = useState<string | null>(null);
+  const [layoutState, setLayoutState] = useState<LayoutState>(loadLayoutState);
+
+  useEffect(() => {
+    saveLayoutState(layoutState);
+  }, [layoutState]);
+
+  useEffect(() => {
+    function onKeyDown(e: KeyboardEvent) {
+      const target = e.target as HTMLElement | null;
+      const tag = target?.tagName;
+      // Don't hijack shortcuts while the user is typing in CLAIM/STAKE
+      // editor or any other text input.
+      if (tag === 'TEXTAREA' || tag === 'INPUT') return;
+      if (!(e.metaKey || e.ctrlKey)) return;
+      if (e.key === ']') {
+        e.preventDefault();
+        setLayoutState('b');
+      } else if (e.key === '[') {
+        e.preventDefault();
+        setLayoutState('a');
+      } else if (e.key === 'o' || e.key === 'O') {
+        // ⌘O always returns to state 'a' so the panel is fully visible.
+        e.preventDefault();
+        setLayoutState('a');
+      }
+    }
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, []);
+
+  function toggleLayout() {
+    setLayoutState((s) => (s === 'a' ? 'b' : 'a'));
+  }
 
   function selectPoint(slug: string) {
     if (editing && editing.slug !== slug) {
@@ -788,7 +849,9 @@ export function PointsOutlineWorkspacePage(_props: Props) {
         </button>
       </div>
 
-      <div className="editorial-po-grid">
+      <div
+        className={`editorial-po-grid editorial-po-grid-state-${layoutState}`}
+      >
         {/* LEFT RAIL — POINTS LIST */}
         <aside className="editorial-po-rail">
           <div className="editorial-po-rail-tabs">
@@ -867,14 +930,18 @@ export function PointsOutlineWorkspacePage(_props: Props) {
               onCancelEdit={cancelEdit}
               onSaveEdit={saveEdit}
               onRescore={() => rescorePoint(activePoint.slug)}
+              layoutState={layoutState}
+              onToggleLayout={toggleLayout}
             />
           ) : null}
         </main>
 
-        {/* RIGHT RAIL — NOTES (state `a`) */}
-        <aside className="editorial-po-notes-rail">
-          <NotesRail notes={detail?.notes ?? []} />
-        </aside>
+        {/* RIGHT RAIL — NOTES (state `a` only; in state `b` notes move to center) */}
+        {layoutState === 'a' ? (
+          <aside className="editorial-po-notes-rail">
+            <NotesRail notes={detail?.notes ?? []} />
+          </aside>
+        ) : null}
       </div>
     </div>
   );
@@ -937,6 +1004,8 @@ function PointDetailView({
   onCancelEdit,
   onSaveEdit,
   onRescore,
+  layoutState,
+  onToggleLayout,
 }: {
   detail: PointDetail;
   stale: boolean;
@@ -948,6 +1017,8 @@ function PointDetailView({
   onCancelEdit: () => void;
   onSaveEdit: () => void;
   onRescore: () => void;
+  layoutState: LayoutState;
+  onToggleLayout: () => void;
 }) {
   const editingClaim =
     editing?.slug === detail.slug && editing.field === 'claim';
@@ -957,11 +1028,28 @@ function PointDetailView({
     detail.discussion.length > 0
       ? detail.discussion[detail.discussion.length - 1].timestamp
       : '—';
+  const lastAgentTurn = [...detail.discussion]
+    .reverse()
+    .find((t): t is AgentTurn => t.kind === 'agent');
 
   return (
     <article className="editorial-po-detail">
       <header className="editorial-po-detail-header">
         <span className="editorial-po-detail-eyebrow">{detail.eyebrow}</span>
+        <button
+          type="button"
+          className="editorial-po-layout-toggle"
+          onClick={onToggleLayout}
+          title={
+            layoutState === 'a'
+              ? 'Expand notes to center (⌘])'
+              : 'Collapse notes to rail (⌘[)'
+          }
+        >
+          {layoutState === 'a'
+            ? '‹ EXPAND NOTES · ⌘]'
+            : '› COLLAPSE TO RAIL · ⌘['}
+        </button>
       </header>
 
       {stale || rescoring ? (
@@ -1115,57 +1203,102 @@ function PointDetailView({
         </div>
       </section>
 
-      <section className="editorial-po-discussion">
-        <header className="editorial-po-discussion-header">
-          <h3 className="editorial-tt-section-label">
-            PANEL DISCUSSION · {detail.discussion.length} TURNS
-          </h3>
-          <div className="editorial-po-discussion-meta">
-            <span className="editorial-po-discussion-last">
-              LAST {lastTurnAt}
-            </span>
-            <span className="editorial-po-discussion-mentions">
-              {['@ALL', '@A', '@R', '@M'].map((m) => (
-                <span key={m} className="editorial-po-discussion-mention">
-                  {m}
-                </span>
-              ))}
-            </span>
+      {layoutState === 'a' ? (
+        <section className="editorial-po-discussion">
+          <header className="editorial-po-discussion-header">
+            <h3 className="editorial-tt-section-label">
+              PANEL DISCUSSION · {detail.discussion.length} TURNS
+            </h3>
+            <div className="editorial-po-discussion-meta">
+              <span className="editorial-po-discussion-last">
+                LAST {lastTurnAt}
+              </span>
+              <span className="editorial-po-discussion-mentions">
+                {['@ALL', '@A', '@R', '@M'].map((m) => (
+                  <span key={m} className="editorial-po-discussion-mention">
+                    {m}
+                  </span>
+                ))}
+              </span>
+            </div>
+          </header>
+
+          {detail.discussion.length === 0 ? (
+            <p className="editorial-tt-empty">
+              No discussion yet — ask the panel.
+            </p>
+          ) : (
+            <ol className="editorial-po-turn-list">
+              {detail.discussion.map((t) =>
+                t.kind === 'agent' ? (
+                  <AgentTurnView key={t.id} turn={t} />
+                ) : (
+                  <RevisionTurnView key={t.id} turn={t} />
+                ),
+              )}
+            </ol>
+          )}
+
+          <div className="editorial-po-discussion-input">
+            <input
+              type="text"
+              placeholder="Ask the panel — or @reference a note…"
+              disabled
+            />
+            <button
+              type="button"
+              className="editorial-chip-button editorial-chip-button-primary"
+              disabled
+            >
+              SEND ⌥↵
+            </button>
           </div>
-        </header>
-
-        {detail.discussion.length === 0 ? (
-          <p className="editorial-tt-empty">
-            No discussion yet — ask the panel.
-          </p>
-        ) : (
-          <ol className="editorial-po-turn-list">
-            {detail.discussion.map((t) =>
-              t.kind === 'agent' ? (
-                <AgentTurnView key={t.id} turn={t} />
-              ) : (
-                <RevisionTurnView key={t.id} turn={t} />
-              ),
-            )}
-          </ol>
-        )}
-
-        <div className="editorial-po-discussion-input">
-          <input
-            type="text"
-            placeholder="Ask the panel — or @reference a note…"
-            disabled
+        </section>
+      ) : (
+        <>
+          <section className="editorial-po-notes-center">
+            <NotesRail notes={detail.notes} />
+          </section>
+          <DiscussionDrawer
+            lastTurnAt={lastTurnAt}
+            lastAgentSummary={lastAgentTurn?.body ?? null}
+            onExpand={onToggleLayout}
           />
-          <button
-            type="button"
-            className="editorial-chip-button editorial-chip-button-primary"
-            disabled
-          >
-            SEND ⌥↵
-          </button>
-        </div>
-      </section>
+        </>
+      )}
     </article>
+  );
+}
+
+function DiscussionDrawer({
+  lastTurnAt,
+  lastAgentSummary,
+  onExpand,
+}: {
+  lastTurnAt: string;
+  lastAgentSummary: string | null;
+  onExpand: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      className="editorial-po-drawer"
+      onClick={onExpand}
+      aria-label="Expand panel discussion (⌘O)"
+    >
+      <span className="editorial-po-drawer-toggle" aria-hidden="true">
+        ▼
+      </span>
+      <span className="editorial-po-drawer-status">
+        PANEL DISCUSSION · last turn {lastTurnAt}
+      </span>
+      <span className="editorial-po-drawer-summary">
+        {lastAgentSummary
+          ? `“${lastAgentSummary}”`
+          : 'No panel turns yet — open the panel to ask.'}
+      </span>
+      <span className="editorial-po-drawer-hint">⌘O</span>
+    </button>
   );
 }
 

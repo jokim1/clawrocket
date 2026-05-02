@@ -6613,3 +6613,117 @@ a.editorial-phase-pill:hover {
     transform: rotate(360deg);
   }
 }
+
+/* ─── Editorial Room · Points + Outline · state `b` chevron-toggle layout ── */
+
+.editorial-po-grid-state-b {
+  grid-template-columns: 220px minmax(0, 1fr);
+}
+
+.editorial-po-detail-header {
+  justify-content: space-between;
+}
+
+.editorial-po-layout-toggle {
+  border: 1px solid #c9c0a8;
+  background: transparent;
+  padding: 0.16rem 0.5rem;
+  border-radius: 3px;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.6rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #6c6655;
+  cursor: pointer;
+}
+
+.editorial-po-layout-toggle:hover {
+  border-color: #1f1c14;
+  color: #1f1c14;
+}
+
+.editorial-po-notes-center {
+  border-top: 1px solid #e2dccc;
+  padding-top: 0.85rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+}
+
+/* In state `b` the notes panel reuses NotesRail's inner markup, so the
+   internal class names (.editorial-po-notes-rail-header, etc.) still
+   render — they only refer to the inner header layout, not the outer rail
+   container. The center variant gives note cards more breathing room per
+   design §7.2: "compact cards still — but more breathing room — not
+   identical to PO4." */
+
+.editorial-po-notes-center .editorial-po-note-card {
+  padding: 0.7rem 0.85rem;
+}
+
+.editorial-po-notes-center .editorial-po-note-body {
+  font-size: 0.82rem;
+}
+
+.editorial-po-drawer {
+  margin-top: auto;
+  border: 1px solid #ddd6c8;
+  border-top-color: #b9b09c;
+  background: #f7f3e8;
+  padding: 0.45rem 0.85rem;
+  border-radius: 5px;
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 0.55rem;
+  cursor: pointer;
+  font-family: inherit;
+  text-align: left;
+  width: 100%;
+}
+
+.editorial-po-drawer:hover {
+  border-color: #1f1c14;
+  background: #efe9d8;
+}
+
+.editorial-po-drawer-toggle {
+  font-size: 0.72rem;
+  color: #6c6655;
+  line-height: 1;
+}
+
+.editorial-po-drawer-status {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.6rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #6c6655;
+  grid-column: 2;
+  grid-row: 1;
+}
+
+.editorial-po-drawer-summary {
+  font-style: italic;
+  font-size: 0.78rem;
+  color: #1f1c14;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  grid-column: 2;
+  grid-row: 2;
+}
+
+.editorial-po-drawer-hint {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.6rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #8a8268;
+  border: 1px solid #c9c0a8;
+  border-radius: 3px;
+  padding: 0.05rem 0.3rem;
+  grid-column: 3;
+  grid-row: 1 / span 2;
+  align-self: center;
+}
