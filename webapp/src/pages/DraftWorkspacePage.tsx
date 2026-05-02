@@ -14,6 +14,12 @@ import TextAlign from '@tiptap/extension-text-align';
 import Highlight from '@tiptap/extension-highlight';
 
 import { EditorialPhaseStrip } from '../components/EditorialPhaseStrip';
+import {
+  DESTINATION_CAPABILITIES,
+  DESTINATION_SHORT,
+  loadDestination,
+  type Destination,
+} from '../lib/editorial-setup';
 import { serializeDocToMarkdown, type JSONNode } from '../lib/markdown-export';
 import { parseMarkdownToDoc } from '../lib/markdown-import';
 
@@ -985,6 +991,7 @@ export function DraftWorkspacePage(_props: Props) {
     'idle',
   );
   const [optimizeOpen, setOptimizeOpen] = useState<boolean>(false);
+  const [destination, setDestination] = useState<Destination>(loadDestination);
   const saveTimerRef = useRef<number | null>(null);
   const exportResetTimerRef = useRef<number | null>(null);
   const importResetTimerRef = useRef<number | null>(null);
@@ -1165,6 +1172,20 @@ export function DraftWorkspacePage(_props: Props) {
     return () => window.removeEventListener('mousedown', handler);
   }, [optimizeOpen]);
 
+  // Refresh destination when window regains focus or another tab updates
+  // Setup. Cheap, and keeps the toolbar in sync without polling.
+  useEffect(() => {
+    const refresh = (): void => setDestination(loadDestination());
+    window.addEventListener('focus', refresh);
+    window.addEventListener('storage', refresh);
+    return () => {
+      window.removeEventListener('focus', refresh);
+      window.removeEventListener('storage', refresh);
+    };
+  }, []);
+
+  const capabilities = DESTINATION_CAPABILITIES[destination];
+
   const orderedOutline = useMemo<OutlineEntry[]>(
     () => [
       ...outlineGroups.HOOK,
@@ -1223,8 +1244,6 @@ export function DraftWorkspacePage(_props: Props) {
 
   const handleExportMarkdown = async (): Promise<void> => {
     if (!editor) return;
-    const json = editor.getJSON() as JSONNode;
-    const md = serializeDocToMarkdown(json);
     const finish = (state: 'copied' | 'error'): void => {
       setExportState(state);
       if (exportResetTimerRef.current !== null) {
@@ -1236,6 +1255,43 @@ export function DraftWorkspacePage(_props: Props) {
       }, 1500);
     };
     try {
+      if (capabilities.exportFormat === 'html') {
+        // Rich-text export for Google Doc — copy as text/html so paste
+        // targets that understand HTML (Google Docs, Notion, etc.) preserve
+        // marks/alignment/etc. Plain text fallback alongside.
+        const html = editor.getHTML();
+        const plain = editor.state.doc.textContent;
+        if (
+          typeof navigator !== 'undefined' &&
+          navigator.clipboard &&
+          typeof ClipboardItem !== 'undefined' &&
+          typeof navigator.clipboard.write === 'function'
+        ) {
+          const item = new ClipboardItem({
+            'text/html': new Blob([html], { type: 'text/html' }),
+            'text/plain': new Blob([plain], { type: 'text/plain' }),
+          });
+          await navigator.clipboard.write([item]);
+          finish('copied');
+          return;
+        }
+        // Fallback: copy raw HTML as plain text.
+        if (
+          typeof navigator !== 'undefined' &&
+          navigator.clipboard &&
+          typeof navigator.clipboard.writeText === 'function'
+        ) {
+          await navigator.clipboard.writeText(html);
+          finish('copied');
+          return;
+        }
+        finish('error');
+        return;
+      }
+
+      // Markdown export for Substack / Plain Markdown / etc.
+      const json = editor.getJSON() as JSONNode;
+      const md = serializeDocToMarkdown(json);
       if (
         typeof navigator !== 'undefined' &&
         navigator.clipboard &&
@@ -1345,6 +1401,14 @@ export function DraftWorkspacePage(_props: Props) {
         <span>
           {totalOutlinePoints} {totalOutlinePoints === 1 ? 'POINT' : 'POINTS'}
         </span>
+        <span className="editorial-po-meta-sep">·</span>
+        <Link
+          to="/editorial/setup"
+          className="editorial-po-draft-destination"
+          title={`Destination: ${DESTINATION_CAPABILITIES[destination].exportButtonLabel.replace('↑ ', '')} export — change in Setup`}
+        >
+          → {DESTINATION_SHORT[destination]}
+        </Link>
       </div>
 
       <div className="editorial-po-draft-meta">
@@ -1398,9 +1462,9 @@ export function DraftWorkspacePage(_props: Props) {
           aria-live="polite"
           title="Copy the draft as Substack-ready markdown"
         >
-          {exportState === 'copied' && 'COPIED ✓'}
+          {exportState === 'copied' && capabilities.exportSuccessLabel}
           {exportState === 'error' && 'COPY FAILED'}
-          {exportState === 'idle' && '↑ COPY MD'}
+          {exportState === 'idle' && capabilities.exportButtonLabel}
         </button>
         <button
           type="button"
@@ -1857,19 +1921,23 @@ export function DraftWorkspacePage(_props: Props) {
                 >
                   <em>I</em>
                 </button>
-                <button
-                  type="button"
-                  className={`editorial-po-draft-toolbar-btn${
-                    editor.isActive('underline')
-                      ? ' editorial-po-draft-toolbar-btn-active'
-                      : ''
-                  }`}
-                  onClick={() => editor.chain().focus().toggleUnderline().run()}
-                  title="Underline (⌘U)"
-                  aria-label="Underline"
-                >
-                  <u>U</u>
-                </button>
+                {capabilities.underline ? (
+                  <button
+                    type="button"
+                    className={`editorial-po-draft-toolbar-btn${
+                      editor.isActive('underline')
+                        ? ' editorial-po-draft-toolbar-btn-active'
+                        : ''
+                    }`}
+                    onClick={() =>
+                      editor.chain().focus().toggleUnderline().run()
+                    }
+                    title="Underline (⌘U)"
+                    aria-label="Underline"
+                  >
+                    <u>U</u>
+                  </button>
+                ) : null}
                 <button
                   type="button"
                   className={`editorial-po-draft-toolbar-btn${
@@ -1896,19 +1964,23 @@ export function DraftWorkspacePage(_props: Props) {
                 >
                   &lt;/&gt;
                 </button>
-                <button
-                  type="button"
-                  className={`editorial-po-draft-toolbar-btn${
-                    editor.isActive('highlight')
-                      ? ' editorial-po-draft-toolbar-btn-active'
-                      : ''
-                  }`}
-                  onClick={() => editor.chain().focus().toggleHighlight().run()}
-                  title="Highlight"
-                  aria-label="Highlight"
-                >
-                  <span className="editorial-po-draft-toolbar-hl">H</span>
-                </button>
+                {capabilities.highlight ? (
+                  <button
+                    type="button"
+                    className={`editorial-po-draft-toolbar-btn${
+                      editor.isActive('highlight')
+                        ? ' editorial-po-draft-toolbar-btn-active'
+                        : ''
+                    }`}
+                    onClick={() =>
+                      editor.chain().focus().toggleHighlight().run()
+                    }
+                    title="Highlight"
+                    aria-label="Highlight"
+                  >
+                    <span className="editorial-po-draft-toolbar-hl">H</span>
+                  </button>
+                ) : null}
                 <button
                   type="button"
                   className={`editorial-po-draft-toolbar-btn${
@@ -1968,21 +2040,29 @@ export function DraftWorkspacePage(_props: Props) {
                 >
                   ❝
                 </button>
-                <span className="editorial-po-draft-toolbar-divider" />
-                <select
-                  className="editorial-po-draft-toolbar-align"
-                  value={getActiveAlign(editor)}
-                  onChange={(e) =>
-                    editor.chain().focus().setTextAlign(e.target.value).run()
-                  }
-                  aria-label="Text alignment"
-                  title="Text alignment"
-                >
-                  <option value="left">⇤ Left</option>
-                  <option value="center">≡ Center</option>
-                  <option value="right">⇥ Right</option>
-                  <option value="justify">≣ Justify</option>
-                </select>
+                {capabilities.align ? (
+                  <>
+                    <span className="editorial-po-draft-toolbar-divider" />
+                    <select
+                      className="editorial-po-draft-toolbar-align"
+                      value={getActiveAlign(editor)}
+                      onChange={(e) =>
+                        editor
+                          .chain()
+                          .focus()
+                          .setTextAlign(e.target.value)
+                          .run()
+                      }
+                      aria-label="Text alignment"
+                      title="Text alignment"
+                    >
+                      <option value="left">⇤ Left</option>
+                      <option value="center">≡ Center</option>
+                      <option value="right">⇥ Right</option>
+                      <option value="justify">≣ Justify</option>
+                    </select>
+                  </>
+                ) : null}
                 <span className="editorial-po-draft-toolbar-divider" />
                 <button
                   type="button"

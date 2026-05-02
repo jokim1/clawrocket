@@ -1,37 +1,21 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 
 import { EditorialPhaseStrip } from '../components/EditorialPhaseStrip';
+import {
+  DELIVERABLE_LABELS,
+  DESTINATION_LABELS,
+  defaultSetupState,
+  loadSetupState,
+  saveSetupState,
+  type DeliverableType,
+  type Destination,
+  type SetupState,
+} from '../lib/editorial-setup';
 
 // SetupState mirrors docs/contracts/editorial-room/v0/setup_state.schema.json
-// (also in EDITORIAL_ROOM_CONTRACT.md §2.1). Held in component state for the
-// 0p-a vertical slice; no persistence yet.
-type DeliverableType =
-  | 'longform_post'
-  | 'podcast_script'
-  | 'book_chapter'
-  | 'social_post'
-  | 'memo';
-
-type Destination =
-  | 'substack_md'
-  | 'google_doc'
-  | 'plain_md'
-  | 'youtube_script'
-  | 'other';
-
-type SetupState = {
-  schema_version: '0';
-  setup_version: number;
-  deliverable_type: DeliverableType;
-  voice_page_slug: string;
-  length_target: { min_words: number; max_words: number } | null;
-  destination: Destination;
-  audience_persona_slugs: string[];
-  llm_room_agent_profile_ids: string[];
-  scoring_pipeline_slug: string;
-  updated_at: string;
-  updated_by_user_id: string;
-};
+// (also in EDITORIAL_ROOM_CONTRACT.md §2.1). Persisted to localStorage via
+// `lib/editorial-setup.ts` so other phases (Draft, Polish, Ship) can read
+// destination + deliverable_type and adapt their surfaces.
 
 type SectionId = 'deliverable' | 'audience' | 'llm-room' | 'scoring';
 
@@ -41,22 +25,6 @@ const SECTIONS: ReadonlyArray<{ id: SectionId; num: string; name: string }> = [
   { id: 'llm-room', num: '03', name: 'LLM Room' },
   { id: 'scoring', num: '04', name: 'Scoring System' },
 ];
-
-const DELIVERABLE_LABELS: Record<DeliverableType, string> = {
-  longform_post: 'Longform Post',
-  podcast_script: 'Podcast Script',
-  book_chapter: 'Book Chapter',
-  social_post: 'Social Post',
-  memo: 'Memo',
-};
-
-const DESTINATION_LABELS: Record<Destination, string> = {
-  substack_md: 'Substack · Markdown export',
-  google_doc: 'Google Doc',
-  plain_md: 'Plain Markdown',
-  youtube_script: 'YouTube Script',
-  other: 'Other',
-};
 
 // Voice library shown in the Deliverable section's voice picker. In production
 // this list comes from rocketorchestra's voice page library; for 0p we
@@ -73,22 +41,6 @@ const AVAILABLE_VOICES: ReadonlyArray<{ slug: string; label: string }> = [
   },
   { slug: 'voice/memo-tight-2026', label: 'Memo · Tight (2026)' },
 ];
-
-function defaultSetupState(): SetupState {
-  return {
-    schema_version: '0',
-    setup_version: 1,
-    deliverable_type: 'longform_post',
-    voice_page_slug: 'voice/gamemakers-2026',
-    length_target: { min_words: 2000, max_words: 2500 },
-    destination: 'substack_md',
-    audience_persona_slugs: [],
-    llm_room_agent_profile_ids: [],
-    scoring_pipeline_slug: 'scoring_pipeline/gamemakers_default',
-    updated_at: new Date().toISOString(),
-    updated_by_user_id: 'user_local_joseph',
-  };
-}
 
 function sectionStatus(
   id: SectionId,
@@ -113,9 +65,15 @@ type Props = {
 };
 
 export function EditorialSetupPage(_props: Props) {
-  const [setup, setSetup] = useState<SetupState>(defaultSetupState);
+  const [setup, setSetup] = useState<SetupState>(loadSetupState);
   const [activeSection, setActiveSection] = useState<SectionId>('deliverable');
   const [pieceTitle, setPieceTitle] = useState('Untitled Piece — new');
+
+  // Persist on every change so other phases (Draft, Polish, Ship) see the
+  // current SetupState immediately.
+  useEffect(() => {
+    saveSetupState(setup);
+  }, [setup]);
 
   const update = (patch: Partial<SetupState>) =>
     setSetup((s) => ({

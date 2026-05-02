@@ -6580,6 +6580,23 @@ a.editorial-phase-pill:hover {
   text-decoration: underline;
 }
 
+.editorial-po-draft-destination {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.6rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #6c6655;
+  text-decoration: none;
+  border: 1px solid #c9c0a8;
+  border-radius: 3px;
+  padding: 0.12rem 0.4rem;
+}
+
+.editorial-po-draft-destination:hover {
+  color: #b7372a;
+  border-color: #b7372a;
+}
+
 .editorial-po-draft-ssr,
 .editorial-po-draft-gates {
   font-weight: 500;
