@@ -682,6 +682,268 @@ function AudienceSection({
   );
 }
 
+type OAuthStatus = {
+  connected: boolean;
+  kind: 'oauth_subscription' | 'api_key' | 'none';
+  expiresAt: string | null;
+  expiringSoon: boolean;
+};
+
+function AnthropicOAuthCard() {
+  const [status, setStatus] = useState<OAuthStatus | null>(null);
+  const [loading, setLoading] = useState<boolean>(true);
+  const [pasteOpen, setPasteOpen] = useState<boolean>(false);
+  const [pendingState, setPendingState] = useState<string | null>(null);
+  const [pasteValue, setPasteValue] = useState<string>('');
+  const [working, setWorking] = useState<boolean>(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const refresh = async (): Promise<void> => {
+    try {
+      const res = await fetch(
+        '/api/v1/agents/providers/anthropic/oauth/status',
+        { credentials: 'include' },
+      );
+      const json = (await res.json()) as
+        | { ok: true; data: OAuthStatus }
+        | { ok: false; error: { message: string } };
+      if (json.ok) setStatus(json.data);
+    } catch {
+      // best-effort; keep last status
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    void refresh();
+  }, []);
+
+  const handleSignIn = async (): Promise<void> => {
+    setError(null);
+    setWorking(true);
+    try {
+      const res = await fetch(
+        '/api/v1/agents/providers/anthropic/oauth/initiate',
+        {
+          method: 'POST',
+          credentials: 'include',
+          headers: { 'Content-Type': 'application/json' },
+        },
+      );
+      const json = (await res.json()) as
+        | {
+            ok: true;
+            data: { authorizeUrl: string; state: string };
+          }
+        | { ok: false; error: { message: string } };
+      if (!json.ok) {
+        setError(json.error.message);
+        return;
+      }
+      setPendingState(json.data.state);
+      setPasteOpen(true);
+      window.open(json.data.authorizeUrl, '_blank', 'noopener,noreferrer');
+    } catch (err) {
+      setError(
+        err instanceof Error
+          ? err.message
+          : 'Failed to start the Claude sign-in flow.',
+      );
+    } finally {
+      setWorking(false);
+    }
+  };
+
+  const handleSubmit = async (): Promise<void> => {
+    setError(null);
+    if (!pendingState) {
+      setError(
+        'No active OAuth flow. Click Sign in with Claude to start a fresh one.',
+      );
+      return;
+    }
+    // Anthropic's console displays the code as `code#state`. If the user
+    // pasted the whole blob, split it; otherwise treat the whole input as
+    // the code and rely on the stored state.
+    const trimmed = pasteValue.trim();
+    let code: string;
+    let stateFromPaste: string | null = null;
+    if (trimmed.includes('#')) {
+      const idx = trimmed.indexOf('#');
+      code = trimmed.slice(0, idx).trim();
+      stateFromPaste = trimmed.slice(idx + 1).trim();
+    } else {
+      code = trimmed;
+    }
+    if (!code) {
+      setError('Paste the code+state blob from console.anthropic.com.');
+      return;
+    }
+    const state = stateFromPaste || pendingState;
+
+    setWorking(true);
+    try {
+      const res = await fetch(
+        '/api/v1/agents/providers/anthropic/oauth/submit',
+        {
+          method: 'POST',
+          credentials: 'include',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ code, state }),
+        },
+      );
+      const json = (await res.json()) as
+        | { ok: true; data: OAuthStatus }
+        | { ok: false; error: { message: string } };
+      if (!json.ok) {
+        setError(json.error.message);
+        return;
+      }
+      setStatus(json.data);
+      setPasteOpen(false);
+      setPendingState(null);
+      setPasteValue('');
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : 'Failed to submit the OAuth code.',
+      );
+    } finally {
+      setWorking(false);
+    }
+  };
+
+  const handleDisconnect = async (): Promise<void> => {
+    setError(null);
+    setWorking(true);
+    try {
+      const res = await fetch(
+        '/api/v1/agents/providers/anthropic/oauth/disconnect',
+        {
+          method: 'POST',
+          credentials: 'include',
+        },
+      );
+      const json = (await res.json()) as
+        | { ok: true; data: OAuthStatus }
+        | { ok: false; error: { message: string } };
+      if (json.ok) setStatus(json.data);
+      else setError(json.error.message);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to disconnect.');
+    } finally {
+      setWorking(false);
+    }
+  };
+
+  const expiresLabel = (() => {
+    if (!status?.expiresAt) return null;
+    const ms = Date.parse(status.expiresAt);
+    if (Number.isNaN(ms)) return null;
+    const minutes = Math.round((ms - Date.now()) / 60000);
+    if (minutes < 0) return 'expired';
+    if (minutes < 60) return `expires in ${minutes}m`;
+    const hours = Math.round(minutes / 60);
+    return `expires in ${hours}h`;
+  })();
+
+  const isConnectedOAuth =
+    status?.connected && status.kind === 'oauth_subscription';
+
+  return (
+    <div className="editorial-oauth-card">
+      <div className="editorial-oauth-row">
+        <div className="editorial-oauth-row-text">
+          <span className="editorial-oauth-label">ANTHROPIC AUTH</span>
+          <span
+            className={`editorial-oauth-status${
+              isConnectedOAuth ? ' editorial-oauth-status-connected' : ''
+            }`}
+          >
+            {loading
+              ? 'CHECKING…'
+              : isConnectedOAuth
+                ? `● CONNECTED (Claude.ai subscription${expiresLabel ? ` · ${expiresLabel}` : ''})`
+                : status?.kind === 'api_key'
+                  ? '● CONNECTED (API key)'
+                  : '○ NOT CONNECTED — agents will fail without an Anthropic credential'}
+          </span>
+        </div>
+        <div className="editorial-oauth-actions">
+          {!isConnectedOAuth ? (
+            <button
+              type="button"
+              className="editorial-chip-button editorial-chip-button-primary"
+              onClick={() => {
+                void handleSignIn();
+              }}
+              disabled={working}
+            >
+              {working ? 'STARTING…' : 'SIGN IN WITH CLAUDE'}
+            </button>
+          ) : (
+            <button
+              type="button"
+              className="editorial-chip-button"
+              onClick={() => {
+                void handleDisconnect();
+              }}
+              disabled={working}
+            >
+              DISCONNECT
+            </button>
+          )}
+        </div>
+      </div>
+
+      {pasteOpen ? (
+        <div className="editorial-oauth-paste">
+          <p className="editorial-oauth-paste-blurb">
+            A new tab opened to claude.ai. Sign in, then{' '}
+            <strong>console.anthropic.com</strong> will display a code. Paste
+            the entire <code>code#state</code> blob below.
+          </p>
+          <textarea
+            className="editorial-oauth-paste-textarea"
+            placeholder="code#state"
+            value={pasteValue}
+            onChange={(e) => setPasteValue(e.target.value)}
+            rows={2}
+            spellCheck={false}
+          />
+          <div className="editorial-oauth-paste-actions">
+            <button
+              type="button"
+              className="editorial-chip-button"
+              onClick={() => {
+                setPasteOpen(false);
+                setPendingState(null);
+                setPasteValue('');
+                setError(null);
+              }}
+              disabled={working}
+            >
+              CANCEL
+            </button>
+            <button
+              type="button"
+              className="editorial-chip-button editorial-chip-button-primary"
+              onClick={() => {
+                void handleSubmit();
+              }}
+              disabled={working || !pasteValue.trim()}
+            >
+              {working ? 'EXCHANGING…' : 'COMPLETE SIGN-IN'}
+            </button>
+          </div>
+        </div>
+      ) : null}
+
+      {error ? <p className="editorial-oauth-error">{error}</p> : null}
+    </div>
+  );
+}
+
 function LLMRoomSection({
   setup,
   update,
@@ -737,6 +999,8 @@ function LLMRoomSection({
         copy="Pick agent profiles that critique, propose, and score during the run. Each one is a named voice with a surface model, a stance, and a per-turn cost — never an anonymous chip."
         nav={nav}
       />
+
+      <AnthropicOAuthCard />
 
       <div className="editorial-agents-selected">
         <h3 className="editorial-personas-section-label">

@@ -127,6 +127,12 @@ import {
   verifyAiProviderCredentialRoute,
 } from './routes/ai-agents.js';
 import {
+  disconnectAnthropicOAuthRoute,
+  getAnthropicOAuthStatusRoute,
+  initiateAnthropicOAuthRoute,
+  submitAnthropicOAuthRoute,
+} from './routes/llm-oauth.js';
+import {
   listUserToolPermissionsRoute,
   updateUserToolPermissionRoute,
   getEffectiveToolsRoute,
@@ -1132,6 +1138,49 @@ function buildApp(opts: WebServerOptions): Hono {
     if (!auth) return unauthorized(c);
     const providerId = c.req.param('providerId');
     const result = await verifyAiProviderCredentialRoute(auth, providerId);
+    return new Response(JSON.stringify(result.body), {
+      status: result.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
+  });
+
+  // ── /api/v1/agents/providers/anthropic/oauth/* ─ Claude.ai subscription ──
+
+  app.post('/api/v1/agents/providers/anthropic/oauth/initiate', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+    const result = await initiateAnthropicOAuthRoute(auth);
+    return new Response(JSON.stringify(result.body), {
+      status: result.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
+  });
+
+  app.post('/api/v1/agents/providers/anthropic/oauth/submit', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+    const body = await c.req.json();
+    const result = await submitAnthropicOAuthRoute(auth, body);
+    return new Response(JSON.stringify(result.body), {
+      status: result.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
+  });
+
+  app.get('/api/v1/agents/providers/anthropic/oauth/status', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+    const result = await getAnthropicOAuthStatusRoute(auth);
+    return new Response(JSON.stringify(result.body), {
+      status: result.statusCode,
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    });
+  });
+
+  app.post('/api/v1/agents/providers/anthropic/oauth/disconnect', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+    const result = await disconnectAnthropicOAuthRoute(auth);
     return new Response(JSON.stringify(result.body), {
       status: result.statusCode,
       headers: { 'content-type': 'application/json; charset=utf-8' },
