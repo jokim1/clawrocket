@@ -6517,6 +6517,242 @@ a.editorial-phase-pill:hover {
   background: #fdf3df;
 }
 
+/* ─── Editorial Room · Phase 04 DRAFT — three-column shell ─────────────── */
+
+.editorial-po-draft-meta {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.4rem 1rem;
+  border-bottom: 1px solid #e2dccc;
+  background: #f7f3e8;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.66rem;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: #5b5644;
+}
+
+.editorial-po-draft-words-on {
+  color: #2e7d62;
+}
+
+.editorial-po-draft-words-under {
+  color: #6c6655;
+}
+
+.editorial-po-draft-words-over {
+  color: #c98a2c;
+}
+
+.editorial-po-draft-autosave {
+  color: #6c6655;
+}
+
+.editorial-po-draft-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.45rem 1rem;
+  border-bottom: 1px solid #e2dccc;
+  background: #fbf8f2;
+  flex-wrap: wrap;
+}
+
+.editorial-po-draft-toolbar-sep {
+  color: #c9c0a8;
+  font-size: 0.85rem;
+  padding: 0 0.2rem;
+}
+
+.editorial-po-draft-scope {
+  margin-left: auto;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.62rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #6c6655;
+  border: 1px solid #c9c0a8;
+  border-radius: 3px;
+  padding: 0.16rem 0.5rem;
+}
+
+.editorial-po-draft-grid {
+  display: grid;
+  grid-template-columns: 220px minmax(0, 1fr) 280px;
+  height: calc(100vh - 170px);
+  background: #fbf8f2;
+  overflow: hidden;
+}
+
+.editorial-po-draft-rail {
+  border-right: 1px solid #e2dccc;
+  padding: 0.85rem 0.6rem;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  background: #f7f3e8;
+}
+
+.editorial-po-draft-section {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.editorial-po-draft-outline-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.editorial-po-draft-outline-item {
+  background: #fff;
+  border: 1px solid #ddd6c8;
+  border-radius: 5px;
+  padding: 0.4rem 0.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.18rem;
+}
+
+.editorial-po-draft-outline-row {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.editorial-po-draft-outline-claim {
+  margin: 0;
+  font-size: 0.74rem;
+  font-weight: 500;
+  color: #1f1c14;
+  line-height: 1.35;
+}
+
+.editorial-po-draft-center {
+  overflow-y: auto;
+  padding: 1.2rem 1.6rem 3rem;
+  background: #fbf8f2;
+  display: flex;
+  justify-content: center;
+}
+
+.editorial-po-draft-editor {
+  width: 100%;
+  max-width: 720px;
+}
+
+.editorial-po-draft-editor .ProseMirror {
+  outline: none;
+  font-family: 'IBM Plex Serif', Georgia, serif;
+  font-size: 1rem;
+  line-height: 1.7;
+  color: #1f1c14;
+  caret-color: #b7372a;
+  min-height: 60vh;
+}
+
+.editorial-po-draft-editor .ProseMirror h1 {
+  font-size: 1.65rem;
+  font-weight: 700;
+  margin: 1.2rem 0 0.8rem;
+  line-height: 1.25;
+  letter-spacing: -0.01em;
+}
+
+.editorial-po-draft-editor .ProseMirror h2 {
+  font-size: 1.3rem;
+  font-weight: 700;
+  margin: 1.4rem 0 0.5rem;
+  line-height: 1.3;
+}
+
+.editorial-po-draft-editor .ProseMirror h3 {
+  font-size: 1.1rem;
+  font-weight: 600;
+  margin: 1.1rem 0 0.4rem;
+}
+
+.editorial-po-draft-editor .ProseMirror p {
+  margin: 0 0 1rem;
+}
+
+.editorial-po-draft-editor .ProseMirror ul,
+.editorial-po-draft-editor .ProseMirror ol {
+  margin: 0 0 1rem;
+  padding-left: 1.4rem;
+}
+
+.editorial-po-draft-editor .ProseMirror blockquote {
+  border-left: 3px solid #b7372a;
+  margin: 0 0 1rem;
+  padding: 0.3rem 0.9rem;
+  color: #4a4738;
+  font-style: italic;
+  background: rgba(247, 243, 232, 0.5);
+}
+
+.editorial-po-draft-editor .ProseMirror code {
+  background: #efe9d8;
+  border-radius: 3px;
+  padding: 0.05rem 0.3rem;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.88em;
+}
+
+.editorial-po-draft-editor .ProseMirror pre {
+  background: #1f1c14;
+  color: #f7f3e8;
+  border-radius: 5px;
+  padding: 0.7rem 0.9rem;
+  margin: 0 0 1rem;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.85rem;
+  overflow-x: auto;
+}
+
+.editorial-po-draft-editor .ProseMirror pre code {
+  background: transparent;
+  color: inherit;
+  padding: 0;
+}
+
+.editorial-po-draft-editor .ProseMirror hr {
+  border: 0;
+  border-top: 1px solid #c9c0a8;
+  margin: 1.5rem 0;
+}
+
+.editorial-po-draft-panel {
+  border-left: 1px solid #e2dccc;
+  padding: 0.85rem 0.7rem;
+  overflow-y: auto;
+  background: #faf6ec;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+@media (max-width: 1280px) {
+  .editorial-po-draft-grid {
+    grid-template-columns: 200px minmax(0, 1fr) 240px;
+  }
+}
+
+@media (max-width: 1080px) {
+  .editorial-po-draft-grid {
+    grid-template-columns: 200px minmax(0, 1fr);
+  }
+  .editorial-po-draft-panel {
+    display: none;
+  }
+}
+
 .editorial-po-note-timestamp {
   margin-left: auto;
   font-family: 'IBM Plex Mono', monospace;

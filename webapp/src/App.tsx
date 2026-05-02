@@ -31,6 +31,7 @@ import {
 } from './lib/api';
 import { AiAgentsPage } from './pages/AiAgentsPage';
 import { DataConnectorsPage } from './pages/DataConnectorsPage';
+import { DraftWorkspacePage } from './pages/DraftWorkspacePage';
 import { EditorialSetupPage } from './pages/EditorialSetupPage';
 import { PointsOutlineWorkspacePage } from './pages/PointsOutlineWorkspacePage';
 import { ThemeTopicsWorkspacePage } from './pages/ThemeTopicsWorkspacePage';
@@ -701,6 +702,10 @@ export function App() {
           element={
             <PointsOutlineWorkspacePage onUnauthorized={handleUnauthorized} />
           }
+        />
+        <Route
+          path="/editorial/draft"
+          element={<DraftWorkspacePage onUnauthorized={handleUnauthorized} />}
         />
         <Route
           path="/editorial/*"
