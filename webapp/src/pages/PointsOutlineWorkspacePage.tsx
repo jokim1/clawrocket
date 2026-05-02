@@ -1,4 +1,19 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import {
+  DndContext,
+  PointerSensor,
+  closestCenter,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+} from '@dnd-kit/core';
+import {
+  SortableContext,
+  arrayMove,
+  useSortable,
+  verticalListSortingStrategy,
+} from '@dnd-kit/sortable';
+import { CSS } from '@dnd-kit/utilities';
 
 import { EditorialPhaseStrip } from '../components/EditorialPhaseStrip';
 
@@ -764,6 +779,39 @@ function saveAddedCounters(points: Point[]): void {
   }
 }
 
+const POINTS_ORDER_KEY = 'editorial-room.points-outline.points-order-v0';
+
+function loadPointsOrder(): string[] {
+  const fixtureSlugs = POINTS.map((p) => p.slug);
+  if (typeof window === 'undefined') return fixtureSlugs;
+  try {
+    const raw = window.localStorage.getItem(POINTS_ORDER_KEY);
+    if (!raw) return fixtureSlugs;
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return fixtureSlugs;
+    const known = new Set(fixtureSlugs);
+    const filtered = parsed.filter(
+      (s): s is string => typeof s === 'string' && known.has(s),
+    );
+    // Append fixture slugs that weren't in storage (handles fixture growth
+    // by putting new Points at the end of the user's order).
+    const inStored = new Set(filtered);
+    const missing = fixtureSlugs.filter((s) => !inStored.has(s));
+    return [...filtered, ...missing];
+  } catch {
+    return fixtureSlugs;
+  }
+}
+
+function savePointsOrder(order: string[]): void {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.setItem(POINTS_ORDER_KEY, JSON.stringify(order));
+  } catch {
+    // ignore
+  }
+}
+
 type Props = {
   onUnauthorized?: () => void;
 };
@@ -784,12 +832,46 @@ export function PointsOutlineWorkspacePage(_props: Props) {
     saveAddedCounters(addedCounters);
   }, [addedCounters]);
 
+  const [pointsOrder, setPointsOrder] = useState<string[]>(loadPointsOrder);
+
+  useEffect(() => {
+    savePointsOrder(pointsOrder);
+  }, [pointsOrder]);
+
+  const orderedMainPoints = useMemo(
+    () =>
+      pointsOrder
+        .map((slug) => POINTS.find((p) => p.slug === slug))
+        .filter((p): p is Point => !!p),
+    [pointsOrder],
+  );
+
   const allCounters = useMemo(
     () => [...COUNTER_POINTS, ...addedCounters],
     [addedCounters],
   );
 
-  const allPoints = useMemo(() => [...POINTS, ...allCounters], [allCounters]);
+  const allPoints = useMemo(
+    () => [...orderedMainPoints, ...allCounters],
+    [orderedMainPoints, allCounters],
+  );
+
+  // PointerSensor with a small activation distance so a click selects the
+  // Point (no movement) but a drag past 5px triggers reorder.
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
+  );
+
+  function handlePointDragEnd(event: DragEndEvent) {
+    const { active, over } = event;
+    if (!over || active.id === over.id) return;
+    setPointsOrder((prev) => {
+      const oldIndex = prev.indexOf(String(active.id));
+      const newIndex = prev.indexOf(String(over.id));
+      if (oldIndex < 0 || newIndex < 0) return prev;
+      return arrayMove(prev, oldIndex, newIndex);
+    });
+  }
   const activePoint =
     allPoints.find((p) => p.slug === activePointSlug) ?? allPoints[0];
 
@@ -1181,17 +1263,32 @@ export function PointsOutlineWorkspacePage(_props: Props) {
             </button>
           </div>
 
-          <ul className="editorial-po-point-list">
-            {POINTS.map((p) => (
-              <PointCard
-                key={p.slug}
-                point={p}
-                state={detailStates[p.slug]}
-                isActive={p.slug === activePointSlug}
-                onSelect={() => selectPoint(p.slug)}
-              />
-            ))}
-          </ul>
+          <DndContext
+            sensors={sensors}
+            collisionDetection={closestCenter}
+            onDragEnd={handlePointDragEnd}
+          >
+            <SortableContext
+              items={pointsOrder}
+              strategy={verticalListSortingStrategy}
+            >
+              <ul className="editorial-po-point-list">
+                {orderedMainPoints.map((p, idx) => (
+                  <SortablePointWrapper key={p.slug} slug={p.slug}>
+                    <PointCard
+                      point={{
+                        ...p,
+                        position: String(idx + 1).padStart(2, '0'),
+                      }}
+                      state={detailStates[p.slug]}
+                      isActive={p.slug === activePointSlug}
+                      onSelect={() => selectPoint(p.slug)}
+                    />
+                  </SortablePointWrapper>
+                ))}
+              </ul>
+            </SortableContext>
+          </DndContext>
 
           {allCounters.length > 0 ? (
             <>
@@ -1199,15 +1296,21 @@ export function PointsOutlineWorkspacePage(_props: Props) {
                 COUNTER-POINTS · {allCounters.length}
               </h2>
               <ul className="editorial-po-point-list">
-                {allCounters.map((p) => (
-                  <PointCard
-                    key={p.slug}
-                    point={p}
-                    state={detailStates[p.slug]}
-                    isActive={p.slug === activePointSlug}
-                    isCounter
-                    onSelect={() => selectPoint(p.slug)}
-                  />
+                {allCounters.map((p, idx) => (
+                  <li key={p.slug} className="editorial-po-point-li">
+                    <PointCard
+                      point={{
+                        ...p,
+                        position: String(
+                          orderedMainPoints.length + 1 + idx,
+                        ).padStart(2, '0'),
+                      }}
+                      state={detailStates[p.slug]}
+                      isActive={p.slug === activePointSlug}
+                      isCounter
+                      onSelect={() => selectPoint(p.slug)}
+                    />
+                  </li>
                 ))}
               </ul>
             </>
@@ -1273,26 +1376,68 @@ function PointCard({
     (isActive ? ' editorial-po-point-card-active' : '') +
     (cardStale ? ' editorial-po-point-card-stale' : '');
   return (
-    <li>
-      <button type="button" className={className} onClick={onSelect}>
-        <div className="editorial-po-point-row">
-          <span className="editorial-po-point-position">{point.position}</span>
-          <span
-            className={`editorial-po-point-type editorial-po-point-type-${point.type.toLowerCase()}`}
-          >
-            {POINT_TYPE_LABEL[point.type]}
-          </span>
-          <span className="editorial-po-point-score">
-            {(state?.aggregate.score ?? point.score).toFixed(1)}
-          </span>
-        </div>
-        <p className="editorial-po-point-claim">{claim}</p>
-        {stake ? <p className="editorial-po-point-stake">{stake}</p> : null}
-        <span className="editorial-po-point-notes">
-          {state?.notes.length ?? point.noteCount} NOTES
-          {cardStale ? ' · STALE' : ''}
+    <button type="button" className={className} onClick={onSelect}>
+      <div className="editorial-po-point-row">
+        <span className="editorial-po-point-position">{point.position}</span>
+        <span
+          className={`editorial-po-point-type editorial-po-point-type-${point.type.toLowerCase()}`}
+        >
+          {POINT_TYPE_LABEL[point.type]}
         </span>
+        <span className="editorial-po-point-score">
+          {(state?.aggregate.score ?? point.score).toFixed(1)}
+        </span>
+      </div>
+      <p className="editorial-po-point-claim">{claim}</p>
+      {stake ? <p className="editorial-po-point-stake">{stake}</p> : null}
+      <span className="editorial-po-point-notes">
+        {state?.notes.length ?? point.noteCount} NOTES
+        {cardStale ? ' · STALE' : ''}
+      </span>
+    </button>
+  );
+}
+
+function SortablePointWrapper({
+  slug,
+  children,
+}: {
+  slug: string;
+  children: ReactNode;
+}) {
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({ id: slug });
+  const style = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    opacity: isDragging ? 0.45 : undefined,
+    zIndex: isDragging ? 5 : undefined,
+  };
+  return (
+    <li
+      ref={setNodeRef}
+      style={style}
+      className={
+        'editorial-po-point-li' +
+        (isDragging ? ' editorial-po-point-li-dragging' : '')
+      }
+    >
+      <button
+        {...attributes}
+        {...listeners}
+        type="button"
+        className="editorial-po-point-handle"
+        aria-label="Drag to reorder"
+      >
+        ⋮⋮
       </button>
+      {children}
     </li>
   );
 }

@@ -6327,6 +6327,58 @@ a.editorial-phase-pill:hover {
   background: #efe9d8;
 }
 
+/* ─── Drag-reorder for main Points (left rail) ─────────────────────────── */
+
+.editorial-po-point-li {
+  display: flex;
+  align-items: stretch;
+  gap: 0.25rem;
+}
+
+.editorial-po-point-li > .editorial-po-point-card {
+  flex: 1;
+  min-width: 0;
+}
+
+.editorial-po-point-handle {
+  flex-shrink: 0;
+  width: 16px;
+  border: 0;
+  background: transparent;
+  color: #b9b09c;
+  cursor: grab;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.7rem;
+  line-height: 1;
+  letter-spacing: -0.05em;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0.4;
+  transition: opacity 120ms ease;
+  border-radius: 3px;
+  touch-action: none;
+}
+
+.editorial-po-point-li:hover .editorial-po-point-handle {
+  opacity: 1;
+}
+
+.editorial-po-point-handle:hover {
+  color: #1f1c14;
+  background: #efe9d8;
+}
+
+.editorial-po-point-handle:active {
+  cursor: grabbing;
+}
+
+.editorial-po-point-li-dragging .editorial-po-point-card {
+  border-color: #1f1c14;
+  box-shadow: 0 4px 12px rgba(31, 28, 20, 0.18);
+}
+
 .editorial-po-note-timestamp {
   margin-left: auto;
   font-family: 'IBM Plex Mono', monospace;
