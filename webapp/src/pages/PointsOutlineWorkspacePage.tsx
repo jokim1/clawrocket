@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 
 import { EditorialPhaseStrip } from '../components/EditorialPhaseStrip';
 
@@ -586,6 +586,66 @@ function rescoreFromContent(state: DetailState): {
 
 const RESCORE_LATENCY_MS = 600;
 
+// localStorage persistence for the per-Point editable+scored state.
+// Bump the version suffix when DetailState gains required fields so older
+// stored shapes get discarded instead of merged into a partial value.
+const STORAGE_KEY = 'editorial-room.points-outline.detail-states-v0';
+
+function isValidStoredState(s: unknown): s is DetailState {
+  if (!s || typeof s !== 'object') return false;
+  const o = s as Record<string, unknown>;
+  return (
+    typeof o.claim === 'string' &&
+    typeof o.stake === 'string' &&
+    Array.isArray(o.discussion) &&
+    typeof o.stale === 'boolean' &&
+    Array.isArray(o.scoreRow) &&
+    !!o.aggregate &&
+    typeof o.aggregate === 'object'
+  );
+}
+
+function loadDetailStates(): Record<string, DetailState> {
+  const fresh = buildInitialDetailStates();
+  if (typeof window === 'undefined') return fresh;
+  try {
+    const raw = window.localStorage.getItem(STORAGE_KEY);
+    if (!raw) return fresh;
+    const parsed: unknown = JSON.parse(raw);
+    if (
+      !parsed ||
+      typeof parsed !== 'object' ||
+      (parsed as { schema_version?: unknown }).schema_version !== '0'
+    ) {
+      return fresh;
+    }
+    const states = (parsed as { states?: unknown }).states;
+    if (!states || typeof states !== 'object') return fresh;
+    const merged: Record<string, DetailState> = { ...fresh };
+    for (const slug of Object.keys(fresh)) {
+      const candidate = (states as Record<string, unknown>)[slug];
+      if (isValidStoredState(candidate)) {
+        merged[slug] = candidate;
+      }
+    }
+    return merged;
+  } catch {
+    return fresh;
+  }
+}
+
+function saveDetailStates(states: Record<string, DetailState>): void {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({ schema_version: '0', states }),
+    );
+  } catch {
+    // Quota exceeded / private mode / disabled — degrade silently.
+  }
+}
+
 type Props = {
   onUnauthorized?: () => void;
 };
@@ -603,9 +663,12 @@ export function PointsOutlineWorkspacePage(_props: Props) {
   const activePoint =
     allPoints.find((p) => p.slug === activePointSlug) ?? allPoints[0];
 
-  const [detailStates, setDetailStates] = useState<Record<string, DetailState>>(
-    buildInitialDetailStates,
-  );
+  const [detailStates, setDetailStates] =
+    useState<Record<string, DetailState>>(loadDetailStates);
+
+  useEffect(() => {
+    saveDetailStates(detailStates);
+  }, [detailStates]);
 
   const [editing, setEditing] = useState<EditingTarget>(null);
   const [draft, setDraft] = useState<string>('');
