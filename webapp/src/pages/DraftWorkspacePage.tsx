@@ -29,6 +29,7 @@ import {
 import { isAgentAuthed, useProviderAuth } from '../lib/llm-provider-auth';
 import { serializeDocToMarkdown, type JSONNode } from '../lib/markdown-export';
 import { parseMarkdownToDoc } from '../lib/markdown-import';
+import { streamAgentPanelTurn } from '../lib/panel-fanout';
 
 // ───────────────────────────────────────────────────────────────────────────
 // Phase 04 DRAFT — bubble toolbar + link/underline/align/highlight.
@@ -260,28 +261,6 @@ function persistLivePanelTurns(turns: LivePanelTurnMap): void {
   } catch {
     // localStorage full / disabled — non-fatal at v0p.
   }
-}
-
-// Minimal client-side SSE record parser. Mirrors the server-side parser in
-// editorial-llm-call.ts; the route emits {event: text_delta|completed|error,
-// data: <json>} records terminated by blank lines.
-type ClientSseEvent = { event?: string; data: string };
-
-function parseClientSseRecord(raw: string): ClientSseEvent | null {
-  const lines = raw.split(/\r?\n/);
-  let eventName: string | undefined;
-  const dataLines: string[] = [];
-  for (const line of lines) {
-    if (!line || line.startsWith(':')) continue;
-    const colon = line.indexOf(':');
-    const field = colon === -1 ? line : line.slice(0, colon);
-    const valueRaw = colon === -1 ? '' : line.slice(colon + 1);
-    const value = valueRaw.startsWith(' ') ? valueRaw.slice(1) : valueRaw;
-    if (field === 'event') eventName = value;
-    else if (field === 'data') dataLines.push(value);
-  }
-  if (dataLines.length === 0 && !eventName) return null;
-  return { event: eventName, data: dataLines.join('\n') };
 }
 
 const PANEL_TURNS: ReadonlyArray<PanelTurn> = [
@@ -1438,91 +1417,30 @@ export function DraftWorkspacePage(_props: Props) {
       agent,
       turnId,
     }: PlannedTurn): Promise<void> => {
-      try {
-        const res = await fetch('/api/v1/editorial/panel-turn', {
-          method: 'POST',
-          credentials: 'include',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            fixtureProvider: agent.provider,
-            agentName: agent.name,
-            agentRole: agent.role,
-            userMessage,
-            segmentContext,
-            scopePointIndex: activePoint,
-          }),
-        });
-
-        if (!res.ok) {
-          const text = await res.text().catch(() => '');
-          throw new Error(
-            `HTTP ${res.status}${text ? ` — ${text.slice(0, 200)}` : ''}`,
-          );
-        }
-        if (!res.body) {
-          throw new Error('Response had no stream body.');
-        }
-
-        const decoder = new TextDecoder('utf-8');
-        const reader = res.body.getReader();
-        let buffer = '';
-        let accumulated = '';
-        let streamErrorMessage: string | null = null;
-
-        for (;;) {
-          const { value, done } = await reader.read();
-          if (done) break;
-          buffer += decoder.decode(value, { stream: true });
-          let idx: number;
-          while ((idx = buffer.indexOf('\n\n')) >= 0) {
-            const raw = buffer.slice(0, idx);
-            buffer = buffer.slice(idx + 2);
-            const event = parseClientSseRecord(raw);
-            if (!event) continue;
-
-            if (event.event === 'text_delta') {
-              try {
-                const data = JSON.parse(event.data) as { text?: string };
-                if (typeof data.text === 'string') {
-                  accumulated += data.text;
-                  updateTurn(turnId, { body: accumulated });
-                }
-              } catch {
-                // ignore malformed SSE record
-              }
-            } else if (event.event === 'completed') {
-              try {
-                const data = JSON.parse(event.data) as { text?: string };
-                if (typeof data.text === 'string' && data.text.length > 0) {
-                  accumulated = data.text;
-                }
-              } catch {
-                // ignore
-              }
-            } else if (event.event === 'error') {
-              try {
-                const data = JSON.parse(event.data) as { message?: string };
-                streamErrorMessage = data.message ?? 'Panel turn errored.';
-              } catch {
-                streamErrorMessage = 'Panel turn errored.';
-              }
-            }
-          }
-        }
-
-        if (streamErrorMessage) throw new Error(streamErrorMessage);
-        // Drained-from-completed text wins over the accumulator so the
-        // persisted turn matches the server's authoritative final value.
-        updateTurn(turnId, { body: accumulated, streaming: false });
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : 'Panel turn failed.';
-        updateTurn(turnId, {
-          body: msg,
-          streaming: false,
-          errored: true,
-        });
-        throw err;
-      }
+      await streamAgentPanelTurn(
+        {
+          agent: {
+            provider: agent.provider,
+            name: agent.name,
+            role: agent.role,
+          },
+          userMessage,
+          segmentContext,
+          scopePointIndex: activePoint,
+        },
+        {
+          onTextDelta: (_delta, accumulated) =>
+            updateTurn(turnId, { body: accumulated }),
+          onComplete: (finalText) =>
+            updateTurn(turnId, { body: finalText, streaming: false }),
+          onError: (msg) =>
+            updateTurn(turnId, {
+              body: msg,
+              streaming: false,
+              errored: true,
+            }),
+        },
+      );
     };
 
     const results = await Promise.allSettled(planned.map(streamForAgent));

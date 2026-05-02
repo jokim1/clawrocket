@@ -17,6 +17,13 @@ import {
 import { CSS } from '@dnd-kit/utilities';
 
 import { EditorialPhaseStrip } from '../components/EditorialPhaseStrip';
+import {
+  getAgentProfileById,
+  type AgentProfile,
+} from '../lib/editorial-fixtures';
+import { loadSetupState } from '../lib/editorial-setup';
+import { isAgentAuthed, useProviderAuth } from '../lib/llm-provider-auth';
+import { streamAgentPanelTurn } from '../lib/panel-fanout';
 
 // ───────────────────────────────────────────────────────────────────────────
 // Fixture-shaped data, hardcoded inline for the 0p-a vertical slice. Real
@@ -101,6 +108,51 @@ type RevisionTurn = {
 };
 
 type DiscussionTurn = AgentTurn | RevisionTurn;
+
+// Live panel turns produced by the `+ ASK` composer in this workspace.
+// Persisted to localStorage at LIVE_PANEL_TURNS_STORAGE_KEY so the user's
+// history survives reloads. Fixture turns (PointDetail.discussion) stay
+// behind live turns in the rendered list.
+type LivePanelTurn = {
+  id: string;
+  agentMonogram: string;
+  agentName: string;
+  agentRole: string;
+  body: string;
+  timestamp: string;
+  streaming?: boolean;
+  errored?: boolean;
+};
+
+type LivePanelTurnMap = Record<string, LivePanelTurn[]>;
+
+const LIVE_PANEL_TURNS_STORAGE_KEY =
+  'editorial-room.points-outline.panel-turns-v0';
+
+function loadLivePanelTurns(): LivePanelTurnMap {
+  if (typeof window === 'undefined') return {};
+  try {
+    const raw = window.localStorage.getItem(LIVE_PANEL_TURNS_STORAGE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== 'object') return {};
+    return parsed as LivePanelTurnMap;
+  } catch {
+    return {};
+  }
+}
+
+function persistLivePanelTurns(turns: LivePanelTurnMap): void {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.setItem(
+      LIVE_PANEL_TURNS_STORAGE_KEY,
+      JSON.stringify(turns),
+    );
+  } catch {
+    // localStorage full / disabled — non-fatal at v0p.
+  }
+}
 
 type PointDetail = {
   slug: string;
@@ -1398,6 +1450,158 @@ export function PointsOutlineWorkspacePage(_props: Props) {
   const stale = state?.stale ?? false;
   const rescoring = rescoringSlug === activePoint.slug;
 
+  // Setup-driven panel agents. Same plumbing as Setup → LLM Room and Draft.
+  const [setup] = useState(loadSetupState);
+  const { authed: providerAuthed } = useProviderAuth();
+  const selectedAgents = useMemo<AgentProfile[]>(
+    () =>
+      setup.llm_room_agent_profile_ids
+        .map((id) => getAgentProfileById(id))
+        .filter((a): a is AgentProfile => a !== null),
+    [setup.llm_room_agent_profile_ids],
+  );
+  const panelAgents = useMemo<AgentProfile[]>(
+    () => selectedAgents.filter((a) => isAgentAuthed(a, providerAuthed)),
+    [selectedAgents, providerAuthed],
+  );
+  const skippedAgentCount = selectedAgents.length - panelAgents.length;
+
+  const [livePanelTurns, setLivePanelTurns] =
+    useState<LivePanelTurnMap>(loadLivePanelTurns);
+
+  const handleSubmitPointPanelTurn = async (
+    point: { slug: string; claim: string; stake: string; notes: Note[] },
+    pointPosition: string | null,
+    userMessage: string,
+  ): Promise<{ allFailed: boolean; errorMessage: string | null }> => {
+    if (panelAgents.length === 0) {
+      return { allFailed: true, errorMessage: 'No connected panel agents.' };
+    }
+
+    // segmentContext = active Point's claim + stake + notes. The LLM gets
+    // enough about the Point to debate it without asking for context.
+    const noteLines = point.notes
+      .map((n) => `[${n.type}] ${n.body}`)
+      .join('\n');
+    const segmentContext = [
+      `CLAIM: ${point.claim}`,
+      `STAKE: ${point.stake}`,
+      noteLines.length > 0 ? `NOTES:\n${noteLines}` : null,
+    ]
+      .filter(Boolean)
+      .join('\n\n');
+
+    const submittedAt = Date.now();
+    const timestamp = new Date(submittedAt).toLocaleTimeString([], {
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    });
+
+    type PlannedTurn = { agent: AgentProfile; turnId: string };
+    const planned: PlannedTurn[] = panelAgents.map((agent, idx) => ({
+      agent,
+      turnId: `live-${submittedAt}-${idx}`,
+    }));
+    const placeholders: LivePanelTurn[] = planned.map(({ agent, turnId }) => ({
+      id: turnId,
+      agentMonogram: agent.monogram,
+      agentName: agent.name.toUpperCase(),
+      agentRole: agent.role.toUpperCase(),
+      body: '',
+      timestamp,
+      streaming: true,
+    }));
+
+    setLivePanelTurns((prev) => {
+      const existing = prev[point.slug] ?? [];
+      return { ...prev, [point.slug]: [...placeholders, ...existing] };
+    });
+
+    const updateTurn = (
+      turnId: string,
+      patch: Partial<LivePanelTurn>,
+    ): void => {
+      setLivePanelTurns((prev) => {
+        const arr = prev[point.slug] ?? [];
+        return {
+          ...prev,
+          [point.slug]: arr.map((t) =>
+            t.id === turnId ? { ...t, ...patch } : t,
+          ),
+        };
+      });
+    };
+
+    // Active position is a 1-based string ("1", "2", …). Convert to 0-based
+    // numeric for `scopePointIndex` so the route's prompt builder can echo
+    // "Point N" with the right number.
+    const scopePointIndex = pointPosition
+      ? Math.max(0, Number(pointPosition) - 1)
+      : null;
+
+    const streamForAgent = async ({
+      agent,
+      turnId,
+    }: PlannedTurn): Promise<void> => {
+      await streamAgentPanelTurn(
+        {
+          agent: {
+            provider: agent.provider,
+            name: agent.name,
+            role: agent.role,
+          },
+          userMessage,
+          segmentContext,
+          scopePointIndex,
+        },
+        {
+          onTextDelta: (_delta, accumulated) =>
+            updateTurn(turnId, { body: accumulated }),
+          onComplete: (finalText) =>
+            updateTurn(turnId, { body: finalText, streaming: false }),
+          onError: (msg) =>
+            updateTurn(turnId, {
+              body: msg,
+              streaming: false,
+              errored: true,
+            }),
+        },
+      );
+    };
+
+    const results = await Promise.allSettled(planned.map(streamForAgent));
+
+    setLivePanelTurns((prev) => {
+      persistLivePanelTurns(prev);
+      return prev;
+    });
+
+    const allFailed =
+      results.length > 0 && results.every((r) => r.status === 'rejected');
+    const errorMessage = allFailed
+      ? (() => {
+          const first = results[0] as PromiseRejectedResult;
+          return first.reason instanceof Error
+            ? first.reason.message
+            : 'Panel turn failed.';
+        })()
+      : null;
+    return { allFailed, errorMessage };
+  };
+
+  const handleClearPointPanel = (pointSlug: string): void => {
+    setLivePanelTurns((prev) => {
+      if (!prev[pointSlug]) return prev;
+      const next = { ...prev };
+      delete next[pointSlug];
+      persistLivePanelTurns(next);
+      return next;
+    });
+  };
+
+  const activePointLiveTurns = livePanelTurns[activePoint.slug] ?? [];
+
   function rescorePoint(slug: string) {
     if (rescoringSlug) return;
     const cur = detailStates[slug];
@@ -1652,6 +1856,7 @@ export function PointsOutlineWorkspacePage(_props: Props) {
         <main className="editorial-po-center">
           {detail ? (
             <PointDetailView
+              key={detail.slug}
               detail={detail}
               stale={stale}
               rescoring={rescoring}
@@ -1667,6 +1872,14 @@ export function PointsOutlineWorkspacePage(_props: Props) {
               noteAdd={noteAddProps}
               noteEdit={noteEditProps}
               activePosition={activePosition}
+              liveTurns={activePointLiveTurns}
+              panelAgents={panelAgents}
+              selectedAgents={selectedAgents}
+              skippedAgentCount={skippedAgentCount}
+              onPanelSubmit={(message) =>
+                handleSubmitPointPanelTurn(detail, activePosition, message)
+              }
+              onPanelClear={() => handleClearPointPanel(detail.slug)}
             />
           ) : null}
         </main>
@@ -1889,6 +2102,12 @@ function PointDetailView({
   noteAdd,
   noteEdit,
   activePosition,
+  liveTurns,
+  panelAgents,
+  selectedAgents,
+  skippedAgentCount,
+  onPanelSubmit,
+  onPanelClear,
 }: {
   detail: PointDetail;
   stale: boolean;
@@ -1905,18 +2124,74 @@ function PointDetailView({
   noteAdd: NoteAddProps;
   noteEdit: NoteEditProps;
   activePosition: string | null;
+  liveTurns: LivePanelTurn[];
+  panelAgents: AgentProfile[];
+  selectedAgents: AgentProfile[];
+  skippedAgentCount: number;
+  onPanelSubmit: (
+    message: string,
+  ) => Promise<{ allFailed: boolean; errorMessage: string | null }>;
+  onPanelClear: () => void;
 }) {
   const editingClaim =
     editing?.slug === detail.slug && editing.field === 'claim';
   const editingStake =
     editing?.slug === detail.slug && editing.field === 'stake';
   const lastTurnAt =
-    detail.discussion.length > 0
-      ? detail.discussion[detail.discussion.length - 1].timestamp
-      : '—';
+    liveTurns.length > 0
+      ? liveTurns[0].timestamp
+      : detail.discussion.length > 0
+        ? detail.discussion[detail.discussion.length - 1].timestamp
+        : '—';
   const lastAgentTurn = [...detail.discussion]
     .reverse()
     .find((t): t is AgentTurn => t.kind === 'agent');
+  // Drawer summary prefers the latest LIVE turn (if any), falling back to
+  // the last fixture agent turn.
+  const drawerSummary =
+    liveTurns.length > 0 && liveTurns[0].body.length > 0
+      ? liveTurns[0].body
+      : (lastAgentTurn?.body ?? null);
+
+  const [composerValue, setComposerValue] = useState<string>('');
+  const [composerSubmitting, setComposerSubmitting] = useState<boolean>(false);
+  const [composerError, setComposerError] = useState<string | null>(null);
+
+  const handleSubmitPanel = async (): Promise<void> => {
+    if (panelAgents.length === 0) return;
+    if (composerSubmitting) return;
+    const message = composerValue.trim();
+    if (!message) return;
+
+    setComposerSubmitting(true);
+    setComposerError(null);
+    setComposerValue('');
+    const { allFailed, errorMessage } = await onPanelSubmit(message);
+    if (allFailed && errorMessage) {
+      setComposerError(errorMessage);
+    }
+    setComposerSubmitting(false);
+  };
+
+  const handleClearPanel = (): void => {
+    onPanelClear();
+    setComposerError(null);
+  };
+
+  const composerPlaceholder =
+    panelAgents.length === 0
+      ? selectedAgents.length === 0
+        ? 'Add an agent in Setup → LLM Room to ask the panel…'
+        : 'No connected providers — reconnect in Setup → LLM Room.'
+      : panelAgents.length === 1
+        ? `Ask ${panelAgents[0].name} (${panelAgents[0].role})…`
+        : `Ask the panel (${panelAgents.length} agents)…`;
+
+  const composerButtonLabel = composerSubmitting
+    ? '… STREAMING'
+    : panelAgents.length >= 2
+      ? `+ ASK PANEL (${panelAgents.length}) ⌥↵`
+      : '+ ASK ⌥↵';
 
   // Rewrite the fixture eyebrow's "POINT N" prefix with the live display
   // position so reordering keeps the center detail label honest.
@@ -2104,12 +2379,24 @@ function PointDetailView({
         <section className="editorial-po-discussion">
           <header className="editorial-po-discussion-header">
             <h3 className="editorial-tt-section-label">
-              PANEL DISCUSSION · {detail.discussion.length} TURNS
+              PANEL DISCUSSION · {liveTurns.length + detail.discussion.length}{' '}
+              TURNS
             </h3>
             <div className="editorial-po-discussion-meta">
               <span className="editorial-po-discussion-last">
                 LAST {lastTurnAt}
               </span>
+              {liveTurns.length > 0 ? (
+                <button
+                  type="button"
+                  className="editorial-chip-button editorial-tt-discussion-clear"
+                  onClick={handleClearPanel}
+                  disabled={composerSubmitting}
+                  title="Clear live turns for this Point"
+                >
+                  ✕ CLEAR
+                </button>
+              ) : null}
               <span className="editorial-po-discussion-mentions">
                 {['@ALL', '@A', '@R', '@M'].map((m) => (
                   <span key={m} className="editorial-po-discussion-mention">
@@ -2120,12 +2407,15 @@ function PointDetailView({
             </div>
           </header>
 
-          {detail.discussion.length === 0 ? (
+          {liveTurns.length === 0 && detail.discussion.length === 0 ? (
             <p className="editorial-tt-empty">
               No discussion yet — ask the panel.
             </p>
           ) : (
             <ol className="editorial-po-turn-list">
+              {liveTurns.map((t) => (
+                <LiveTurnView key={t.id} turn={t} />
+              ))}
               {detail.discussion.map((t) =>
                 t.kind === 'agent' ? (
                   <AgentTurnView key={t.id} turn={t} />
@@ -2139,17 +2429,46 @@ function PointDetailView({
           <div className="editorial-po-discussion-input">
             <input
               type="text"
-              placeholder="Ask the panel — or @reference a note…"
-              disabled
+              placeholder={composerPlaceholder}
+              value={composerValue}
+              onChange={(e) => setComposerValue(e.target.value)}
+              disabled={panelAgents.length === 0 || composerSubmitting}
+              onKeyDown={(e) => {
+                if (
+                  (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) ||
+                  (e.key === 'Enter' && !e.shiftKey)
+                ) {
+                  e.preventDefault();
+                  void handleSubmitPanel();
+                }
+              }}
             />
             <button
               type="button"
               className="editorial-chip-button editorial-chip-button-primary"
-              disabled
+              disabled={
+                panelAgents.length === 0 ||
+                composerSubmitting ||
+                !composerValue.trim()
+              }
+              onClick={() => {
+                void handleSubmitPanel();
+              }}
             >
-              SEND ⌥↵
+              {composerButtonLabel}
             </button>
           </div>
+          {panelAgents.length > 0 ? (
+            <p className="editorial-tt-discussion-hint">
+              {panelAgents.map((a) => a.name).join(' · ')}
+              {skippedAgentCount > 0
+                ? ` · ${skippedAgentCount} skipped (auth missing)`
+                : ''}
+            </p>
+          ) : null}
+          {composerError ? (
+            <p className="editorial-tt-discussion-error">{composerError}</p>
+          ) : null}
         </section>
       ) : (
         <>
@@ -2162,7 +2481,7 @@ function PointDetailView({
           </section>
           <DiscussionDrawer
             lastTurnAt={lastTurnAt}
-            lastAgentSummary={lastAgentTurn?.body ?? null}
+            lastAgentSummary={drawerSummary}
             onExpand={onToggleLayout}
           />
         </>
@@ -2200,6 +2519,37 @@ function DiscussionDrawer({
       </span>
       <span className="editorial-po-drawer-hint">⌘O</span>
     </button>
+  );
+}
+
+function LiveTurnView({ turn }: { turn: LivePanelTurn }) {
+  return (
+    <li className="editorial-po-turn editorial-tt-turn-live">
+      <div className="editorial-po-turn-head">
+        <span
+          className="editorial-persona-avatar editorial-persona-avatar-sm"
+          data-persona={turn.agentMonogram}
+        >
+          {turn.agentMonogram}
+        </span>
+        <span className="editorial-po-turn-name">{turn.agentName}</span>
+        <span className="editorial-po-turn-role">{turn.agentRole}</span>
+        <span className="editorial-po-turn-timestamp">{turn.timestamp}</span>
+      </div>
+      <p
+        className={
+          'editorial-po-turn-body' +
+          (turn.errored ? ' editorial-tt-turn-body-errored' : '')
+        }
+      >
+        {turn.body}
+        {turn.streaming ? (
+          <span className="editorial-tt-turn-cursor" aria-hidden="true">
+            ▍
+          </span>
+        ) : null}
+      </p>
+    </li>
   );
 }
 
