@@ -58,6 +58,9 @@ type Note = {
   bodyExpanded?: string;
   promotable?: boolean;
   highlighted?: boolean;
+  // Set when the user promotes a counter-type note to a Counter-Point.
+  // Holds the new Counter-Point's slug so the chip can deep-link to it.
+  promotedToSlug?: string;
 };
 
 // Discriminated union: agent turns are LLM panel responses; revision turns
@@ -143,6 +146,7 @@ type NoteEditProps = {
   onSave: () => void;
   onSetDraft: (v: string) => void;
   onDelete: (noteId: string) => void;
+  onPromote: (noteId: string) => void;
 };
 
 const PRIMARY_PERSONAS: ReadonlyArray<Persona> = [
@@ -666,9 +670,16 @@ function loadDetailStates(): Record<string, DetailState> {
     }
     const states = (parsed as { states?: unknown }).states;
     if (!states || typeof states !== 'object') return fresh;
+    const storedRecord = states as Record<string, unknown>;
     const merged: Record<string, DetailState> = { ...fresh };
-    for (const slug of Object.keys(fresh)) {
-      const candidate = (states as Record<string, unknown>)[slug];
+    // Merge across the union of fixture and stored slugs so promoted
+    // Counter-Points (which only exist in storage) survive reload.
+    const allSlugs = new Set([
+      ...Object.keys(fresh),
+      ...Object.keys(storedRecord),
+    ]);
+    for (const slug of allSlugs) {
+      const candidate = storedRecord[slug];
       if (isValidStoredState(candidate)) {
         merged[slug] = candidate;
       }
@@ -712,6 +723,47 @@ function saveLayoutState(s: LayoutState): void {
   }
 }
 
+const ADDED_COUNTERS_KEY = 'editorial-room.points-outline.added-counters-v0';
+
+function isValidPoint(p: unknown): p is Point {
+  if (!p || typeof p !== 'object') return false;
+  const o = p as Record<string, unknown>;
+  return (
+    typeof o.slug === 'string' &&
+    typeof o.position === 'string' &&
+    (o.type === 'HOOK' ||
+      o.type === 'ARG' ||
+      o.type === 'CLOSE' ||
+      o.type === 'COUNTER') &&
+    typeof o.score === 'number' &&
+    typeof o.claim === 'string' &&
+    typeof o.stake === 'string' &&
+    typeof o.noteCount === 'number'
+  );
+}
+
+function loadAddedCounters(): Point[] {
+  if (typeof window === 'undefined') return [];
+  try {
+    const raw = window.localStorage.getItem(ADDED_COUNTERS_KEY);
+    if (!raw) return [];
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(isValidPoint);
+  } catch {
+    return [];
+  }
+}
+
+function saveAddedCounters(points: Point[]): void {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.setItem(ADDED_COUNTERS_KEY, JSON.stringify(points));
+  } catch {
+    // ignore
+  }
+}
+
 type Props = {
   onUnauthorized?: () => void;
 };
@@ -725,7 +777,19 @@ export function PointsOutlineWorkspacePage(_props: Props) {
     'p1-deal-term-lockdown',
   );
 
-  const allPoints = useMemo(() => [...POINTS, ...COUNTER_POINTS], []);
+  const [addedCounters, setAddedCounters] =
+    useState<Point[]>(loadAddedCounters);
+
+  useEffect(() => {
+    saveAddedCounters(addedCounters);
+  }, [addedCounters]);
+
+  const allCounters = useMemo(
+    () => [...COUNTER_POINTS, ...addedCounters],
+    [addedCounters],
+  );
+
+  const allPoints = useMemo(() => [...POINTS, ...allCounters], [allCounters]);
   const activePoint =
     allPoints.find((p) => p.slug === activePointSlug) ?? allPoints[0];
 
@@ -852,6 +916,65 @@ export function PointsOutlineWorkspacePage(_props: Props) {
     }
   }
 
+  function promoteNoteToCounter(noteId: string) {
+    const slug = activePoint.slug;
+    const cur = detailStates[slug];
+    if (!cur) return;
+    const note = cur.notes.find((n) => n.id === noteId);
+    if (!note || note.type !== 'counter' || note.promotedToSlug) return;
+
+    const counterSlug = `cp-promoted-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+    const counterPosition = String(6 + addedCounters.length).padStart(2, '0');
+
+    const newCounter: Point = {
+      slug: counterSlug,
+      position: counterPosition,
+      type: 'COUNTER',
+      score: 5.0,
+      claim: note.body,
+      stake: 'Promoted from a counter note — review and refine.',
+      noteCount: 0,
+    };
+
+    const newDetailState: DetailState = {
+      claim: note.body,
+      stake: 'Promoted from a counter note — review and refine.',
+      discussion: [],
+      stale: true,
+      scoreRow: PRIMARY_PERSONAS.map((p) => ({
+        persona: p,
+        score: 5,
+        note: 'placeholder — rescore to evaluate',
+      })),
+      aggregate: { score: 5.0, ssr: 0.5, gatesPass: false },
+      notes: [],
+    };
+
+    setDetailStates((prev) => {
+      const cur2 = prev[slug];
+      if (!cur2) return prev;
+      return {
+        ...prev,
+        [slug]: {
+          ...cur2,
+          notes: cur2.notes.map((n) =>
+            n.id === noteId ? { ...n, promotedToSlug: counterSlug } : n,
+          ),
+        },
+        [counterSlug]: newDetailState,
+      };
+    });
+    setAddedCounters((prev) => [...prev, newCounter]);
+    // Activate the new Counter so the user can see + rescore it.
+    setActivePointSlug(counterSlug);
+    // Clear any in-flight CLAIM/STAKE / note edit on the prior Point.
+    setEditing(null);
+    setDraft('');
+    setEditingNoteId(null);
+    setNoteEditDraft('');
+    setNoteAddState({ kind: 'idle' });
+  }
+
   function startAddingNote() {
     setNoteAddState({ kind: 'picking-type', slug: activePoint.slug });
   }
@@ -915,6 +1038,7 @@ export function PointsOutlineWorkspacePage(_props: Props) {
     onSave: saveEditNote,
     onSetDraft: setNoteEditDraft,
     onDelete: deleteNote,
+    onPromote: promoteNoteToCounter,
   };
 
   const fixture = POINT_DETAILS[activePoint.slug];
@@ -1069,13 +1193,13 @@ export function PointsOutlineWorkspacePage(_props: Props) {
             ))}
           </ul>
 
-          {COUNTER_POINTS.length > 0 ? (
+          {allCounters.length > 0 ? (
             <>
               <h2 className="editorial-rail-heading editorial-rail-heading-spaced editorial-rail-heading-counter">
-                COUNTER-POINTS · {COUNTER_POINTS.length}
+                COUNTER-POINTS · {allCounters.length}
               </h2>
               <ul className="editorial-po-point-list">
-                {COUNTER_POINTS.map((p) => (
+                {allCounters.map((p) => (
                   <PointCard
                     key={p.slug}
                     point={p}
@@ -1735,11 +1859,21 @@ function NotesRail({
                   <span className="editorial-po-note-type">
                     {NOTE_TYPE_LABEL[n.type]}
                   </span>
-                  {n.promotable ? (
+                  {n.promotedToSlug ? (
+                    <span
+                      className="editorial-po-note-promoted"
+                      title="Already promoted to a Counter-Point"
+                    >
+                      ↗ PROMOTED
+                    </span>
+                  ) : n.type === 'counter' ? (
                     <button
                       type="button"
                       className="editorial-po-note-promote"
-                      disabled
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        noteEdit.onPromote(n.id);
+                      }}
                     >
                       PROMOTE ›
                     </button>
