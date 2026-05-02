@@ -59,12 +59,16 @@ function validatorFor(schemaFile: string): ValidateFunction {
 const FIXTURE_SCHEMA_OVERRIDES: Record<string, string> = {
   'point_with_evidence.example.json': 'point.schema.json',
   'point_note_blocks.example.json': 'point_note_block.schema.json',
+  'suggestions.adv_cut.json': 'suggestion.schema.json',
+  'suggestions.opus_review.json': 'suggestion.schema.json',
 };
 
 // Fixtures whose top-level value is an array of <schema> rather than a single
 // <schema>. We validate each element separately.
 const FIXTURES_AS_ARRAY: ReadonlySet<string> = new Set([
   'point_note_blocks.example.json',
+  'suggestions.adv_cut.json',
+  'suggestions.opus_review.json',
 ]);
 
 function schemaFileForFixture(fixtureFile: string): string {
