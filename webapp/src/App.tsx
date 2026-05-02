@@ -31,6 +31,7 @@ import {
 } from './lib/api';
 import { AiAgentsPage } from './pages/AiAgentsPage';
 import { DataConnectorsPage } from './pages/DataConnectorsPage';
+import { EditorialSetupPage } from './pages/EditorialSetupPage';
 import { MainChannelPage } from './pages/MainChannelPage';
 import { TalkDetailPage } from './pages/TalkDetailPage';
 import { TalkListPage } from './pages/TalkListPage';
@@ -672,6 +673,27 @@ export function App() {
 
   if (auth.status === 'unauthenticated') {
     return <SignInView onSignedIn={refreshSession} />;
+  }
+
+  // Editorial Room runs in its own shell (no ClawTalk sidebar/header) —
+  // the 6-pill phase strip is the navigation per docs/design/01_setup.md.
+  if (location.pathname.startsWith('/editorial')) {
+    return (
+      <Routes>
+        <Route
+          path="/editorial"
+          element={<Navigate to="/editorial/setup" replace />}
+        />
+        <Route
+          path="/editorial/setup"
+          element={<EditorialSetupPage onUnauthorized={handleUnauthorized} />}
+        />
+        <Route
+          path="/editorial/*"
+          element={<Navigate to="/editorial/setup" replace />}
+        />
+      </Routes>
+    );
   }
 
   return (
