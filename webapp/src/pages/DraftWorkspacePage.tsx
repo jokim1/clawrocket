@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
-  BubbleMenu,
   EditorContent,
   FloatingMenu,
   useEditor,
@@ -1815,20 +1814,12 @@ export function DraftWorkspacePage(_props: Props) {
 
         {/* CENTER — TIPTAP EDITOR */}
         <main className="editorial-po-draft-center">
-          <div className="editorial-po-draft-status-bar">{statusText}</div>
-          <div className="editorial-po-draft-editor">
+          <div className="editorial-po-draft-header">
+            <div className="editorial-po-draft-status-bar">{statusText}</div>
             {editor ? (
-              <BubbleMenu
-                editor={editor}
-                className="editorial-po-draft-bubble"
-                shouldShow={({ editor: e, from, to }) => {
-                  if (from === to) return false;
-                  if (e.isActive('codeBlock')) return false;
-                  return true;
-                }}
-              >
+              <div className="editorial-po-draft-format-toolbar">
                 <select
-                  className="editorial-po-draft-bubble-style"
+                  className="editorial-po-draft-toolbar-style"
                   value={getActiveStyle(editor)}
                   onChange={(e) => applyStyle(editor, e.target.value)}
                   aria-label="Text style"
@@ -1839,12 +1830,12 @@ export function DraftWorkspacePage(_props: Props) {
                   <option value="h3">Heading 3</option>
                   <option value="h4">Heading 4</option>
                 </select>
-                <span className="editorial-po-draft-bubble-divider" />
+                <span className="editorial-po-draft-toolbar-divider" />
                 <button
                   type="button"
-                  className={`editorial-po-draft-bubble-btn${
+                  className={`editorial-po-draft-toolbar-btn${
                     editor.isActive('bold')
-                      ? ' editorial-po-draft-bubble-btn-active'
+                      ? ' editorial-po-draft-toolbar-btn-active'
                       : ''
                   }`}
                   onClick={() => editor.chain().focus().toggleBold().run()}
@@ -1855,9 +1846,9 @@ export function DraftWorkspacePage(_props: Props) {
                 </button>
                 <button
                   type="button"
-                  className={`editorial-po-draft-bubble-btn${
+                  className={`editorial-po-draft-toolbar-btn${
                     editor.isActive('italic')
-                      ? ' editorial-po-draft-bubble-btn-active'
+                      ? ' editorial-po-draft-toolbar-btn-active'
                       : ''
                   }`}
                   onClick={() => editor.chain().focus().toggleItalic().run()}
@@ -1868,9 +1859,9 @@ export function DraftWorkspacePage(_props: Props) {
                 </button>
                 <button
                   type="button"
-                  className={`editorial-po-draft-bubble-btn${
+                  className={`editorial-po-draft-toolbar-btn${
                     editor.isActive('underline')
-                      ? ' editorial-po-draft-bubble-btn-active'
+                      ? ' editorial-po-draft-toolbar-btn-active'
                       : ''
                   }`}
                   onClick={() => editor.chain().focus().toggleUnderline().run()}
@@ -1881,9 +1872,9 @@ export function DraftWorkspacePage(_props: Props) {
                 </button>
                 <button
                   type="button"
-                  className={`editorial-po-draft-bubble-btn${
+                  className={`editorial-po-draft-toolbar-btn${
                     editor.isActive('strike')
-                      ? ' editorial-po-draft-bubble-btn-active'
+                      ? ' editorial-po-draft-toolbar-btn-active'
                       : ''
                   }`}
                   onClick={() => editor.chain().focus().toggleStrike().run()}
@@ -1894,9 +1885,9 @@ export function DraftWorkspacePage(_props: Props) {
                 </button>
                 <button
                   type="button"
-                  className={`editorial-po-draft-bubble-btn${
+                  className={`editorial-po-draft-toolbar-btn${
                     editor.isActive('code')
-                      ? ' editorial-po-draft-bubble-btn-active'
+                      ? ' editorial-po-draft-toolbar-btn-active'
                       : ''
                   }`}
                   onClick={() => editor.chain().focus().toggleCode().run()}
@@ -1907,22 +1898,22 @@ export function DraftWorkspacePage(_props: Props) {
                 </button>
                 <button
                   type="button"
-                  className={`editorial-po-draft-bubble-btn${
+                  className={`editorial-po-draft-toolbar-btn${
                     editor.isActive('highlight')
-                      ? ' editorial-po-draft-bubble-btn-active'
+                      ? ' editorial-po-draft-toolbar-btn-active'
                       : ''
                   }`}
                   onClick={() => editor.chain().focus().toggleHighlight().run()}
                   title="Highlight"
                   aria-label="Highlight"
                 >
-                  <span className="editorial-po-draft-bubble-hl">H</span>
+                  <span className="editorial-po-draft-toolbar-hl">H</span>
                 </button>
                 <button
                   type="button"
-                  className={`editorial-po-draft-bubble-btn${
+                  className={`editorial-po-draft-toolbar-btn${
                     editor.isActive('link')
-                      ? ' editorial-po-draft-bubble-btn-active'
+                      ? ' editorial-po-draft-toolbar-btn-active'
                       : ''
                   }`}
                   onClick={() => promptLink(editor)}
@@ -1931,12 +1922,12 @@ export function DraftWorkspacePage(_props: Props) {
                 >
                   🔗
                 </button>
-                <span className="editorial-po-draft-bubble-divider" />
+                <span className="editorial-po-draft-toolbar-divider" />
                 <button
                   type="button"
-                  className={`editorial-po-draft-bubble-btn${
+                  className={`editorial-po-draft-toolbar-btn${
                     editor.isActive('bulletList')
-                      ? ' editorial-po-draft-bubble-btn-active'
+                      ? ' editorial-po-draft-toolbar-btn-active'
                       : ''
                   }`}
                   onClick={() =>
@@ -1949,9 +1940,9 @@ export function DraftWorkspacePage(_props: Props) {
                 </button>
                 <button
                   type="button"
-                  className={`editorial-po-draft-bubble-btn${
+                  className={`editorial-po-draft-toolbar-btn${
                     editor.isActive('orderedList')
-                      ? ' editorial-po-draft-bubble-btn-active'
+                      ? ' editorial-po-draft-toolbar-btn-active'
                       : ''
                   }`}
                   onClick={() =>
@@ -1964,9 +1955,9 @@ export function DraftWorkspacePage(_props: Props) {
                 </button>
                 <button
                   type="button"
-                  className={`editorial-po-draft-bubble-btn${
+                  className={`editorial-po-draft-toolbar-btn${
                     editor.isActive('blockquote')
-                      ? ' editorial-po-draft-bubble-btn-active'
+                      ? ' editorial-po-draft-toolbar-btn-active'
                       : ''
                   }`}
                   onClick={() =>
@@ -1977,9 +1968,9 @@ export function DraftWorkspacePage(_props: Props) {
                 >
                   ❝
                 </button>
-                <span className="editorial-po-draft-bubble-divider" />
+                <span className="editorial-po-draft-toolbar-divider" />
                 <select
-                  className="editorial-po-draft-bubble-align"
+                  className="editorial-po-draft-toolbar-align"
                   value={getActiveAlign(editor)}
                   onChange={(e) =>
                     editor.chain().focus().setTextAlign(e.target.value).run()
@@ -1992,8 +1983,31 @@ export function DraftWorkspacePage(_props: Props) {
                   <option value="right">⇥ Right</option>
                   <option value="justify">≣ Justify</option>
                 </select>
-              </BubbleMenu>
+                <span className="editorial-po-draft-toolbar-divider" />
+                <button
+                  type="button"
+                  className="editorial-po-draft-toolbar-btn"
+                  onClick={() => editor.chain().focus().undo().run()}
+                  disabled={!editor.can().undo()}
+                  title="Undo (⌘Z)"
+                  aria-label="Undo"
+                >
+                  ↺
+                </button>
+                <button
+                  type="button"
+                  className="editorial-po-draft-toolbar-btn"
+                  onClick={() => editor.chain().focus().redo().run()}
+                  disabled={!editor.can().redo()}
+                  title="Redo (⌘⇧Z)"
+                  aria-label="Redo"
+                >
+                  ↻
+                </button>
+              </div>
             ) : null}
+          </div>
+          <div className="editorial-po-draft-editor">
             {editor ? (
               <FloatingMenu
                 editor={editor}
