@@ -2,8 +2,11 @@ import { useEffect, useMemo, useState } from 'react';
 
 import { EditorialPhaseStrip } from '../components/EditorialPhaseStrip';
 import {
+  FIXTURE_AGENT_PROFILES,
   FIXTURE_PERSONAS,
+  getAgentProfileById,
   getPersonaBySlug,
+  type AgentProfile,
   type Persona,
 } from '../lib/editorial-fixtures';
 import {
@@ -200,13 +203,7 @@ export function EditorialSetupPage(_props: Props) {
             <AudienceSection setup={setup} update={update} nav={navProps} />
           )}
           {activeSection === 'llm-room' && (
-            <StubSection
-              num="03"
-              title="Who is in the LLM Room?"
-              copy="Pick agent profiles that critique, propose, and score during the run."
-              note="Agent library + per-agent stance/cost — coming next slice."
-              nav={navProps}
-            />
+            <LLMRoomSection setup={setup} update={update} nav={navProps} />
           )}
           {activeSection === 'scoring' && (
             <StubSection
@@ -676,6 +673,195 @@ function AudienceSection({
               ADD SUGGESTED
             </button>
           </div>
+        </div>
+      ) : null}
+
+      <div className="editorial-section-footer">
+        <span className="editorial-section-footer-meta">
+          setup_version {setup.setup_version} · changes stale dependent scores
+        </span>
+      </div>
+    </section>
+  );
+}
+
+function LLMRoomSection({
+  setup,
+  update,
+  nav,
+}: {
+  setup: SetupState;
+  update: (patch: Partial<SetupState>) => void;
+  nav: SectionNavProps;
+}) {
+  const [pickerOpen, setPickerOpen] = useState(false);
+
+  const selected = useMemo<AgentProfile[]>(
+    () =>
+      setup.llm_room_agent_profile_ids
+        .map((id) => getAgentProfileById(id))
+        .filter((a): a is AgentProfile => a !== null),
+    [setup.llm_room_agent_profile_ids],
+  );
+
+  const available = useMemo<AgentProfile[]>(
+    () =>
+      FIXTURE_AGENT_PROFILES.filter(
+        (a) => !setup.llm_room_agent_profile_ids.includes(a.id),
+      ),
+    [setup.llm_room_agent_profile_ids],
+  );
+
+  const totalCostPerTurn = useMemo(
+    () => selected.reduce((sum, a) => sum + a.costPerTurnUsd, 0),
+    [selected],
+  );
+
+  const addAgent = (id: string): void => {
+    if (setup.llm_room_agent_profile_ids.includes(id)) return;
+    update({
+      llm_room_agent_profile_ids: [...setup.llm_room_agent_profile_ids, id],
+    });
+  };
+
+  const removeAgent = (id: string): void => {
+    update({
+      llm_room_agent_profile_ids: setup.llm_room_agent_profile_ids.filter(
+        (i) => i !== id,
+      ),
+    });
+  };
+
+  return (
+    <section className="editorial-section-workspace">
+      <SectionHeader
+        num="03"
+        title="Who is in the LLM Room?"
+        copy="Pick agent profiles that critique, propose, and score during the run. Each one is a named voice with a surface model, a stance, and a per-turn cost — never an anonymous chip."
+        nav={nav}
+      />
+
+      <div className="editorial-agents-selected">
+        <h3 className="editorial-personas-section-label">
+          ACTIVE · {selected.length}
+        </h3>
+        {selected.length === 0 ? (
+          <p className="editorial-personas-empty">
+            No agents in the room yet — pick at least two so a panel turn can
+            run.
+          </p>
+        ) : (
+          <ul className="editorial-agents-list">
+            {selected.map((a) => (
+              <li key={a.id} className="editorial-agent-row">
+                <span
+                  className={`editorial-persona-avatar editorial-persona-avatar-${a.color}`}
+                  aria-hidden="true"
+                >
+                  {a.monogram}
+                </span>
+                <div className="editorial-agent-row-text">
+                  <div className="editorial-agent-headline">
+                    <span className="editorial-persona-name">{a.name}</span>
+                    <span className="editorial-agent-role">{a.role}</span>
+                  </div>
+                  <p className="editorial-agent-stance">{a.stance}</p>
+                </div>
+                <span className="editorial-agent-model">
+                  {a.model} · {a.provider}
+                </span>
+                <span className="editorial-agent-cost">
+                  ~${a.costPerTurnUsd.toFixed(2)}/TURN
+                </span>
+                <button
+                  type="button"
+                  className="editorial-chip-button"
+                  onClick={() => removeAgent(a.id)}
+                >
+                  REMOVE
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+
+      <div className="editorial-agents-footer">
+        <span className="editorial-agents-footer-meta">
+          {selected.length} ACTIVE · ALL PROFILES FROM AGENT-PROFILE LIBRARY ·
+          EST. ~${totalCostPerTurn.toFixed(2)} PER PANEL TURN
+        </span>
+        <div className="editorial-agents-footer-actions">
+          <button
+            type="button"
+            className="editorial-chip-button editorial-chip-button-primary"
+            onClick={() => setPickerOpen((open) => !open)}
+            disabled={available.length === 0}
+          >
+            {pickerOpen ? '✕ CLOSE PICKER' : '+ ADD AGENT'}
+          </button>
+          <button type="button" className="editorial-chip-button" disabled>
+            BROWSE LIBRARY
+          </button>
+        </div>
+      </div>
+
+      {pickerOpen && available.length > 0 ? (
+        <div className="editorial-agents-picker">
+          <h3 className="editorial-personas-section-label">
+            AGENT LIBRARY · {available.length} AVAILABLE
+          </h3>
+          <ul className="editorial-agents-picker-grid">
+            {available.map((a) => (
+              <li
+                key={a.id}
+                className={`editorial-agent-card${
+                  a.suggested ? ' editorial-agent-card-suggested' : ''
+                }`}
+              >
+                {a.suggested ? (
+                  <span className="editorial-persona-suggested editorial-persona-suggested-yellow">
+                    ● SUGGESTED
+                  </span>
+                ) : null}
+                <div className="editorial-agent-card-body">
+                  <div className="editorial-agent-card-headline">
+                    <span
+                      className={`editorial-persona-avatar editorial-persona-avatar-${a.color}`}
+                      aria-hidden="true"
+                    >
+                      {a.monogram}
+                    </span>
+                    <div>
+                      <h4 className="editorial-persona-name">{a.name}</h4>
+                      <span className="editorial-agent-role">{a.role}</span>
+                    </div>
+                  </div>
+                  <span className="editorial-agent-model">
+                    {a.model} · {a.provider}
+                  </span>
+                  <p className="editorial-agent-stance">{a.stance}</p>
+                </div>
+                <footer className="editorial-agent-card-footer">
+                  <span className="editorial-agent-cost">
+                    ~${a.costPerTurnUsd.toFixed(2)}/TURN
+                  </span>
+                  <button
+                    type="button"
+                    className={`editorial-chip-button${
+                      a.suggested ? ' editorial-chip-button-primary' : ''
+                    }`}
+                    onClick={() => {
+                      addAgent(a.id);
+                      if (available.length === 1) setPickerOpen(false);
+                    }}
+                  >
+                    + ADD
+                  </button>
+                </footer>
+              </li>
+            ))}
+          </ul>
         </div>
       ) : null}
 

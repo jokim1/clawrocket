@@ -130,3 +130,96 @@ export const FIXTURE_PERSONAS: ReadonlyArray<Persona> = [
 export function getPersonaBySlug(slug: string): Persona | null {
   return FIXTURE_PERSONAS.find((p) => p.slug === slug) ?? null;
 }
+
+// ─── LLM Room agent profile library ─────────────────────────────────────────
+// Agent profiles are the AI critics on the panel — not anonymous chips per
+// design §11 anti-pattern. Each is named, has a surface model + provider,
+// a stance, and a per-turn cost so the user always sees what they're paying
+// for and how the agent will critique.
+
+export type AgentProfile = {
+  id: string;
+  name: string;
+  role: string;
+  monogram: string;
+  color: PersonaColor;
+  model: string;
+  provider: string;
+  stance: string;
+  costPerTurnUsd: number;
+  suggested?: boolean;
+};
+
+export const FIXTURE_AGENT_PROFILES: ReadonlyArray<AgentProfile> = [
+  {
+    id: 'agent/argus',
+    name: 'Argus',
+    role: 'argument critic',
+    monogram: 'A',
+    color: 'green',
+    model: 'CLAUDE-OPUS-4',
+    provider: 'ANTHROPIC',
+    stance: 'hostile to weak claims · steelmans counters',
+    costPerTurnUsd: 0.04,
+  },
+  {
+    id: 'agent/marisol',
+    name: 'Marisol',
+    role: 'narrative shaper',
+    monogram: 'M',
+    color: 'blue',
+    model: 'GPT-5',
+    provider: 'OPENAI',
+    stance: 'tightens prose · won’t soften claims',
+    costPerTurnUsd: 0.03,
+  },
+  {
+    id: 'agent/kenji',
+    name: 'Kenji',
+    role: 'source auditor',
+    monogram: 'K',
+    color: 'red',
+    model: 'GEMINI-2-PRO',
+    provider: 'GOOGLE',
+    stance: 'verifies citations · flags missing primary sources',
+    costPerTurnUsd: 0.02,
+  },
+  {
+    id: 'agent/voice-critic',
+    name: 'Voice Critic',
+    role: 'voice consistency',
+    monogram: 'V',
+    color: 'gold',
+    model: 'CLAUDE-OPUS-4',
+    provider: 'ANTHROPIC',
+    stance: 'enforces voice page rules · catches drift',
+    costPerTurnUsd: 0.04,
+    suggested: true,
+  },
+  {
+    id: 'agent/ada',
+    name: 'Ada',
+    role: 'structure scout',
+    monogram: 'D',
+    color: 'purple',
+    model: 'CLAUDE-SONNET-4',
+    provider: 'ANTHROPIC',
+    stance: 'evaluates section flow + length',
+    costPerTurnUsd: 0.02,
+  },
+  {
+    id: 'agent/counter',
+    name: 'Counter',
+    role: 'adversarial reader',
+    monogram: 'C',
+    color: 'teal',
+    model: 'GPT-5',
+    provider: 'OPENAI',
+    stance: 'argues the opposite case · finds blind spots',
+    costPerTurnUsd: 0.04,
+  },
+];
+
+export function getAgentProfileById(id: string): AgentProfile | null {
+  return FIXTURE_AGENT_PROFILES.find((a) => a.id === id) ?? null;
+}
