@@ -1,5 +1,7 @@
 import { useMemo, useState } from 'react';
 
+import { EditorialPhaseStrip } from '../components/EditorialPhaseStrip';
+
 // SetupState mirrors docs/contracts/editorial-room/v0/setup_state.schema.json
 // (also in EDITORIAL_ROOM_CONTRACT.md §2.1). Held in component state for the
 // 0p-a vertical slice; no persistence yet.
@@ -30,15 +32,6 @@ type SetupState = {
   updated_at: string;
   updated_by_user_id: string;
 };
-
-const PHASES = [
-  { id: 'setup', label: '01 SETUP' },
-  { id: 'theme-topics', label: '02 THEME + TOPICS' },
-  { id: 'points-outline', label: '03 POINTS + OUTLINE' },
-  { id: 'draft', label: '04 DRAFT' },
-  { id: 'polish', label: '05 POLISH' },
-  { id: 'ship', label: '06 SHIP' },
-] as const;
 
 type SectionId = 'deliverable' | 'audience' | 'llm-room' | 'scoring';
 
@@ -160,35 +153,7 @@ export function EditorialSetupPage(_props: Props) {
 
   return (
     <div className="editorial-room">
-      <header className="editorial-phase-strip">
-        <div className="editorial-phase-strip-brand">
-          <span className="editorial-phase-strip-mark">ER</span>
-          <span className="editorial-phase-strip-title">
-            Editorial Room <span className="editorial-version">v0P</span>
-          </span>
-        </div>
-        <nav className="editorial-phase-strip-pills">
-          {PHASES.map((p) => (
-            <span
-              key={p.id}
-              className={`editorial-phase-pill${p.id === 'setup' ? ' editorial-phase-pill-active' : ''}`}
-            >
-              {p.label}
-            </span>
-          ))}
-        </nav>
-        <div className="editorial-phase-strip-actions">
-          <button type="button" className="editorial-chip-button" disabled>
-            ⌘K
-          </button>
-          <button type="button" className="editorial-chip-button" disabled>
-            HISTORY
-          </button>
-          <button type="button" className="editorial-chip-button" disabled>
-            SAVE
-          </button>
-        </div>
-      </header>
+      <EditorialPhaseStrip activePhase="setup" />
 
       <div className="editorial-meta-bar">
         <span className="editorial-meta-prefix">SETUP</span>
