@@ -4,10 +4,13 @@ import { EditorialPhaseStrip } from '../components/EditorialPhaseStrip';
 import {
   FIXTURE_AGENT_PROFILES,
   FIXTURE_PERSONAS,
+  FIXTURE_PIPELINES,
   getAgentProfileById,
   getPersonaBySlug,
+  getPipelineBySlug,
   type AgentProfile,
   type Persona,
+  type ScoringPipeline,
 } from '../lib/editorial-fixtures';
 import {
   DELIVERABLE_LABELS,
@@ -206,13 +209,7 @@ export function EditorialSetupPage(_props: Props) {
             <LLMRoomSection setup={setup} update={update} nav={navProps} />
           )}
           {activeSection === 'scoring' && (
-            <StubSection
-              num="04"
-              title="What scoring system governs gates?"
-              copy="Pick a scoring pipeline. Tune scorer weights and budget caps inline."
-              note="Pipeline picker · weighted-scorer editor · budget caps — coming next slice."
-              nav={navProps}
-            />
+            <ScoringSection setup={setup} update={update} nav={navProps} />
           )}
         </main>
 
@@ -864,6 +861,113 @@ function LLMRoomSection({
           </ul>
         </div>
       ) : null}
+
+      <div className="editorial-section-footer">
+        <span className="editorial-section-footer-meta">
+          setup_version {setup.setup_version} · changes stale dependent scores
+        </span>
+      </div>
+    </section>
+  );
+}
+
+function ScoringSection({
+  setup,
+  update,
+  nav,
+}: {
+  setup: SetupState;
+  update: (patch: Partial<SetupState>) => void;
+  nav: SectionNavProps;
+}) {
+  const pipeline: ScoringPipeline =
+    getPipelineBySlug(setup.scoring_pipeline_slug) ?? FIXTURE_PIPELINES[0];
+
+  return (
+    <section className="editorial-section-workspace">
+      <SectionHeader
+        num="04"
+        title="What scoring system governs gates?"
+        copy="Pick a scoring pipeline. Each pipeline bundles weighted scorers and budget caps that govern Theme/Topic/Draft optimization. Inline tuning lands when SetupState extends with per-piece overrides."
+        nav={nav}
+      />
+
+      <div className="editorial-scoring-grid">
+        {/* Column 1 — PIPELINE */}
+        <div className="editorial-scoring-col">
+          <h3 className="editorial-personas-section-label">PIPELINE</h3>
+          <select
+            className="editorial-scoring-pipeline-select"
+            value={setup.scoring_pipeline_slug}
+            onChange={(e) => update({ scoring_pipeline_slug: e.target.value })}
+            aria-label="Scoring pipeline"
+          >
+            {FIXTURE_PIPELINES.map((p) => (
+              <option key={p.slug} value={p.slug}>
+                {p.name}
+              </option>
+            ))}
+          </select>
+          <p className="editorial-scoring-pipeline-desc">
+            {pipeline.description}
+          </p>
+          <p className="editorial-scoring-pipeline-meta">
+            slug: <code>{pipeline.slug}</code>
+          </p>
+        </div>
+
+        {/* Column 2 — SCORERS */}
+        <div className="editorial-scoring-col">
+          <h3 className="editorial-personas-section-label">
+            SCORERS · WEIGHTS
+          </h3>
+          <ul className="editorial-scoring-scorers">
+            {pipeline.scorers.map((s) => (
+              <li key={s.name} className="editorial-scoring-scorer">
+                <div className="editorial-scoring-scorer-row">
+                  <span className="editorial-scoring-scorer-name">
+                    {s.name}
+                  </span>
+                  <div className="editorial-scoring-scorer-bar">
+                    <div
+                      className="editorial-scoring-scorer-fill"
+                      style={{ width: `${Math.round(s.weight * 100)}%` }}
+                    />
+                  </div>
+                  <span className="editorial-scoring-scorer-weight">
+                    ×{s.weight.toFixed(2)}
+                  </span>
+                </div>
+                <p className="editorial-scoring-scorer-desc">{s.description}</p>
+                {s.note ? (
+                  <p className="editorial-scoring-scorer-note">{s.note}</p>
+                ) : null}
+              </li>
+            ))}
+          </ul>
+          <p className="editorial-scoring-tuning-note">
+            Inline weight tuning is read-only at v0p. Per-piece scorer overrides
+            land when SetupState extends to carry them.
+          </p>
+        </div>
+
+        {/* Column 3 — BUDGET CAPS */}
+        <div className="editorial-scoring-col">
+          <h3 className="editorial-personas-section-label">BUDGET CAPS</h3>
+          <ul className="editorial-scoring-caps">
+            {pipeline.budgetCaps.map((cap) => (
+              <li key={cap.label} className="editorial-scoring-cap">
+                <span className="editorial-scoring-cap-label">{cap.label}</span>
+                <span className="editorial-scoring-cap-value">{cap.value}</span>
+              </li>
+            ))}
+          </ul>
+          <p className="editorial-scoring-tuning-note">
+            Hard caps for OPTIMIZATION_LOOP §5 cost guardrails. Inline editing
+            lands with SetupState overrides.
+          </p>
+        </div>
+      </div>
 
       <div className="editorial-section-footer">
         <span className="editorial-section-footer-meta">

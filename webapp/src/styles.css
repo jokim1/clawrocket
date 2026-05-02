@@ -5413,6 +5413,214 @@ a {
   background: #fbf8f2;
 }
 
+/* Setup · Scoring System section */
+
+.editorial-scoring-grid {
+  margin-top: 1.4rem;
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) minmax(0, 2fr) minmax(180px, 1fr);
+  gap: 1.1rem;
+}
+
+@media (max-width: 1080px) {
+  .editorial-scoring-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.editorial-scoring-col {
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+  background: #fff;
+  border: 1px solid #ddd6c8;
+  border-radius: 6px;
+  padding: 0.85rem 0.95rem;
+}
+
+.editorial-scoring-pipeline-select {
+  border: 1px solid #c9c0a8;
+  border-radius: 5px;
+  padding: 0.4rem 0.55rem;
+  font-family: 'IBM Plex Sans', system-ui, sans-serif;
+  font-size: 0.88rem;
+  background: #fbf8f2;
+  color: #1f1c14;
+}
+
+.editorial-scoring-pipeline-select:focus {
+  outline: none;
+  border-color: #b7372a;
+  box-shadow: 0 0 0 1px #b7372a;
+}
+
+.editorial-scoring-pipeline-desc {
+  margin: 0;
+  font-family: 'IBM Plex Serif', Georgia, serif;
+  font-size: 0.84rem;
+  font-style: italic;
+  color: #4a4738;
+  line-height: 1.4;
+}
+
+.editorial-scoring-pipeline-meta {
+  margin: 0;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.62rem;
+  letter-spacing: 0.04em;
+  color: #8a8268;
+  text-transform: uppercase;
+}
+
+.editorial-scoring-pipeline-meta code {
+  background: #fbf8f2;
+  border: 1px solid #e2dccc;
+  border-radius: 3px;
+  padding: 0 0.35rem;
+  font-size: 0.7rem;
+  color: #5b5644;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.editorial-scoring-scorers {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+}
+
+.editorial-scoring-scorer {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  padding-bottom: 0.4rem;
+  border-bottom: 1px dashed #efe9d8;
+}
+
+.editorial-scoring-scorer:last-child {
+  border-bottom: 0;
+  padding-bottom: 0;
+}
+
+.editorial-scoring-scorer-row {
+  display: grid;
+  grid-template-columns: minmax(120px, max-content) 1fr auto;
+  align-items: center;
+  gap: 0.55rem;
+}
+
+.editorial-scoring-scorer-name {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.74rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #1f1c14;
+  font-weight: 600;
+}
+
+.editorial-scoring-scorer-bar {
+  position: relative;
+  height: 0.4rem;
+  background: #efe9d8;
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.editorial-scoring-scorer-fill {
+  position: absolute;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  background: #b7372a;
+  border-radius: 2px;
+  transition: width 200ms ease;
+}
+
+.editorial-scoring-scorer-weight {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.74rem;
+  letter-spacing: 0.04em;
+  color: #1f1c14;
+  font-weight: 600;
+  white-space: nowrap;
+  min-width: 3rem;
+  text-align: right;
+}
+
+.editorial-scoring-scorer-desc {
+  margin: 0;
+  font-family: 'IBM Plex Serif', Georgia, serif;
+  font-size: 0.78rem;
+  font-style: italic;
+  color: #5b5644;
+  line-height: 1.45;
+  padding-left: 0.05rem;
+}
+
+.editorial-scoring-scorer-note {
+  margin: 0;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.6rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #8a6d2c;
+  background: #fff8e7;
+  border: 1px solid #f5d76e;
+  border-radius: 3px;
+  padding: 0.18rem 0.4rem;
+  align-self: flex-start;
+}
+
+.editorial-scoring-tuning-note {
+  margin: 0.5rem 0 0;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.6rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #8a8268;
+  line-height: 1.4;
+}
+
+.editorial-scoring-caps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.editorial-scoring-cap {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  padding-bottom: 0.4rem;
+  border-bottom: 1px dashed #efe9d8;
+  font-family: 'IBM Plex Mono', monospace;
+}
+
+.editorial-scoring-cap:last-child {
+  border-bottom: 0;
+  padding-bottom: 0;
+}
+
+.editorial-scoring-cap-label {
+  font-size: 0.66rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #6c6655;
+}
+
+.editorial-scoring-cap-value {
+  font-size: 0.86rem;
+  font-weight: 600;
+  color: #1f1c14;
+  letter-spacing: 0.02em;
+}
+
 .editorial-setup-preview {
   border-left: 1px solid #ddd6c8;
   padding: 1.1rem 1rem;
