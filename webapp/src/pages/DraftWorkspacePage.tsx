@@ -10,26 +10,28 @@ import StarterKit from '@tiptap/starter-kit';
 import { EditorialPhaseStrip } from '../components/EditorialPhaseStrip';
 
 // ───────────────────────────────────────────────────────────────────────────
-// Phase 04 DRAFT — cursor-aware navigation cut.
-// Builds on the first-cut three-column shell (PR #269) by wiring the editor's
-// selection state into:
-//   • a sticky active-paragraph header above the prose
-//     (`PARAGRAPH N OF M · POINT P · TYPE`)
-//   • the SCOPE chip in the toolbar (live SELECTION / PARAGRAPH N / WHOLE DRAFT)
-//   • the Outline rail (◉/◌ active indicator, `N ¶` count, click-to-jump)
+// Phase 04 DRAFT — versions tab + ⌘S manual save.
+// Builds on the cursor-aware navigation cut (PR #270) by adding the Versions
+// rail tab per design/04_draft.md §10.4:
+//   • Named snapshots: manual_save (⌘S), phase_entry (mount), restore_from_snapshot
+//     — durable, never auto-pruned at v0p
+//   • Auto snapshots: every 60s if changed since last snapshot — last 20 retained
+//     (FIFO prune)
+//   • Restore replaces the current draft body and captures pre-restore state
+//     as a named snapshot so the user can recover from a misclick
 //
-// Segment-binding is heuristic: we evenly distribute the doc's top-level
-// paragraphs across the ordered Outline points (HOOK → BODY → CLOSE). True
-// segment markers (custom Tiptap nodes that pin paragraphs to specific Points)
-// land in a follow-up PR.
+// Earlier cuts in this page:
+//   • PR #269: three-column shell + Tiptap editor + outline rail + word count
+//   • PR #270: cursor-aware status bar + scope chip + outline jump-to-segment
 //
 // Still deferred (per design/04_draft.md):
-// - Sources + Versions tabs in left rail
+// - Sources tab (left rail) — scoped citation tracker
 // - Panel chat scoped to active segment (right rail)
 // - Quick-action chips wired to handlers (FULL DRAFT / POLISH / etc.)
 // - + OPTIMIZE popover with cost preview + customize panel + run
 // - Voice-lock banner, mechanical scorer, suggestion overlay
-// - Markdown export, revision history, source-map round-trip
+// - Markdown export, source-map round-trip
+// - Compressed-diff snapshot storage (currently full JSON per snapshot)
 //
 // NOTE on the Outline-rail data source: the Points workspace owns its
 // state in its own localStorage envelope. To avoid threading a shared
@@ -74,6 +76,25 @@ type Bucket = {
   count: number;
 };
 
+type VersionKind = 'named' | 'auto';
+
+type VersionTrigger =
+  | 'manual_save'
+  | 'phase_entry'
+  | 'autosave'
+  | 'restore_from_snapshot';
+
+type VersionEntry = {
+  id: string;
+  kind: VersionKind;
+  trigger: VersionTrigger;
+  timestamp: number;
+  preview: string;
+  body: unknown;
+};
+
+type RailTab = 'outline' | 'versions';
+
 const SECTION_ORDER: ReadonlyArray<OutlineSection> = ['HOOK', 'BODY', 'CLOSE'];
 
 const SECTION_LABEL: Record<OutlineSection, string> = {
@@ -86,6 +107,17 @@ const POINTS_DETAIL_STATES_KEY =
   'editorial-room.points-outline.detail-states-v1';
 const POINTS_ORDER_KEY = 'editorial-room.points-outline.points-order-v0';
 const DRAFT_CONTENT_KEY = 'editorial-room.draft.content-v0';
+const DRAFT_VERSIONS_KEY = 'editorial-room.draft.versions-v0';
+
+const AUTO_SNAPSHOT_INTERVAL_MS = 60_000;
+const AUTO_VERSIONS_RETENTION = 20;
+
+const TRIGGER_LABELS: Record<VersionTrigger, string> = {
+  manual_save: 'MANUAL ⌘S',
+  phase_entry: 'PHASE ENTRY',
+  autosave: 'AUTOSAVE',
+  restore_from_snapshot: 'PRE-RESTORE',
+};
 
 const FIXTURE_POINT_TYPES: Record<string, 'HOOK' | 'ARG' | 'CLOSE'> = {
   'p1-deal-term-lockdown': 'HOOK',
@@ -286,6 +318,113 @@ function countWords(text: string): number {
   return trimmed.split(/\s+/).filter(Boolean).length;
 }
 
+// ─── version + snapshot helpers ─────────────────────────────────────────────
+
+function isValidVersion(v: unknown): v is VersionEntry {
+  if (!v || typeof v !== 'object') return false;
+  const obj = v as Record<string, unknown>;
+  if (typeof obj.id !== 'string') return false;
+  if (obj.kind !== 'named' && obj.kind !== 'auto') return false;
+  if (
+    obj.trigger !== 'manual_save' &&
+    obj.trigger !== 'phase_entry' &&
+    obj.trigger !== 'autosave' &&
+    obj.trigger !== 'restore_from_snapshot'
+  ) {
+    return false;
+  }
+  if (typeof obj.timestamp !== 'number') return false;
+  if (typeof obj.preview !== 'string') return false;
+  if (obj.body === undefined) return false;
+  return true;
+}
+
+function loadVersions(): VersionEntry[] {
+  if (typeof window === 'undefined') return [];
+  try {
+    const raw = window.localStorage.getItem(DRAFT_VERSIONS_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(isValidVersion);
+  } catch {
+    return [];
+  }
+}
+
+function saveVersionsToStorage(versions: VersionEntry[]): void {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.setItem(DRAFT_VERSIONS_KEY, JSON.stringify(versions));
+  } catch {
+    // localStorage quota errors silently dropped at v0p
+  }
+}
+
+function pruneAutoVersions(versions: VersionEntry[]): VersionEntry[] {
+  const named = versions.filter((v) => v.kind === 'named');
+  const auto = [...versions].filter((v) => v.kind === 'auto');
+  // Keep the most recent N auto-snapshots.
+  auto.sort((a, b) => b.timestamp - a.timestamp);
+  const keepAuto = auto.slice(0, AUTO_VERSIONS_RETENTION);
+  return [...named, ...keepAuto].sort((a, b) => a.timestamp - b.timestamp);
+}
+
+function makeVersionId(): string {
+  if (
+    typeof globalThis.crypto !== 'undefined' &&
+    typeof globalThis.crypto.randomUUID === 'function'
+  ) {
+    return globalThis.crypto.randomUUID();
+  }
+  return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function buildPreview(text: string): string {
+  const collapsed = text.replace(/\s+/g, ' ').trim();
+  if (!collapsed) return '(empty)';
+  return collapsed.length > 80 ? `${collapsed.slice(0, 80)}…` : collapsed;
+}
+
+function createVersionEntry(
+  editor: Editor,
+  kind: VersionKind,
+  trigger: VersionTrigger,
+): VersionEntry {
+  return {
+    id: makeVersionId(),
+    kind,
+    trigger,
+    timestamp: Date.now(),
+    preview: buildPreview(editor.state.doc.textContent),
+    body: editor.getJSON(),
+  };
+}
+
+function latestVersion(versions: VersionEntry[]): VersionEntry | null {
+  if (versions.length === 0) return null;
+  let latest = versions[0];
+  for (let i = 1; i < versions.length; i++) {
+    if (versions[i].timestamp > latest.timestamp) latest = versions[i];
+  }
+  return latest;
+}
+
+function bodiesEqual(a: unknown, b: unknown): boolean {
+  // Cheap structural compare via JSON. Fine for a v0p draft (~10KB).
+  return JSON.stringify(a) === JSON.stringify(b);
+}
+
+function formatVersionDay(ts: number): string {
+  const d = new Date(ts);
+  const today = new Date();
+  if (d.toDateString() === today.toDateString()) return 'TODAY';
+  const yesterday = new Date(today);
+  yesterday.setDate(today.getDate() - 1);
+  if (d.toDateString() === yesterday.toDateString()) return 'YESTERDAY';
+  return `${String(d.getMonth() + 1).padStart(2, '0')}/${String(d.getDate()).padStart(2, '0')}`;
+}
+
 // ─── cursor + paragraph helpers ─────────────────────────────────────────────
 
 function getDocParagraphs(editor: Editor): ParagraphRange[] {
@@ -448,7 +587,15 @@ export function DraftWorkspacePage(_props: Props) {
     inHeading: false,
     hasSelection: false,
   });
+  const [versions, setVersions] = useState<VersionEntry[]>(loadVersions);
+  const [activeRailTab, setActiveRailTab] = useState<RailTab>('outline');
+  const [showAutosaves, setShowAutosaves] = useState<boolean>(false);
   const saveTimerRef = useRef<number | null>(null);
+  // Bumped on every editor onUpdate. Compared against `lastSnapshotVersionRef`
+  // by the auto-snapshot interval to skip no-op snapshots.
+  const editorVersionRef = useRef<number>(0);
+  const lastSnapshotVersionRef = useRef<number>(-1);
+  const phaseEntryDoneRef = useRef<boolean>(false);
 
   const editor = useEditor({
     extensions: [StarterKit],
@@ -458,6 +605,7 @@ export function DraftWorkspacePage(_props: Props) {
       setCursor(computeCursorState(editor));
     },
     onUpdate: ({ editor }) => {
+      editorVersionRef.current += 1;
       setWordCount(countWords(editor.state.doc.textContent));
       setCursor(computeCursorState(editor));
       if (saveTimerRef.current !== null) {
@@ -481,6 +629,71 @@ export function DraftWorkspacePage(_props: Props) {
       }
     };
   }, []);
+
+  // Persist versions whenever they change.
+  useEffect(() => {
+    saveVersionsToStorage(versions);
+  }, [versions]);
+
+  // Phase-entry snapshot — fires once per page mount, but skip if the latest
+  // existing snapshot already matches the current draft body (avoids the
+  // "open page → close → reopen" duplicate-spam case).
+  useEffect(() => {
+    if (!editor || phaseEntryDoneRef.current) return;
+    phaseEntryDoneRef.current = true;
+    const currentBody = editor.getJSON();
+    setVersions((prev) => {
+      const last = latestVersion(prev);
+      if (last && bodiesEqual(last.body, currentBody)) {
+        return prev;
+      }
+      return pruneAutoVersions([
+        ...prev,
+        createVersionEntry(editor, 'named', 'phase_entry'),
+      ]);
+    });
+    lastSnapshotVersionRef.current = editorVersionRef.current;
+  }, [editor]);
+
+  // Auto-snapshot on a 60s cadence, but only if the editor changed since the
+  // last snapshot. Bounded retention via FIFO prune to AUTO_VERSIONS_RETENTION.
+  useEffect(() => {
+    if (!editor) return;
+    const intervalId = window.setInterval(() => {
+      if (editorVersionRef.current === lastSnapshotVersionRef.current) {
+        return;
+      }
+      lastSnapshotVersionRef.current = editorVersionRef.current;
+      setVersions((prev) =>
+        pruneAutoVersions([
+          ...prev,
+          createVersionEntry(editor, 'auto', 'autosave'),
+        ]),
+      );
+    }, AUTO_SNAPSHOT_INTERVAL_MS);
+    return () => window.clearInterval(intervalId);
+  }, [editor]);
+
+  // ⌘S / Ctrl+S → manual named snapshot. Always creates a snapshot — user
+  // intent is explicit. The Versions tab pill count bumps to give the user
+  // a quiet visual receipt; we don't auto-flip the rail tab.
+  useEffect(() => {
+    if (!editor) return;
+    const handler = (e: KeyboardEvent): void => {
+      if (e.key !== 's' && e.key !== 'S') return;
+      if (!(e.metaKey || e.ctrlKey)) return;
+      e.preventDefault();
+      lastSnapshotVersionRef.current = editorVersionRef.current;
+      setVersions((prev) =>
+        pruneAutoVersions([
+          ...prev,
+          createVersionEntry(editor, 'named', 'manual_save'),
+        ]),
+      );
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [editor]);
 
   const orderedOutline = useMemo<OutlineEntry[]>(
     () => [
@@ -508,6 +721,42 @@ export function DraftWorkspacePage(_props: Props) {
   const handleOutlineClick = (pointIndex: number): void => {
     if (!editor) return;
     jumpToPointParagraph(editor, pointIndex, buckets);
+  };
+
+  const namedVersions = useMemo(
+    () =>
+      [...versions]
+        .filter((v) => v.kind === 'named')
+        .sort((a, b) => b.timestamp - a.timestamp),
+    [versions],
+  );
+  const autoVersions = useMemo(
+    () =>
+      [...versions]
+        .filter((v) => v.kind === 'auto')
+        .sort((a, b) => b.timestamp - a.timestamp),
+    [versions],
+  );
+
+  const handleRestoreVersion = (version: VersionEntry): void => {
+    if (!editor) return;
+    // Per design/04_draft.md §10.4: capture pre-restore state as a named
+    // snapshot so the user can recover from a misclick. Then replace the
+    // editor body with the picked snapshot.
+    const preRestore = createVersionEntry(
+      editor,
+      'named',
+      'restore_from_snapshot',
+    );
+    setVersions((prev) => pruneAutoVersions([...prev, preRestore]));
+    // setContent isn't currently undoable through Tiptap's history, so the
+    // pre-restore named snapshot above IS the user's recovery path.
+    editor.commands.setContent(version.body as Content);
+    // Push the per-edit content store too, so a subsequent reload picks up
+    // the restored body.
+    saveDraftContent(version.body);
+    setLastSavedAt(new Date());
+    lastSnapshotVersionRef.current = editorVersionRef.current;
   };
 
   const wordTargetStatus = (() => {
@@ -566,7 +815,12 @@ export function DraftWorkspacePage(_props: Props) {
           <div className="editorial-po-rail-tabs">
             <button
               type="button"
-              className="editorial-po-rail-tab editorial-po-rail-tab-active"
+              className={`editorial-po-rail-tab${
+                activeRailTab === 'outline'
+                  ? ' editorial-po-rail-tab-active'
+                  : ''
+              }`}
+              onClick={() => setActiveRailTab('outline')}
             >
               Outline{' '}
               <span className="editorial-po-rail-tab-count">
@@ -576,90 +830,182 @@ export function DraftWorkspacePage(_props: Props) {
             <button type="button" className="editorial-po-rail-tab" disabled>
               Sources <span className="editorial-po-rail-tab-count">—</span>
             </button>
-            <button type="button" className="editorial-po-rail-tab" disabled>
-              Versions <span className="editorial-po-rail-tab-count">—</span>
+            <button
+              type="button"
+              className={`editorial-po-rail-tab${
+                activeRailTab === 'versions'
+                  ? ' editorial-po-rail-tab-active'
+                  : ''
+              }`}
+              onClick={() => setActiveRailTab('versions')}
+            >
+              Versions{' '}
+              <span className="editorial-po-rail-tab-count">
+                {namedVersions.length}
+              </span>
             </button>
           </div>
 
-          {totalOutlinePoints === 0 ? (
-            <p className="editorial-tt-empty">
-              No Points in the Outline yet. Visit{' '}
-              <a href="/editorial/points-outline">03 POINTS + OUTLINE</a> to add
-              some.
-            </p>
-          ) : (
-            (() => {
-              let runningPos = 0;
-              return SECTION_ORDER.map((section) => {
-                const points = outlineGroups[section];
-                const startPos = runningPos;
-                runningPos += points.length;
-                if (points.length === 0) return null;
-                return (
-                  <section key={section} className="editorial-po-draft-section">
-                    <h3 className="editorial-po-outline-section-header">
-                      <span className="editorial-po-outline-section-label">
-                        {SECTION_LABEL[section]}
-                      </span>
-                      <span className="editorial-po-outline-section-count">
-                        {points.length}
-                      </span>
-                    </h3>
-                    <ul className="editorial-po-draft-outline-list">
-                      {points.map((p, idx) => {
-                        const orderIndex = startPos + idx;
-                        const isActive = orderIndex === activePoint;
-                        const paraCount = buckets[orderIndex]?.count ?? 0;
-                        return (
-                          <li
-                            key={p.slug}
-                            className={`editorial-po-draft-outline-item${
-                              isActive
-                                ? ' editorial-po-draft-outline-item-active'
-                                : ''
-                            }`}
-                          >
-                            <button
-                              type="button"
-                              className="editorial-po-draft-outline-button"
-                              onClick={() => handleOutlineClick(orderIndex)}
-                              aria-pressed={isActive}
+          {activeRailTab === 'outline' ? (
+            totalOutlinePoints === 0 ? (
+              <p className="editorial-tt-empty">
+                No Points in the Outline yet. Visit{' '}
+                <a href="/editorial/points-outline">03 POINTS + OUTLINE</a> to
+                add some.
+              </p>
+            ) : (
+              (() => {
+                let runningPos = 0;
+                return SECTION_ORDER.map((section) => {
+                  const points = outlineGroups[section];
+                  const startPos = runningPos;
+                  runningPos += points.length;
+                  if (points.length === 0) return null;
+                  return (
+                    <section
+                      key={section}
+                      className="editorial-po-draft-section"
+                    >
+                      <h3 className="editorial-po-outline-section-header">
+                        <span className="editorial-po-outline-section-label">
+                          {SECTION_LABEL[section]}
+                        </span>
+                        <span className="editorial-po-outline-section-count">
+                          {points.length}
+                        </span>
+                      </h3>
+                      <ul className="editorial-po-draft-outline-list">
+                        {points.map((p, idx) => {
+                          const orderIndex = startPos + idx;
+                          const isActive = orderIndex === activePoint;
+                          const paraCount = buckets[orderIndex]?.count ?? 0;
+                          return (
+                            <li
+                              key={p.slug}
+                              className={`editorial-po-draft-outline-item${
+                                isActive
+                                  ? ' editorial-po-draft-outline-item-active'
+                                  : ''
+                              }`}
                             >
-                              <div className="editorial-po-draft-outline-row">
-                                <span
-                                  className="editorial-po-draft-outline-indicator"
-                                  aria-hidden="true"
-                                >
-                                  {isActive ? '◉' : '◌'}
-                                </span>
-                                <span className="editorial-po-point-position">
-                                  {String(orderIndex + 1).padStart(2, '0')}
-                                </span>
-                                <span
-                                  className={`editorial-po-point-type editorial-po-point-type-${p.type.toLowerCase()}`}
-                                >
-                                  {p.type === 'ARG' ? 'ARGUMENT' : p.type}
-                                </span>
-                                <span className="editorial-po-point-score">
-                                  {p.score.toFixed(1)}
-                                  {p.stale ? '·' : ''}
-                                </span>
-                                <span className="editorial-po-draft-outline-paracount">
-                                  {paraCount} ¶
-                                </span>
-                              </div>
-                              <p className="editorial-po-draft-outline-claim">
-                                {p.claim}
-                              </p>
-                            </button>
-                          </li>
-                        );
-                      })}
-                    </ul>
-                  </section>
-                );
-              });
-            })()
+                              <button
+                                type="button"
+                                className="editorial-po-draft-outline-button"
+                                onClick={() => handleOutlineClick(orderIndex)}
+                                aria-pressed={isActive}
+                              >
+                                <div className="editorial-po-draft-outline-row">
+                                  <span
+                                    className="editorial-po-draft-outline-indicator"
+                                    aria-hidden="true"
+                                  >
+                                    {isActive ? '◉' : '◌'}
+                                  </span>
+                                  <span className="editorial-po-point-position">
+                                    {String(orderIndex + 1).padStart(2, '0')}
+                                  </span>
+                                  <span
+                                    className={`editorial-po-point-type editorial-po-point-type-${p.type.toLowerCase()}`}
+                                  >
+                                    {p.type === 'ARG' ? 'ARGUMENT' : p.type}
+                                  </span>
+                                  <span className="editorial-po-point-score">
+                                    {p.score.toFixed(1)}
+                                    {p.stale ? '·' : ''}
+                                  </span>
+                                  <span className="editorial-po-draft-outline-paracount">
+                                    {paraCount} ¶
+                                  </span>
+                                </div>
+                                <p className="editorial-po-draft-outline-claim">
+                                  {p.claim}
+                                </p>
+                              </button>
+                            </li>
+                          );
+                        })}
+                      </ul>
+                    </section>
+                  );
+                });
+              })()
+            )
+          ) : (
+            <div className="editorial-po-draft-versions-list">
+              {namedVersions.length === 0 && autoVersions.length === 0 ? (
+                <p className="editorial-tt-empty">
+                  No saved versions yet. Press ⌘S to save a named snapshot.
+                  Auto-snapshots fire every 60 seconds while editing.
+                </p>
+              ) : (
+                <>
+                  {namedVersions.map((v) => (
+                    <article
+                      key={v.id}
+                      className="editorial-po-draft-version-item editorial-po-draft-version-item-named"
+                    >
+                      <header className="editorial-po-draft-version-header">
+                        <span className="editorial-po-draft-version-time">
+                          {formatVersionDay(v.timestamp)}{' '}
+                          {formatHHMM(new Date(v.timestamp))}
+                        </span>
+                        <span className="editorial-po-draft-version-trigger">
+                          {TRIGGER_LABELS[v.trigger]}
+                        </span>
+                      </header>
+                      <p className="editorial-po-draft-version-preview">
+                        {v.preview}
+                      </p>
+                      <button
+                        type="button"
+                        className="editorial-po-draft-version-restore"
+                        onClick={() => handleRestoreVersion(v)}
+                      >
+                        RESTORE →
+                      </button>
+                    </article>
+                  ))}
+                  {autoVersions.length > 0 && (
+                    <button
+                      type="button"
+                      className="editorial-po-draft-versions-toggle"
+                      onClick={() => setShowAutosaves((s) => !s)}
+                    >
+                      {showAutosaves ? '▾ HIDE' : '▸ SHOW'}{' '}
+                      {autoVersions.length} AUTOSAVE
+                      {autoVersions.length === 1 ? '' : 'S'}
+                    </button>
+                  )}
+                  {showAutosaves &&
+                    autoVersions.map((v) => (
+                      <article
+                        key={v.id}
+                        className="editorial-po-draft-version-item editorial-po-draft-version-item-auto"
+                      >
+                        <header className="editorial-po-draft-version-header">
+                          <span className="editorial-po-draft-version-time">
+                            {formatVersionDay(v.timestamp)}{' '}
+                            {formatHHMM(new Date(v.timestamp))}
+                          </span>
+                          <span className="editorial-po-draft-version-trigger">
+                            {TRIGGER_LABELS[v.trigger]}
+                          </span>
+                        </header>
+                        <p className="editorial-po-draft-version-preview">
+                          {v.preview}
+                        </p>
+                        <button
+                          type="button"
+                          className="editorial-po-draft-version-restore"
+                          onClick={() => handleRestoreVersion(v)}
+                        >
+                          RESTORE →
+                        </button>
+                      </article>
+                    ))}
+                </>
+              )}
+            </div>
           )}
         </aside>
 
