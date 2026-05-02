@@ -8508,6 +8508,17 @@ a.editorial-phase-pill:hover {
   word-break: break-word;
 }
 
+.editorial-po-draft-panel-hint {
+  margin: 0.15rem 0.6rem 0.5rem;
+  padding: 0;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.6rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #6a6a6a;
+  word-break: break-word;
+}
+
 /* Sources tab content */
 
 .editorial-po-draft-sources-list {

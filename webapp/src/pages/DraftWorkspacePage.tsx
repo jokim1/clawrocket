@@ -26,6 +26,7 @@ import {
   type Destination,
   type SetupState,
 } from '../lib/editorial-setup';
+import { isAgentAuthed, useProviderAuth } from '../lib/llm-provider-auth';
 import { serializeDocToMarkdown, type JSONNode } from '../lib/markdown-export';
 import { parseMarkdownToDoc } from '../lib/markdown-import';
 
@@ -1059,6 +1060,10 @@ export function DraftWorkspacePage(_props: Props) {
   const [optimizeOpen, setOptimizeOpen] = useState<boolean>(false);
   const [destination, setDestination] = useState<Destination>(loadDestination);
   const [setup, setSetup] = useState<SetupState>(loadSetupState);
+  // Provider auth state — drives the agent picker for `+ ASK`. Refetches on
+  // mount; the composer's panel size reflects which providers are connected
+  // right now, not what the user picked in Setup.
+  const { authed: providerAuthed } = useProviderAuth();
 
   // Live panel turns produced by the `+ ASK` composer, keyed by activePoint.
   // Persisted to localStorage so they survive reloads. Fixture turns are
@@ -1307,16 +1312,22 @@ export function DraftWorkspacePage(_props: Props) {
     return PANEL_TURNS.filter((t) => t.scopePointIndex === activePoint);
   }, [activePoint, livePanelTurns]);
 
-  // Active agent — first selected agent profile that exists in the fixture
-  // library. The composer surfaces the agent's name + role + provider to
-  // the user before submit so it's never an anonymous chip.
-  const activeAgent = useMemo<AgentProfile | null>(() => {
-    for (const id of setup.llm_room_agent_profile_ids) {
-      const profile = getAgentProfileById(id);
-      if (profile) return profile;
-    }
-    return null;
-  }, [setup.llm_room_agent_profile_ids]);
+  // Selected agent profiles — the full set the user picked in Setup → LLM
+  // Room, including any whose provider has since lost auth (those still
+  // show up in Setup as ⚠ AUTH MISSING). `panelAgents` is the subset we'll
+  // actually fan `+ ASK` out to: connected providers only.
+  const selectedAgents = useMemo<AgentProfile[]>(
+    () =>
+      setup.llm_room_agent_profile_ids
+        .map((id) => getAgentProfileById(id))
+        .filter((a): a is AgentProfile => a !== null),
+    [setup.llm_room_agent_profile_ids],
+  );
+  const panelAgents = useMemo<AgentProfile[]>(
+    () => selectedAgents.filter((a) => isAgentAuthed(a, providerAuthed)),
+    [selectedAgents, providerAuthed],
+  );
+  const skippedAgentCount = selectedAgents.length - panelAgents.length;
 
   const scopeText = scopeChipText(cursor);
   const statusText = activeStatusText(cursor, orderedOutline, activePoint);
@@ -1327,9 +1338,12 @@ export function DraftWorkspacePage(_props: Props) {
   };
 
   // ─── + ASK composer dispatch ──────────────────────────────────────────
-  // Streams a single panel turn from the active agent against the active
-  // point's segment context. Live turns are persisted under
-  // editorial-room.draft.panel-turns-v0 keyed by activePoint.
+  // Fans a single user message out to every authed panel agent in parallel.
+  // Each agent gets its own placeholder turn that streams independently;
+  // one agent's failure does not affect the others (matches the contract's
+  // partial_provider_failures semantics in EDITORIAL_ROOM_CONTRACT.md §4.4).
+  // Live turns are persisted under editorial-room.draft.panel-turns-v0
+  // keyed by activePoint.
   // Clear all live panel turns for the active point. Fixtures reappear
   // afterward (they're the first-time-UX fallback). Per-point because the
   // whole-history nuke is rarely what the user wants — usually they're
@@ -1353,7 +1367,7 @@ export function DraftWorkspacePage(_props: Props) {
     activePoint >= 0 && (livePanelTurns[String(activePoint)]?.length ?? 0) > 0;
 
   const handleSubmitPanelTurn = async (): Promise<void> => {
-    if (!activeAgent) return;
+    if (panelAgents.length === 0) return;
     if (activePoint < 0) return;
     if (composerSubmitting) return;
     const userMessage = composerValue.trim();
@@ -1362,7 +1376,7 @@ export function DraftWorkspacePage(_props: Props) {
     setComposerSubmitting(true);
     setComposerError(null);
 
-    // Build segment context from the paragraphs in the active point's bucket.
+    // Build segment context once — same for every agent in the panel.
     const segmentContext = (() => {
       if (!editor) return '';
       const paragraphs = getDocParagraphs(editor);
@@ -1378,136 +1392,159 @@ export function DraftWorkspacePage(_props: Props) {
       return text.join('\n\n');
     })();
 
-    const turnId = `live-${Date.now()}`;
     const pointKey = String(activePoint);
-    const placeholder: PanelTurn = {
+    const submittedAt = Date.now();
+    const timestamp = new Date(submittedAt).toLocaleTimeString([], {
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    });
+
+    type PlannedTurn = { agent: AgentProfile; turnId: string };
+    const planned: PlannedTurn[] = panelAgents.map((agent, idx) => ({
+      agent,
+      turnId: `live-${submittedAt}-${idx}`,
+    }));
+    const placeholders: PanelTurn[] = planned.map(({ agent, turnId }) => ({
       id: turnId,
       scopePointIndex: activePoint,
-      personaInitial: activeAgent.monogram,
-      personaName: activeAgent.name.toUpperCase(),
-      personaRole: activeAgent.role.toUpperCase(),
+      personaInitial: agent.monogram,
+      personaName: agent.name.toUpperCase(),
+      personaRole: agent.role.toUpperCase(),
       body: '',
-      timestamp: new Date().toLocaleTimeString([], {
-        hour: '2-digit',
-        minute: '2-digit',
-        hour12: false,
-      }),
+      timestamp,
       streaming: true,
-    };
+    }));
 
     setLivePanelTurns((prev) => {
       const existing = prev[pointKey] ?? [];
-      const next = { ...prev, [pointKey]: [placeholder, ...existing] };
-      return next;
+      return { ...prev, [pointKey]: [...placeholders, ...existing] };
     });
     setComposerValue('');
 
-    const updateTurn = (patch: Partial<PanelTurn>): void => {
+    const updateTurn = (turnId: string, patch: Partial<PanelTurn>): void => {
       setLivePanelTurns((prev) => {
         const arr = prev[pointKey] ?? [];
-        const next = {
+        return {
           ...prev,
           [pointKey]: arr.map((t) =>
             t.id === turnId ? { ...t, ...patch } : t,
           ),
         };
-        return next;
       });
     };
 
-    try {
-      const res = await fetch('/api/v1/editorial/panel-turn', {
-        method: 'POST',
-        credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          fixtureProvider: activeAgent.provider,
-          agentName: activeAgent.name,
-          agentRole: activeAgent.role,
-          userMessage,
-          segmentContext,
-          scopePointIndex: activePoint,
-        }),
-      });
+    const streamForAgent = async ({
+      agent,
+      turnId,
+    }: PlannedTurn): Promise<void> => {
+      try {
+        const res = await fetch('/api/v1/editorial/panel-turn', {
+          method: 'POST',
+          credentials: 'include',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            fixtureProvider: agent.provider,
+            agentName: agent.name,
+            agentRole: agent.role,
+            userMessage,
+            segmentContext,
+            scopePointIndex: activePoint,
+          }),
+        });
 
-      if (!res.ok) {
-        const text = await res.text().catch(() => '');
-        throw new Error(
-          `HTTP ${res.status}${text ? ` — ${text.slice(0, 200)}` : ''}`,
-        );
-      }
-      if (!res.body) {
-        throw new Error('Response had no stream body.');
-      }
+        if (!res.ok) {
+          const text = await res.text().catch(() => '');
+          throw new Error(
+            `HTTP ${res.status}${text ? ` — ${text.slice(0, 200)}` : ''}`,
+          );
+        }
+        if (!res.body) {
+          throw new Error('Response had no stream body.');
+        }
 
-      const decoder = new TextDecoder('utf-8');
-      const reader = res.body.getReader();
-      let buffer = '';
-      let accumulated = '';
-      let streamErrorMessage: string | null = null;
+        const decoder = new TextDecoder('utf-8');
+        const reader = res.body.getReader();
+        let buffer = '';
+        let accumulated = '';
+        let streamErrorMessage: string | null = null;
 
-      for (;;) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        let idx: number;
-        while ((idx = buffer.indexOf('\n\n')) >= 0) {
-          const raw = buffer.slice(0, idx);
-          buffer = buffer.slice(idx + 2);
-          const event = parseClientSseRecord(raw);
-          if (!event) continue;
+        for (;;) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          let idx: number;
+          while ((idx = buffer.indexOf('\n\n')) >= 0) {
+            const raw = buffer.slice(0, idx);
+            buffer = buffer.slice(idx + 2);
+            const event = parseClientSseRecord(raw);
+            if (!event) continue;
 
-          if (event.event === 'text_delta') {
-            try {
-              const data = JSON.parse(event.data) as { text?: string };
-              if (typeof data.text === 'string') {
-                accumulated += data.text;
-                updateTurn({ body: accumulated });
+            if (event.event === 'text_delta') {
+              try {
+                const data = JSON.parse(event.data) as { text?: string };
+                if (typeof data.text === 'string') {
+                  accumulated += data.text;
+                  updateTurn(turnId, { body: accumulated });
+                }
+              } catch {
+                // ignore malformed SSE record
               }
-            } catch {
-              // ignore malformed SSE record
-            }
-          } else if (event.event === 'completed') {
-            try {
-              const data = JSON.parse(event.data) as { text?: string };
-              if (typeof data.text === 'string' && data.text.length > 0) {
-                accumulated = data.text;
+            } else if (event.event === 'completed') {
+              try {
+                const data = JSON.parse(event.data) as { text?: string };
+                if (typeof data.text === 'string' && data.text.length > 0) {
+                  accumulated = data.text;
+                }
+              } catch {
+                // ignore
               }
-            } catch {
-              // ignore
-            }
-          } else if (event.event === 'error') {
-            try {
-              const data = JSON.parse(event.data) as { message?: string };
-              streamErrorMessage = data.message ?? 'Panel turn errored.';
-            } catch {
-              streamErrorMessage = 'Panel turn errored.';
+            } else if (event.event === 'error') {
+              try {
+                const data = JSON.parse(event.data) as { message?: string };
+                streamErrorMessage = data.message ?? 'Panel turn errored.';
+              } catch {
+                streamErrorMessage = 'Panel turn errored.';
+              }
             }
           }
         }
-      }
 
-      if (streamErrorMessage) throw new Error(streamErrorMessage);
-      // Final body — any drained-from-completed text wins over accumulator
-      // so the persisted turn matches the server's authoritative final value.
-      updateTurn({ body: accumulated, streaming: false });
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Panel turn failed.';
+        if (streamErrorMessage) throw new Error(streamErrorMessage);
+        // Drained-from-completed text wins over the accumulator so the
+        // persisted turn matches the server's authoritative final value.
+        updateTurn(turnId, { body: accumulated, streaming: false });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : 'Panel turn failed.';
+        updateTurn(turnId, {
+          body: msg,
+          streaming: false,
+          errored: true,
+        });
+        throw err;
+      }
+    };
+
+    const results = await Promise.allSettled(planned.map(streamForAgent));
+
+    // Composer-level error fires only when EVERY agent failed. Per-agent
+    // errors already render inside the failed agent's own turn.
+    if (results.length > 0 && results.every((r) => r.status === 'rejected')) {
+      const first = results[0] as PromiseRejectedResult;
+      const msg =
+        first.reason instanceof Error
+          ? first.reason.message
+          : 'Panel turn failed.';
       setComposerError(msg);
-      updateTurn({
-        body: msg,
-        streaming: false,
-        errored: true,
-      });
-    } finally {
-      setComposerSubmitting(false);
-      // Persist the final state regardless of success/failure so the user
-      // can see what happened on reload.
-      setLivePanelTurns((prev) => {
-        persistLivePanelTurns(prev);
-        return prev;
-      });
     }
+
+    setComposerSubmitting(false);
+    // Persist the final state regardless of per-agent outcomes so the user
+    // sees what happened on reload.
+    setLivePanelTurns((prev) => {
+      persistLivePanelTurns(prev);
+      return prev;
+    });
   };
 
   const namedVersions = useMemo(
@@ -2579,15 +2616,23 @@ export function DraftWorkspacePage(_props: Props) {
             <textarea
               className="editorial-po-draft-panel-input"
               placeholder={
-                !activeAgent
-                  ? 'Add an agent in Setup → LLM Room to ask the panel…'
+                panelAgents.length === 0
+                  ? selectedAgents.length === 0
+                    ? 'Add an agent in Setup → LLM Room to ask the panel…'
+                    : 'No connected providers — reconnect in Setup → LLM Room.'
                   : activePoint < 0
                     ? 'Click into a paragraph to scope your question…'
-                    : `Ask ${activeAgent.name} (${activeAgent.role})…`
+                    : panelAgents.length === 1
+                      ? `Ask ${panelAgents[0].name} (${panelAgents[0].role})…`
+                      : `Ask the panel (${panelAgents.length} agents)…`
               }
               value={composerValue}
               onChange={(e) => setComposerValue(e.target.value)}
-              disabled={!activeAgent || activePoint < 0 || composerSubmitting}
+              disabled={
+                panelAgents.length === 0 ||
+                activePoint < 0 ||
+                composerSubmitting
+              }
               rows={2}
               onKeyDown={(e) => {
                 if (
@@ -2603,7 +2648,7 @@ export function DraftWorkspacePage(_props: Props) {
               type="button"
               className="editorial-po-draft-panel-ask"
               disabled={
-                !activeAgent ||
+                panelAgents.length === 0 ||
                 activePoint < 0 ||
                 composerSubmitting ||
                 !composerValue.trim()
@@ -2612,18 +2657,34 @@ export function DraftWorkspacePage(_props: Props) {
                 void handleSubmitPanelTurn();
               }}
               title={
-                !activeAgent
-                  ? 'No agent selected — add one in Setup → LLM Room.'
+                panelAgents.length === 0
+                  ? selectedAgents.length === 0
+                    ? 'No agent selected — add one in Setup → LLM Room.'
+                    : 'No connected providers — reconnect in Setup → LLM Room.'
                   : activePoint < 0
                     ? 'Click into a paragraph to scope the turn.'
                     : composerSubmitting
-                      ? 'Streaming the turn…'
-                      : `Ask ${activeAgent.name}`
+                      ? 'Streaming the panel…'
+                      : panelAgents.length === 1
+                        ? `Ask ${panelAgents[0].name}`
+                        : `Ask all ${panelAgents.length} agents in parallel`
               }
             >
-              {composerSubmitting ? '… STREAMING' : '+ ASK'}
+              {composerSubmitting
+                ? '… STREAMING'
+                : panelAgents.length >= 2
+                  ? `+ ASK PANEL (${panelAgents.length})`
+                  : '+ ASK'}
             </button>
           </div>
+          {panelAgents.length > 0 ? (
+            <p className="editorial-po-draft-panel-hint">
+              {panelAgents.map((a) => a.name).join(' · ')}
+              {skippedAgentCount > 0
+                ? ` · ${skippedAgentCount} skipped (auth missing)`
+                : ''}
+            </p>
+          ) : null}
           {composerError ? (
             <p className="editorial-po-draft-panel-error">{composerError}</p>
           ) : null}
