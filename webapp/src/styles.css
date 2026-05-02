@@ -4523,6 +4523,48 @@ a {
   cursor: not-allowed;
 }
 
+.editorial-chip-button-primary {
+  background: #1d2433;
+  color: #fff;
+  border-color: #1d2433;
+}
+
+.editorial-chip-button-primary:hover:not(:disabled) {
+  background: #0f1626;
+  border-color: #0f1626;
+}
+
+.editorial-section-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 1.25rem;
+  margin-bottom: 1.6rem;
+}
+
+.editorial-section-header-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.editorial-section-header-text > .editorial-section-eyebrow,
+.editorial-section-header-text > .editorial-section-heading,
+.editorial-section-header-text > .editorial-section-subhead {
+  margin-bottom: 0.5rem;
+}
+
+.editorial-section-header-text > .editorial-section-subhead {
+  margin-bottom: 0;
+}
+
+.editorial-section-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  flex-shrink: 0;
+  align-items: flex-end;
+}
+
 .editorial-meta-bar {
   display: flex;
   align-items: center;
