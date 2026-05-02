@@ -223,3 +223,124 @@ export const FIXTURE_AGENT_PROFILES: ReadonlyArray<AgentProfile> = [
 export function getAgentProfileById(id: string): AgentProfile | null {
   return FIXTURE_AGENT_PROFILES.find((a) => a.id === id) ?? null;
 }
+
+// ─── Scoring pipeline library ───────────────────────────────────────────────
+// Each pipeline is a named bundle of scorers (with weights summing to ~1.0
+// across role:score scorers) + budget caps. At v0p the scorers and caps are
+// read-only — tunable inline editing lands when SetupState extends to carry
+// per-piece overrides.
+
+export type ScoringScorer = {
+  name: string;
+  weight: number;
+  description: string;
+  note?: string;
+};
+
+export type BudgetCap = {
+  label: string;
+  value: string;
+};
+
+export type ScoringPipeline = {
+  slug: string;
+  name: string;
+  description: string;
+  scorers: ScoringScorer[];
+  budgetCaps: BudgetCap[];
+};
+
+export const FIXTURE_PIPELINES: ReadonlyArray<ScoringPipeline> = [
+  {
+    slug: 'scoring_pipeline/gamemakers_default',
+    name: 'GameMakers default',
+    description:
+      'Rubric + SSR + voice drift; counter-audience disabled at Theme/Topic, auto-on at Polish.',
+    scorers: [
+      {
+        name: 'RUBRIC JUDGE',
+        weight: 0.4,
+        description:
+          'Opus · 6 axes · stance / claim / source / voice / risk / fit',
+      },
+      {
+        name: 'SSR PANEL',
+        weight: 0.4,
+        description: 'aggregated per-persona scores (audience size × scorers)',
+      },
+      {
+        name: 'VOICE DRIFT',
+        weight: 0.2,
+        description:
+          'rule-based · voice page rules · catches drift across sections',
+      },
+      {
+        name: 'COUNTER-AUDIENCE',
+        weight: 0.0,
+        description: 'adversarial pass against opposite cohort',
+        note: 'Drafts only · disabled at Theme/Topic · auto-on at Polish',
+      },
+    ],
+    budgetCaps: [
+      { label: 'PER TOPIC OPTIM.', value: '$5.00' },
+      { label: 'PER DRAFT OPTIM.', value: '$50.00' },
+      { label: 'PER POLISH ROUND', value: '$0.50' },
+      { label: 'HARD WALLCLOCK', value: '10 MIN' },
+    ],
+  },
+  {
+    slug: 'scoring_pipeline/autonovel_research',
+    name: 'AutoNovel research',
+    description: '5 personas · 4-agent panel · novelty-weighted scoring.',
+    scorers: [
+      {
+        name: 'NOVELTY',
+        weight: 0.3,
+        description: 'penalizes restated claims · rewards new framing',
+      },
+      {
+        name: 'RUBRIC JUDGE',
+        weight: 0.3,
+        description: 'Opus · 6 axes',
+      },
+      {
+        name: 'SSR PANEL',
+        weight: 0.3,
+        description: 'aggregated per-persona',
+      },
+      {
+        name: 'VOICE DRIFT',
+        weight: 0.1,
+        description: 'rule-based',
+      },
+    ],
+    budgetCaps: [
+      { label: 'PER TOPIC OPTIM.', value: '$8.00' },
+      { label: 'PER DRAFT OPTIM.', value: '$80.00' },
+      { label: 'PER POLISH ROUND', value: '$1.00' },
+      { label: 'HARD WALLCLOCK', value: '15 MIN' },
+    ],
+  },
+  {
+    slug: 'scoring_pipeline/memo_short',
+    name: 'Memo · short form',
+    description: '1 persona · 1 agent · rubric-only.',
+    scorers: [
+      {
+        name: 'RUBRIC JUDGE',
+        weight: 1.0,
+        description: 'Opus · single-axis fit',
+      },
+    ],
+    budgetCaps: [
+      { label: 'PER TOPIC OPTIM.', value: '$1.00' },
+      { label: 'PER DRAFT OPTIM.', value: '$10.00' },
+      { label: 'PER POLISH ROUND', value: '$0.10' },
+      { label: 'HARD WALLCLOCK', value: '3 MIN' },
+    ],
+  },
+];
+
+export function getPipelineBySlug(slug: string): ScoringPipeline | null {
+  return FIXTURE_PIPELINES.find((p) => p.slug === slug) ?? null;
+}
