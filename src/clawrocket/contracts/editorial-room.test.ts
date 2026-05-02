@@ -53,11 +53,19 @@ function validatorFor(schemaFile: string): ValidateFunction {
 // `<base>.schema.json`. e.g., `theme.derived_from_pcp.json` →
 // `theme.schema.json`; `setup_state.minimal.json` → `setup_state.schema.json`.
 // A few fixtures in EDITORIAL_ROOM_CONTRACT.md §9.1 use a different shape
-// (e.g., `point_with_evidence.example.json` for the `point` schema); those
-// are listed in `FIXTURE_SCHEMA_OVERRIDES`.
+// (e.g., `point_with_evidence.example.json` for the `point` schema, or
+// `point_note_blocks.example.json` plural-named for the singular schema);
+// those are listed in `FIXTURE_SCHEMA_OVERRIDES`.
 const FIXTURE_SCHEMA_OVERRIDES: Record<string, string> = {
   'point_with_evidence.example.json': 'point.schema.json',
+  'point_note_blocks.example.json': 'point_note_block.schema.json',
 };
+
+// Fixtures whose top-level value is an array of <schema> rather than a single
+// <schema>. We validate each element separately.
+const FIXTURES_AS_ARRAY: ReadonlySet<string> = new Set([
+  'point_note_blocks.example.json',
+]);
 
 function schemaFileForFixture(fixtureFile: string): string {
   if (fixtureFile in FIXTURE_SCHEMA_OVERRIDES) {
@@ -106,7 +114,18 @@ describe('editorial-room v0 contracts', () => {
       (fixtureFile, schemaFile) => {
         const validate = validatorFor(schemaFile);
         const fixture = loadJson(resolve(fixtureDir, fixtureFile));
-        expectValid(validate, fixture, fixtureFile);
+        if (FIXTURES_AS_ARRAY.has(fixtureFile)) {
+          if (!Array.isArray(fixture)) {
+            throw new Error(
+              `${fixtureFile} expected to be a JSON array (FIXTURES_AS_ARRAY)`,
+            );
+          }
+          fixture.forEach((elem, idx) => {
+            expectValid(validate, elem, `${fixtureFile}[${idx}]`);
+          });
+        } else {
+          expectValid(validate, fixture, fixtureFile);
+        }
       },
     );
   });
