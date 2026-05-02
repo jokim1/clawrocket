@@ -1466,24 +1466,28 @@ export function DraftWorkspacePage(_props: Props) {
           {exportState === 'error' && 'COPY FAILED'}
           {exportState === 'idle' && capabilities.exportButtonLabel}
         </button>
-        <button
-          type="button"
-          className={`editorial-po-draft-import${
-            importState === 'pasted' ? ' editorial-po-draft-import-pasted' : ''
-          }${
-            importState === 'error' ? ' editorial-po-draft-import-error' : ''
-          }`}
-          onClick={() => {
-            void handleImportMarkdown();
-          }}
-          disabled={!editor}
-          aria-live="polite"
-          title="Replace the draft with markdown from your clipboard (a pre-paste snapshot is captured to Versions)"
-        >
-          {importState === 'pasted' && 'PASTED ✓'}
-          {importState === 'error' && 'PASTE FAILED'}
-          {importState === 'idle' && '↓ PASTE MD'}
-        </button>
+        {capabilities.showPasteMarkdown ? (
+          <button
+            type="button"
+            className={`editorial-po-draft-import${
+              importState === 'pasted'
+                ? ' editorial-po-draft-import-pasted'
+                : ''
+            }${
+              importState === 'error' ? ' editorial-po-draft-import-error' : ''
+            }`}
+            onClick={() => {
+              void handleImportMarkdown();
+            }}
+            disabled={!editor}
+            aria-live="polite"
+            title="Replace the draft with markdown from your clipboard (a pre-paste snapshot is captured to Versions)"
+          >
+            {importState === 'pasted' && 'PASTED ✓'}
+            {importState === 'error' && 'PASTE FAILED'}
+            {importState === 'idle' && '↓ PASTE MD'}
+          </button>
+        ) : null}
         <Link
           to="/editorial/points-outline"
           className="editorial-po-draft-back"
