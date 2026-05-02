@@ -15,10 +15,16 @@ import Highlight from '@tiptap/extension-highlight';
 
 import { EditorialPhaseStrip } from '../components/EditorialPhaseStrip';
 import {
+  getAgentProfileById,
+  type AgentProfile,
+} from '../lib/editorial-fixtures';
+import {
   DESTINATION_CAPABILITIES,
   DESTINATION_SHORT,
   loadDestination,
+  loadSetupState,
   type Destination,
+  type SetupState,
 } from '../lib/editorial-setup';
 import { serializeDocToMarkdown, type JSONNode } from '../lib/markdown-export';
 import { parseMarkdownToDoc } from '../lib/markdown-import';
@@ -215,7 +221,67 @@ type PanelTurn = {
   body: string;
   actionLabel?: string;
   timestamp: string;
+  // Set on live turns produced by the `+ ASK` composer. Fixture turns
+  // never set these. `streaming` true while the turn is mid-SSE-stream;
+  // `errored` true when the dispatch failed.
+  streaming?: boolean;
+  errored?: boolean;
 };
+
+// localStorage key for persisted live panel turns. Indexed by activePoint
+// so the user's history survives reloads and the right rail picks back up
+// where they left off. Fixture turns are kept as a first-time-UX fallback —
+// once a point has at least one live turn, fixtures are replaced.
+const LIVE_PANEL_TURNS_STORAGE_KEY = 'editorial-room.draft.panel-turns-v0';
+
+type LivePanelTurnMap = Record<string, PanelTurn[]>;
+
+function loadLivePanelTurns(): LivePanelTurnMap {
+  if (typeof window === 'undefined') return {};
+  try {
+    const raw = window.localStorage.getItem(LIVE_PANEL_TURNS_STORAGE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== 'object') return {};
+    return parsed as LivePanelTurnMap;
+  } catch {
+    return {};
+  }
+}
+
+function persistLivePanelTurns(turns: LivePanelTurnMap): void {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.setItem(
+      LIVE_PANEL_TURNS_STORAGE_KEY,
+      JSON.stringify(turns),
+    );
+  } catch {
+    // localStorage full / disabled — non-fatal at v0p.
+  }
+}
+
+// Minimal client-side SSE record parser. Mirrors the server-side parser in
+// editorial-llm-call.ts; the route emits {event: text_delta|completed|error,
+// data: <json>} records terminated by blank lines.
+type ClientSseEvent = { event?: string; data: string };
+
+function parseClientSseRecord(raw: string): ClientSseEvent | null {
+  const lines = raw.split(/\r?\n/);
+  let eventName: string | undefined;
+  const dataLines: string[] = [];
+  for (const line of lines) {
+    if (!line || line.startsWith(':')) continue;
+    const colon = line.indexOf(':');
+    const field = colon === -1 ? line : line.slice(0, colon);
+    const valueRaw = colon === -1 ? '' : line.slice(colon + 1);
+    const value = valueRaw.startsWith(' ') ? valueRaw.slice(1) : valueRaw;
+    if (field === 'event') eventName = value;
+    else if (field === 'data') dataLines.push(value);
+  }
+  if (dataLines.length === 0 && !eventName) return null;
+  return { event: eventName, data: dataLines.join('\n') };
+}
 
 const PANEL_TURNS: ReadonlyArray<PanelTurn> = [
   // Point 0 — HOOK
@@ -992,6 +1058,17 @@ export function DraftWorkspacePage(_props: Props) {
   );
   const [optimizeOpen, setOptimizeOpen] = useState<boolean>(false);
   const [destination, setDestination] = useState<Destination>(loadDestination);
+  const [setup, setSetup] = useState<SetupState>(loadSetupState);
+
+  // Live panel turns produced by the `+ ASK` composer, keyed by activePoint.
+  // Persisted to localStorage so they survive reloads. Fixture turns are
+  // kept as a first-time-UX fallback when a given point has no live turns.
+  const [livePanelTurns, setLivePanelTurns] =
+    useState<LivePanelTurnMap>(loadLivePanelTurns);
+  const [composerValue, setComposerValue] = useState<string>('');
+  const [composerError, setComposerError] = useState<string | null>(null);
+  const [composerSubmitting, setComposerSubmitting] = useState<boolean>(false);
+
   const saveTimerRef = useRef<number | null>(null);
   const exportResetTimerRef = useRef<number | null>(null);
   const importResetTimerRef = useRef<number | null>(null);
@@ -1172,10 +1249,15 @@ export function DraftWorkspacePage(_props: Props) {
     return () => window.removeEventListener('mousedown', handler);
   }, [optimizeOpen]);
 
-  // Refresh destination when window regains focus or another tab updates
-  // Setup. Cheap, and keeps the toolbar in sync without polling.
+  // Refresh destination + setup when window regains focus or another tab
+  // updates Setup. Cheap, and keeps the toolbar + composer's active-agent
+  // pick in sync without polling.
   useEffect(() => {
-    const refresh = (): void => setDestination(loadDestination());
+    const refresh = (): void => {
+      const next = loadSetupState();
+      setSetup(next);
+      setDestination(next.destination);
+    };
     window.addEventListener('focus', refresh);
     window.addEventListener('storage', refresh);
     return () => {
@@ -1214,10 +1296,27 @@ export function DraftWorkspacePage(_props: Props) {
     () => computeGateStatus(orderedOutline, ssrAggregate),
     [orderedOutline, ssrAggregate],
   );
+  // Real turns replace fixtures once the user has used `+ ASK` for this
+  // point — the picker is "what's been asked", not "what could be asked".
+  // Fixtures stay as a first-time-UX fallback so the empty state is never
+  // bare on a brand-new workspace.
   const scopedPanelTurns = useMemo<PanelTurn[]>(() => {
     if (activePoint < 0) return [];
+    const live = livePanelTurns[String(activePoint)];
+    if (live && live.length > 0) return live;
     return PANEL_TURNS.filter((t) => t.scopePointIndex === activePoint);
-  }, [activePoint]);
+  }, [activePoint, livePanelTurns]);
+
+  // Active agent — first selected agent profile that exists in the fixture
+  // library. The composer surfaces the agent's name + role + provider to
+  // the user before submit so it's never an anonymous chip.
+  const activeAgent = useMemo<AgentProfile | null>(() => {
+    for (const id of setup.llm_room_agent_profile_ids) {
+      const profile = getAgentProfileById(id);
+      if (profile) return profile;
+    }
+    return null;
+  }, [setup.llm_room_agent_profile_ids]);
 
   const scopeText = scopeChipText(cursor);
   const statusText = activeStatusText(cursor, orderedOutline, activePoint);
@@ -1225,6 +1324,168 @@ export function DraftWorkspacePage(_props: Props) {
   const handleOutlineClick = (pointIndex: number): void => {
     if (!editor) return;
     jumpToPointParagraph(editor, pointIndex, buckets);
+  };
+
+  // ─── + ASK composer dispatch ──────────────────────────────────────────
+  // Streams a single panel turn from the active agent against the active
+  // point's segment context. Live turns are persisted under
+  // editorial-room.draft.panel-turns-v0 keyed by activePoint.
+  const handleSubmitPanelTurn = async (): Promise<void> => {
+    if (!activeAgent) return;
+    if (activePoint < 0) return;
+    if (composerSubmitting) return;
+    const userMessage = composerValue.trim();
+    if (!userMessage) return;
+
+    setComposerSubmitting(true);
+    setComposerError(null);
+
+    // Build segment context from the paragraphs in the active point's bucket.
+    const segmentContext = (() => {
+      if (!editor) return '';
+      const paragraphs = getDocParagraphs(editor);
+      const bucket = buckets[activePoint];
+      if (!bucket || bucket.count === 0) return '';
+      const text: string[] = [];
+      for (let i = bucket.start; i < bucket.end; i++) {
+        const range = paragraphs[i];
+        if (!range) continue;
+        const node = editor.state.doc.nodeAt(range.start);
+        if (node) text.push(node.textContent);
+      }
+      return text.join('\n\n');
+    })();
+
+    const turnId = `live-${Date.now()}`;
+    const pointKey = String(activePoint);
+    const placeholder: PanelTurn = {
+      id: turnId,
+      scopePointIndex: activePoint,
+      personaInitial: activeAgent.monogram,
+      personaName: activeAgent.name.toUpperCase(),
+      personaRole: activeAgent.role.toUpperCase(),
+      body: '',
+      timestamp: new Date().toLocaleTimeString([], {
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: false,
+      }),
+      streaming: true,
+    };
+
+    setLivePanelTurns((prev) => {
+      const existing = prev[pointKey] ?? [];
+      const next = { ...prev, [pointKey]: [placeholder, ...existing] };
+      return next;
+    });
+    setComposerValue('');
+
+    const updateTurn = (patch: Partial<PanelTurn>): void => {
+      setLivePanelTurns((prev) => {
+        const arr = prev[pointKey] ?? [];
+        const next = {
+          ...prev,
+          [pointKey]: arr.map((t) =>
+            t.id === turnId ? { ...t, ...patch } : t,
+          ),
+        };
+        return next;
+      });
+    };
+
+    try {
+      const res = await fetch('/api/v1/editorial/panel-turn', {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          fixtureProvider: activeAgent.provider,
+          agentName: activeAgent.name,
+          agentRole: activeAgent.role,
+          userMessage,
+          segmentContext,
+          scopePointIndex: activePoint,
+        }),
+      });
+
+      if (!res.ok) {
+        const text = await res.text().catch(() => '');
+        throw new Error(
+          `HTTP ${res.status}${text ? ` — ${text.slice(0, 200)}` : ''}`,
+        );
+      }
+      if (!res.body) {
+        throw new Error('Response had no stream body.');
+      }
+
+      const decoder = new TextDecoder('utf-8');
+      const reader = res.body.getReader();
+      let buffer = '';
+      let accumulated = '';
+      let streamErrorMessage: string | null = null;
+
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        let idx: number;
+        while ((idx = buffer.indexOf('\n\n')) >= 0) {
+          const raw = buffer.slice(0, idx);
+          buffer = buffer.slice(idx + 2);
+          const event = parseClientSseRecord(raw);
+          if (!event) continue;
+
+          if (event.event === 'text_delta') {
+            try {
+              const data = JSON.parse(event.data) as { text?: string };
+              if (typeof data.text === 'string') {
+                accumulated += data.text;
+                updateTurn({ body: accumulated });
+              }
+            } catch {
+              // ignore malformed SSE record
+            }
+          } else if (event.event === 'completed') {
+            try {
+              const data = JSON.parse(event.data) as { text?: string };
+              if (typeof data.text === 'string' && data.text.length > 0) {
+                accumulated = data.text;
+              }
+            } catch {
+              // ignore
+            }
+          } else if (event.event === 'error') {
+            try {
+              const data = JSON.parse(event.data) as { message?: string };
+              streamErrorMessage = data.message ?? 'Panel turn errored.';
+            } catch {
+              streamErrorMessage = 'Panel turn errored.';
+            }
+          }
+        }
+      }
+
+      if (streamErrorMessage) throw new Error(streamErrorMessage);
+      // Final body — any drained-from-completed text wins over accumulator
+      // so the persisted turn matches the server's authoritative final value.
+      updateTurn({ body: accumulated, streaming: false });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Panel turn failed.';
+      setComposerError(msg);
+      updateTurn({
+        body: msg,
+        streaming: false,
+        errored: true,
+      });
+    } finally {
+      setComposerSubmitting(false);
+      // Persist the final state regardless of success/failure so the user
+      // can see what happened on reload.
+      setLivePanelTurns((prev) => {
+        persistLivePanelTurns(prev);
+        return prev;
+      });
+    }
   };
 
   const namedVersions = useMemo(
@@ -2250,7 +2511,23 @@ export function DraftWorkspacePage(_props: Props) {
                       {turn.timestamp}
                     </span>
                   </header>
-                  <p className="editorial-po-draft-panel-body">{turn.body}</p>
+                  <p
+                    className={`editorial-po-draft-panel-body${
+                      turn.errored
+                        ? ' editorial-po-draft-panel-body-errored'
+                        : ''
+                    }`}
+                  >
+                    {turn.body}
+                    {turn.streaming ? (
+                      <span
+                        className="editorial-po-draft-panel-cursor"
+                        aria-hidden="true"
+                      >
+                        ▍
+                      </span>
+                    ) : null}
+                  </p>
                   {turn.actionLabel ? (
                     <button
                       type="button"
@@ -2269,19 +2546,55 @@ export function DraftWorkspacePage(_props: Props) {
           <div className="editorial-po-draft-panel-composer">
             <textarea
               className="editorial-po-draft-panel-input"
-              placeholder="Ask the panel… (LLM wiring required at v0p)"
-              disabled
+              placeholder={
+                !activeAgent
+                  ? 'Add an agent in Setup → LLM Room to ask the panel…'
+                  : activePoint < 0
+                    ? 'Click into a paragraph to scope your question…'
+                    : `Ask ${activeAgent.name} (${activeAgent.role})…`
+              }
+              value={composerValue}
+              onChange={(e) => setComposerValue(e.target.value)}
+              disabled={!activeAgent || activePoint < 0 || composerSubmitting}
               rows={2}
+              onKeyDown={(e) => {
+                if (
+                  (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) ||
+                  (e.key === 'Enter' && !e.shiftKey)
+                ) {
+                  e.preventDefault();
+                  void handleSubmitPanelTurn();
+                }
+              }}
             />
             <button
               type="button"
               className="editorial-po-draft-panel-ask"
-              disabled
-              title="Composer wiring lands with the editorial-scoped DiscussionSession"
+              disabled={
+                !activeAgent ||
+                activePoint < 0 ||
+                composerSubmitting ||
+                !composerValue.trim()
+              }
+              onClick={() => {
+                void handleSubmitPanelTurn();
+              }}
+              title={
+                !activeAgent
+                  ? 'No agent selected — add one in Setup → LLM Room.'
+                  : activePoint < 0
+                    ? 'Click into a paragraph to scope the turn.'
+                    : composerSubmitting
+                      ? 'Streaming the turn…'
+                      : `Ask ${activeAgent.name}`
+              }
             >
-              + ASK
+              {composerSubmitting ? '… STREAMING' : '+ ASK'}
             </button>
           </div>
+          {composerError ? (
+            <p className="editorial-po-draft-panel-error">{composerError}</p>
+          ) : null}
         </aside>
       </div>
     </div>
