@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 
 import { EditorialPhaseStrip } from '../components/EditorialPhaseStrip';
 import {
@@ -21,11 +21,13 @@ import {
   type Destination,
   type SetupState,
 } from '../lib/editorial-setup';
+import { PROVIDER_CATALOG, type ProviderEntry } from '../lib/llm-providers';
 import {
-  catalogIdForFixtureProvider,
-  PROVIDER_CATALOG,
-  type ProviderEntry,
-} from '../lib/llm-providers';
+  isAgentAuthed,
+  useProviderAuth,
+  type AdditionalProviderCard,
+  type AdditionalProviderCardMap,
+} from '../lib/llm-provider-auth';
 
 // SetupState mirrors docs/contracts/editorial-room/v0/setup_state.schema.json
 // (also in EDITORIAL_ROOM_CONTRACT.md §2.1). Persisted to localStorage via
@@ -1288,19 +1290,8 @@ function OpenAICodexOAuthCard({ onChange }: { onChange?: () => void } = {}) {
 // ─── Generic API-key auth card ──────────────────────────────────────────────
 // Backs api_key entries in the provider catalog (Gemini, NVIDIA, …) by
 // POSTing to the existing PUT /api/v1/agents/providers/:providerId route.
-// Provider state (hasCredential, credentialHint) comes from GET /api/v1/agents.
-
-type AdditionalProviderCard = {
-  id: string;
-  hasCredential: boolean;
-  credentialHint: string | null;
-  verificationStatus:
-    | 'verified'
-    | 'invalid'
-    | 'unavailable'
-    | 'missing'
-    | 'not_verified';
-};
+// Provider state (hasCredential, credentialHint) comes from GET /api/v1/agents
+// via the shared `useProviderAuth` hook in `lib/llm-provider-auth.ts`.
 
 function ApiKeyAuthCard({
   entry,
@@ -1468,89 +1459,9 @@ function ApiKeyAuthCard({
   );
 }
 
-// ─── Provider auth list + status hook ────────────────────────────────────────
-
-type ProviderAuthMap = Record<string, boolean>;
-
-type AdditionalProviderCardMap = Record<string, AdditionalProviderCard>;
-
-function useProviderAuth(): {
-  authed: ProviderAuthMap;
-  cards: AdditionalProviderCardMap;
-  refresh: () => Promise<void>;
-} {
-  const [authed, setAuthed] = useState<ProviderAuthMap>({});
-  const [cards, setCards] = useState<AdditionalProviderCardMap>({});
-
-  const refresh = useCallback(async (): Promise<void> => {
-    const next: ProviderAuthMap = {};
-    const nextCards: AdditionalProviderCardMap = {};
-
-    const oauthEntries = PROVIDER_CATALOG.filter((p) => p.oauthStatusEndpoint);
-    const apiKeyEntries = PROVIDER_CATALOG.filter(
-      (p) => p.authType === 'api_key',
-    );
-
-    await Promise.all([
-      ...oauthEntries.map(async (p) => {
-        try {
-          const res = await fetch(p.oauthStatusEndpoint!, {
-            credentials: 'include',
-          });
-          const json = (await res.json()) as
-            | { ok: true; data: { connected: boolean } }
-            | { ok: false };
-          next[p.id] = !!(
-            'ok' in json &&
-            json.ok &&
-            (json.data as { connected?: boolean }).connected
-          );
-        } catch {
-          next[p.id] = false;
-        }
-      }),
-      apiKeyEntries.length > 0
-        ? (async () => {
-            try {
-              const res = await fetch('/api/v1/agents', {
-                credentials: 'include',
-              });
-              const json = (await res.json()) as
-                | {
-                    ok: true;
-                    data: {
-                      additionalProviders: AdditionalProviderCard[];
-                    };
-                  }
-                | { ok: false };
-              if ('ok' in json && json.ok) {
-                for (const p of apiKeyEntries) {
-                  const found = json.data.additionalProviders.find(
-                    (ap) => ap.id === p.id,
-                  );
-                  next[p.id] = !!found?.hasCredential;
-                  if (found) nextCards[p.id] = found;
-                }
-              } else {
-                for (const p of apiKeyEntries) next[p.id] = false;
-              }
-            } catch {
-              for (const p of apiKeyEntries) next[p.id] = false;
-            }
-          })()
-        : Promise.resolve(),
-    ]);
-
-    setAuthed(next);
-    setCards(nextCards);
-  }, []);
-
-  useEffect(() => {
-    void refresh();
-  }, [refresh]);
-
-  return { authed, cards, refresh };
-}
+// ─── Provider auth list ─────────────────────────────────────────────────────
+// `useProviderAuth` + `isAgentAuthed` live in `lib/llm-provider-auth.ts` so
+// the Draft right-rail panel composer can reuse them.
 
 function ProviderAuthList({
   cards,
@@ -1579,12 +1490,6 @@ function ProviderAuthList({
       })}
     </>
   );
-}
-
-function isAgentAuthed(a: AgentProfile, authed: ProviderAuthMap): boolean {
-  const catalogId = catalogIdForFixtureProvider(a.provider);
-  if (!catalogId) return false;
-  return !!authed[catalogId];
 }
 
 function LLMRoomSection({
