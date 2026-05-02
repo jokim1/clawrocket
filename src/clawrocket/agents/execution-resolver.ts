@@ -179,8 +179,22 @@ function resolveSecret(
 
   if (secretRecord) {
     try {
-      return decryptProviderSecret(secretRecord.ciphertext);
-    } catch {
+      const payload = decryptProviderSecret(secretRecord.ciphertext);
+      // Talk runtime uses x-api-key auth (direct HTTP). OAuth subscription
+      // tokens are not compatible — they require Bearer auth + the Claude
+      // Code identity headers, which Editorial Room handles separately.
+      // Surface a specific error so callers can fall back / instruct the
+      // user to switch to API-key auth for Talks.
+      if (payload.kind !== 'api_key') {
+        throw new ExecutionResolverError(
+          `Provider ${agent.provider_id} is configured with ${payload.kind} auth — ` +
+            `Talk runtime requires an API key. Connect an API key for direct HTTP execution.`,
+          'SECRET_DECRYPTION_FAILED',
+        );
+      }
+      return { apiKey: payload.apiKey };
+    } catch (err) {
+      if (err instanceof ExecutionResolverError) throw err;
       throw new ExecutionResolverError(
         `Failed to decrypt provider secret for ${agent.provider_id}`,
         'SECRET_DECRYPTION_FAILED',

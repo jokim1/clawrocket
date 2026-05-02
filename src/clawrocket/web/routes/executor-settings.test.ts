@@ -39,7 +39,7 @@ function seedAnthropicSecret(apiKey = 'sk-ant-test'): void {
        ON CONFLICT(provider_id) DO UPDATE SET ciphertext = excluded.ciphertext,
          updated_at = excluded.updated_at, updated_by = excluded.updated_by`,
     )
-    .run(encryptProviderSecret({ apiKey }), now, auth.userId);
+    .run(encryptProviderSecret({ kind: 'api_key', apiKey }), now, auth.userId);
 }
 
 describe('executor-settings routes', () => {

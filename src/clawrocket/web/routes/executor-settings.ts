@@ -215,7 +215,9 @@ function getAnthropicApiKey(): string | null {
   const row = getAnthropicSecretRow();
   if (!row?.ciphertext) return null;
   try {
-    return decryptProviderSecret(row.ciphertext).apiKey.trim();
+    const payload = decryptProviderSecret(row.ciphertext);
+    if (payload.kind !== 'api_key') return null;
+    return payload.apiKey.trim();
   } catch {
     return null;
   }
@@ -598,7 +600,7 @@ function saveAnthropicApiKey(apiKey: string, userId: string): void {
        ON CONFLICT(provider_id) DO UPDATE SET ciphertext = excluded.ciphertext,
          updated_at = excluded.updated_at, updated_by = excluded.updated_by`,
     )
-    .run(encryptProviderSecret({ apiKey }), now, userId);
+    .run(encryptProviderSecret({ kind: 'api_key', apiKey }), now, userId);
   upsertSettingValue({
     key: 'executor.updatedAt',
     value: now,
