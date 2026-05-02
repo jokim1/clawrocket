@@ -3,6 +3,7 @@ import {
   DndContext,
   PointerSensor,
   closestCenter,
+  useDroppable,
   useSensor,
   useSensors,
   type DragEndEvent,
@@ -128,6 +129,9 @@ type DetailState = {
   // with v1-shaped storage; undefined defaults to true for main Points and
   // false for counters (counters are argued against, never in the outline).
   inOutline?: boolean;
+  // User override of the Point's type (set by drag-between-sections in the
+  // Outline tab). Optional; falls back to the fixture type.
+  pointType?: PointType;
 };
 
 // Outline target range — design/03_points_outline.md §13.6 says "5–7" is the
@@ -136,6 +140,31 @@ const OUTLINE_TARGET_MIN = 5;
 const OUTLINE_TARGET_MAX = 7;
 
 type LeftRailTab = 'points' | 'outline';
+
+// Outline sections per Joseph's brief: HOOK / BODY / CLOSE. Counters never
+// appear in the outline. ARG-typed Points map to the BODY section.
+type OutlineSection = 'HOOK' | 'BODY' | 'CLOSE';
+
+const SECTION_ORDER: ReadonlyArray<OutlineSection> = ['HOOK', 'BODY', 'CLOSE'];
+
+const SECTION_LABEL: Record<OutlineSection, string> = {
+  HOOK: 'HOOK',
+  BODY: 'BODY',
+  CLOSE: 'CLOSE',
+};
+
+function pointTypeToSection(t: PointType): OutlineSection | null {
+  if (t === 'HOOK') return 'HOOK';
+  if (t === 'ARG') return 'BODY';
+  if (t === 'CLOSE') return 'CLOSE';
+  return null; // COUNTER → not in outline
+}
+
+function sectionToPointType(s: OutlineSection): PointType {
+  if (s === 'HOOK') return 'HOOK';
+  if (s === 'CLOSE') return 'CLOSE';
+  return 'ARG';
+}
 
 // State machine for adding a new note: `idle` → click `+` → `picking-type`
 // (filter chips become type-pickers) → click chip → `editing` (textarea
@@ -1040,6 +1069,10 @@ export function PointsOutlineWorkspacePage(_props: Props) {
     return s?.inOutline ?? true;
   }
 
+  function effectiveType(slug: string, fallback: PointType): PointType {
+    return detailStates[slug]?.pointType ?? fallback;
+  }
+
   function toggleInOutline(slug: string) {
     setDetailStates((prev) => {
       const cur = prev[slug];
@@ -1054,6 +1087,102 @@ export function PointsOutlineWorkspacePage(_props: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [orderedMainPoints, detailStates],
   );
+
+  // Group outlinePoints by effective section. Each Point carries the
+  // overridden type so card rendering shows the right colored type badge.
+  const outlineSectionsGrouped = useMemo(() => {
+    const groups: Record<OutlineSection, Point[]> = {
+      HOOK: [],
+      BODY: [],
+      CLOSE: [],
+    };
+    for (const p of outlinePoints) {
+      const t = effectiveType(p.slug, p.type);
+      const sec = pointTypeToSection(t);
+      if (sec) groups[sec].push({ ...p, type: t });
+    }
+    return groups;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [outlinePoints, detailStates]);
+
+  function handleOutlineDragEnd(event: DragEndEvent) {
+    const { active, over } = event;
+    if (!over) return;
+    const activeSlug = String(active.id);
+    const overId = String(over.id);
+    if (activeSlug === overId) return;
+
+    const sectionPrefix = 'outline-section-';
+    let destSection: OutlineSection;
+    let dropOnPoint: string | null = null;
+
+    if (overId.startsWith(sectionPrefix)) {
+      destSection = overId.slice(sectionPrefix.length) as OutlineSection;
+      if (!SECTION_ORDER.includes(destSection)) return;
+    } else {
+      dropOnPoint = overId;
+      const overFix = POINTS.find((p) => p.slug === overId);
+      if (!overFix) return;
+      const sec = pointTypeToSection(effectiveType(overId, overFix.type));
+      if (!sec) return;
+      destSection = sec;
+    }
+
+    const activeFix = POINTS.find((p) => p.slug === activeSlug);
+    if (!activeFix) return;
+    const activeSection = pointTypeToSection(
+      effectiveType(activeSlug, activeFix.type),
+    );
+
+    if (activeSection !== destSection) {
+      const newType = sectionToPointType(destSection);
+      setDetailStates((prev) => {
+        const cur = prev[activeSlug];
+        if (!cur) return prev;
+        return { ...prev, [activeSlug]: { ...cur, pointType: newType } };
+      });
+    }
+
+    setPointsOrder((prev) => {
+      const oldIdx = prev.indexOf(activeSlug);
+      if (oldIdx < 0) return prev;
+      if (dropOnPoint) {
+        const newIdx = prev.indexOf(dropOnPoint);
+        if (newIdx < 0) return prev;
+        return arrayMove(prev, oldIdx, newIdx);
+      }
+      // Section-container drop: insert at end of destSection in flat order.
+      const without = prev.filter((s) => s !== activeSlug);
+      const sectionOf = (slug: string): OutlineSection | null => {
+        const fix = POINTS.find((p) => p.slug === slug);
+        if (!fix) return null;
+        return pointTypeToSection(effectiveType(slug, fix.type));
+      };
+      const destIdx = SECTION_ORDER.indexOf(destSection);
+      let lastInDest = -1;
+      let firstAfterDest = -1;
+      for (let i = 0; i < without.length; i++) {
+        const sec = sectionOf(without[i]);
+        if (sec === destSection) {
+          lastInDest = i;
+        } else if (sec) {
+          const si = SECTION_ORDER.indexOf(sec);
+          if (si > destIdx && firstAfterDest < 0) firstAfterDest = i;
+        }
+      }
+      const insertAt =
+        lastInDest >= 0
+          ? lastInDest + 1
+          : firstAfterDest >= 0
+            ? firstAfterDest
+            : without.length;
+      return [
+        ...without.slice(0, insertAt),
+        activeSlug,
+        ...without.slice(insertAt),
+      ];
+    });
+  }
 
   function selectPoint(slug: string) {
     if (editing && editing.slug !== slug) {
@@ -1479,47 +1608,43 @@ export function PointsOutlineWorkspacePage(_props: Props) {
               ) : null}
             </>
           ) : (
-            // Outline tab: filtered, non-sortable list of inOutline main
-            // Points only. Drag-reorder happens in Points tab; Outline
-            // reflects that order.
-            <>
-              {outlinePoints.length === 0 ? (
-                <p className="editorial-tt-empty">
-                  No Points in the Outline yet — add some from the Points tab.
-                </p>
-              ) : (
-                <ul className="editorial-po-point-list">
-                  {outlinePoints.map((p) => {
-                    const idx = orderedMainPoints.findIndex(
-                      (m) => m.slug === p.slug,
-                    );
-                    return (
-                      <li key={p.slug} className="editorial-po-point-li">
-                        <PointCard
-                          point={{
-                            ...p,
-                            position: String(idx + 1).padStart(2, '0'),
-                          }}
-                          state={detailStates[p.slug]}
-                          isActive={p.slug === activePointSlug}
-                          onSelect={() => selectPoint(p.slug)}
-                          inOutline
-                          onToggleOutline={() => toggleInOutline(p.slug)}
-                        />
-                      </li>
-                    );
-                  })}
-                </ul>
-              )}
+            // Outline tab: section-grouped, sortable. Drag within a section
+            // reorders; drag between sections changes the Point's type.
+            <DndContext
+              sensors={sensors}
+              collisionDetection={closestCenter}
+              onDragEnd={handleOutlineDragEnd}
+            >
+              {(() => {
+                let runningPos = 0;
+                return SECTION_ORDER.map((section) => {
+                  const sectionPoints = outlineSectionsGrouped[section];
+                  const startPos = runningPos + 1;
+                  runningPos += sectionPoints.length;
+                  return (
+                    <OutlineSection
+                      key={section}
+                      section={section}
+                      points={sectionPoints}
+                      startPosition={startPos}
+                      detailStates={detailStates}
+                      activePointSlug={activePointSlug}
+                      onSelect={selectPoint}
+                      onToggleOutline={toggleInOutline}
+                    />
+                  );
+                });
+              })()}
               <p className="editorial-po-outline-hint">
-                Target {OUTLINE_TARGET_MIN}–{OUTLINE_TARGET_MAX} Points.{' '}
+                {outlinePoints.length} of {OUTLINE_TARGET_MIN}–
+                {OUTLINE_TARGET_MAX} ·{' '}
                 {outlinePoints.length < OUTLINE_TARGET_MIN
                   ? `Add ${OUTLINE_TARGET_MIN - outlinePoints.length} more.`
                   : outlinePoints.length > OUTLINE_TARGET_MAX
                     ? `${outlinePoints.length - OUTLINE_TARGET_MAX} over target.`
                     : 'On target.'}
               </p>
-            </>
+            </DndContext>
           )}
         </aside>
 
@@ -1634,6 +1759,73 @@ function PointCard({
         ) : null}
       </div>
     </button>
+  );
+}
+
+function OutlineSection({
+  section,
+  points,
+  startPosition,
+  detailStates,
+  activePointSlug,
+  onSelect,
+  onToggleOutline,
+}: {
+  section: OutlineSection;
+  points: ReadonlyArray<Point>;
+  startPosition: number;
+  detailStates: Record<string, DetailState>;
+  activePointSlug: string;
+  onSelect: (slug: string) => void;
+  onToggleOutline: (slug: string) => void;
+}) {
+  const { setNodeRef, isOver } = useDroppable({
+    id: `outline-section-${section}`,
+  });
+  const slugs = points.map((p) => p.slug);
+  return (
+    <section
+      ref={setNodeRef}
+      className={
+        'editorial-po-outline-section' +
+        (isOver ? ' editorial-po-outline-section-over' : '') +
+        (points.length === 0 ? ' editorial-po-outline-section-empty' : '')
+      }
+    >
+      <h3 className="editorial-po-outline-section-header">
+        <span className="editorial-po-outline-section-label">
+          {SECTION_LABEL[section]}
+        </span>
+        <span className="editorial-po-outline-section-count">
+          {points.length}
+        </span>
+      </h3>
+      <SortableContext items={slugs} strategy={verticalListSortingStrategy}>
+        {points.length === 0 ? (
+          <p className="editorial-po-outline-section-placeholder">
+            Drop a Point here to make it a {SECTION_LABEL[section]} point.
+          </p>
+        ) : (
+          <ul className="editorial-po-point-list">
+            {points.map((p, idx) => (
+              <SortablePointWrapper key={p.slug} slug={p.slug}>
+                <PointCard
+                  point={{
+                    ...p,
+                    position: String(startPosition + idx).padStart(2, '0'),
+                  }}
+                  state={detailStates[p.slug]}
+                  isActive={p.slug === activePointSlug}
+                  onSelect={() => onSelect(p.slug)}
+                  inOutline
+                  onToggleOutline={() => onToggleOutline(p.slug)}
+                />
+              </SortablePointWrapper>
+            ))}
+          </ul>
+        )}
+      </SortableContext>
+    </section>
   );
 }
 

@@ -6438,6 +6438,85 @@ a.editorial-phase-pill:hover {
   text-align: center;
 }
 
+/* ─── Outline tab — section headers + empty-section drop zones ─────────── */
+
+.editorial-po-outline-section {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  padding: 0.4rem;
+  margin: 0.2rem -0.4rem;
+  border-radius: 5px;
+  border: 1px dashed transparent;
+  transition:
+    background-color 120ms ease,
+    border-color 120ms ease;
+}
+
+.editorial-po-outline-section-over {
+  background: #f4ecd8;
+  border-color: #c98a2c;
+}
+
+.editorial-po-outline-section-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.65rem;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: #4a4738;
+}
+
+.editorial-po-outline-section-header::before,
+.editorial-po-outline-section-header::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: #c9c0a8;
+}
+
+.editorial-po-outline-section-header::after {
+  flex: 0 0 12px;
+}
+
+.editorial-po-outline-section-label {
+  flex-shrink: 0;
+}
+
+.editorial-po-outline-section-count {
+  flex-shrink: 0;
+  color: #8a8268;
+  font-weight: 400;
+  letter-spacing: 0.05em;
+}
+
+.editorial-po-outline-section-placeholder {
+  margin: 0;
+  padding: 0.5rem 0.6rem;
+  border: 1px dashed #b9b09c;
+  border-radius: 5px;
+  background: rgba(255, 253, 245, 0.5);
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.62rem;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: #8a8268;
+  text-align: center;
+}
+
+.editorial-po-outline-section-empty {
+  border-color: #ddd6c8;
+}
+
+.editorial-po-outline-section-empty.editorial-po-outline-section-over {
+  border-color: #c98a2c;
+  background: #fdf3df;
+}
+
 .editorial-po-note-timestamp {
   margin-left: auto;
   font-family: 'IBM Plex Mono', monospace;
