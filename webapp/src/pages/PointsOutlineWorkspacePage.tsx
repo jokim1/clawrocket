@@ -1866,7 +1866,7 @@ function NotesRail({
                     >
                       ↗ PROMOTED
                     </span>
-                  ) : n.promotable ? (
+                  ) : n.type === 'counter' ? (
                     <button
                       type="button"
                       className="editorial-po-note-promote"
