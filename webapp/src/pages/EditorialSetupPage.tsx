@@ -1219,6 +1219,21 @@ function OpenAICodexOAuthCard() {
         </div>
       </div>
 
+      {!isConnectedOAuth && !pending ? (
+        <p className="editorial-oauth-prereq">
+          First time? Enable <strong>Device code authorization</strong> in your{' '}
+          <a
+            href="https://chatgpt.com/#settings/Security"
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            ChatGPT Security Settings
+          </a>{' '}
+          before signing in — otherwise the consent page will show a disabled
+          Continue button.
+        </p>
+      ) : null}
+
       {pending ? (
         <div className="editorial-oauth-paste">
           <p className="editorial-oauth-paste-blurb">
@@ -1236,6 +1251,18 @@ function OpenAICodexOAuthCard() {
               OPEN VERIFICATION URL ↗
             </a>
           </div>
+          <p className="editorial-oauth-paste-blurb">
+            If <strong>Continue</strong> is disabled on auth.openai.com, enable
+            Device code authorization in{' '}
+            <a
+              href="https://chatgpt.com/#settings/Security"
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              ChatGPT Security Settings
+            </a>{' '}
+            and reload the consent page.
+          </p>
           {pollMessage ? (
             <p className="editorial-oauth-poll-message">⌛ {pollMessage}</p>
           ) : null}
