@@ -6850,6 +6850,126 @@ a.editorial-phase-pill:hover {
   gap: 0.6rem;
 }
 
+/* Sources tab content */
+
+.editorial-po-draft-sources-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+
+.editorial-po-draft-source-item {
+  background: #fff;
+  border: 1px solid #ddd6c8;
+  border-radius: 5px;
+  padding: 0.45rem 0.55rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.editorial-po-draft-source-header {
+  display: flex;
+  align-items: baseline;
+  gap: 0.4rem;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.6rem;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: #6c6655;
+}
+
+.editorial-po-draft-source-index {
+  color: #b7372a;
+  font-weight: 600;
+}
+
+.editorial-po-draft-source-kind {
+  border: 1px solid #c9c0a8;
+  border-radius: 3px;
+  padding: 0 0.3rem;
+  letter-spacing: 0.06em;
+  font-size: 0.55rem;
+}
+
+.editorial-po-draft-source-kind-filing {
+  border-color: #2e7d62;
+  color: #2e7d62;
+}
+
+.editorial-po-draft-source-kind-article {
+  border-color: #5b6dad;
+  color: #5b6dad;
+}
+
+.editorial-po-draft-source-kind-transcript {
+  border-color: #8a6d2c;
+  color: #8a6d2c;
+}
+
+.editorial-po-draft-source-kind-page-ref {
+  border-color: #6c6655;
+  color: #6c6655;
+}
+
+.editorial-po-draft-source-kind-social {
+  border-color: #b7372a;
+  color: #b7372a;
+}
+
+.editorial-po-draft-source-date {
+  margin-left: auto;
+}
+
+.editorial-po-draft-source-title {
+  margin: 0.1rem 0 0;
+  font-size: 0.78rem;
+  font-weight: 500;
+  font-family: 'IBM Plex Serif', Georgia, serif;
+  color: #1f1c14;
+  line-height: 1.3;
+}
+
+.editorial-po-draft-source-citation {
+  margin: 0;
+  font-size: 0.66rem;
+  font-family: 'IBM Plex Mono', monospace;
+  color: #6c6655;
+  letter-spacing: 0.02em;
+  line-height: 1.4;
+}
+
+.editorial-po-draft-source-publication {
+  color: #1f1c14;
+  font-weight: 500;
+}
+
+.editorial-po-draft-source-url {
+  align-self: flex-end;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.6rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #b7372a;
+  text-decoration: none;
+}
+
+.editorial-po-draft-source-url:hover {
+  text-decoration: underline;
+}
+
+.editorial-po-draft-source-note {
+  margin: 0.4rem 0 0;
+  padding-top: 0.45rem;
+  border-top: 1px dashed #c9c0a8;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.58rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #8a8268;
+  line-height: 1.4;
+}
+
 /* Versions tab content */
 
 .editorial-po-draft-versions-list {

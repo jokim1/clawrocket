@@ -11,26 +11,27 @@ import { EditorialPhaseStrip } from '../components/EditorialPhaseStrip';
 import { serializeDocToMarkdown, type JSONNode } from '../lib/markdown-export';
 
 // ───────────────────────────────────────────────────────────────────────────
-// Phase 04 DRAFT — markdown export cut.
-// Adds a `↑ COPY MD` button in the sub-meta bar that serializes the editor
-// JSON to Substack-paste-ready markdown via `lib/markdown-export.ts`. This
-// closes the loop on "draft → ship" without any LLM dependency at v0p — the
-// user can write in the Editorial Room and paste directly into Substack /
-// Google Doc / etc.
+// Phase 04 DRAFT — Sources tab cut.
+// Wires the Sources rail tab per design/04_draft.md §6.1: a draft-scoped
+// view of the source_blocks the panel can cite. Fixture-only at v0p; real
+// `clawrocket.source_blocks filtered by Outline ancestry` lookup lands when
+// the autoresearch pipeline plugs in.
 //
 // Earlier cuts in this page:
 //   • PR #269: three-column shell + Tiptap editor + outline rail + word count
 //   • PR #270: cursor-aware status bar + scope chip + outline jump-to-segment
 //   • PR #271: Versions tab + ⌘S manual save + 60s autosave snapshots
+//   • PR #272: ↑ COPY MD export (Tiptap-JSON → markdown serializer)
 //
 // Still deferred (per design/04_draft.md):
-// - Sources tab (left rail) — scoped citation tracker
 // - Panel chat scoped to active segment (right rail)
 // - Quick-action chips wired to handlers (FULL DRAFT / POLISH / etc.)
 // - + OPTIMIZE popover with cost preview + customize panel + run
 // - Voice-lock banner, mechanical scorer, suggestion overlay
 // - Markdown round-trip + source-map (0p-b1 spike: Tiptap → MD → Tiptap)
 // - Compressed-diff snapshot storage (currently full JSON per snapshot)
+// - Real Sources data: currently fixture-only; cite-on-click into editor
+//   + per-segment source filter deferred to autoresearch wiring
 //
 // NOTE on the Outline-rail data source: the Points workspace owns its
 // state in its own localStorage envelope. To avoid threading a shared
@@ -92,7 +93,71 @@ type VersionEntry = {
   body: unknown;
 };
 
-type RailTab = 'outline' | 'versions';
+type RailTab = 'outline' | 'sources' | 'versions';
+
+type SourceKind = 'filing' | 'article' | 'transcript' | 'page-ref' | 'social';
+
+type SourceEntry = {
+  id: string;
+  index: number;
+  kind: SourceKind;
+  title: string;
+  publication?: string;
+  date?: string;
+  citation: string;
+  url?: string;
+};
+
+const SOURCE_KIND_LABELS: Record<SourceKind, string> = {
+  filing: 'FILING',
+  article: 'ARTICLE',
+  transcript: 'TRANSCRIPT',
+  'page-ref': 'PAGE',
+  social: 'SOCIAL',
+};
+
+// Fixture sources matching the Embracer hero example. Replaced by
+// `clawrocket.source_blocks filtered by Outline ancestry` once autoresearch
+// is wired up.
+const FIXTURE_SOURCES: ReadonlyArray<SourceEntry> = [
+  {
+    id: 's1',
+    index: 1,
+    kind: 'filing',
+    title: 'Embracer Group AB · Form 8-K',
+    publication: 'SEC EDGAR',
+    date: '2025-08-14',
+    citation: 'Item 2.06 (impairment), pp.14–16',
+    url: 'https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=0001877787',
+  },
+  {
+    id: 's2',
+    index: 2,
+    kind: 'article',
+    title: "Embracer's $2.1B writedown reshapes indie publishing terms",
+    publication: 'GamesIndustry.biz',
+    date: '2025-08-15',
+    citation: 'Hyland — 2025-08-15',
+  },
+  {
+    id: 's3',
+    index: 3,
+    kind: 'transcript',
+    title: 'Embracer Q2 FY26 earnings call',
+    publication: 'Embracer Group',
+    date: '2025-08-14',
+    citation: 'CFO comments at 23:14',
+  },
+  {
+    id: 's4',
+    index: 4,
+    kind: 'social',
+    title: '@indiedev_ravi: "deal terms changed overnight"',
+    publication: 'X / Twitter',
+    date: '2025-09-02',
+    citation: 'Personal communication',
+  },
+];
 
 const SECTION_ORDER: ReadonlyArray<OutlineSection> = ['HOOK', 'BODY', 'CLOSE'];
 
@@ -890,8 +955,19 @@ export function DraftWorkspacePage(_props: Props) {
                 {totalOutlinePoints}/5–7
               </span>
             </button>
-            <button type="button" className="editorial-po-rail-tab" disabled>
-              Sources <span className="editorial-po-rail-tab-count">—</span>
+            <button
+              type="button"
+              className={`editorial-po-rail-tab${
+                activeRailTab === 'sources'
+                  ? ' editorial-po-rail-tab-active'
+                  : ''
+              }`}
+              onClick={() => setActiveRailTab('sources')}
+            >
+              Sources{' '}
+              <span className="editorial-po-rail-tab-count">
+                {FIXTURE_SOURCES.length}
+              </span>
             </button>
             <button
               type="button"
@@ -909,8 +985,8 @@ export function DraftWorkspacePage(_props: Props) {
             </button>
           </div>
 
-          {activeRailTab === 'outline' ? (
-            totalOutlinePoints === 0 ? (
+          {activeRailTab === 'outline' &&
+            (totalOutlinePoints === 0 ? (
               <p className="editorial-tt-empty">
                 No Points in the Outline yet. Visit{' '}
                 <a href="/editorial/points-outline">03 POINTS + OUTLINE</a> to
@@ -992,8 +1068,55 @@ export function DraftWorkspacePage(_props: Props) {
                   );
                 });
               })()
-            )
-          ) : (
+            ))}
+          {activeRailTab === 'sources' && (
+            <div className="editorial-po-draft-sources-list">
+              {FIXTURE_SOURCES.map((s) => (
+                <article key={s.id} className="editorial-po-draft-source-item">
+                  <header className="editorial-po-draft-source-header">
+                    <span className="editorial-po-draft-source-index">
+                      [{s.index}]
+                    </span>
+                    <span
+                      className={`editorial-po-draft-source-kind editorial-po-draft-source-kind-${s.kind}`}
+                    >
+                      {SOURCE_KIND_LABELS[s.kind]}
+                    </span>
+                    {s.date ? (
+                      <span className="editorial-po-draft-source-date">
+                        {s.date}
+                      </span>
+                    ) : null}
+                  </header>
+                  <h4 className="editorial-po-draft-source-title">{s.title}</h4>
+                  <p className="editorial-po-draft-source-citation">
+                    {s.publication ? (
+                      <span className="editorial-po-draft-source-publication">
+                        {s.publication}
+                      </span>
+                    ) : null}
+                    {s.publication ? ' · ' : null}
+                    {s.citation}
+                  </p>
+                  {s.url ? (
+                    <a
+                      className="editorial-po-draft-source-url"
+                      href={s.url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                    >
+                      OPEN ↗
+                    </a>
+                  ) : null}
+                </article>
+              ))}
+              <p className="editorial-po-draft-source-note">
+                Fixture sources for v0p. Real source_blocks land with the
+                autoresearch wiring.
+              </p>
+            </div>
+          )}
+          {activeRailTab === 'versions' && (
             <div className="editorial-po-draft-versions-list">
               {namedVersions.length === 0 && autoVersions.length === 0 ? (
                 <p className="editorial-tt-empty">
