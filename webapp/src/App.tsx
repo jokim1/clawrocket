@@ -32,6 +32,7 @@ import {
 import { AiAgentsPage } from './pages/AiAgentsPage';
 import { DataConnectorsPage } from './pages/DataConnectorsPage';
 import { EditorialSetupPage } from './pages/EditorialSetupPage';
+import { ThemeTopicsWorkspacePage } from './pages/ThemeTopicsWorkspacePage';
 import { MainChannelPage } from './pages/MainChannelPage';
 import { TalkDetailPage } from './pages/TalkDetailPage';
 import { TalkListPage } from './pages/TalkListPage';
@@ -687,6 +688,12 @@ export function App() {
         <Route
           path="/editorial/setup"
           element={<EditorialSetupPage onUnauthorized={handleUnauthorized} />}
+        />
+        <Route
+          path="/editorial/theme-topics"
+          element={
+            <ThemeTopicsWorkspacePage onUnauthorized={handleUnauthorized} />
+          }
         />
         <Route
           path="/editorial/*"
