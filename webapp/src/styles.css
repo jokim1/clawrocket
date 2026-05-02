@@ -8299,6 +8299,24 @@ a.editorial-phase-pill:hover {
   color: #6c6655;
 }
 
+.editorial-po-draft-panel-clear {
+  background: none;
+  border: 1px solid #c9c0a8;
+  border-radius: 3px;
+  padding: 0.1rem 0.4rem;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.55rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #6c6655;
+  cursor: pointer;
+}
+
+.editorial-po-draft-panel-clear:hover {
+  border-color: #b7372a;
+  color: #b7372a;
+}
+
 .editorial-po-draft-panel-summary {
   margin: 0;
   padding: 0.5rem 0.75rem;

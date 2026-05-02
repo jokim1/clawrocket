@@ -1330,6 +1330,28 @@ export function DraftWorkspacePage(_props: Props) {
   // Streams a single panel turn from the active agent against the active
   // point's segment context. Live turns are persisted under
   // editorial-room.draft.panel-turns-v0 keyed by activePoint.
+  // Clear all live panel turns for the active point. Fixtures reappear
+  // afterward (they're the first-time-UX fallback). Per-point because the
+  // whole-history nuke is rarely what the user wants — usually they're
+  // clearing a single bad/errored point.
+  const handleClearPanelHistory = (): void => {
+    if (activePoint < 0) return;
+    const pointKey = String(activePoint);
+    setLivePanelTurns((prev) => {
+      if (!prev[pointKey]) return prev;
+      const next = { ...prev };
+      delete next[pointKey];
+      persistLivePanelTurns(next);
+      return next;
+    });
+    setComposerError(null);
+  };
+
+  // True iff the active point has at least one live (non-fixture) turn.
+  // The CLEAR chip in the panel header only renders when this is true.
+  const hasLiveTurnsForActivePoint =
+    activePoint >= 0 && (livePanelTurns[String(activePoint)]?.length ?? 0) > 0;
+
   const handleSubmitPanelTurn = async (): Promise<void> => {
     if (!activeAgent) return;
     if (activePoint < 0) return;
@@ -2472,6 +2494,16 @@ export function DraftWorkspacePage(_props: Props) {
               <span className="editorial-po-draft-panel-last">
                 LAST {scopedPanelTurns[0].timestamp}
               </span>
+            ) : null}
+            {hasLiveTurnsForActivePoint ? (
+              <button
+                type="button"
+                className="editorial-po-draft-panel-clear"
+                onClick={handleClearPanelHistory}
+                title="Clear live panel turns for this point. Fixture turns will reappear."
+              >
+                ✕ CLEAR
+              </button>
             ) : null}
           </header>
 
