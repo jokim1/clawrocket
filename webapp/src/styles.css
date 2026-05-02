@@ -8385,6 +8385,24 @@ a.editorial-phase-pill:hover {
   color: #1f1c14;
 }
 
+.editorial-po-draft-panel-body-errored {
+  color: #b7372a;
+}
+
+.editorial-po-draft-panel-cursor {
+  display: inline-block;
+  margin-left: 0.15rem;
+  color: #b7372a;
+  font-weight: 700;
+  animation: editorial-panel-cursor-blink 1s steps(1) infinite;
+}
+
+@keyframes editorial-panel-cursor-blink {
+  50% {
+    opacity: 0;
+  }
+}
+
 .editorial-po-draft-panel-action {
   align-self: flex-start;
   background: none;
@@ -8445,9 +8463,31 @@ a.editorial-phase-pill:hover {
   letter-spacing: 0.06em;
   text-transform: uppercase;
   color: #fff;
+  cursor: pointer;
+  align-self: stretch;
+}
+
+.editorial-po-draft-panel-ask:disabled {
   cursor: not-allowed;
   opacity: 0.6;
-  align-self: stretch;
+}
+
+.editorial-po-draft-panel-ask:hover:not(:disabled) {
+  background: #962c22;
+  border-color: #962c22;
+}
+
+.editorial-po-draft-panel-error {
+  margin: 0.3rem 0.6rem 0.6rem;
+  padding: 0.4rem 0.55rem;
+  background: #fff0eb;
+  border: 1px solid #b7372a;
+  border-radius: 4px;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.62rem;
+  letter-spacing: 0.02em;
+  color: #b7372a;
+  word-break: break-word;
 }
 
 /* Sources tab content */
