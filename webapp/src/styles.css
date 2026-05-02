@@ -5238,6 +5238,121 @@ a {
   gap: 0.4rem;
 }
 
+/* Setup · Anthropic OAuth status card (top of LLM Room section) */
+
+.editorial-oauth-card {
+  margin-top: 1.4rem;
+  background: #fff;
+  border: 1px solid #ddd6c8;
+  border-radius: 6px;
+  padding: 0.75rem 0.85rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+}
+
+.editorial-oauth-row {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  flex-wrap: wrap;
+}
+
+.editorial-oauth-row-text {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  min-width: 0;
+}
+
+.editorial-oauth-label {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.6rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #6c6655;
+}
+
+.editorial-oauth-status {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.74rem;
+  letter-spacing: 0.04em;
+  color: #c98a2c;
+}
+
+.editorial-oauth-status-connected {
+  color: #2e7d62;
+}
+
+.editorial-oauth-actions {
+  display: flex;
+  gap: 0.4rem;
+}
+
+.editorial-oauth-paste {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  border-top: 1px dashed #c9c0a8;
+  padding-top: 0.6rem;
+}
+
+.editorial-oauth-paste-blurb {
+  margin: 0;
+  font-family: 'IBM Plex Serif', Georgia, serif;
+  font-size: 0.86rem;
+  font-style: italic;
+  color: #4a4738;
+  line-height: 1.45;
+}
+
+.editorial-oauth-paste-blurb code {
+  background: #fbf8f2;
+  border: 1px solid #e2dccc;
+  border-radius: 3px;
+  padding: 0 0.3rem;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.78rem;
+  font-style: normal;
+}
+
+.editorial-oauth-paste-textarea {
+  width: 100%;
+  border: 1px solid #c9c0a8;
+  border-radius: 5px;
+  padding: 0.5rem 0.6rem;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.8rem;
+  background: #fbf8f2;
+  color: #1f1c14;
+  resize: vertical;
+}
+
+.editorial-oauth-paste-textarea:focus {
+  outline: none;
+  border-color: #b7372a;
+  box-shadow: 0 0 0 1px #b7372a;
+}
+
+.editorial-oauth-paste-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.4rem;
+}
+
+.editorial-oauth-error {
+  margin: 0;
+  padding: 0.5rem 0.65rem;
+  background: #fff0eb;
+  border: 1px solid #b7372a;
+  border-radius: 5px;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.7rem;
+  color: #b7372a;
+  letter-spacing: 0.02em;
+}
+
 /* Setup · LLM Room section */
 
 .editorial-agents-selected {
