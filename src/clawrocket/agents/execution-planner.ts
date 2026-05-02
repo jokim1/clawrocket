@@ -167,7 +167,9 @@ export function getAnthropicApiKeyFromDb(): string | null {
   }
 
   try {
-    return decryptProviderSecret(row.ciphertext).apiKey.trim();
+    const payload = decryptProviderSecret(row.ciphertext);
+    if (payload.kind !== 'api_key') return null;
+    return payload.apiKey.trim();
   } catch {
     return null;
   }

@@ -27,6 +27,7 @@ describe('provider secret store', () => {
 
     const storeA = await import('./provider-secret-store.js');
     const ciphertext = storeA.encryptProviderSecret({
+      kind: 'api_key',
       apiKey: 'sk-test-123',
     });
 

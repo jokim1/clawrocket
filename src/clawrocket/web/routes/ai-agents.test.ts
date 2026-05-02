@@ -43,6 +43,7 @@ function seedProviderSecret(
     .run(
       providerId,
       encryptProviderSecret({
+        kind: 'api_key',
         apiKey,
         ...(organizationId ? { organizationId } : {}),
       }),

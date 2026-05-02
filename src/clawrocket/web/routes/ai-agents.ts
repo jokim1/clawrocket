@@ -129,7 +129,12 @@ function maskApiKey(apiKey: string): string {
 
 function parseStoredSecret(ciphertext: string): LlmSecret | null {
   try {
-    return decryptProviderSecret(ciphertext);
+    const payload = decryptProviderSecret(ciphertext);
+    // ai-agents endpoints surface the API-key view of credentials. OAuth
+    // subscription tokens are managed via the dedicated /oauth routes
+    // and not represented in this view.
+    if (payload.kind !== 'api_key') return null;
+    return { apiKey: payload.apiKey };
   } catch {
     return null;
   }
@@ -732,6 +737,7 @@ export async function putAiProviderCredentialRoute(
   ).run(
     providerId,
     encryptProviderSecret({
+      kind: 'api_key',
       apiKey,
       ...(organizationId ? { organizationId } : {}),
     }),
