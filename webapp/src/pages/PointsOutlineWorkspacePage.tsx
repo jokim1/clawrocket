@@ -98,10 +98,13 @@ type DetailState = {
   claim: string;
   stake: string;
   discussion: DiscussionTurn[];
-  // Stale = current claim/stake hash differs from the hash that the
-  // score_snapshots were computed against. UI-only flag for now;
-  // recompute is a follow-up PR.
+  // Stale = current claim/stake hash differs from the hash that scoreRow /
+  // aggregate were computed against. Cleared by RESCORE; in production this
+  // would dispatch run_skill against the scoring_pipeline and append a fresh
+  // score_snapshots row (per EDITORIAL_ROOM_CONTRACT.md §4.2).
   stale: boolean;
+  scoreRow: ScoreCell[];
+  aggregate: { score: number; ssr: number; gatesPass: boolean };
 };
 
 type EditField = 'claim' | 'stake';
@@ -538,10 +541,50 @@ function buildInitialDetailStates(): Record<string, DetailState> {
       stake: d.stake,
       discussion: [...d.discussion],
       stale: false,
+      scoreRow: d.scoreRow.map((c) => ({ ...c })),
+      aggregate: { ...d.aggregate },
     };
   }
   return out;
 }
+
+// Deterministic small drift on claim/stake content so RESCORE produces
+// realistic, repeatable score changes in the fixture-only slice. Real
+// rescore dispatches `run_skill` against the scoring_pipeline.
+function simpleHash(s: string): number {
+  let h = 0;
+  for (let i = 0; i < s.length; i++) {
+    h = ((h << 5) - h + s.charCodeAt(i)) | 0;
+  }
+  return Math.abs(h);
+}
+
+function rescoreFromContent(state: DetailState): {
+  scoreRow: ScoreCell[];
+  aggregate: DetailState['aggregate'];
+} {
+  const seed = simpleHash(state.claim + '|' + state.stake);
+  const scoreRow = state.scoreRow.map((cell, i) => {
+    const delta = ((((seed * (i + 7)) >>> 3) % 11) - 5) / 10; // -0.5..+0.5
+    const raw = cell.score + delta;
+    const clamped = Math.max(0, Math.min(10, raw));
+    return { ...cell, score: Math.round(clamped * 10) / 10 };
+  });
+  const mean = scoreRow.reduce((s, c) => s + c.score, 0) / scoreRow.length;
+  const aggScore = Math.round(mean * 10) / 10;
+  const ssrDelta = ((((seed * 13) >>> 5) % 11) - 5) / 100; // -0.05..+0.05
+  const ssr = Math.max(0, Math.min(1, state.aggregate.ssr + ssrDelta));
+  return {
+    scoreRow,
+    aggregate: {
+      score: aggScore,
+      ssr: Math.round(ssr * 100) / 100,
+      gatesPass: aggScore >= 6.0,
+    },
+  };
+}
+
+const RESCORE_LATENCY_MS = 600;
 
 type Props = {
   onUnauthorized?: () => void;
@@ -566,6 +609,7 @@ export function PointsOutlineWorkspacePage(_props: Props) {
 
   const [editing, setEditing] = useState<EditingTarget>(null);
   const [draft, setDraft] = useState<string>('');
+  const [rescoringSlug, setRescoringSlug] = useState<string | null>(null);
 
   function selectPoint(slug: string) {
     if (editing && editing.slug !== slug) {
@@ -585,9 +629,31 @@ export function PointsOutlineWorkspacePage(_props: Props) {
           claim: state.claim,
           stake: state.stake,
           discussion: state.discussion,
+          scoreRow: state.scoreRow,
+          aggregate: state.aggregate,
         }
       : null;
   const stale = state?.stale ?? false;
+  const rescoring = rescoringSlug === activePoint.slug;
+
+  function rescorePoint(slug: string) {
+    if (rescoringSlug) return;
+    const cur = detailStates[slug];
+    if (!cur || !cur.stale) return;
+    setRescoringSlug(slug);
+    setTimeout(() => {
+      setDetailStates((prev) => {
+        const s = prev[slug];
+        if (!s) return prev;
+        const next = rescoreFromContent(s);
+        return {
+          ...prev,
+          [slug]: { ...s, stale: false, ...next },
+        };
+      });
+      setRescoringSlug(null);
+    }, RESCORE_LATENCY_MS);
+  }
 
   function startEdit(field: EditField) {
     if (!detail) return;
@@ -730,12 +796,14 @@ export function PointsOutlineWorkspacePage(_props: Props) {
             <PointDetailView
               detail={detail}
               stale={stale}
+              rescoring={rescoring}
               editing={editing}
               draft={draft}
               setDraft={setDraft}
               onStartEdit={startEdit}
               onCancelEdit={cancelEdit}
               onSaveEdit={saveEdit}
+              onRescore={() => rescorePoint(activePoint.slug)}
             />
           ) : null}
         </main>
@@ -781,7 +849,7 @@ function PointCard({
             {POINT_TYPE_LABEL[point.type]}
           </span>
           <span className="editorial-po-point-score">
-            {point.score.toFixed(1)}
+            {(state?.aggregate.score ?? point.score).toFixed(1)}
           </span>
         </div>
         <p className="editorial-po-point-claim">{claim}</p>
@@ -798,21 +866,25 @@ function PointCard({
 function PointDetailView({
   detail,
   stale,
+  rescoring,
   editing,
   draft,
   setDraft,
   onStartEdit,
   onCancelEdit,
   onSaveEdit,
+  onRescore,
 }: {
   detail: PointDetail;
   stale: boolean;
+  rescoring: boolean;
   editing: EditingTarget;
   draft: string;
   setDraft: (v: string) => void;
   onStartEdit: (field: EditField) => void;
   onCancelEdit: () => void;
   onSaveEdit: () => void;
+  onRescore: () => void;
 }) {
   const editingClaim =
     editing?.slug === detail.slug && editing.field === 'claim';
@@ -829,21 +901,40 @@ function PointDetailView({
         <span className="editorial-po-detail-eyebrow">{detail.eyebrow}</span>
       </header>
 
-      {stale ? (
-        <div className="editorial-po-stale-banner" role="status">
+      {stale || rescoring ? (
+        <div
+          className={
+            'editorial-po-stale-banner' +
+            (rescoring ? ' editorial-po-stale-banner-rescoring' : '')
+          }
+          role="status"
+          aria-live="polite"
+        >
           <span className="editorial-po-stale-icon" aria-hidden="true">
-            ⚠
+            {rescoring ? '⟳' : '⚠'}
           </span>
           <span className="editorial-po-stale-text">
-            STALE — claim or stake changed since last score; recompute deferred
+            {rescoring
+              ? 'RESCORING…'
+              : 'STALE — claim or stake changed since last score'}
           </span>
+          {!rescoring ? (
+            <button
+              type="button"
+              className="editorial-po-stale-rescore"
+              onClick={onRescore}
+            >
+              RESCORE →
+            </button>
+          ) : null}
         </div>
       ) : null}
 
       <div
         className={
           'editorial-tt-score-row' +
-          (stale ? ' editorial-po-score-row-stale' : '')
+          (stale && !rescoring ? ' editorial-po-score-row-stale' : '') +
+          (rescoring ? ' editorial-po-score-row-rescoring' : '')
         }
       >
         {detail.scoreRow.map((cell) => (

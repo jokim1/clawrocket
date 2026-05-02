@@ -6568,3 +6568,48 @@ a.editorial-phase-pill:hover {
   border-radius: 0 3px 3px 0;
   line-height: 1.45;
 }
+
+.editorial-po-stale-rescore {
+  margin-left: 0.45rem;
+  border: 1px solid #1f1c14;
+  background: #1f1c14;
+  color: #f7f3e8;
+  padding: 0.16rem 0.55rem;
+  border-radius: 3px;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.62rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.editorial-po-stale-rescore:hover {
+  background: #2e7d62;
+  border-color: #2e7d62;
+}
+
+.editorial-po-stale-banner-rescoring {
+  border-color: #2e7d62;
+  background: #ecf5f0;
+  color: #1f4e3b;
+}
+
+.editorial-po-stale-banner-rescoring .editorial-po-stale-icon {
+  display: inline-block;
+  animation: editorial-po-spin 1.2s linear infinite;
+}
+
+.editorial-po-score-row-rescoring .editorial-tt-score-cell-number,
+.editorial-po-score-row-rescoring .editorial-tt-score-cell-note {
+  opacity: 0.35;
+  transition: opacity 200ms ease;
+}
+
+@keyframes editorial-po-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
