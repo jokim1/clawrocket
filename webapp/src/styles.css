@@ -6727,3 +6727,84 @@ a.editorial-phase-pill:hover {
   grid-row: 1 / span 2;
   align-self: center;
 }
+
+/* ─── Editorial Room · Points + Outline · add-note flow ──────────────── */
+
+.editorial-po-notes-filter-picking {
+  background: #fdf3df;
+  padding: 0.3rem;
+  margin: -0.3rem -0.3rem 0.4rem;
+  border-radius: 4px;
+  border: 1px solid #c98a2c;
+  position: relative;
+}
+
+.editorial-po-notes-filter-picking::before {
+  content: 'PICK A TYPE →';
+  position: absolute;
+  top: -0.65rem;
+  left: 0.4rem;
+  background: #fdf3df;
+  padding: 0 0.3rem;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.55rem;
+  letter-spacing: 0.06em;
+  color: #7a4a08;
+}
+
+.editorial-po-notes-filter-picking .editorial-po-notes-filter-chip {
+  cursor: pointer;
+  opacity: 1;
+  transform: scale(1.05);
+  transition:
+    transform 120ms ease,
+    box-shadow 120ms ease;
+}
+
+.editorial-po-notes-filter-picking .editorial-po-notes-filter-chip:hover {
+  box-shadow: 0 0 0 2px rgba(31, 28, 20, 0.18);
+}
+
+.editorial-po-notes-filter-chip-add-active {
+  border-color: #b7372a;
+  color: #b7372a;
+  border-style: solid;
+  font-weight: 700;
+}
+
+.editorial-po-note-card-new {
+  border-color: #1f1c14;
+  border-width: 1.5px;
+  background: #fffdf5;
+}
+
+.editorial-po-note-edit-textarea {
+  font-family: inherit;
+  font-size: 0.78rem;
+  line-height: 1.45;
+  color: #1f1c14;
+  background: #fff;
+  border: 1px solid #c9c0a8;
+  border-radius: 4px;
+  padding: 0.4rem 0.5rem;
+  resize: vertical;
+  width: 100%;
+  box-sizing: border-box;
+  margin-top: 0.25rem;
+}
+
+.editorial-po-note-edit-textarea:focus {
+  outline: none;
+  border-color: #b7372a;
+  box-shadow: 0 0 0 2px rgba(183, 55, 42, 0.18);
+}
+
+.editorial-po-note-card-new .editorial-po-edit-actions {
+  margin-top: 0.4rem;
+}
+
+.editorial-po-note-add-picking {
+  border-color: #b7372a;
+  color: #b7372a;
+  border-style: solid;
+}
