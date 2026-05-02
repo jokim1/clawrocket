@@ -1,16 +1,45 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
-  useEditor,
+  BubbleMenu,
   EditorContent,
+  useEditor,
   type Content,
   type Editor,
 } from '@tiptap/react';
 import StarterKit from '@tiptap/starter-kit';
+import LinkExtension from '@tiptap/extension-link';
+import Underline from '@tiptap/extension-underline';
+import TextAlign from '@tiptap/extension-text-align';
+import Highlight from '@tiptap/extension-highlight';
 
 import { EditorialPhaseStrip } from '../components/EditorialPhaseStrip';
 import { serializeDocToMarkdown, type JSONNode } from '../lib/markdown-export';
 import { parseMarkdownToDoc } from '../lib/markdown-import';
+
+// ───────────────────────────────────────────────────────────────────────────
+// Phase 04 DRAFT — bubble toolbar + link/underline/align/highlight.
+// Adds a floating bubble menu that appears on text selection (Notion /
+// Substack pattern) with a heading-style dropdown, inline-mark toggles
+// (B I U S code), link insert, list/blockquote toggles, alignment, and
+// highlight. Tiptap JSON is the canonical representation, so all of
+// these survive in the editor's saved state and through the Versions
+// ledger. The Markdown export is a lossy serialization — underline,
+// alignment, and highlight don't survive MD round-trip (no standard
+// markdown for them); bold/italic/strike/code/link/lists/headings/
+// blockquote do round-trip cleanly via the existing exporter.
+//
+// Earlier cuts in this page (most recent at bottom):
+//   • PR #269: three-column shell + Tiptap editor + outline rail + word count
+//   • PR #270: cursor-aware status bar + scope chip + outline jump-to-segment
+//   • PR #271: Versions tab + ⌘S manual save + 60s autosave snapshots
+//   • PR #272: ↑ COPY MD export (Tiptap-JSON → markdown serializer)
+//   • PR #273: Sources tab — fixture-only cite tracker
+//   • PR #274: + OPTIMIZE popover UI shell (RUN disabled at v0p)
+//   • PR #275: sub-meta polish — eyebrow + SSR + GATES + ← BACK
+//   • PR #276: Panel chat right rail — mock turns + composer
+//   • PR #277: 0p-b1 Markdown round-trip parser + ↓ PASTE MD
+// ───────────────────────────────────────────────────────────────────────────
 
 // ───────────────────────────────────────────────────────────────────────────
 // Phase 04 DRAFT — Panel chat right rail (mock turns).
@@ -714,6 +743,51 @@ function findActivePoint(activeParaIndex: number, buckets: Bucket[]): number {
   return -1;
 }
 
+// ─── bubble toolbar helpers ─────────────────────────────────────────────────
+
+function getActiveStyle(editor: Editor): string {
+  for (let level = 1; level <= 4; level++) {
+    if (editor.isActive('heading', { level })) return `h${level}`;
+  }
+  return 'paragraph';
+}
+
+function applyStyle(editor: Editor, style: string): void {
+  if (style === 'paragraph') {
+    editor.chain().focus().setParagraph().run();
+    return;
+  }
+  const m = /^h([1-6])$/.exec(style);
+  if (!m) return;
+  const level = parseInt(m[1], 10) as 1 | 2 | 3 | 4 | 5 | 6;
+  editor.chain().focus().toggleHeading({ level }).run();
+}
+
+function getActiveAlign(editor: Editor): string {
+  if (editor.isActive({ textAlign: 'center' })) return 'center';
+  if (editor.isActive({ textAlign: 'right' })) return 'right';
+  if (editor.isActive({ textAlign: 'justify' })) return 'justify';
+  return 'left';
+}
+
+function promptLink(editor: Editor): void {
+  const previous = editor.getAttributes('link').href as string | undefined;
+  // window.prompt is intentional — a small inline popup is a follow-up
+  // PR. The flow still works for v0p: paste-or-type URL, blank to remove.
+  const url = window.prompt('Link URL', previous ?? '');
+  if (url === null) return;
+  if (url.trim() === '') {
+    editor.chain().focus().extendMarkRange('link').unsetLink().run();
+    return;
+  }
+  editor
+    .chain()
+    .focus()
+    .extendMarkRange('link')
+    .setLink({ href: url.trim() })
+    .run();
+}
+
 function jumpToPointParagraph(
   editor: Editor,
   pointIndex: number,
@@ -922,7 +996,22 @@ export function DraftWorkspacePage(_props: Props) {
   const phaseEntryDoneRef = useRef<boolean>(false);
 
   const editor = useEditor({
-    extensions: [StarterKit],
+    extensions: [
+      StarterKit,
+      Underline,
+      Highlight,
+      LinkExtension.configure({
+        openOnClick: false,
+        autolink: true,
+        linkOnPaste: true,
+        HTMLAttributes: { rel: 'noopener noreferrer', target: '_blank' },
+      }),
+      TextAlign.configure({
+        types: ['heading', 'paragraph'],
+        alignments: ['left', 'center', 'right', 'justify'],
+        defaultAlignment: 'left',
+      }),
+    ],
     content: loadDraftContent(),
     onCreate: ({ editor }) => {
       setWordCount(countWords(editor.state.doc.textContent));
@@ -1047,6 +1136,20 @@ export function DraftWorkspacePage(_props: Props) {
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
   }, [optimizeOpen]);
+
+  // ⌘K / Ctrl+K → prompt for link URL on the current selection.
+  useEffect(() => {
+    if (!editor) return;
+    const handler = (e: KeyboardEvent): void => {
+      if (e.key !== 'k' && e.key !== 'K') return;
+      if (!(e.metaKey || e.ctrlKey)) return;
+      if (e.shiftKey) return;
+      e.preventDefault();
+      promptLink(editor);
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [editor]);
 
   // Click outside the popover closes it. Anchor-relative; we ignore clicks
   // inside the anchor wrapper (which contains both the button and popover).
@@ -1713,6 +1816,183 @@ export function DraftWorkspacePage(_props: Props) {
         <main className="editorial-po-draft-center">
           <div className="editorial-po-draft-status-bar">{statusText}</div>
           <div className="editorial-po-draft-editor">
+            {editor ? (
+              <BubbleMenu
+                editor={editor}
+                className="editorial-po-draft-bubble"
+                shouldShow={({ editor: e, from, to }) => {
+                  if (from === to) return false;
+                  if (e.isActive('codeBlock')) return false;
+                  return true;
+                }}
+              >
+                <select
+                  className="editorial-po-draft-bubble-style"
+                  value={getActiveStyle(editor)}
+                  onChange={(e) => applyStyle(editor, e.target.value)}
+                  aria-label="Text style"
+                >
+                  <option value="paragraph">Normal</option>
+                  <option value="h1">Heading 1</option>
+                  <option value="h2">Heading 2</option>
+                  <option value="h3">Heading 3</option>
+                  <option value="h4">Heading 4</option>
+                </select>
+                <span className="editorial-po-draft-bubble-divider" />
+                <button
+                  type="button"
+                  className={`editorial-po-draft-bubble-btn${
+                    editor.isActive('bold')
+                      ? ' editorial-po-draft-bubble-btn-active'
+                      : ''
+                  }`}
+                  onClick={() => editor.chain().focus().toggleBold().run()}
+                  title="Bold (⌘B)"
+                  aria-label="Bold"
+                >
+                  <strong>B</strong>
+                </button>
+                <button
+                  type="button"
+                  className={`editorial-po-draft-bubble-btn${
+                    editor.isActive('italic')
+                      ? ' editorial-po-draft-bubble-btn-active'
+                      : ''
+                  }`}
+                  onClick={() => editor.chain().focus().toggleItalic().run()}
+                  title="Italic (⌘I)"
+                  aria-label="Italic"
+                >
+                  <em>I</em>
+                </button>
+                <button
+                  type="button"
+                  className={`editorial-po-draft-bubble-btn${
+                    editor.isActive('underline')
+                      ? ' editorial-po-draft-bubble-btn-active'
+                      : ''
+                  }`}
+                  onClick={() => editor.chain().focus().toggleUnderline().run()}
+                  title="Underline (⌘U)"
+                  aria-label="Underline"
+                >
+                  <u>U</u>
+                </button>
+                <button
+                  type="button"
+                  className={`editorial-po-draft-bubble-btn${
+                    editor.isActive('strike')
+                      ? ' editorial-po-draft-bubble-btn-active'
+                      : ''
+                  }`}
+                  onClick={() => editor.chain().focus().toggleStrike().run()}
+                  title="Strikethrough"
+                  aria-label="Strikethrough"
+                >
+                  <s>S</s>
+                </button>
+                <button
+                  type="button"
+                  className={`editorial-po-draft-bubble-btn${
+                    editor.isActive('code')
+                      ? ' editorial-po-draft-bubble-btn-active'
+                      : ''
+                  }`}
+                  onClick={() => editor.chain().focus().toggleCode().run()}
+                  title="Inline code (⌘E)"
+                  aria-label="Inline code"
+                >
+                  &lt;/&gt;
+                </button>
+                <button
+                  type="button"
+                  className={`editorial-po-draft-bubble-btn${
+                    editor.isActive('highlight')
+                      ? ' editorial-po-draft-bubble-btn-active'
+                      : ''
+                  }`}
+                  onClick={() => editor.chain().focus().toggleHighlight().run()}
+                  title="Highlight"
+                  aria-label="Highlight"
+                >
+                  <span className="editorial-po-draft-bubble-hl">H</span>
+                </button>
+                <button
+                  type="button"
+                  className={`editorial-po-draft-bubble-btn${
+                    editor.isActive('link')
+                      ? ' editorial-po-draft-bubble-btn-active'
+                      : ''
+                  }`}
+                  onClick={() => promptLink(editor)}
+                  title="Link (⌘K)"
+                  aria-label="Link"
+                >
+                  🔗
+                </button>
+                <span className="editorial-po-draft-bubble-divider" />
+                <button
+                  type="button"
+                  className={`editorial-po-draft-bubble-btn${
+                    editor.isActive('bulletList')
+                      ? ' editorial-po-draft-bubble-btn-active'
+                      : ''
+                  }`}
+                  onClick={() =>
+                    editor.chain().focus().toggleBulletList().run()
+                  }
+                  title="Bullet list"
+                  aria-label="Bullet list"
+                >
+                  •
+                </button>
+                <button
+                  type="button"
+                  className={`editorial-po-draft-bubble-btn${
+                    editor.isActive('orderedList')
+                      ? ' editorial-po-draft-bubble-btn-active'
+                      : ''
+                  }`}
+                  onClick={() =>
+                    editor.chain().focus().toggleOrderedList().run()
+                  }
+                  title="Numbered list"
+                  aria-label="Numbered list"
+                >
+                  1.
+                </button>
+                <button
+                  type="button"
+                  className={`editorial-po-draft-bubble-btn${
+                    editor.isActive('blockquote')
+                      ? ' editorial-po-draft-bubble-btn-active'
+                      : ''
+                  }`}
+                  onClick={() =>
+                    editor.chain().focus().toggleBlockquote().run()
+                  }
+                  title="Blockquote"
+                  aria-label="Blockquote"
+                >
+                  ❝
+                </button>
+                <span className="editorial-po-draft-bubble-divider" />
+                <select
+                  className="editorial-po-draft-bubble-align"
+                  value={getActiveAlign(editor)}
+                  onChange={(e) =>
+                    editor.chain().focus().setTextAlign(e.target.value).run()
+                  }
+                  aria-label="Text alignment"
+                  title="Text alignment"
+                >
+                  <option value="left">⇤ Left</option>
+                  <option value="center">≡ Center</option>
+                  <option value="right">⇥ Right</option>
+                  <option value="justify">≣ Justify</option>
+                </select>
+              </BubbleMenu>
+            ) : null}
             <EditorContent editor={editor} />
           </div>
         </main>
