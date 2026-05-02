@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { Link } from 'react-router-dom';
 import {
   useEditor,
   EditorContent,
@@ -11,13 +12,19 @@ import { EditorialPhaseStrip } from '../components/EditorialPhaseStrip';
 import { serializeDocToMarkdown, type JSONNode } from '../lib/markdown-export';
 
 // ───────────────────────────────────────────────────────────────────────────
-// Phase 04 DRAFT — + OPTIMIZE popover UI shell.
-// Wires the popover per design/04_draft.md §5: scope-aware description,
-// 4-stage list (AUTORESEARCH / AUTONOVEL / PANEL PASS / PROPOSE 2–3), mock
-// cost preview, CUSTOMIZE / RUN footer. RUN is visible-but-disabled at v0p
-// because no LLM provider is wired into Draft yet — the popover establishes
-// the UX surface and keyboard shortcut (⌘O) so the run flow can drop in
-// later without re-litigating the visual design.
+// Phase 04 DRAFT — sub-meta bar polish.
+// Adds the eyebrow row (`UNDER OUTLINE: <title> · N POINTS`), SSR aggregate +
+// GATES indicator on the main meta row, and a `← BACK` chip linking back to
+// the Points + Outline workspace per design/04_draft.md §3.
+//
+// Outline title is hardcoded to the Embracer fixture for v0p; once the
+// Outline workspace stores a topic title in localStorage, plumb it through
+// here.
+//
+// SSR aggregate is computed as the mean of outline-point scores (no real
+// scoring pipeline at v0p). GATES indicator is heuristic at v0p: ✓ when the
+// SSR mean ≥ 6.0 and no point dips below 5.0; ⚠ otherwise. Real gate logic
+// replaces this once gate thresholds land in Setup.
 //
 // Earlier cuts in this page:
 //   • PR #269: three-column shell + Tiptap editor + outline rail + word count
@@ -25,6 +32,7 @@ import { serializeDocToMarkdown, type JSONNode } from '../lib/markdown-export';
 //   • PR #271: Versions tab + ⌘S manual save + 60s autosave snapshots
 //   • PR #272: ↑ COPY MD export (Tiptap-JSON → markdown serializer)
 //   • PR #273: Sources tab — fixture-only cite tracker
+//   • PR #274: + OPTIMIZE popover UI shell (RUN disabled at v0p)
 //
 // Still deferred (per design/04_draft.md):
 // - Panel chat scoped to active segment (right rail)
@@ -36,6 +44,7 @@ import { serializeDocToMarkdown, type JSONNode } from '../lib/markdown-export';
 // - Compressed-diff snapshot storage (currently full JSON per snapshot)
 // - Real Sources data: currently fixture-only; cite-on-click into editor
 //   + per-segment source filter deferred to autoresearch wiring
+// - Real outline title + real GATES thresholds from Setup
 //
 // NOTE on the Outline-rail data source: the Points workspace owns its
 // state in its own localStorage envelope. To avoid threading a shared
@@ -721,6 +730,30 @@ function optimizeCostEstimate(cursor: CursorState): OptimizeCostEstimate {
   return { tokens: '≈28K TOKENS', wall: '12S WALL', dollars: '≈$0.08' };
 }
 
+// Fixture outline title for the Embracer working example. Will be replaced
+// with `outline.compiled_truth.title` from the Points + Outline workspace
+// once that field is plumbed through localStorage.
+const FIXTURE_OUTLINE_TITLE =
+  "How Embracer's $2.1B writedown changed indie publishing terms";
+
+type GateStatus = 'pass' | 'warn' | 'unknown';
+
+function computeSsrAggregate(orderedOutline: OutlineEntry[]): number | null {
+  if (orderedOutline.length === 0) return null;
+  const sum = orderedOutline.reduce((acc, p) => acc + p.score, 0);
+  return sum / orderedOutline.length;
+}
+
+function computeGateStatus(
+  orderedOutline: OutlineEntry[],
+  ssr: number | null,
+): GateStatus {
+  if (ssr === null) return 'unknown';
+  if (ssr < 6.0) return 'warn';
+  if (orderedOutline.some((p) => p.score < 5.0)) return 'warn';
+  return 'pass';
+}
+
 const WORD_TARGET_MIN = 1200;
 const WORD_TARGET_MAX = 1400;
 
@@ -914,6 +947,14 @@ export function DraftWorkspacePage(_props: Props) {
   );
 
   const totalOutlinePoints = orderedOutline.length;
+  const ssrAggregate = useMemo(
+    () => computeSsrAggregate(orderedOutline),
+    [orderedOutline],
+  );
+  const gateStatus = useMemo(
+    () => computeGateStatus(orderedOutline, ssrAggregate),
+    [orderedOutline, ssrAggregate],
+  );
   const scopeText = scopeChipText(cursor);
   const statusText = activeStatusText(cursor, orderedOutline, activePoint);
 
@@ -1007,10 +1048,52 @@ export function DraftWorkspacePage(_props: Props) {
     <div className="editorial-room">
       <EditorialPhaseStrip activePhase="draft" />
 
+      <div className="editorial-po-draft-meta editorial-po-draft-meta-eyebrow">
+        <span className="editorial-po-draft-meta-eyebrow-label">
+          UNDER OUTLINE:
+        </span>
+        <Link
+          to="/editorial/points-outline"
+          className="editorial-po-draft-meta-title"
+        >
+          {FIXTURE_OUTLINE_TITLE}
+        </Link>
+        <span className="editorial-po-meta-sep">·</span>
+        <span>
+          {totalOutlinePoints} {totalOutlinePoints === 1 ? 'POINT' : 'POINTS'}
+        </span>
+      </div>
+
       <div className="editorial-po-draft-meta">
         <span className={`editorial-po-draft-words ${wordTargetStatus}`}>
           {wordCount.toLocaleString()} / {WORD_TARGET_MIN.toLocaleString()}–
           {WORD_TARGET_MAX.toLocaleString()} WORDS
+        </span>
+        <span className="editorial-po-meta-sep">·</span>
+        <span
+          className={`editorial-po-draft-ssr${
+            ssrAggregate === null ? ' editorial-po-draft-ssr-empty' : ''
+          }`}
+          title="Mean of outline-point scores (no scoring pipeline at v0p)"
+        >
+          {ssrAggregate === null ? '—.— SSR' : `${ssrAggregate.toFixed(1)} SSR`}
+        </span>
+        <span className="editorial-po-meta-sep">·</span>
+        <span
+          className={`editorial-po-draft-gates editorial-po-draft-gates-${gateStatus}`}
+          title={
+            gateStatus === 'pass'
+              ? 'Heuristic gate: all outline scores ≥ 5.0 and SSR mean ≥ 6.0 (v0p heuristic)'
+              : gateStatus === 'warn'
+                ? 'Heuristic gate: SSR mean below 6.0 or a point below 5.0 (v0p heuristic)'
+                : 'No outline points yet — gate status unknown'
+          }
+        >
+          {gateStatus === 'pass'
+            ? '✓ GATES'
+            : gateStatus === 'warn'
+              ? '⚠ GATES'
+              : '— GATES'}
         </span>
         <span className="editorial-po-meta-sep">·</span>
         <span className="editorial-po-draft-autosave">
@@ -1036,6 +1119,13 @@ export function DraftWorkspacePage(_props: Props) {
           {exportState === 'error' && 'COPY FAILED'}
           {exportState === 'idle' && '↑ COPY MD'}
         </button>
+        <Link
+          to="/editorial/points-outline"
+          className="editorial-po-draft-back"
+          title="Back to Points + Outline"
+        >
+          ← BACK
+        </Link>
       </div>
 
       <div className="editorial-po-draft-toolbar">
