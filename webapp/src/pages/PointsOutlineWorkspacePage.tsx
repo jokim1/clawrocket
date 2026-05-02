@@ -10,6 +10,14 @@ import { EditorialPhaseStrip } from '../components/EditorialPhaseStrip';
 // Discussion-in-center). State `b` toggle, drag-reorder, Outline tab,
 // counter-promotion, and add-note flow follow in separate PRs.
 //
+// CLAIM and STAKE are inline-editable. Saving an edit (a) updates the field
+// on the active Point, (b) appends a system "revision" turn to the panel
+// discussion preserving the prior text, and (c) marks the Point's score
+// snapshots stale (UI only — recompute is a follow-up PR). Maps to
+// EDITORIAL_ROOM_CONTRACT.md §4.4 (DiscussionTurn.initiator: 'system' for
+// revision turns), §4.5 (ProposalKind: 'edit_point'), and §4.2
+// (ScoreSnapshot.is_stale via object_content_hash divergence).
+//
 // NOTE on the note-type enum (contract gap #4): design/03_points_outline.md
 // uses {claim, evidence, thought, question, counter, other}; the schema's
 // PointNoteBlock.type uses {thought, claim, evidence, question, counterpoint}
@@ -52,13 +60,28 @@ type Note = {
   highlighted?: boolean;
 };
 
-type DiscussionTurn = {
+// Discriminated union: agent turns are LLM panel responses; revision turns
+// are system-generated history cards dropped in when the user edits a Point's
+// CLAIM or STAKE. Maps to EDITORIAL_ROOM_CONTRACT.md §4.4 — revision turns
+// would be `initiator: 'system'` with `initiated_action: 'edit_point'`.
+type AgentTurn = {
   id: string;
+  kind: 'agent';
   agent: Persona;
   timestamp: string;
   body: string;
   proposes: string | null;
 };
+
+type RevisionTurn = {
+  id: string;
+  kind: 'revision';
+  timestamp: string;
+  field: 'claim' | 'stake';
+  previousText: string;
+};
+
+type DiscussionTurn = AgentTurn | RevisionTurn;
 
 type PointDetail = {
   slug: string;
@@ -69,8 +92,20 @@ type PointDetail = {
   stake: string;
   notes: Note[];
   discussion: DiscussionTurn[];
-  lastTurnAt: string;
 };
+
+type DetailState = {
+  claim: string;
+  stake: string;
+  discussion: DiscussionTurn[];
+  // Stale = current claim/stake hash differs from the hash that the
+  // score_snapshots were computed against. UI-only flag for now;
+  // recompute is a follow-up PR.
+  stale: boolean;
+};
+
+type EditField = 'claim' | 'stake';
+type EditingTarget = { slug: string; field: EditField } | null;
 
 const PRIMARY_PERSONAS: ReadonlyArray<Persona> = [
   {
@@ -223,6 +258,7 @@ const POINT_DETAILS: Record<string, PointDetail> = {
     discussion: [
       {
         id: 't1',
+        kind: 'agent',
         agent: PRIMARY_PERSONAS[0],
         timestamp: '11:42',
         body: 'The reclassification is the right load-bearing hook. Make sure §1 names it explicitly — readers will skim the others.',
@@ -230,6 +266,7 @@ const POINT_DETAILS: Record<string, PointDetail> = {
       },
       {
         id: 't2',
+        kind: 'agent',
         agent: PRIMARY_PERSONAS[1],
         timestamp: '11:43',
         body: 'Pushing back: I want a person in this paragraph. The reclassification is correct but bloodless. The Annapurna note is the human edge — use it.',
@@ -237,6 +274,7 @@ const POINT_DETAILS: Record<string, PointDetail> = {
       },
       {
         id: 't3',
+        kind: 'agent',
         agent: PRIMARY_PERSONAS[2],
         timestamp: '11:45',
         body: "Devolver prelim $5 is ambiguous — I'd cite Embracer 8-K only and add Devolver as 'see also'.",
@@ -244,13 +282,13 @@ const POINT_DETAILS: Record<string, PointDetail> = {
       },
       {
         id: 't4',
+        kind: 'agent',
         agent: PRIMARY_PERSONAS[0],
         timestamp: '11:47',
         body: "Ravi's right that this needs a person. But promote that note as a Counter, not as the lead — the lead is the deal shape.",
         proposes: 'PROMOTE ANNAPURNA NOTE → COUNTER',
       },
     ],
-    lastTurnAt: '11:47',
   },
   'p2-mg-conditional-liability': {
     slug: 'p2-mg-conditional-liability',
@@ -298,13 +336,13 @@ const POINT_DETAILS: Record<string, PointDetail> = {
     discussion: [
       {
         id: 't1',
+        kind: 'agent',
         agent: PRIMARY_PERSONAS[2],
         timestamp: '11:05',
         body: 'Worth one paragraph on IFRS 15 vs ASC 450 — even if you cut it later, the structural read should be globally true or you flag it.',
         proposes: null,
       },
     ],
-    lastTurnAt: '11:05',
   },
   'p3-cohort-split': {
     slug: 'p3-cohort-split',
@@ -344,7 +382,6 @@ const POINT_DETAILS: Record<string, PointDetail> = {
       },
     ],
     discussion: [],
-    lastTurnAt: '—',
   },
   'p4-eighteen-month-lockin': {
     slug: 'p4-eighteen-month-lockin',
@@ -384,7 +421,6 @@ const POINT_DETAILS: Record<string, PointDetail> = {
       },
     ],
     discussion: [],
-    lastTurnAt: '—',
   },
   'p5-recoupment-creep': {
     slug: 'p5-recoupment-creep',
@@ -418,7 +454,6 @@ const POINT_DETAILS: Record<string, PointDetail> = {
       },
     ],
     discussion: [],
-    lastTurnAt: '—',
   },
   'cp1-one-off': {
     slug: 'cp1-one-off',
@@ -445,7 +480,6 @@ const POINT_DETAILS: Record<string, PointDetail> = {
     stake: 'Steel-man the cyclical read.',
     notes: [],
     discussion: [],
-    lastTurnAt: '—',
   },
 };
 
@@ -486,6 +520,29 @@ const POINT_TYPE_LABEL: Record<PointType, string> = {
   COUNTER: 'COUNTER',
 };
 
+const REVISION_FIELD_LABEL: Record<EditField, string> = {
+  claim: 'CLAIM',
+  stake: 'STAKE',
+};
+
+function nowHHMM(): string {
+  const d = new Date();
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+}
+
+function buildInitialDetailStates(): Record<string, DetailState> {
+  const out: Record<string, DetailState> = {};
+  for (const [slug, d] of Object.entries(POINT_DETAILS)) {
+    out[slug] = {
+      claim: d.claim,
+      stake: d.stake,
+      discussion: [...d.discussion],
+      stale: false,
+    };
+  }
+  return out;
+}
+
 type Props = {
   onUnauthorized?: () => void;
 };
@@ -502,7 +559,80 @@ export function PointsOutlineWorkspacePage(_props: Props) {
   const allPoints = useMemo(() => [...POINTS, ...COUNTER_POINTS], []);
   const activePoint =
     allPoints.find((p) => p.slug === activePointSlug) ?? allPoints[0];
-  const detail = POINT_DETAILS[activePoint.slug];
+
+  const [detailStates, setDetailStates] = useState<Record<string, DetailState>>(
+    buildInitialDetailStates,
+  );
+
+  const [editing, setEditing] = useState<EditingTarget>(null);
+  const [draft, setDraft] = useState<string>('');
+
+  function selectPoint(slug: string) {
+    if (editing && editing.slug !== slug) {
+      // Switching Points cancels any in-flight edit on the prior Point.
+      setEditing(null);
+      setDraft('');
+    }
+    setActivePointSlug(slug);
+  }
+
+  const fixture = POINT_DETAILS[activePoint.slug];
+  const state = detailStates[activePoint.slug];
+  const detail: PointDetail | null =
+    fixture && state
+      ? {
+          ...fixture,
+          claim: state.claim,
+          stake: state.stake,
+          discussion: state.discussion,
+        }
+      : null;
+  const stale = state?.stale ?? false;
+
+  function startEdit(field: EditField) {
+    if (!detail) return;
+    setDraft(field === 'claim' ? detail.claim : detail.stake);
+    setEditing({ slug: activePoint.slug, field });
+  }
+
+  function cancelEdit() {
+    setEditing(null);
+    setDraft('');
+  }
+
+  function saveEdit() {
+    if (!editing) return;
+    const slug = editing.slug;
+    const field = editing.field;
+    const newText = draft.trim();
+    if (!newText) {
+      return;
+    }
+    setDetailStates((prev) => {
+      const cur = prev[slug];
+      if (!cur) return prev;
+      const oldText = field === 'claim' ? cur.claim : cur.stake;
+      if (oldText === newText) return prev;
+      const revisionTurn: RevisionTurn = {
+        id: `rev-${slug}-${Date.now()}`,
+        kind: 'revision',
+        timestamp: nowHHMM(),
+        field,
+        previousText: oldText,
+      };
+      return {
+        ...prev,
+        [slug]: {
+          ...cur,
+          [field]: newText,
+          discussion: [...cur.discussion, revisionTurn],
+          stale: true,
+        },
+      };
+    });
+    setEditing(null);
+    setDraft('');
+  }
 
   return (
     <div className="editorial-room">
@@ -563,37 +693,13 @@ export function PointsOutlineWorkspacePage(_props: Props) {
 
           <ul className="editorial-po-point-list">
             {POINTS.map((p) => (
-              <li key={p.slug}>
-                <button
-                  type="button"
-                  className={
-                    'editorial-po-point-card' +
-                    (p.slug === activePointSlug
-                      ? ' editorial-po-point-card-active'
-                      : '')
-                  }
-                  onClick={() => setActivePointSlug(p.slug)}
-                >
-                  <div className="editorial-po-point-row">
-                    <span className="editorial-po-point-position">
-                      {p.position}
-                    </span>
-                    <span
-                      className={`editorial-po-point-type editorial-po-point-type-${p.type.toLowerCase()}`}
-                    >
-                      {POINT_TYPE_LABEL[p.type]}
-                    </span>
-                    <span className="editorial-po-point-score">
-                      {p.score.toFixed(1)}
-                    </span>
-                  </div>
-                  <p className="editorial-po-point-claim">{p.claim}</p>
-                  <p className="editorial-po-point-stake">{p.stake}</p>
-                  <span className="editorial-po-point-notes">
-                    {p.noteCount} NOTES
-                  </span>
-                </button>
-              </li>
+              <PointCard
+                key={p.slug}
+                point={p}
+                state={detailStates[p.slug]}
+                isActive={p.slug === activePointSlug}
+                onSelect={() => selectPoint(p.slug)}
+              />
             ))}
           </ul>
 
@@ -604,36 +710,14 @@ export function PointsOutlineWorkspacePage(_props: Props) {
               </h2>
               <ul className="editorial-po-point-list">
                 {COUNTER_POINTS.map((p) => (
-                  <li key={p.slug}>
-                    <button
-                      type="button"
-                      className={
-                        'editorial-po-point-card editorial-po-point-card-counter' +
-                        (p.slug === activePointSlug
-                          ? ' editorial-po-point-card-active'
-                          : '')
-                      }
-                      onClick={() => setActivePointSlug(p.slug)}
-                    >
-                      <div className="editorial-po-point-row">
-                        <span className="editorial-po-point-position">
-                          {p.position}
-                        </span>
-                        <span
-                          className={`editorial-po-point-type editorial-po-point-type-${p.type.toLowerCase()}`}
-                        >
-                          {POINT_TYPE_LABEL[p.type]}
-                        </span>
-                        <span className="editorial-po-point-score">
-                          {p.score.toFixed(1)}
-                        </span>
-                      </div>
-                      <p className="editorial-po-point-claim">{p.claim}</p>
-                      {p.stake ? (
-                        <p className="editorial-po-point-stake">{p.stake}</p>
-                      ) : null}
-                    </button>
-                  </li>
+                  <PointCard
+                    key={p.slug}
+                    point={p}
+                    state={detailStates[p.slug]}
+                    isActive={p.slug === activePointSlug}
+                    isCounter
+                    onSelect={() => selectPoint(p.slug)}
+                  />
                 ))}
               </ul>
             </>
@@ -642,7 +726,18 @@ export function PointsOutlineWorkspacePage(_props: Props) {
 
         {/* CENTER — ACTIVE POINT DETAIL + PANEL DISCUSSION */}
         <main className="editorial-po-center">
-          {detail ? <PointDetailView detail={detail} /> : null}
+          {detail ? (
+            <PointDetailView
+              detail={detail}
+              stale={stale}
+              editing={editing}
+              draft={draft}
+              setDraft={setDraft}
+              onStartEdit={startEdit}
+              onCancelEdit={cancelEdit}
+              onSaveEdit={saveEdit}
+            />
+          ) : null}
         </main>
 
         {/* RIGHT RAIL — NOTES (state `a`) */}
@@ -654,14 +749,103 @@ export function PointsOutlineWorkspacePage(_props: Props) {
   );
 }
 
-function PointDetailView({ detail }: { detail: PointDetail }) {
+function PointCard({
+  point,
+  state,
+  isActive,
+  isCounter,
+  onSelect,
+}: {
+  point: Point;
+  state: DetailState | undefined;
+  isActive: boolean;
+  isCounter?: boolean;
+  onSelect: () => void;
+}) {
+  const claim = state?.claim ?? point.claim;
+  const stake = state?.stake ?? point.stake;
+  const cardStale = state?.stale ?? false;
+  const className =
+    'editorial-po-point-card' +
+    (isCounter ? ' editorial-po-point-card-counter' : '') +
+    (isActive ? ' editorial-po-point-card-active' : '') +
+    (cardStale ? ' editorial-po-point-card-stale' : '');
+  return (
+    <li>
+      <button type="button" className={className} onClick={onSelect}>
+        <div className="editorial-po-point-row">
+          <span className="editorial-po-point-position">{point.position}</span>
+          <span
+            className={`editorial-po-point-type editorial-po-point-type-${point.type.toLowerCase()}`}
+          >
+            {POINT_TYPE_LABEL[point.type]}
+          </span>
+          <span className="editorial-po-point-score">
+            {point.score.toFixed(1)}
+          </span>
+        </div>
+        <p className="editorial-po-point-claim">{claim}</p>
+        {stake ? <p className="editorial-po-point-stake">{stake}</p> : null}
+        <span className="editorial-po-point-notes">
+          {point.noteCount} NOTES
+          {cardStale ? ' · STALE' : ''}
+        </span>
+      </button>
+    </li>
+  );
+}
+
+function PointDetailView({
+  detail,
+  stale,
+  editing,
+  draft,
+  setDraft,
+  onStartEdit,
+  onCancelEdit,
+  onSaveEdit,
+}: {
+  detail: PointDetail;
+  stale: boolean;
+  editing: EditingTarget;
+  draft: string;
+  setDraft: (v: string) => void;
+  onStartEdit: (field: EditField) => void;
+  onCancelEdit: () => void;
+  onSaveEdit: () => void;
+}) {
+  const editingClaim =
+    editing?.slug === detail.slug && editing.field === 'claim';
+  const editingStake =
+    editing?.slug === detail.slug && editing.field === 'stake';
+  const lastTurnAt =
+    detail.discussion.length > 0
+      ? detail.discussion[detail.discussion.length - 1].timestamp
+      : '—';
+
   return (
     <article className="editorial-po-detail">
       <header className="editorial-po-detail-header">
         <span className="editorial-po-detail-eyebrow">{detail.eyebrow}</span>
       </header>
 
-      <div className="editorial-tt-score-row">
+      {stale ? (
+        <div className="editorial-po-stale-banner" role="status">
+          <span className="editorial-po-stale-icon" aria-hidden="true">
+            ⚠
+          </span>
+          <span className="editorial-po-stale-text">
+            STALE — claim or stake changed since last score; recompute deferred
+          </span>
+        </div>
+      ) : null}
+
+      <div
+        className={
+          'editorial-tt-score-row' +
+          (stale ? ' editorial-po-score-row-stale' : '')
+        }
+      >
         {detail.scoreRow.map((cell) => (
           <div key={cell.persona.slug} className="editorial-tt-score-cell">
             <div className="editorial-tt-score-cell-head">
@@ -705,11 +889,72 @@ function PointDetailView({ detail }: { detail: PointDetail }) {
       </div>
 
       <section className="editorial-po-claim-stake">
-        <h3 className="editorial-tt-section-label">CLAIM</h3>
-        <p className="editorial-po-claim-body">{detail.claim}</p>
+        <header className="editorial-po-section-head">
+          <h3 className="editorial-tt-section-label">CLAIM</h3>
+          {!editingClaim ? (
+            <button
+              type="button"
+              className="editorial-po-edit-trigger"
+              onClick={() => onStartEdit('claim')}
+            >
+              ✎ EDIT
+            </button>
+          ) : null}
+        </header>
+
+        {editingClaim ? (
+          <ClaimStakeEditor
+            value={draft}
+            onChange={setDraft}
+            onSave={onSaveEdit}
+            onCancel={onCancelEdit}
+            multiline
+            ariaLabel="Edit claim"
+          />
+        ) : (
+          <p
+            className="editorial-po-claim-body editorial-po-claim-body-clickable"
+            role="button"
+            tabIndex={0}
+            onClick={() => onStartEdit('claim')}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                onStartEdit('claim');
+              }
+            }}
+          >
+            {detail.claim}
+          </p>
+        )}
+
         <div className="editorial-po-stake-row">
           <span className="editorial-po-stake-label">STAKE</span>
-          <p className="editorial-po-stake-body">{detail.stake}</p>
+          {editingStake ? (
+            <ClaimStakeEditor
+              value={draft}
+              onChange={setDraft}
+              onSave={onSaveEdit}
+              onCancel={onCancelEdit}
+              multiline={false}
+              ariaLabel="Edit stake"
+            />
+          ) : (
+            <p
+              className="editorial-po-stake-body editorial-po-stake-body-clickable"
+              role="button"
+              tabIndex={0}
+              onClick={() => onStartEdit('stake')}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault();
+                  onStartEdit('stake');
+                }
+              }}
+            >
+              {detail.stake}
+            </p>
+          )}
           <span className="editorial-po-notes-badge">
             {detail.notes.length} NOTES
           </span>
@@ -723,7 +968,7 @@ function PointDetailView({ detail }: { detail: PointDetail }) {
           </h3>
           <div className="editorial-po-discussion-meta">
             <span className="editorial-po-discussion-last">
-              LAST {detail.lastTurnAt}
+              LAST {lastTurnAt}
             </span>
             <span className="editorial-po-discussion-mentions">
               {['@ALL', '@A', '@R', '@M'].map((m) => (
@@ -741,33 +986,13 @@ function PointDetailView({ detail }: { detail: PointDetail }) {
           </p>
         ) : (
           <ol className="editorial-po-turn-list">
-            {detail.discussion.map((t) => (
-              <li key={t.id} className="editorial-po-turn">
-                <div className="editorial-po-turn-head">
-                  <span
-                    className="editorial-persona-avatar editorial-persona-avatar-sm"
-                    data-persona={t.agent.letter}
-                  >
-                    {t.agent.letter}
-                  </span>
-                  <span className="editorial-po-turn-name">{t.agent.name}</span>
-                  <span className="editorial-po-turn-role">{t.agent.role}</span>
-                  <span className="editorial-po-turn-timestamp">
-                    {t.timestamp}
-                  </span>
-                </div>
-                <p className="editorial-po-turn-body">{t.body}</p>
-                {t.proposes ? (
-                  <button
-                    type="button"
-                    className="editorial-po-turn-proposes"
-                    disabled
-                  >
-                    + {t.proposes}
-                  </button>
-                ) : null}
-              </li>
-            ))}
+            {detail.discussion.map((t) =>
+              t.kind === 'agent' ? (
+                <AgentTurnView key={t.id} turn={t} />
+              ) : (
+                <RevisionTurnView key={t.id} turn={t} />
+              ),
+            )}
           </ol>
         )}
 
@@ -787,6 +1012,115 @@ function PointDetailView({ detail }: { detail: PointDetail }) {
         </div>
       </section>
     </article>
+  );
+}
+
+function AgentTurnView({ turn }: { turn: AgentTurn }) {
+  return (
+    <li className="editorial-po-turn">
+      <div className="editorial-po-turn-head">
+        <span
+          className="editorial-persona-avatar editorial-persona-avatar-sm"
+          data-persona={turn.agent.letter}
+        >
+          {turn.agent.letter}
+        </span>
+        <span className="editorial-po-turn-name">{turn.agent.name}</span>
+        <span className="editorial-po-turn-role">{turn.agent.role}</span>
+        <span className="editorial-po-turn-timestamp">{turn.timestamp}</span>
+      </div>
+      <p className="editorial-po-turn-body">{turn.body}</p>
+      {turn.proposes ? (
+        <button type="button" className="editorial-po-turn-proposes" disabled>
+          + {turn.proposes}
+        </button>
+      ) : null}
+    </li>
+  );
+}
+
+function RevisionTurnView({ turn }: { turn: RevisionTurn }) {
+  return (
+    <li className="editorial-po-turn editorial-po-revision-turn">
+      <div className="editorial-po-revision-head">
+        <span className="editorial-po-revision-icon" aria-hidden="true">
+          ⟲
+        </span>
+        <span className="editorial-po-revision-label">
+          REVISION · {REVISION_FIELD_LABEL[turn.field]} CHANGED
+        </span>
+        <span className="editorial-po-turn-timestamp">{turn.timestamp}</span>
+      </div>
+      <blockquote className="editorial-po-revision-prev">
+        “{turn.previousText}”
+      </blockquote>
+    </li>
+  );
+}
+
+function ClaimStakeEditor({
+  value,
+  onChange,
+  onSave,
+  onCancel,
+  multiline,
+  ariaLabel,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  onSave: () => void;
+  onCancel: () => void;
+  multiline: boolean;
+  ariaLabel: string;
+}) {
+  return (
+    <div
+      className={
+        'editorial-po-edit' +
+        (multiline
+          ? ' editorial-po-edit-multiline'
+          : ' editorial-po-edit-inline')
+      }
+    >
+      <textarea
+        autoFocus
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Escape') {
+            e.preventDefault();
+            onCancel();
+          } else if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+            e.preventDefault();
+            onSave();
+          }
+        }}
+        aria-label={ariaLabel}
+        rows={multiline ? 3 : 1}
+        className={
+          multiline
+            ? 'editorial-po-edit-textarea-multiline'
+            : 'editorial-po-edit-textarea-inline'
+        }
+      />
+      <div className="editorial-po-edit-actions">
+        <button
+          type="button"
+          className="editorial-po-edit-save"
+          onClick={onSave}
+          disabled={!value.trim()}
+        >
+          SAVE ⌘↵
+        </button>
+        <button
+          type="button"
+          className="editorial-po-edit-cancel"
+          onClick={onCancel}
+        >
+          CANCEL · ESC
+        </button>
+      </div>
+    </div>
   );
 }
 
