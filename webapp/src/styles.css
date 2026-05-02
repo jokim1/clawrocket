@@ -5353,6 +5353,40 @@ a {
   letter-spacing: 0.02em;
 }
 
+.editorial-oauth-usercode {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+  background: #fbf8f2;
+  border: 1px solid #c9c0a8;
+  border-radius: 5px;
+  padding: 0.5rem 0.65rem;
+}
+
+.editorial-oauth-usercode code {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 1.4rem;
+  font-weight: 600;
+  letter-spacing: 0.18em;
+  color: #1f1c14;
+  background: #fff;
+  border: 1px solid #c9c0a8;
+  border-radius: 4px;
+  padding: 0.25rem 0.65rem;
+  flex: 1;
+  text-align: center;
+}
+
+.editorial-oauth-poll-message {
+  margin: 0;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.7rem;
+  letter-spacing: 0.04em;
+  color: #6c6655;
+  font-style: italic;
+}
+
 /* Setup · LLM Room section */
 
 .editorial-agents-selected {
