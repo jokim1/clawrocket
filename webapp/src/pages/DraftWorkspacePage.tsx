@@ -8,21 +8,20 @@ import {
 import StarterKit from '@tiptap/starter-kit';
 
 import { EditorialPhaseStrip } from '../components/EditorialPhaseStrip';
+import { serializeDocToMarkdown, type JSONNode } from '../lib/markdown-export';
 
 // ───────────────────────────────────────────────────────────────────────────
-// Phase 04 DRAFT — versions tab + ⌘S manual save.
-// Builds on the cursor-aware navigation cut (PR #270) by adding the Versions
-// rail tab per design/04_draft.md §10.4:
-//   • Named snapshots: manual_save (⌘S), phase_entry (mount), restore_from_snapshot
-//     — durable, never auto-pruned at v0p
-//   • Auto snapshots: every 60s if changed since last snapshot — last 20 retained
-//     (FIFO prune)
-//   • Restore replaces the current draft body and captures pre-restore state
-//     as a named snapshot so the user can recover from a misclick
+// Phase 04 DRAFT — markdown export cut.
+// Adds a `↑ COPY MD` button in the sub-meta bar that serializes the editor
+// JSON to Substack-paste-ready markdown via `lib/markdown-export.ts`. This
+// closes the loop on "draft → ship" without any LLM dependency at v0p — the
+// user can write in the Editorial Room and paste directly into Substack /
+// Google Doc / etc.
 //
 // Earlier cuts in this page:
 //   • PR #269: three-column shell + Tiptap editor + outline rail + word count
 //   • PR #270: cursor-aware status bar + scope chip + outline jump-to-segment
+//   • PR #271: Versions tab + ⌘S manual save + 60s autosave snapshots
 //
 // Still deferred (per design/04_draft.md):
 // - Sources tab (left rail) — scoped citation tracker
@@ -30,7 +29,7 @@ import { EditorialPhaseStrip } from '../components/EditorialPhaseStrip';
 // - Quick-action chips wired to handlers (FULL DRAFT / POLISH / etc.)
 // - + OPTIMIZE popover with cost preview + customize panel + run
 // - Voice-lock banner, mechanical scorer, suggestion overlay
-// - Markdown export, source-map round-trip
+// - Markdown round-trip + source-map (0p-b1 spike: Tiptap → MD → Tiptap)
 // - Compressed-diff snapshot storage (currently full JSON per snapshot)
 //
 // NOTE on the Outline-rail data source: the Points workspace owns its
@@ -590,7 +589,11 @@ export function DraftWorkspacePage(_props: Props) {
   const [versions, setVersions] = useState<VersionEntry[]>(loadVersions);
   const [activeRailTab, setActiveRailTab] = useState<RailTab>('outline');
   const [showAutosaves, setShowAutosaves] = useState<boolean>(false);
+  const [exportState, setExportState] = useState<'idle' | 'copied' | 'error'>(
+    'idle',
+  );
   const saveTimerRef = useRef<number | null>(null);
+  const exportResetTimerRef = useRef<number | null>(null);
   // Bumped on every editor onUpdate. Compared against `lastSnapshotVersionRef`
   // by the auto-snapshot interval to skip no-op snapshots.
   const editorVersionRef = useRef<number>(0);
@@ -626,6 +629,9 @@ export function DraftWorkspacePage(_props: Props) {
     return () => {
       if (saveTimerRef.current !== null) {
         window.clearTimeout(saveTimerRef.current);
+      }
+      if (exportResetTimerRef.current !== null) {
+        window.clearTimeout(exportResetTimerRef.current);
       }
     };
   }, []);
@@ -738,6 +744,45 @@ export function DraftWorkspacePage(_props: Props) {
     [versions],
   );
 
+  const handleExportMarkdown = async (): Promise<void> => {
+    if (!editor) return;
+    const json = editor.getJSON() as JSONNode;
+    const md = serializeDocToMarkdown(json);
+    const finish = (state: 'copied' | 'error'): void => {
+      setExportState(state);
+      if (exportResetTimerRef.current !== null) {
+        window.clearTimeout(exportResetTimerRef.current);
+      }
+      exportResetTimerRef.current = window.setTimeout(() => {
+        setExportState('idle');
+        exportResetTimerRef.current = null;
+      }, 1500);
+    };
+    try {
+      if (
+        typeof navigator !== 'undefined' &&
+        navigator.clipboard &&
+        typeof navigator.clipboard.writeText === 'function'
+      ) {
+        await navigator.clipboard.writeText(md);
+        finish('copied');
+        return;
+      }
+      // Older-browser fallback: textarea + execCommand. Best-effort only.
+      const textarea = document.createElement('textarea');
+      textarea.value = md;
+      textarea.style.position = 'fixed';
+      textarea.style.left = '-9999px';
+      document.body.appendChild(textarea);
+      textarea.select();
+      const ok = document.execCommand('copy');
+      document.body.removeChild(textarea);
+      finish(ok ? 'copied' : 'error');
+    } catch {
+      finish('error');
+    }
+  };
+
   const handleRestoreVersion = (version: VersionEntry): void => {
     if (!editor) return;
     // Per design/04_draft.md §10.4: capture pre-restore state as a named
@@ -780,6 +825,24 @@ export function DraftWorkspacePage(_props: Props) {
             ? `LAST AUTOSAVE ${formatHHMM(lastSavedAt)}`
             : 'NO CHANGES SINCE LOAD'}
         </span>
+        <button
+          type="button"
+          className={`editorial-po-draft-export${
+            exportState === 'copied' ? ' editorial-po-draft-export-copied' : ''
+          }${
+            exportState === 'error' ? ' editorial-po-draft-export-error' : ''
+          }`}
+          onClick={() => {
+            void handleExportMarkdown();
+          }}
+          disabled={!editor}
+          aria-live="polite"
+          title="Copy the draft as Substack-ready markdown"
+        >
+          {exportState === 'copied' && 'COPIED ✓'}
+          {exportState === 'error' && 'COPY FAILED'}
+          {exportState === 'idle' && '↑ COPY MD'}
+        </button>
       </div>
 
       <div className="editorial-po-draft-toolbar">

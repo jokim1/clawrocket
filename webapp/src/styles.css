@@ -6549,6 +6549,49 @@ a.editorial-phase-pill:hover {
   color: #6c6655;
 }
 
+.editorial-po-draft-export {
+  margin-left: auto;
+  background: none;
+  border: 1px solid #c9c0a8;
+  border-radius: 3px;
+  padding: 0.2rem 0.6rem;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.62rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #5b5644;
+  cursor: pointer;
+  transition:
+    background 100ms,
+    color 100ms,
+    border-color 100ms;
+}
+
+.editorial-po-draft-export:hover:not(:disabled) {
+  background: #fff8e7;
+  border-color: #b7372a;
+  color: #b7372a;
+}
+
+.editorial-po-draft-export:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.editorial-po-draft-export-copied,
+.editorial-po-draft-export-copied:hover {
+  background: #ddf0e1;
+  border-color: #2e7d62;
+  color: #2e7d62;
+}
+
+.editorial-po-draft-export-error,
+.editorial-po-draft-export-error:hover {
+  background: #fbe5e1;
+  border-color: #b7372a;
+  color: #b7372a;
+}
+
 .editorial-po-draft-toolbar {
   display: flex;
   align-items: center;
