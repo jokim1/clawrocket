@@ -1,6 +1,13 @@
 import { useMemo, useState } from 'react';
 
 import { EditorialPhaseStrip } from '../components/EditorialPhaseStrip';
+import {
+  getAgentProfileById,
+  type AgentProfile,
+} from '../lib/editorial-fixtures';
+import { loadSetupState } from '../lib/editorial-setup';
+import { isAgentAuthed, useProviderAuth } from '../lib/llm-provider-auth';
+import { streamAgentPanelTurn } from '../lib/panel-fanout';
 
 // ───────────────────────────────────────────────────────────────────────────
 // Fixture-shaped data, hardcoded inline for the 0p-a vertical slice. Real
@@ -67,6 +74,51 @@ type SourceCard = {
   cited: boolean;
   disputed?: boolean;
 };
+
+// Live panel turns produced by the `+ ASK` composer for the active topic.
+// Persisted to localStorage at LIVE_PANEL_TURNS_STORAGE_KEY so the user's
+// history survives reloads. Fixture turns (Topic.discussion above) stay as
+// the first-time-UX fallback at the top of the rendered list.
+type LivePanelTurn = {
+  id: string;
+  agentMonogram: string;
+  agentName: string;
+  agentRole: string;
+  body: string;
+  timestamp: string;
+  streaming?: boolean;
+  errored?: boolean;
+};
+
+type LivePanelTurnMap = Record<string, LivePanelTurn[]>;
+
+const LIVE_PANEL_TURNS_STORAGE_KEY =
+  'editorial-room.theme-topics.panel-turns-v0';
+
+function loadLivePanelTurns(): LivePanelTurnMap {
+  if (typeof window === 'undefined') return {};
+  try {
+    const raw = window.localStorage.getItem(LIVE_PANEL_TURNS_STORAGE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== 'object') return {};
+    return parsed as LivePanelTurnMap;
+  } catch {
+    return {};
+  }
+}
+
+function persistLivePanelTurns(turns: LivePanelTurnMap): void {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.setItem(
+      LIVE_PANEL_TURNS_STORAGE_KEY,
+      JSON.stringify(turns),
+    );
+  } catch {
+    // localStorage full / disabled — non-fatal at v0p.
+  }
+}
 
 const PRIMARY_PERSONAS: ReadonlyArray<Persona> = [
   { slug: 'persona/ankit-indie-dev', letter: 'A', name: 'ANKIT' },
@@ -407,6 +459,149 @@ export function ThemeTopicsWorkspacePage(_props: Props) {
 
   const activeTheme = THEMES.find((t) => t.slug === activeThemeSlug);
 
+  // Setup-driven panel agents. Reuses the same provider-auth and agent
+  // selection plumbing as Setup → LLM Room and the Draft right rail.
+  const [setup] = useState(loadSetupState);
+  const { authed: providerAuthed } = useProviderAuth();
+  const selectedAgents = useMemo<AgentProfile[]>(
+    () =>
+      setup.llm_room_agent_profile_ids
+        .map((id) => getAgentProfileById(id))
+        .filter((a): a is AgentProfile => a !== null),
+    [setup.llm_room_agent_profile_ids],
+  );
+  const panelAgents = useMemo<AgentProfile[]>(
+    () => selectedAgents.filter((a) => isAgentAuthed(a, providerAuthed)),
+    [selectedAgents, providerAuthed],
+  );
+  const skippedAgentCount = selectedAgents.length - panelAgents.length;
+
+  const [livePanelTurns, setLivePanelTurns] =
+    useState<LivePanelTurnMap>(loadLivePanelTurns);
+
+  const handleSubmitTopicPanelTurn = async (
+    topic: Topic,
+    userMessage: string,
+  ): Promise<{ allFailed: boolean; errorMessage: string | null }> => {
+    if (panelAgents.length === 0) {
+      return { allFailed: true, errorMessage: 'No connected panel agents.' };
+    }
+
+    // segmentContext = topic title + thesis + flat note dump. The LLM
+    // gets enough to debate the notes without having to ask for them.
+    const noteLines = topic.notes
+      .map((n) => `[${n.type}] ${n.body}`)
+      .join('\n');
+    const segmentContext = [
+      `TOPIC: ${topic.workingTitle}`,
+      `THESIS: ${topic.thesis}`,
+      noteLines.length > 0 ? `NOTES:\n${noteLines}` : null,
+    ]
+      .filter(Boolean)
+      .join('\n\n');
+
+    const submittedAt = Date.now();
+    const timestamp = new Date(submittedAt).toLocaleTimeString([], {
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    });
+
+    type PlannedTurn = { agent: AgentProfile; turnId: string };
+    const planned: PlannedTurn[] = panelAgents.map((agent, idx) => ({
+      agent,
+      turnId: `live-${submittedAt}-${idx}`,
+    }));
+    const placeholders: LivePanelTurn[] = planned.map(({ agent, turnId }) => ({
+      id: turnId,
+      agentMonogram: agent.monogram,
+      agentName: agent.name.toUpperCase(),
+      agentRole: agent.role.toUpperCase(),
+      body: '',
+      timestamp,
+      streaming: true,
+    }));
+
+    setLivePanelTurns((prev) => {
+      const existing = prev[topic.slug] ?? [];
+      return { ...prev, [topic.slug]: [...placeholders, ...existing] };
+    });
+
+    const updateTurn = (
+      turnId: string,
+      patch: Partial<LivePanelTurn>,
+    ): void => {
+      setLivePanelTurns((prev) => {
+        const arr = prev[topic.slug] ?? [];
+        return {
+          ...prev,
+          [topic.slug]: arr.map((t) =>
+            t.id === turnId ? { ...t, ...patch } : t,
+          ),
+        };
+      });
+    };
+
+    const streamForAgent = async ({
+      agent,
+      turnId,
+    }: PlannedTurn): Promise<void> => {
+      await streamAgentPanelTurn(
+        {
+          agent: {
+            provider: agent.provider,
+            name: agent.name,
+            role: agent.role,
+          },
+          userMessage,
+          segmentContext,
+          scopePointIndex: null,
+        },
+        {
+          onTextDelta: (_delta, accumulated) =>
+            updateTurn(turnId, { body: accumulated }),
+          onComplete: (finalText) =>
+            updateTurn(turnId, { body: finalText, streaming: false }),
+          onError: (msg) =>
+            updateTurn(turnId, {
+              body: msg,
+              streaming: false,
+              errored: true,
+            }),
+        },
+      );
+    };
+
+    const results = await Promise.allSettled(planned.map(streamForAgent));
+
+    setLivePanelTurns((prev) => {
+      persistLivePanelTurns(prev);
+      return prev;
+    });
+
+    const allFailed =
+      results.length > 0 && results.every((r) => r.status === 'rejected');
+    const errorMessage = allFailed
+      ? (() => {
+          const first = results[0] as PromiseRejectedResult;
+          return first.reason instanceof Error
+            ? first.reason.message
+            : 'Panel turn failed.';
+        })()
+      : null;
+    return { allFailed, errorMessage };
+  };
+
+  const handleClearTopicPanel = (topicSlug: string): void => {
+    setLivePanelTurns((prev) => {
+      if (!prev[topicSlug]) return prev;
+      const next = { ...prev };
+      delete next[topicSlug];
+      persistLivePanelTurns(next);
+      return next;
+    });
+  };
+
   return (
     <div className="editorial-room">
       <EditorialPhaseStrip activePhase="theme-topics" />
@@ -574,7 +769,18 @@ export function ThemeTopicsWorkspacePage(_props: Props) {
         {/* CENTER: TOPIC DETAIL */}
         <main className="editorial-tt-center">
           {activeTopic ? (
-            <TopicDetail topic={activeTopic} />
+            <TopicDetail
+              key={activeTopic.slug}
+              topic={activeTopic}
+              liveTurns={livePanelTurns[activeTopic.slug] ?? []}
+              panelAgents={panelAgents}
+              selectedAgents={selectedAgents}
+              skippedAgentCount={skippedAgentCount}
+              onSubmit={(message) =>
+                handleSubmitTopicPanelTurn(activeTopic, message)
+              }
+              onClear={() => handleClearTopicPanel(activeTopic.slug)}
+            />
           ) : (
             <div className="editorial-tt-center-empty">
               Pick a Theme with Topics to start.
@@ -632,7 +838,72 @@ export function ThemeTopicsWorkspacePage(_props: Props) {
   );
 }
 
-function TopicDetail({ topic }: { topic: Topic }) {
+function TopicDetail({
+  topic,
+  liveTurns,
+  panelAgents,
+  selectedAgents,
+  skippedAgentCount,
+  onSubmit,
+  onClear,
+}: {
+  topic: Topic;
+  liveTurns: LivePanelTurn[];
+  panelAgents: AgentProfile[];
+  selectedAgents: AgentProfile[];
+  skippedAgentCount: number;
+  onSubmit: (
+    message: string,
+  ) => Promise<{ allFailed: boolean; errorMessage: string | null }>;
+  onClear: () => void;
+}) {
+  const [composerValue, setComposerValue] = useState<string>('');
+  const [composerSubmitting, setComposerSubmitting] = useState<boolean>(false);
+  const [composerError, setComposerError] = useState<string | null>(null);
+
+  const lastTimestamp =
+    liveTurns.length > 0
+      ? liveTurns[0].timestamp
+      : topic.discussion.length > 0
+        ? topic.discussion[topic.discussion.length - 1].timestamp
+        : null;
+
+  const handleSubmit = async (): Promise<void> => {
+    if (panelAgents.length === 0) return;
+    if (composerSubmitting) return;
+    const message = composerValue.trim();
+    if (!message) return;
+
+    setComposerSubmitting(true);
+    setComposerError(null);
+    setComposerValue('');
+    const { allFailed, errorMessage } = await onSubmit(message);
+    if (allFailed && errorMessage) {
+      setComposerError(errorMessage);
+    }
+    setComposerSubmitting(false);
+  };
+
+  const handleClear = (): void => {
+    onClear();
+    setComposerError(null);
+  };
+
+  const composerPlaceholder =
+    panelAgents.length === 0
+      ? selectedAgents.length === 0
+        ? 'Add an agent in Setup → LLM Room to ask the panel…'
+        : 'No connected providers — reconnect in Setup → LLM Room.'
+      : panelAgents.length === 1
+        ? `Ask ${panelAgents[0].name} (${panelAgents[0].role}) — or @reference a note above…`
+        : `Ask the panel (${panelAgents.length} agents) — or @reference a note above…`;
+
+  const composerButtonLabel = composerSubmitting
+    ? '… STREAMING'
+    : panelAgents.length >= 2
+      ? `+ ASK PANEL (${panelAgents.length}) ⌥↵`
+      : '+ ASK ⌥↵';
+
   return (
     <article className="editorial-tt-topic-detail">
       <header className="editorial-tt-topic-header">
@@ -750,21 +1021,71 @@ function TopicDetail({ topic }: { topic: Topic }) {
       <section className="editorial-tt-discussion">
         <header className="editorial-tt-discussion-header">
           <h3 className="editorial-tt-section-label">
-            PANEL DISCUSSION · {topic.discussion.length} TURNS
-            {topic.discussion.length > 0 ? ' DEBATING NOTES ABOVE' : ''}
+            PANEL DISCUSSION · {liveTurns.length + topic.discussion.length}{' '}
+            TURNS
+            {liveTurns.length + topic.discussion.length > 0
+              ? ' DEBATING NOTES ABOVE'
+              : ''}
           </h3>
-          <span className="editorial-tt-discussion-last">
-            {topic.discussion.length > 0
-              ? `LAST ${topic.discussion[topic.discussion.length - 1].timestamp}`
-              : '—'}
-          </span>
+          <div className="editorial-tt-discussion-meta">
+            <span className="editorial-tt-discussion-last">
+              {lastTimestamp ? `LAST ${lastTimestamp}` : '—'}
+            </span>
+            {liveTurns.length > 0 ? (
+              <button
+                type="button"
+                className="editorial-chip-button editorial-tt-discussion-clear"
+                onClick={handleClear}
+                disabled={composerSubmitting}
+                title="Clear live turns for this Topic"
+              >
+                ✕ CLEAR
+              </button>
+            ) : null}
+          </div>
         </header>
-        {topic.discussion.length === 0 ? (
+        {liveTurns.length === 0 && topic.discussion.length === 0 ? (
           <p className="editorial-tt-empty">
             No discussion yet — ask the panel.
           </p>
         ) : (
           <ol className="editorial-tt-turn-list">
+            {liveTurns.map((t) => (
+              <li
+                key={t.id}
+                className="editorial-tt-turn editorial-tt-turn-live"
+              >
+                <div className="editorial-tt-turn-head">
+                  <span
+                    className="editorial-persona-avatar editorial-persona-avatar-sm"
+                    data-persona={t.agentMonogram}
+                  >
+                    {t.agentMonogram}
+                  </span>
+                  <span className="editorial-tt-turn-name">{t.agentName}</span>
+                  <span className="editorial-tt-turn-role">{t.agentRole}</span>
+                  <span className="editorial-tt-turn-timestamp">
+                    {t.timestamp}
+                  </span>
+                </div>
+                <p
+                  className={
+                    'editorial-tt-turn-body' +
+                    (t.errored ? ' editorial-tt-turn-body-errored' : '')
+                  }
+                >
+                  {t.body}
+                  {t.streaming ? (
+                    <span
+                      className="editorial-tt-turn-cursor"
+                      aria-hidden="true"
+                    >
+                      ▍
+                    </span>
+                  ) : null}
+                </p>
+              </li>
+            ))}
             {topic.discussion.map((t) => (
               <li key={t.id} className="editorial-tt-turn">
                 <div className="editorial-tt-turn-head">
@@ -800,24 +1121,46 @@ function TopicDetail({ topic }: { topic: Topic }) {
         <div className="editorial-tt-discussion-input">
           <input
             type="text"
-            placeholder="Ask the panel — or @reference a note above…"
-            disabled
+            placeholder={composerPlaceholder}
+            value={composerValue}
+            onChange={(e) => setComposerValue(e.target.value)}
+            disabled={panelAgents.length === 0 || composerSubmitting}
+            onKeyDown={(e) => {
+              if (
+                (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) ||
+                (e.key === 'Enter' && !e.shiftKey)
+              ) {
+                e.preventDefault();
+                void handleSubmit();
+              }
+            }}
           />
-          <div className="editorial-tt-discussion-mentions">
-            {['@ALL', '@A', '@R', '@M', '#NOTE'].map((m) => (
-              <span key={m} className="editorial-tt-discussion-mention">
-                {m}
-              </span>
-            ))}
-          </div>
           <button
             type="button"
             className="editorial-chip-button editorial-chip-button-primary"
-            disabled
+            disabled={
+              panelAgents.length === 0 ||
+              composerSubmitting ||
+              !composerValue.trim()
+            }
+            onClick={() => {
+              void handleSubmit();
+            }}
           >
-            SEND ⌥↵
+            {composerButtonLabel}
           </button>
         </div>
+        {panelAgents.length > 0 ? (
+          <p className="editorial-tt-discussion-hint">
+            {panelAgents.map((a) => a.name).join(' · ')}
+            {skippedAgentCount > 0
+              ? ` · ${skippedAgentCount} skipped (auth missing)`
+              : ''}
+          </p>
+        ) : null}
+        {composerError ? (
+          <p className="editorial-tt-discussion-error">{composerError}</p>
+        ) : null}
       </section>
     </article>
   );
