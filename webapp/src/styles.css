@@ -6310,6 +6310,23 @@ a.editorial-phase-pill:hover {
   cursor: not-allowed;
 }
 
+.editorial-po-note-promote:hover:not(:disabled) {
+  background: #b7372a;
+  color: #fff;
+}
+
+.editorial-po-note-promoted {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.58rem;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: #6c6655;
+  border: 1px solid #b9b09c;
+  border-radius: 3px;
+  padding: 0.04rem 0.3rem;
+  background: #efe9d8;
+}
+
 .editorial-po-note-timestamp {
   margin-left: auto;
   font-family: 'IBM Plex Mono', monospace;
