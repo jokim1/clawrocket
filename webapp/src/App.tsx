@@ -32,6 +32,7 @@ import {
 import { AiAgentsPage } from './pages/AiAgentsPage';
 import { DataConnectorsPage } from './pages/DataConnectorsPage';
 import { EditorialSetupPage } from './pages/EditorialSetupPage';
+import { PointsOutlineWorkspacePage } from './pages/PointsOutlineWorkspacePage';
 import { ThemeTopicsWorkspacePage } from './pages/ThemeTopicsWorkspacePage';
 import { MainChannelPage } from './pages/MainChannelPage';
 import { TalkDetailPage } from './pages/TalkDetailPage';
@@ -693,6 +694,12 @@ export function App() {
           path="/editorial/theme-topics"
           element={
             <ThemeTopicsWorkspacePage onUnauthorized={handleUnauthorized} />
+          }
+        />
+        <Route
+          path="/editorial/points-outline"
+          element={
+            <PointsOutlineWorkspacePage onUnauthorized={handleUnauthorized} />
           }
         />
         <Route
