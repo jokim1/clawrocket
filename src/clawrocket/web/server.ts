@@ -138,6 +138,7 @@ import {
   initiateOpenAIOAuthRoute,
   pollOpenAIOAuthRoute,
 } from './routes/llm-oauth-openai.js';
+import { handleEditorialPanelTurn } from './routes/editorial-panel.js';
 import {
   listUserToolPermissionsRoute,
   updateUserToolPermissionRoute,
@@ -1234,6 +1235,14 @@ function buildApp(opts: WebServerOptions): Hono {
       status: result.statusCode,
       headers: { 'content-type': 'application/json; charset=utf-8' },
     });
+  });
+
+  // ── /api/v1/editorial/panel-turn ─ Editorial Room panel turn (SSE) ───────
+
+  app.post('/api/v1/editorial/panel-turn', async (c) => {
+    const auth = requireAuth(c);
+    if (!auth) return unauthorized(c);
+    return handleEditorialPanelTurn(c, auth);
   });
 
   // ── POST /api/v1/settings/executor/verify ─ credential verification ───
