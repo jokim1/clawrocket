@@ -5,7 +5,7 @@ import {
   completeDevCallback,
   getAuthConfig,
   startGoogleAuth,
-} from '../lib/api';
+} from '../lib/session-api';
 
 export function SignInView(props: {
   onSignedIn: () => Promise<void> | void;
@@ -69,8 +69,8 @@ export function SignInView(props: {
   return (
     <main className="auth-shell">
       <section className="auth-panel">
-        <h1>ClawRocket</h1>
-        <p>Sign in to access your talks and machine-local context.</p>
+        <h1>editorialboard</h1>
+        <p>Sign in to access your editorial workspace.</p>
         <button
           type="button"
           onClick={signInWithRedirect}
