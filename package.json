@@ -8,6 +8,8 @@
     "build": "tsc",
     "start": "node dist/index.js",
     "dev": "tsx src/index.ts",
+    "dev:editorial": "tsx src/server.ts",
+    "start:editorial": "node dist/server.js",
     "check:webapp": "node scripts/ensure-webapp-installed.mjs",
     "install:webapp": "node scripts/install-webapp.mjs",
     "install:all": "npm install && npm run install:webapp",
