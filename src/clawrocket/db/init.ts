@@ -2,7 +2,7 @@ import Database from 'better-sqlite3';
 
 import { getDb } from '../../db.js';
 import { TIMEZONE } from '../../config.js';
-import { BUILTIN_ADDITIONAL_PROVIDERS } from '../agents/builtin-additional-providers.js';
+import { BUILTIN_ADDITIONAL_PROVIDERS } from '../llm/builtin-providers.js';
 
 const DEFAULT_CHANNEL_BINDING_TIMEZONE = TIMEZONE || 'UTC';
 
