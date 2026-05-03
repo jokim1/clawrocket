@@ -536,6 +536,9 @@ async function* streamOpenAIResponses(
   const body = {
     model: cred.model,
     stream: true,
+    // Codex+ChatGPT rejects the request unless `store` is explicitly false
+    // (server-side response storage isn't allowed on this account type).
+    store: false,
     instructions: input.systemPrompt,
     input: [
       {
