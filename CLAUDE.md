@@ -1,24 +1,14 @@
-# ClawRocket Repo Context
+# editorialboard Repo Context
 
 See [README.md](README.md) for product overview. This file is the short coding context for agents working inside the repo.
 
 ## Current Project Shape
 
-ClawRocket is a NanoClaw-derived fork with two distinct runtime domains:
+editorialboard.ai is a single-product, single-bootstrap web app for the **Editorial Room** — multi-agent LLM critique on editorial drafts.
 
-1. **NanoClaw core**
-   - single-process orchestrator
-   - containerized Claude execution
-   - channels, scheduler, IPC, group queues
-
-2. **ClawRocket web/talk stack**
-   - auth + RBAC
-   - web UI and API
-   - executor settings
-   - provider-routed Talk runtime
-   - direct HTTP streaming talk execution
-
-Keep those domains separate when making changes.
+- **Backend:** Hono server in `src/server.ts` (entry) → `src/clawrocket/web/editorial-app.ts` (routes). SQLite store via `src/db.ts` + `src/clawrocket/db/init.ts`.
+- **Frontend:** Vite + React under `webapp/`. Six-phase Editorial flow.
+- **LLM dispatch:** `src/clawrocket/llm/editorial-llm-call.ts` streams the panel-turn SSE endpoint against Anthropic / OpenAI / Gemini / NVIDIA NIM.
 
 ## Engineering Defaults
 
@@ -28,67 +18,56 @@ Keep those domains separate when making changes.
 - If a simpler implementation requires resetting, deleting, or rebuilding local data/users, do that instead of carrying compatibility baggage.
 - Remove dead paths instead of supporting old and new behavior in parallel.
 
-## Most Important Boundaries
-
-- Prefer ClawRocket-specific work under `src/clawrocket/*`.
-- Treat changes to `src/index.ts`, `src/db.ts`, `src/config.ts`, and `src/task-scheduler.ts` as upstream-sensitive.
-- Before widening that surface, check [docs/UPSTREAM-PATCH-SURFACE.md](docs/UPSTREAM-PATCH-SURFACE.md).
-
 ## Key Files
 
-| File | Purpose |
-| --- | --- |
-| `src/index.ts` | core startup, singleton coordination, channels, scheduler, message loop |
-| `src/instance-coordinator.ts` | single-instance ownership and graceful takeover |
-| `src/container-runner.ts` | containerized core executor path |
-| `src/clawrocket/web/index.ts` | web-server bootstrap and Talk worker wiring |
-| `src/clawrocket/web/server.ts` | Hono app and HTTP bind lifecycle |
-| `src/clawrocket/talks/direct-executor.ts` | provider-neutral direct Talk runtime |
-| `src/clawrocket/talks/run-worker.ts` | queued Talk run dispatch |
-| `src/clawrocket/talks/executor-settings.ts` | core executor settings + restart status |
-| `src/clawrocket/db/init.ts` | ClawRocket schema |
-| `src/clawrocket/db/llm-accessors.ts` | Talk provider, route, agent, and attempt persistence |
-| `webapp/src/pages/SettingsPage.tsx` | executor + Talk LLM settings UI |
-| `webapp/src/pages/TalkDetailPage.tsx` | Talk UI, agent targeting, streaming state |
+| File                                                                                                   | Purpose                                                                |
+| ------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------- |
+| `src/server.ts`                                                                                        | bootstrap: init SQLite, start Hono, handle SIGINT/SIGTERM              |
+| `src/db.ts`                                                                                            | better-sqlite3 connection helper (`getDb`, `initDatabase`)             |
+| `src/clawrocket/config.ts`                                                                             | server + auth + provider env config                                    |
+| `src/clawrocket/db/init.ts`                                                                            | 10-table editorial schema + provider-catalog seeds                     |
+| `src/clawrocket/db/accessors.ts`                                                                       | typed accessors (User, WebSession, Invite, OAuthState, DeviceAuthCode) |
+| `src/clawrocket/identity/auth-service.ts`                                                              | Google OAuth + device-code + session lifecycle                         |
+| `src/clawrocket/web/editorial-app.ts`                                                                  | Hono app: route registration, SPA shell, helpers                       |
+| `src/clawrocket/web/middleware/{auth,csrf,rate-limit}.ts`                                              | request-time guards                                                    |
+| `src/clawrocket/web/routes/editorial-panel.ts`                                                         | POST `/api/v1/editorial/panel-turn` (SSE)                              |
+| `src/clawrocket/web/routes/{ai-agents,llm-oauth,llm-oauth-openai}.ts`                                  | provider catalog + OAuth flows                                         |
+| `src/clawrocket/llm/editorial-llm-call.ts`                                                             | streaming dispatcher (Anthropic, OpenAI, Gemini, NVIDIA)               |
+| `src/clawrocket/llm/{anthropic-oauth,openai-codex-oauth}.ts`                                           | provider OAuth implementations                                         |
+| `src/clawrocket/llm/provider-secret-store.ts`                                                          | encryption-at-rest for provider credentials                            |
+| `webapp/src/pages/{EditorialSetup,ThemeTopicsWorkspace,PointsOutlineWorkspace,DraftWorkspace}Page.tsx` | the four canonical editorial pages                                     |
 
 ## Current Runtime Facts
 
-- Talk runtime mode is `direct_http`.
-- Talks are stateless and text-only in v1.
-- Core executor remains on the container/Claude path.
-- Talk provider secrets are encrypted at rest.
-- Core executor credentials are managed through the executor settings service.
-- A built-in mock Talk route exists for first boot.
-- Only one process should own a given `DATA_DIR`; a second process attempts graceful takeover.
-
-## Operations Facts
-
-- Ubuntu `systemd --user` is the canonical deployment model.
-- `CLAWROCKET_SELF_RESTART=1` enables owner-triggered restart from the settings page.
-- The web server should only log startup success after confirmed bind.
+- Single Node process; no IPC, no scheduler, no container runtime, no channels.
+- Editorial routes are the only HTTP surface besides `/api/v1/health`.
+- Provider secrets are encrypted at rest in SQLite; master key in `CLAWROCKET_PROVIDER_SECRET_KEY`.
+- Anthropic and OpenAI Codex subscriptions are supported via OAuth; OpenAI/Gemini/NVIDIA via API key.
+- SQLite store lives at `${STORE_DIR}/messages.db`; existing data is disposable.
+- Session cookies: `cr_access_token` (HttpOnly), `cr_refresh_token` (HttpOnly), `cr_csrf_token` (JS-readable for double-submit CSRF).
 
 ## Development Commands
 
 ```bash
-npm run dev
-npm run dev:web
-npm run typecheck
-npm run test
-npm run build
+npm run dev               # backend on :3210
+npm run dev:web           # webapp on :5173 (proxies /api/* to :3210)
+npm run typecheck         # backend tsc --noEmit
+npm run test              # backend vitest run (NANOCLAW_ALLOW_UNSUPPORTED_NODE=1 wrapper)
 npm --prefix webapp run typecheck
 npm --prefix webapp run test
+npm --prefix webapp run build
 ```
 
 ## Docs To Trust
 
-- [docs/SPEC.md](docs/SPEC.md): current architecture
-- [docs/REQUIREMENTS.md](docs/REQUIREMENTS.md): current constraints/priorities
-- [docs/SECURITY.md](docs/SECURITY.md): security model
-- [docs/DEBUG_CHECKLIST.md](docs/DEBUG_CHECKLIST.md): debugging flows
-- [docs/OPERATIONS_UBUNTU.md](docs/OPERATIONS_UBUNTU.md): production operations
+- [docs/CLOUD_TARGET.md](docs/CLOUD_TARGET.md) — cloud port plan (Cloudflare Workers + Supabase Postgres). Phase A (PURGE) complete; Phase B is next.
+- [docs/EDITORIAL_ROOM_CONTRACT.md](docs/EDITORIAL_ROOM_CONTRACT.md) — internal validation contracts.
+- [docs/SCHEMA_DEFINITION.md](docs/SCHEMA_DEFINITION.md), [docs/THEME_TOPIC_POINTS_DEFINITION.md](docs/THEME_TOPIC_POINTS_DEFINITION.md) — data model.
+- [docs/design/](docs/design/) — canonical UI specs.
 
-## Docs To Avoid Reintroducing
+## Vestigial Scaffolding (Future Cleanup)
 
-- old phase plans
-- rollout notes masquerading as source-of-truth docs
-- upstream NanoClaw-only descriptions that ignore the ClawRocket web/talk stack
+- `setup/` — NanoClaw onboarding scripts (container, register, mounts, etc.). Imports refer to deleted chassis files; never invoked by the editorial product. Tests pass because they mock the broken paths.
+- `skills-engine/` — NanoClaw skill management. Tests pass; not used by editorial code.
+
+Both are kept as inert scaffolding; can be removed in a follow-up cleanup PR once we are sure no upstream borrowing is desired.

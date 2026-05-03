@@ -1,149 +1,95 @@
-# ClawRocket
+# editorialboard
 
-ClawRocket is a NanoClaw-derived personal assistant that keeps the upstream containerized core small while adding an authenticated web app, multi-agent Talks, executor settings, and provider-routed direct HTTP talk execution.
+editorialboard.ai is the **Editorial Room** — a multi-agent LLM critique workspace for editorial drafts. Define a deliverable and audience, build out theme/topics and points/outline, draft, then ask a panel of LLM personas (Claude, GPT, Gemini, NVIDIA NIM) for critique mid-edit.
+
+Currently runs locally for Phase 0p. Cloud deploy to Cloudflare + Supabase tracked in [docs/CLOUD_TARGET.md](docs/CLOUD_TARGET.md).
 
 ## What Exists Today
 
-The repo has two execution domains:
+Single product, single bootstrap, single SQLite store.
 
-1. **Core executor**
-   - Runs through the existing container/Claude path.
-   - Uses the NanoClaw-style orchestrator in `src/index.ts`.
-   - Remains Anthropic-compatible and upstream-sensitive.
-
-2. **Talk runtime**
-   - Runs through ClawRocket’s direct HTTP runtime in `src/clawrocket/talks/direct-executor.ts`.
-   - Streams responses, reconstructs context statelessly, and supports multiple talk agents per talk.
-   - Uses provider/route configuration stored in SQLite.
-
-ClawRocket also adds:
-
-- authenticated web UI and API
-- RBAC (`owner`, `admin`, `member`)
-- executor settings and status APIs
-- Talk LLM provider/route settings
-- per-talk multi-agent routing
-- sequential provider fallback for Talks
-- a per-`DATA_DIR` single-instance takeover guard
-- systemd-friendly self-restart support for Ubuntu deployments
+- Hono HTTP server (`src/server.ts` + `src/clawrocket/web/editorial-app.ts`) with auth, session, provider OAuth, and the editorial panel-turn SSE endpoint.
+- Vite-built React webapp (`webapp/`) with the six-phase Editorial flow: Setup → Theme/Topics → Points/Outline → Draft → Polish → Ship.
+- SQLite store (`src/db.ts` + `src/clawrocket/db/init.ts`) with ten editorial tables: users, invites, sessions, OAuth state, device codes, Google credentials, and the LLM provider catalog/secrets/verifications.
+- Provider integrations:
+  - Anthropic (API key + Claude.ai subscription via OAuth)
+  - OpenAI (API key + ChatGPT Codex subscription via device-code OAuth)
+  - Gemini (API key)
+  - NVIDIA NIM (API key)
 
 ## Repo Shape
 
 ```text
 src/
-  index.ts                    Core orchestrator + singleton startup
-  container-runner.ts         Containerized core executor path
-  instance-coordinator.ts     Single-instance takeover guard
-  task-scheduler.ts           Core scheduler loop
-  db.ts                       Shared SQLite connection
+  server.ts                          Bootstrap (initDB → start Hono)
+  db.ts                              SQLite connection
+  config.ts, env.ts, logger.ts       Shared utilities
+  types.ts                           Shared types
 
   clawrocket/
-    db/                       Web/talk schema and typed accessors
-    identity/                 Auth, sessions, invites
-    talks/                    Direct Talk runtime, workers, settings
-    web/                      Hono API server and routes
-    llm/                      Talk-provider capabilities and secret storage
+    config.ts                        Editorial-server config + envs
+    db/init.ts                       10-table editorial schema
+    db/accessors.ts                  User/session/invite/OAuth typed accessors
+    identity/                        Auth service + sessions + Google scopes
+    llm/                             Provider catalog, secret storage, OAuth flows
+    llm/editorial-llm-call.ts        Multi-provider streaming dispatcher
+    web/editorial-app.ts             Hono app + route registration
+    web/middleware/                  Auth, CSRF, rate-limit
+    web/routes/                      Auth, agents, llm-oauth, editorial-panel, system
+    contracts/                       JSON-schema validation contracts
 
 webapp/
-  src/pages/SettingsPage.tsx  Executor + Talk LLM settings UI
-  src/pages/TalkDetailPage.tsx
+  src/pages/                         EditorialSetup, ThemeTopics, PointsOutline, DraftWorkspace
+  src/components/                    EditorialPhaseStrip, SignInView, ...
+  src/lib/                           editorial-fixtures, llm-providers, panel-fanout, markdown export/import
 ```
 
-## Architecture Summary
+## Editorial Flow
 
-```text
-Channels / scheduler / IPC
-        |
-        v
-  Core orchestrator (`src/index.ts`)
-        |
-        +--> Containerized Claude/NanoClaw execution
-        |
-        +--> ClawRocket web server
-                |
-                +--> Auth + RBAC
-                +--> Talks API + SSE
-                +--> TalkRunWorker
-                        |
-                        v
-                 Direct HTTP Talk runtime
-                 (Anthropic + OpenAI-compatible providers)
-```
+1. **Setup** — pick deliverable type, voice, audience, scoring rubric.
+2. **Theme + Topics** — capture editorial intent and topic structure.
+3. **Points + Outline** — turn topics into outline points with sources.
+4. **Draft** — write inside the editor; hit `+ ASK PANEL` mid-edit to stream critique from a configured LLM persona via SSE.
+5. **Polish** — iteration loop (Phase 1A).
+6. **Ship** — export to Markdown.
 
-## Current Runtime Behavior
-
-### Core executor
-
-- Uses container isolation and the existing agent-runner path.
-- Reads executor settings from the typed executor settings service.
-- Supports restart-aware settings changes and boot-marker verification.
-
-### Talks
-
-- Default runtime mode is `direct_http`.
-- Talks are text-only and stateless in v1.
-- Every Talk has at least one agent and exactly one primary agent.
-- Talk agents reference named routes.
-- Routes contain ordered provider/model steps for sequential fallback.
-- A built-in mock route is seeded for fresh installs.
-
-### Single-instance behavior
-
-- Only one process should own a given `DATA_DIR`.
-- Starting a second instance against the same `DATA_DIR` triggers graceful takeover:
-  - control-socket shutdown request first
-  - verified `SIGTERM`
-  - verified `SIGKILL` only if needed
-- Ownership is held by a live `ownership.lock` file handle plus runtime metadata in `data/runtime/instance/`.
-
-## Local Development
-
-Install:
+## Quick Start
 
 ```bash
-npm install
-npm run install:webapp
+npm run install:all       # installs root + webapp deps
+npm run dev               # tsx src/server.ts on :3210
+npm run dev:web           # vite on :5173, proxies /api/* to :3210
 ```
 
-Run:
+Then open `http://localhost:5173`.
+
+For local dev, the easiest way to sign in is the dev-login form on the sign-in page; it uses the loopback Google OAuth callback path and bypasses real Google.
+
+Note: dev login from Vite (5173) → backend (3210) cross-origin fetch is blocked by browser CORS. Loading via `http://127.0.0.1:3210` directly works end-to-end.
+
+## Development Commands
 
 ```bash
-npm run dev
-npm run dev:web
-```
-
-Common checks:
-
-```bash
-npm run typecheck
-npm run test
-npm run build
+npm run dev               # backend on :3210
+npm run dev:web           # webapp on :5173 (proxies /api/* to :3210)
+npm run typecheck         # backend tsc --noEmit
+npm run test              # backend vitest run
 npm --prefix webapp run typecheck
 npm --prefix webapp run test
+npm --prefix webapp run build
+npm run build             # backend tsc → dist/
+npm start                 # node dist/server.js
 ```
 
-## Operations Notes
+## Docs
 
-- Ubuntu `systemd --user` is the canonical production deployment path.
-- The web restart button only works when `CLAWROCKET_SELF_RESTART=1` is present in the service environment.
-- Do not run an ad hoc second production instance against the same `DATA_DIR` unless you intend to take over the running service.
+- [docs/CLOUD_TARGET.md](docs/CLOUD_TARGET.md) — cloud port plan (Cloudflare Workers + Supabase Postgres). Phase A (PURGE) complete; Phase B is next.
+- [docs/05_DESIGN_BRIEF.md](docs/05_DESIGN_BRIEF.md) — UI design brief.
+- [docs/06_PHASE_1A_KICKOFF.md](docs/06_PHASE_1A_KICKOFF.md) — Phase 1A kickoff and locked decisions.
+- [docs/EDITORIAL_ROOM_CONTRACT.md](docs/EDITORIAL_ROOM_CONTRACT.md) — internal validation contracts.
+- [docs/SCHEMA_DEFINITION.md](docs/SCHEMA_DEFINITION.md), [docs/THEME_TOPIC_POINTS_DEFINITION.md](docs/THEME_TOPIC_POINTS_DEFINITION.md) — data model.
+- [docs/design/](docs/design/) — canonical UI specs.
 
-See:
+## License
 
-- [docs/OPERATIONS_UBUNTU.md](docs/OPERATIONS_UBUNTU.md)
-- [docs/DEBUG_CHECKLIST.md](docs/DEBUG_CHECKLIST.md)
-
-## Documentation Map
-
-- [CLAUDE.md](CLAUDE.md): coding-agent context for this repo
-- [docs/SPEC.md](docs/SPEC.md): current architecture and data-flow spec
-- [docs/REQUIREMENTS.md](docs/REQUIREMENTS.md): current design constraints and priorities
-- [docs/SECURITY.md](docs/SECURITY.md): security model and current limitations
-- [docs/UPSTREAM-PATCH-SURFACE.md](docs/UPSTREAM-PATCH-SURFACE.md): allowed NanoClaw-core touchpoints
-- [docs/UPSTREAM-SYNC-LOG.md](docs/UPSTREAM-SYNC-LOG.md): maintained sync/runtime history
-
-## Scope Guidance For Contributors
-
-- Changes under `src/clawrocket/*` are generally preferred for ClawRocket-specific functionality.
-- Changes to NanoClaw-core files should stay within the patch-surface rules in [docs/UPSTREAM-PATCH-SURFACE.md](docs/UPSTREAM-PATCH-SURFACE.md).
-- Docs in this repo should describe the current implementation, not old rollout phases or speculative plans.
+Private.
