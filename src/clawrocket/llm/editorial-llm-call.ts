@@ -75,7 +75,11 @@ const PROVIDERS: ReadonlyArray<EditorialProviderEntry> = [
     id: 'provider.openai',
     transport: 'openai_responses',
     baseUrl: 'https://chatgpt.com/backend-api/codex',
-    defaultModel: 'gpt-5',
+    // Codex-via-ChatGPT rejects bare 'gpt-5' with HTTP 400 — only the
+    // codex-tuned variants are accepted on this endpoint. Mirrors the
+    // model pinned for the host-Codex provider in
+    // `agents/builtin-additional-providers.ts`.
+    defaultModel: 'gpt-5.3-codex',
   },
   {
     id: 'provider.gemini',
