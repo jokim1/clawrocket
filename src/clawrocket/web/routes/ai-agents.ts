@@ -63,7 +63,9 @@ interface SecretRow {
 
 function getCredentialHint(providerId: string): string | null {
   const row = getDb()
-    .prepare('SELECT ciphertext FROM llm_provider_secrets WHERE provider_id = ?')
+    .prepare(
+      'SELECT ciphertext FROM llm_provider_secrets WHERE provider_id = ?',
+    )
     .get(providerId) as SecretRow | undefined;
   if (!row) return null;
   try {
@@ -145,12 +147,14 @@ export async function putAiProviderCredentialRoute(
       status: 404,
       body: {
         ok: false,
-        error: { code: 'not_found', message: `Unknown provider: ${providerId}` },
+        error: {
+          code: 'not_found',
+          message: `Unknown provider: ${providerId}`,
+        },
       },
     };
   }
-  const apiKey =
-    typeof body.apiKey === 'string' ? body.apiKey.trim() : '';
+  const apiKey = typeof body.apiKey === 'string' ? body.apiKey.trim() : '';
   if (!apiKey) {
     return {
       status: 400,
@@ -189,7 +193,10 @@ export async function verifyAiProviderCredentialRoute(
       status: 404,
       body: {
         ok: false,
-        error: { code: 'not_found', message: `Unknown provider: ${providerId}` },
+        error: {
+          code: 'not_found',
+          message: `Unknown provider: ${providerId}`,
+        },
       },
     };
   }

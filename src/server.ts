@@ -12,12 +12,14 @@
 // PR-6 swaps `npm run dev` to point at this file.
 
 import { initDatabase } from './db.js';
+import { initClawrocketSchema } from './clawrocket/db/index.js';
 import { logger } from './logger.js';
 import { WEB_HOST, WEB_PORT } from './clawrocket/config.js';
-import { createWebServer } from './clawrocket/web/server.js';
+import { createWebServer } from './clawrocket/web/editorial-app.js';
 
 async function main(): Promise<void> {
   initDatabase();
+  initClawrocketSchema();
   logger.info('Database initialized');
 
   const server = createWebServer({ host: WEB_HOST, port: WEB_PORT });
