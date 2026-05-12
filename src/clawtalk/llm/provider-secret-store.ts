@@ -31,11 +31,7 @@ function getSecretMaterial(): string {
 }
 
 function deriveKey(): Buffer {
-  return crypto.scryptSync(
-    getSecretMaterial(),
-    'clawtalk-provider-store',
-    32,
-  );
+  return crypto.scryptSync(getSecretMaterial(), 'clawtalk-provider-store', 32);
 }
 
 function validateProviderSecretPayload(
