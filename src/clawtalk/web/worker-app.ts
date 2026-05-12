@@ -142,34 +142,35 @@ async function handleHealth(c: Context): Promise<Response> {
  * ically; Node mode (vitest, tsx local) falls back to the
  * CLAWTALK_DEV_STUB_ENABLED gate.
  */
-const requireAuthMiddleware: MiddlewareHandler<{ Variables: Variables }> =
-  async (c, next) => {
-    const env = extractJwksEnv(c.env);
-    const result = await authenticateRequestPg(
-      {
-        authorization: c.req.header('authorization'),
-        cookie: c.req.header('cookie'),
-      },
-      env,
-    );
-    if (result.kind !== 'authenticated') {
-      return new Response(
-        JSON.stringify({
-          ok: false,
-          error: {
-            code: 'unauthorized',
-            message: 'Authentication is required',
-          },
-        }),
-        {
-          status: 401,
-          headers: {
-            'content-type': 'application/json; charset=utf-8',
-            'www-authenticate': authChallengeHeader(result.reason),
-          },
+const requireAuthMiddleware: MiddlewareHandler<{
+  Variables: Variables;
+}> = async (c, next) => {
+  const env = extractJwksEnv(c.env);
+  const result = await authenticateRequestPg(
+    {
+      authorization: c.req.header('authorization'),
+      cookie: c.req.header('cookie'),
+    },
+    env,
+  );
+  if (result.kind !== 'authenticated') {
+    return new Response(
+      JSON.stringify({
+        ok: false,
+        error: {
+          code: 'unauthorized',
+          message: 'Authentication is required',
         },
-      );
-    }
-    c.set('auth', result.auth);
-    await next();
-  };
+      }),
+      {
+        status: 401,
+        headers: {
+          'content-type': 'application/json; charset=utf-8',
+          'www-authenticate': authChallengeHeader(result.reason),
+        },
+      },
+    );
+  }
+  c.set('auth', result.auth);
+  await next();
+};

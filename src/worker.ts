@@ -14,10 +14,7 @@
 // run-via-queues port lands as its own slice after the route caller-
 // swap finishes.
 
-import {
-  type RequestExecutionContext,
-  withRequestScopedDb,
-} from './db-pg.js';
+import { type RequestExecutionContext, withRequestScopedDb } from './db-pg.js';
 import { getWorkerApp } from './clawtalk/web/worker-app.js';
 
 // Wrangler bindings declared in wrangler.toml. Workers Secrets (set via

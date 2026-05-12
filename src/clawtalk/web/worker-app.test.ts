@@ -21,10 +21,7 @@ import type { JWK, KeyLike } from 'jose';
 import { initPgDatabase } from '../../db-pg.js';
 import { CLAWTALK_ALLOWED_ORIGINS } from '../config.js';
 import { ACCESS_TOKEN_COOKIE } from './cookies.js';
-import {
-  _resetWorkerAppForTests,
-  getWorkerApp,
-} from './worker-app.js';
+import { _resetWorkerAppForTests, getWorkerApp } from './worker-app.js';
 
 const PROJECT_URL = 'https://test-project.supabase.co';
 const ISSUER = `${PROJECT_URL}/auth/v1`;
@@ -98,10 +95,7 @@ afterAll(async () => {
 beforeEach(() => {
   kvStore.clear();
   // Prime the JWKS cache so verifyJwt doesn't have to fetch.
-  kvStore.set(
-    'supabase-jwks-v1',
-    JSON.stringify({ keys: [publicJwk] }),
-  );
+  kvStore.set('supabase-jwks-v1', JSON.stringify({ keys: [publicJwk] }));
   _resetWorkerAppForTests();
   vi.stubGlobal('fetch', async (url: string | URL) => {
     // The worker-app shouldn't reach the JWKS endpoint (cache primed),
