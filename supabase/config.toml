@@ -1,0 +1,83 @@
+# clawtalk Supabase CLI config.
+#
+# Ports use the 54430-54439 range to coexist with editorialroom (which sits
+# on 54420-54429) on the same Mac. If you bring up a new sibling Supabase
+# project, claim the next free 10-port range and bump every port below.
+
+project_id = "clawtalk"
+
+[api]
+enabled = true
+port = 54431
+schemas = ["public", "graphql_public"]
+extra_search_path = ["public", "extensions"]
+max_rows = 1000
+
+[api.tls]
+enabled = false
+
+[db]
+port = 54432
+shadow_port = 54430
+health_timeout = "2m"
+major_version = 17
+
+[db.pooler]
+enabled = false
+port = 54439
+pool_mode = "transaction"
+default_pool_size = 20
+max_client_conn = 100
+
+[db.migrations]
+enabled = true
+schema_paths = []
+
+[db.seed]
+enabled = true
+sql_paths = ["./seed.sql"]
+
+[realtime]
+enabled = false
+
+[studio]
+enabled = true
+port = 54433
+api_url = "http://127.0.0.1"
+
+[inbucket]
+enabled = true
+port = 54434
+
+[storage]
+enabled = false
+
+[analytics]
+enabled = true
+port = 54435
+backend = "postgres"
+
+[edge_runtime]
+enabled = false
+
+[auth]
+enabled = true
+# clawtalk.app cloud target. Override per-environment via env var.
+site_url = "http://127.0.0.1:5173"
+additional_redirect_urls = ["http://127.0.0.1:3210", "http://127.0.0.1:8788"]
+jwt_expiry = 3600
+enable_refresh_token_rotation = true
+refresh_token_reuse_interval = 10
+enable_signup = true
+enable_anonymous_sign_ins = false
+
+[auth.email]
+enable_signup = false
+double_confirm_changes = true
+enable_confirmations = false
+
+# Google OAuth lives in Supabase Auth in cloud. Disabled for local dev so
+# `supabase start` doesn't require client_id/secret env vars. CI/cloud
+# stacks set [auth.external.google] via the dashboard or env overrides.
+[auth.external.google]
+enabled = false

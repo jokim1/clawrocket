@@ -40,4 +40,12 @@ CLAUDE.local.md
 # Skills system (local per-installation state)
 .nanoclaw/
 
+# Cloudflare Workers local dev state
+.wrangler/
+
+# Supabase local dev state (auto-generated)
+supabase/.temp/
+supabase/.branches/
+supabase/snippets/
+
 agents-sdk-docs
