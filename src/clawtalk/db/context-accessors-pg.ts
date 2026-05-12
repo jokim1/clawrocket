@@ -253,7 +253,9 @@ function toStateSnapshot(row: TalkStateEntryRecord): TalkStateEntrySnapshot {
 // Goal accessors
 // ---------------------------------------------------------------------------
 
-export async function getTalkGoal(talkId: string): Promise<GoalSnapshot | null> {
+export async function getTalkGoal(
+  talkId: string,
+): Promise<GoalSnapshot | null> {
   const db = getDbPg();
   const rows = await db<TalkGoalRecord[]>`
     select talk_id, owner_id, goal_text, updated_at, updated_by

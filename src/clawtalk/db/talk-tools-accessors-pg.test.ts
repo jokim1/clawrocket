@@ -114,9 +114,7 @@ describe('talk-tools-accessors-pg (postgres + RLS)', () => {
       const list = await listTalkResourceBindings(TALK_A_ID);
       expect(list.length).toBe(1);
 
-      expect(await deleteTalkResourceBinding(TALK_A_ID, created.id)).toBe(
-        true,
-      );
+      expect(await deleteTalkResourceBinding(TALK_A_ID, created.id)).toBe(true);
       expect((await listTalkResourceBindings(TALK_A_ID)).length).toBe(0);
     });
   });
