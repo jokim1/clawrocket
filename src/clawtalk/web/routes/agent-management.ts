@@ -57,9 +57,7 @@ function providerHasCredential(providerId: string): boolean {
     return TALK_EXECUTOR_ANTHROPIC_API_KEY.trim().length > 0;
   }
   const row = getDb()
-    .prepare(
-      `SELECT 1 FROM llm_provider_secrets WHERE provider_id = ? LIMIT 1`,
-    )
+    .prepare(`SELECT 1 FROM llm_provider_secrets WHERE provider_id = ? LIMIT 1`)
     .get(providerId) as { 1: number } | undefined;
   return !!row;
 }
@@ -71,8 +69,11 @@ function getProviderName(providerId: string): string | null {
   return row?.name ?? null;
 }
 
-function buildExecutionPreview(record: RegisteredAgentRecord): ExecutionPreview {
-  const providerName = getProviderName(record.provider_id) || record.provider_id;
+function buildExecutionPreview(
+  record: RegisteredAgentRecord,
+): ExecutionPreview {
+  const providerName =
+    getProviderName(record.provider_id) || record.provider_id;
   if (!providerHasCredential(record.provider_id)) {
     return {
       surface: 'main',
@@ -99,7 +100,9 @@ function buildExecutionPreview(record: RegisteredAgentRecord): ExecutionPreview 
   };
 }
 
-function toApiSnapshot(record: RegisteredAgentRecord): RegisteredAgentApiSnapshot {
+function toApiSnapshot(
+  record: RegisteredAgentRecord,
+): RegisteredAgentApiSnapshot {
   return {
     ...toAgentSnapshot(record),
     executionPreview: buildExecutionPreview(record),
@@ -141,7 +144,10 @@ export function listAgentsRoute(_auth: AuthContext): {
   return envelopeOk(records.map(toApiSnapshot));
 }
 
-export function getAgentRoute(_auth: AuthContext, agentId: string): {
+export function getAgentRoute(
+  _auth: AuthContext,
+  agentId: string,
+): {
   statusCode: number;
   body: ApiEnvelope<RegisteredAgentApiSnapshot>;
 } {
@@ -342,8 +348,7 @@ export function updateMainAgentRoute(
       'You do not have permission to update the main agent.',
     );
   }
-  const agentId =
-    typeof body?.agentId === 'string' ? body.agentId.trim() : '';
+  const agentId = typeof body?.agentId === 'string' ? body.agentId.trim() : '';
   if (!agentId) {
     return envelopeError(400, 'invalid_input', 'agentId is required.');
   }
