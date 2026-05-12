@@ -1,8 +1,3 @@
-import { getRegisteredChannelNames } from '../../../channels/registry.js';
-import {
-  getContainerRuntimeStatus,
-  type ContainerRuntimeStatus,
-} from '../../../container-runtime.js';
 import { isDatabaseHealthy } from '../../db/index.js';
 import { KeychainBridge } from '../../secrets/keychain.js';
 import { ApiEnvelope } from '../types.js';
@@ -11,11 +6,7 @@ export interface DeepStatus {
   process: 'ok';
   db: 'ok' | 'error';
   keychain: 'ok' | 'error';
-  containerRuntime: ContainerRuntimeStatus;
   providers: 'not_checked';
-  channels: {
-    registered: string[];
-  };
 }
 
 export async function healthResponse(
@@ -50,11 +41,7 @@ export async function statusResponse(
       process: 'ok',
       db: dbHealthy ? 'ok' : 'error',
       keychain: keychainHealthy ? 'ok' : 'error',
-      containerRuntime: getContainerRuntimeStatus(),
       providers: 'not_checked',
-      channels: {
-        registered: getRegisteredChannelNames(),
-      },
     },
   };
 }

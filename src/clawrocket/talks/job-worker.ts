@@ -1,7 +1,7 @@
 import { TALK_RUN_POLL_MS } from '../config.js';
 import { claimDueTalkJobs, createJobTriggerRun } from '../db/index.js';
 import { logger } from '../../logger.js';
-import { WakeablePollLoop } from '../channels/wakeable-poll-loop.js';
+import { WakeablePollLoop } from './wakeable-poll-loop.js';
 
 export interface TalkJobWorkerControl {
   wake(): void;

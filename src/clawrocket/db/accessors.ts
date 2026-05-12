@@ -1,9 +1,12 @@
 import { randomUUID } from 'crypto';
 
 import { getDb } from '../../db.js';
-import { refreshMainThreadSummary } from '../agents/main-context-loader.js';
-import type { BrowserBlockMetadata } from '../browser/metadata.js';
-import { notifyOutboxEvent } from '../channels/outbox-notifier.js';
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type BrowserBlockMetadata = Record<string, any>;
+function refreshMainThreadSummary(_threadId: string): void {
+  // Main channel summary refresh disabled (chassis removed).
+}
+import { notifyOutboxEvent } from '../talks/outbox-notifier.js';
 import {
   inferThreadTitleFromContent,
   isLegacyPlaceholderTalkThreadTitle,

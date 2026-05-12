@@ -23,17 +23,7 @@ import {
   getTalkMessageById,
   getTalkRunById,
 } from '../db/accessors.js';
-import { getTalkChannelBindingById } from '../db/channel-accessors.js';
 import { getTalkJobById } from '../db/job-accessors.js';
-import {
-  listConnectorsForTalkRun,
-  type TalkRunConnectorRecord,
-} from '../db/connector-accessors.js';
-import {
-  executeConnectorTool,
-  type ToolExecutionContext,
-} from '../connectors/tool-executors.js';
-import { parseConnectorToolName } from '../connectors/runtime.js';
 import {
   deleteTalkStateEntry,
   getTalkStateEntry,
@@ -51,31 +41,117 @@ import {
   type ExecutionEvent,
 } from '../agents/agent-router.js';
 import type { LlmContentBlock, LlmMessage } from '../agents/llm-client.js';
-import {
-  getContainerAllowedTools,
-  planExecution,
-} from '../agents/execution-planner.js';
+import { planExecution } from '../agents/execution-planner.js';
 import {
   getMainAgent,
   listTalkAgents,
   resolvePrimaryAgent,
 } from '../agents/agent-registry.js';
-import { resolveValidatedProjectMountPath } from '../agents/project-mounts.js';
-import { executeContainerAgentTurn } from '../agents/container-turn-executor.js';
-import { executeCodexAgentTurn } from '../agents/codex-turn-executor.js';
 import { modelSupportsVision } from '../llm/capabilities.js';
 import type { TalkPersonaRole } from '../llm/types.js';
-import type { TalkRunStatus } from '../types.js';
-import { executeWebFetch, executeWebSearch } from '../tools/web-tools.js';
-import { executeBrowserTool } from '../tools/browser-tools.js';
-import { buildBrowserResumeSection } from '../browser/run-context.js';
-import type { ExecutionDecisionMetadata } from '../browser/metadata.js';
-import { fetchSlackRecentConversationContext } from '../channels/slack-connector.js';
-import { buildTalkChannelBindingStateNamespace } from '../db/channel-accessors.js';
 import { loadTalkContext } from './context-loader.js';
-import { executeGoogleDriveTalkTool } from './google-drive-tools.js';
-import { executeTalkOutputTool } from './output-tools.js';
 import { isImageAttachmentMimeType } from './attachment-extraction.js';
+
+// ---------------------------------------------------------------------------
+// Chassis-removal stubs
+//
+// The following names used to come from container/browser/channel/connector
+// modules that were deleted in the NanoClaw chassis purge. The basic Talk
+// runtime never reaches these call sites under the current (web-only) build.
+// They throw or return inert values so the file still type-checks.
+// ---------------------------------------------------------------------------
+
+type TalkRunStatus = string;
+type ExecutionDecisionMetadata = Record<string, unknown>;
+type TalkRunConnectorRecord = {
+  id: string;
+  verificationStatus: string;
+  [key: string]: unknown;
+};
+type ToolExecutionContext = Record<string, unknown>;
+type ChannelBindingStub = {
+  id: string;
+  platform: string;
+  display_name: string | null;
+  connection_display_name: string | null;
+  connection_id: string;
+  connection_health_status: string;
+  timezone: string | null;
+  response_mode: 'all' | 'off' | 'mentions';
+  delivery_mode: 'reply' | 'channel';
+  instructions: string | null;
+};
+type ToolResultStub = { result: string; isError?: boolean };
+type ContainerTurnResultStub = {
+  content: string;
+  usage?: {
+    inputTokens?: number;
+    outputTokens?: number;
+    cachedInputTokens?: number;
+  } | null;
+};
+type ConnectorToolNameParts = { connectorId: string; toolName: string };
+
+function getTalkChannelBindingById(_id: string): ChannelBindingStub | null {
+  return null;
+}
+function buildTalkChannelBindingStateNamespace(_binding: unknown): string {
+  return '';
+}
+async function fetchSlackRecentConversationContext(
+  ..._args: unknown[]
+): Promise<{ lines: string[]; unavailableReason: string | null }> {
+  return { lines: [], unavailableReason: 'Slack ingress is disabled.' };
+}
+function listConnectorsForTalkRun(_talkId: string): TalkRunConnectorRecord[] {
+  return [];
+}
+function parseConnectorToolName(_name: string): ConnectorToolNameParts | null {
+  return null;
+}
+function buildBrowserResumeSection(..._args: unknown[]): string {
+  return '';
+}
+function getContainerAllowedTools(..._args: unknown[]): string[] {
+  return [];
+}
+function resolveValidatedProjectMountPath(..._args: unknown[]): string {
+  throw new Error('Project mounts are disabled (chassis removed).');
+}
+async function executeConnectorTool(
+  ..._args: unknown[]
+): Promise<ToolResultStub> {
+  throw new Error('Connector tools are disabled (chassis removed).');
+}
+async function executeWebFetch(..._args: unknown[]): Promise<ToolResultStub> {
+  throw new Error('Web fetch tool is disabled (chassis removed).');
+}
+async function executeWebSearch(..._args: unknown[]): Promise<ToolResultStub> {
+  throw new Error('Web search tool is disabled (chassis removed).');
+}
+async function executeBrowserTool(..._args: unknown[]): Promise<ToolResultStub> {
+  throw new Error('Browser tool is disabled (chassis removed).');
+}
+async function executeGoogleDriveTalkTool(
+  ..._args: unknown[]
+): Promise<ToolResultStub> {
+  throw new Error('Google Drive tool is disabled (chassis removed).');
+}
+async function executeTalkOutputTool(
+  ..._args: unknown[]
+): Promise<ToolResultStub> {
+  throw new Error('Talk output tool is disabled (chassis removed).');
+}
+async function executeContainerAgentTurn(
+  ..._args: unknown[]
+): Promise<ContainerTurnResultStub> {
+  throw new Error('Container agent execution is disabled (chassis removed).');
+}
+async function executeCodexAgentTurn(
+  ..._args: unknown[]
+): Promise<ContainerTurnResultStub> {
+  throw new Error('Codex agent execution is disabled (chassis removed).');
+}
 import { loadAttachmentFile } from './attachment-storage.js';
 import {
   TalkExecutorError,
@@ -390,7 +466,7 @@ function loadChannelTriggerContext(input: { triggerMessageId: string }): {
     triggerMessage?.metadata_json,
   );
   if (!trigger) {
-    return { trigger: null, binding: undefined };
+    return { trigger: null, binding: null };
   }
 
   return {
@@ -822,7 +898,7 @@ export function buildToolExecutor(
       };
 
       const result = await executeConnectorTool(toolName, args, context);
-      return { result: result.content, isError: result.isError };
+      return { result: result.result, isError: result.isError };
     }
 
     if (toolName === 'web_fetch') {
@@ -2090,7 +2166,7 @@ export class CleanTalkExecutor implements TalkExecutor {
           enableBrowserTools: scopedEffectiveTools.some(
             (tool) => tool.toolFamily === 'browser' && tool.enabled,
           ),
-          onProgressUpdate: (message) => {
+          onProgressUpdate: (message: string) => {
             const currentAgent = resolvedAgent!;
             emitTalkEvent({
               type: 'talk_progress_update',

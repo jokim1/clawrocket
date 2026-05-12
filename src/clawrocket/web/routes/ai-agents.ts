@@ -3,10 +3,26 @@ import {
   BUILTIN_ADDITIONAL_PROVIDER_IDS,
   BUILTIN_ADDITIONAL_PROVIDERS,
 } from '../../agents/builtin-additional-providers.js';
-import {
-  CodexHostStatusService,
-  type CodexHostStatusView,
-} from '../../agents/codex-host-runtime.js';
+type CodexHostStatusView = {
+  status: 'unsupported';
+  authenticated: false;
+  cliInstalled: false;
+  sandboxAvailable: false;
+  authMode: 'unsupported' | 'apikey' | 'chatgpt';
+  message: string;
+};
+class CodexHostStatusService {
+  async getStatusView(): Promise<CodexHostStatusView> {
+    return {
+      status: 'unsupported',
+      authenticated: false,
+      cliInstalled: false,
+      sandboxAvailable: false,
+      authMode: 'unsupported',
+      message: 'Codex host runtime is disabled (chassis removed).',
+    };
+  }
+}
 import {
   LlmClientError,
   callLlm,

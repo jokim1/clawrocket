@@ -17,7 +17,6 @@ import {
   type LlmStreamEvent,
   LlmClientError,
 } from './llm-client.js';
-import { BrowserRunPausedError } from '../browser/run-paused-error.js';
 import { TalkExecutorError } from '../talks/executor.js';
 
 // ---------------------------------------------------------------------------
@@ -550,18 +549,6 @@ export async function executeWithAgent(
             isError: !!isError,
           });
         } catch (err) {
-          if (err instanceof BrowserRunPausedError) {
-            if (err.browserBlock.confirmationId) {
-              emit({
-                type: 'awaiting_confirmation',
-                confirmationId: err.browserBlock.confirmationId,
-                toolName: call.name,
-                actionSummary:
-                  err.browserBlock.pendingToolCall?.toolName || call.name,
-              });
-            }
-            throw err;
-          }
           const errorMsg = String(err);
           emit({
             type: 'tool_result',

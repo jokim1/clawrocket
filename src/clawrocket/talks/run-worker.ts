@@ -16,7 +16,6 @@ import {
   type TalkRunRecord,
 } from '../db/index.js';
 import { logger } from '../../logger.js';
-import { BrowserRunPausedError } from '../browser/run-paused-error.js';
 
 import {
   TalkExecutorError,
@@ -311,17 +310,6 @@ export class TalkRunWorker implements TalkRunWorkerControl {
         this.onTalkTerminal?.(run.talk_id!);
       }
     } catch (error) {
-      if (error instanceof BrowserRunPausedError) {
-        logger.info(
-          {
-            runId: run.id,
-            talkId: run.talk_id,
-            browserBlock: error.browserBlock.kind,
-          },
-          'Talk run paused for browser intervention',
-        );
-        return;
-      }
       if (isAbortError(error)) {
         if (!this.running) return;
         if (this.isCancelled(run.id)) return;

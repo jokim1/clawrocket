@@ -13,27 +13,18 @@
  */
 
 import { getDb } from '../../db.js';
-import { listConnectorsForTalkRun } from '../db/connector-accessors.js';
 import { listTalkStateEntries } from '../db/context-accessors.js';
 import type { EffectiveToolAccess } from '../db/agent-accessors.js';
 import { listTalkOutputs } from '../db/output-accessors.js';
-import {
-  buildConnectorToolDefinitions,
-  type ConnectorToolDefinition,
-} from '../connectors/runtime.js';
 import {
   type LlmToolDefinition,
   type LlmMessage,
 } from '../agents/llm-client.js';
 import type { TalkPersonaRole } from '../llm/types.js';
-import { WEB_TOOL_DEFINITIONS } from '../tools/web-tools.js';
-import { BROWSER_TOOL_DEFINITIONS } from '../tools/browser-tools.js';
-import {
-  buildBoundGoogleDrivePromptSection,
-  buildGoogleDriveContextTools,
-} from './google-drive-tools.js';
-import { buildTalkOutputToolDefinitions } from './output-tools.js';
 import type { TalkJobExecutionPolicy } from './executor.js';
+
+const WEB_TOOL_DEFINITIONS: LlmToolDefinition[] = [];
+const BROWSER_TOOL_DEFINITIONS: LlmToolDefinition[] = [];
 
 // ---------------------------------------------------------------------------
 // Types
@@ -355,7 +346,7 @@ export async function loadTalkContext(
     ),
     budgetTokens: RETRIEVAL_SECTION_RESERVE,
   });
-  const boundGoogleDriveResources = buildBoundGoogleDrivePromptSection(talkId);
+  const boundGoogleDriveResources = '';
 
   // Step 3: Build connector tools (currently empty stub)
   const connectorTools = buildConnectorTools(db, talkId, options?.jobPolicy);
@@ -624,28 +615,11 @@ function buildSourceManifest(sources: SourceRow[]): Array<{
  */
 function buildConnectorTools(
   _db: any,
-  talkId: string,
-  jobPolicy?: TalkJobExecutionPolicy | null,
+  _talkId: string,
+  _jobPolicy?: TalkJobExecutionPolicy | null,
 ): LlmToolDefinition[] {
-  // listConnectorsForTalkRun already filters: enabled=1, has ciphertext.
-  const connectors = listConnectorsForTalkRun(talkId);
-  const scopedConnectors = jobPolicy
-    ? connectors.filter((connector) =>
-        jobPolicy.allowedConnectorIds.includes(connector.id),
-      )
-    : connectors;
-
-  // Additional runtime guard: only verified connectors produce tools.
-  const verified = scopedConnectors.filter(
-    (c) => c.verificationStatus === 'verified',
-  );
-
-  const defs = buildConnectorToolDefinitions(verified);
-  return defs.map((def) => ({
-    name: def.toolName,
-    description: def.description,
-    inputSchema: def.inputSchema,
-  }));
+  // Data connectors were removed with the NanoClaw chassis purge.
+  return [];
 }
 
 // ---------------------------------------------------------------------------
@@ -837,9 +811,6 @@ function buildContextTools(
   effectiveTools?: EffectiveToolAccess[],
 ): LlmToolDefinition[] {
   const tools: LlmToolDefinition[] = [
-    ...buildTalkOutputToolDefinitions({
-      includeWrite: jobPolicy ? jobPolicy.allowOutputWrite : true,
-    }),
     {
       name: 'read_context_source',
       description:
@@ -869,7 +840,6 @@ function buildContextTools(
         required: ['attachmentId'],
       },
     },
-    ...buildGoogleDriveContextTools({ talkId, userId }),
   ];
 
   tools.push({

@@ -24,7 +24,6 @@ import {
   type ContextSourceFetchStrategy,
   updateSourceExtraction,
 } from '../db/index.js';
-import { runBrowserSourceFetchInContainer } from './browser-source-container.js';
 import { logger } from '../../logger.js';
 
 // ---------------------------------------------------------------------------
@@ -226,7 +225,11 @@ export interface TalkContextSourceIngestionService {
 }
 
 const DEFAULT_BROWSER_SOURCE_FETCHER: BrowserSourceFetcher = {
-  fetch: (input) => runBrowserSourceFetchInContainer(input),
+  fetch: async () => {
+    throw new Error(
+      'Browser source fetching is disabled in this build (NanoClaw chassis was removed).',
+    );
+  },
 };
 
 function getConfiguredManagedSourceFetcher(): ManagedSourceFetcher | null {

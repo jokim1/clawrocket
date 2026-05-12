@@ -1,7 +1,9 @@
 import { randomUUID } from 'crypto';
 
 import { getDb } from '../../../db.js';
-import { getContainerRuntimeStatus } from '../../../container-runtime.js';
+function getContainerRuntimeStatus(): 'ready' | 'unavailable' {
+  return 'unavailable';
+}
 import {
   AttachmentValidationError,
   TalkActiveRoundError,
@@ -37,13 +39,22 @@ import {
 } from '../../db/index.js';
 import type { TalkPersonaRole } from '../../llm/types.js';
 import type { TalkRunContextSnapshot } from '../../talks/context-loader.js';
-import type {
-  BrowserBlockMetadata,
-  BrowserResumeMetadata,
-  CarriedBrowserSessionMetadata,
-  ExecutionDecisionMetadata,
-} from '../../browser/metadata.js';
-import { validateMount } from '../../../mount-security.js';
+type BrowserBlockMetadata = Record<string, unknown>;
+type BrowserResumeMetadata = Record<string, unknown>;
+type CarriedBrowserSessionMetadata = Record<string, unknown>;
+type ExecutionDecisionMetadata = Record<string, unknown>;
+type MountValidationResult =
+  | { allowed: true; realHostPath: string; reason?: never }
+  | { allowed: false; reason: string; realHostPath?: never };
+function validateMount(
+  _mount: { hostPath: string; readonly?: boolean },
+  _opts?: unknown,
+): MountValidationResult {
+  return {
+    allowed: false,
+    reason: 'Mount validation is disabled (chassis removed).',
+  };
+}
 import {
   parsePolicyAgentsForExecution,
   parsePolicyAgentsForUiBadges,
