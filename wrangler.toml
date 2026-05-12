@@ -1,0 +1,94 @@
+# clawtalk — Cloudflare Workers config.
+#
+# Phase 5 PR 1 lands this file as the foundation for the cloud cutover that
+# happens in PR 2. It is consumed by `wrangler dev` (local dev pointing at
+# `supabase start`) and `wrangler deploy` (CI/CD, deferred until clawtalk's
+# Cloudflare project is provisioned).
+#
+# Bindings:
+#   - [assets]   serves webapp/dist with SPA fallback for /* (non-API)
+#   - [[hyperdrive]] DB  pooled Postgres connection to Supabase
+#   - [[kv_namespaces]] JWKS_CACHE  caches Supabase JWKS for D2 auth
+#   - [[queues.producers]] TALK_RUN_QUEUE  enqueues multi-agent runs
+#   - [[queues.consumers]] TALK_RUN_QUEUE  consumer worker for runs
+#
+# Secrets are set via `wrangler secret put` and never live in this file.
+
+name = "clawtalk"
+main = "src/worker.ts"
+
+compatibility_date = "2026-05-12"
+compatibility_flags = ["nodejs_compat"]
+
+# ─── Static Assets ────────────────────────────────────────────────────
+[assets]
+directory = "./webapp/dist"
+binding = "ASSETS"
+not_found_handling = "single-page-application"
+
+# ─── Hyperdrive — pooled Postgres to Supabase ─────────────────────────
+#
+# Create via:
+#   wrangler hyperdrive create clawtalk-pg \
+#     --connection-string "postgresql://postgres.<ref>:<password>@aws-1-us-east-1.pooler.supabase.com:5432/postgres"
+#
+# Use the Supavisor SESSION pooler (port 5432) — Hyperdrive needs prepared
+# statements, which the Transaction pooler (6543) disallows. Replace the
+# `id` below with the value `wrangler hyperdrive create` prints.
+[[hyperdrive]]
+binding = "DB"
+id = "REPLACE_WITH_HYPERDRIVE_ID"
+# Local supabase stack runs on the clawtalk-specific 54430–54439 port
+# range (see supabase/config.toml). 54432 is the database port.
+localConnectionString = "postgresql://postgres:postgres@127.0.0.1:54432/postgres"
+
+# ─── KV — Supabase JWKS cache ─────────────────────────────────────────
+#
+# Create via:
+#   wrangler kv namespace create JWKS_CACHE
+[[kv_namespaces]]
+binding = "JWKS_CACHE"
+id = "REPLACE_WITH_KV_NAMESPACE_ID"
+
+# ─── Queues — multi-agent run dispatch ────────────────────────────────
+#
+# Create via:
+#   wrangler queues create clawtalk-talk-runs
+#
+# Producer + consumer share the same Worker (single deployment) — fetch
+# requests enqueue, the queue handler consumes. Runs that hit Worker CPU
+# limits survive because the consumer Worker is invoked independently of
+# the original HTTP request, and the run state persists in talk_runs.
+[[queues.producers]]
+binding = "TALK_RUN_QUEUE"
+queue = "clawtalk-talk-runs"
+
+[[queues.consumers]]
+queue = "clawtalk-talk-runs"
+max_batch_size = 1
+max_batch_timeout = 5
+max_retries = 3
+dead_letter_queue = "clawtalk-talk-runs-dlq"
+
+# ─── Secrets (set via CLI, not here) ──────────────────────────────────
+#
+#   wrangler secret put CLAWTALK_PROVIDER_SECRET_KEY
+#     Master encryption passphrase for llm_provider_secrets (AES-256-GCM
+#     + PBKDF2-100k). Replaces the local-keychain path used in SQLite mode.
+#
+#   wrangler secret put SUPABASE_PUBLISHABLE_KEY
+#     Supabase anon key (`sb_publishable_...`). Used by auth-refresh /
+#     auth-logout to call Supabase's REST auth endpoints.
+#
+# What does NOT live as a Workers Secret:
+#   - SUPABASE_PROJECT_URL: declared in [vars] (non-secret).
+#   - VITE_SUPABASE_URL + VITE_SUPABASE_ANON_KEY: webapp build-time vars;
+#     CI sources them from GitHub Actions secrets.
+
+# ─── Plain (non-secret) vars ──────────────────────────────────────────
+[vars]
+PUBLIC_MODE = "true"
+WEB_SECURE_COOKIES = "true"
+TRUSTED_PROXY_MODE = "cloudflare"
+CLAWTALK_ALLOWED_ORIGIN = "https://clawtalk.jokim1.workers.dev,https://clawtalk.app"
+SUPABASE_PROJECT_URL = "REPLACE_WITH_SUPABASE_PROJECT_URL"
