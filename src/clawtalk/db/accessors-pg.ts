@@ -2087,8 +2087,7 @@ export async function cancelTalkRunsAtomic(input: {
 
   const cancelledRunIds: string[] = [];
   let cancelledRunning = false;
-  const cancelReason =
-    `Cancelled by ${input.cancelledBy}`.slice(0, 500);
+  const cancelReason = `Cancelled by ${input.cancelledBy}`.slice(0, 500);
   for (const run of activeRuns) {
     const updated = await db<{ id: string }[]>`
       update public.talk_runs

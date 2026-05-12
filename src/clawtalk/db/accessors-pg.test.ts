@@ -941,20 +941,17 @@ describe('accessors-pg slice 1: talks/folders/members/threads', () => {
   it('claimQueuedTalkRuns → completeRunAndPromoteNextAtomic: queued→running→completed lifecycle', async () => {
     const AGENT_1 = '0c555555-aaaa-9999-9999-000000000001';
 
-    const { talkId, threadId } = await withUserContext(
-      USER_A_ID,
-      async () => {
-        const t = await createTalk({
-          ownerId: USER_A_ID,
-          topicTitle: 'Lifecycle',
-        });
-        const tid = await getOrCreateDefaultThread({
-          talkId: t.id,
-          ownerId: USER_A_ID,
-        });
-        return { talkId: t.id, threadId: tid };
-      },
-    );
+    const { talkId, threadId } = await withUserContext(USER_A_ID, async () => {
+      const t = await createTalk({
+        ownerId: USER_A_ID,
+        topicTitle: 'Lifecycle',
+      });
+      const tid = await getOrCreateDefaultThread({
+        talkId: t.id,
+        ownerId: USER_A_ID,
+      });
+      return { talkId: t.id, threadId: tid };
+    });
 
     const turn = await withUserContext(USER_A_ID, async () => {
       return await enqueueTalkTurnAtomic({
@@ -1014,27 +1011,24 @@ describe('accessors-pg slice 1: talks/folders/members/threads', () => {
       expect(attempts[0].status).toBe('success');
       // talk_run_completed event present.
       const events = await getOutboxEventsForTopics([`talk:${talkId}`], 0);
-      expect(
-        events.some((e) => e.event_type === 'talk_run_completed'),
-      ).toBe(true);
+      expect(events.some((e) => e.event_type === 'talk_run_completed')).toBe(
+        true,
+      );
     });
   });
 
   it('failRunAndPromoteNextAtomic: queued→running→failed with reason recorded', async () => {
     const AGENT_1 = '0c555555-aaaa-9999-9999-000000000002';
-    const { talkId, threadId } = await withUserContext(
-      USER_A_ID,
-      async () => {
-        const t = await createTalk({ ownerId: USER_A_ID, topicTitle: 'Fail' });
-        return {
+    const { talkId, threadId } = await withUserContext(USER_A_ID, async () => {
+      const t = await createTalk({ ownerId: USER_A_ID, topicTitle: 'Fail' });
+      return {
+        talkId: t.id,
+        threadId: await getOrCreateDefaultThread({
           talkId: t.id,
-          threadId: await getOrCreateDefaultThread({
-            talkId: t.id,
-            ownerId: USER_A_ID,
-          }),
-        };
-      },
-    );
+          ownerId: USER_A_ID,
+        }),
+      };
+    });
     const runId = await withUserContext(USER_A_ID, async () => {
       const turn = await enqueueTalkTurnAtomic({
         ownerId: USER_A_ID,
