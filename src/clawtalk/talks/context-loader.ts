@@ -618,7 +618,7 @@ function buildConnectorTools(
   _talkId: string,
   _jobPolicy?: TalkJobExecutionPolicy | null,
 ): LlmToolDefinition[] {
-  // Data connectors were removed with the NanoClaw chassis purge.
+  // Data connectors were removed with the ClawTalk chassis purge.
   return [];
 }
 

@@ -10,7 +10,7 @@ function applyValidPublicModeEnv(): void {
   vi.stubEnv('AUTH_DEV_MODE', 'false');
   vi.stubEnv('WEB_SECURE_COOKIES', 'true');
   vi.stubEnv('TRUSTED_PROXY_MODE', 'cloudflare');
-  vi.stubEnv('CLAWROCKET_PROVIDER_SECRET_KEY', 'test-provider-secret');
+  vi.stubEnv('CLAWTALK_PROVIDER_SECRET_KEY', 'test-provider-secret');
   vi.stubEnv('GOOGLE_OAUTH_CLIENT_ID', 'test-client-id');
   vi.stubEnv('GOOGLE_OAUTH_CLIENT_SECRET', 'test-client-secret');
   vi.stubEnv(
@@ -19,7 +19,7 @@ function applyValidPublicModeEnv(): void {
   );
 }
 
-describe('clawrocket config public mode', () => {
+describe('clawtalk config public mode', () => {
   afterEach(() => {
     vi.unmock('../logger.js');
     vi.unstubAllEnvs();
@@ -122,7 +122,7 @@ describe('clawrocket config public mode', () => {
       config
         .getPublicModeConfigErrors()
         .some((error) =>
-          error.includes('CLAWROCKET_PROVIDER_SECRET_KEY must be set'),
+          error.includes('CLAWTALK_PROVIDER_SECRET_KEY must be set'),
         ),
     ).toBe(true);
   });

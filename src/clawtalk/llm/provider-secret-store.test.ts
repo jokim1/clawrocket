@@ -14,14 +14,14 @@ describe('provider secret store', () => {
     vi.restoreAllMocks();
   });
 
-  it('reads CLAWROCKET_PROVIDER_SECRET_KEY from .env when process.env is unset', async () => {
+  it('reads CLAWTALK_PROVIDER_SECRET_KEY from .env when process.env is unset', async () => {
     const tempDir = fs.mkdtempSync(
-      path.join(os.tmpdir(), 'clawrocket-provider-secret-'),
+      path.join(os.tmpdir(), 'clawtalk-provider-secret-'),
     );
     process.chdir(tempDir);
     fs.writeFileSync(
       path.join(tempDir, '.env'),
-      'CLAWROCKET_PROVIDER_SECRET_KEY=env-secret-one\n',
+      'CLAWTALK_PROVIDER_SECRET_KEY=env-secret-one\n',
       'utf8',
     );
 
@@ -32,7 +32,7 @@ describe('provider secret store', () => {
 
     fs.writeFileSync(
       path.join(tempDir, '.env'),
-      'CLAWROCKET_PROVIDER_SECRET_KEY=env-secret-two\n',
+      'CLAWTALK_PROVIDER_SECRET_KEY=env-secret-two\n',
       'utf8',
     );
     vi.resetModules();

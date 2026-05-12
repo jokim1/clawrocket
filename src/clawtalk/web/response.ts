@@ -28,7 +28,7 @@ export function sendSse(
     'content-type': 'text/event-stream; charset=utf-8',
     'cache-control': 'no-cache',
     connection: 'keep-alive',
-    'x-clawrocket-sse-mode': 'snapshot',
+    'x-clawtalk-sse-mode': 'snapshot',
   });
   res.write('retry: 3000\n');
   res.end(payload);

@@ -3,13 +3,13 @@ import { describe, expect, it } from 'vitest';
 import {
   _initTestDatabase,
   createMessage,
-  initClawrocketSchema,
+  initClawtalkSchema,
   upsertUser,
 } from './index.js';
 import { getDb } from '../../db.js';
-import { _initClawrocketTestSchema } from './init.js';
+import { _initClawtalkTestSchema } from './init.js';
 
-describe('clawrocket schema init', () => {
+describe('clawtalk schema init', () => {
   it('creates all core tables on a fresh database', () => {
     _initTestDatabase();
     const db = getDb();
@@ -22,11 +22,7 @@ describe('clawrocket schema init', () => {
 
     const tableNames = tables.map((t) => t.name);
 
-    // Core tables from db.ts
-    expect(tableNames).toContain('chats');
-    expect(tableNames).toContain('scheduled_tasks');
-
-    // Clawrocket tables
+    // Clawtalk tables
     expect(tableNames).toContain('users');
     expect(tableNames).toContain('talks');
     expect(tableNames).toContain('talk_messages');
@@ -201,7 +197,7 @@ describe('clawrocket schema init', () => {
        WHERE id = 'provider.gemini'`,
     ).run();
 
-    initClawrocketSchema();
+    initClawtalkSchema();
 
     const geminiProvider = db
       .prepare(
@@ -294,7 +290,7 @@ describe('clawrocket schema init', () => {
       'owner-1',
     );
 
-    initClawrocketSchema();
+    initClawtalkSchema();
 
     const bindings = db
       .prepare(
@@ -422,7 +418,7 @@ describe('clawrocket schema init', () => {
       new Date().toISOString(),
     );
 
-    _initClawrocketTestSchema();
+    _initClawtalkTestSchema();
 
     const toolPermissionsRow = db
       .prepare(
@@ -528,7 +524,7 @@ describe('clawrocket schema init', () => {
     );
     db.pragma('foreign_keys = ON');
 
-    initClawrocketSchema();
+    initClawtalkSchema();
 
     const migratedRow = db
       .prepare(

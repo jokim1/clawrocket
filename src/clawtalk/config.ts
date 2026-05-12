@@ -19,7 +19,7 @@ const envConfig = readEnvFile([
   'GOOGLE_OAUTH_REDIRECT_URI',
   'GOOGLE_PICKER_API_KEY',
   'GOOGLE_PICKER_APP_ID',
-  'CLAWROCKET_PROVIDER_SECRET_KEY',
+  'CLAWTALK_PROVIDER_SECRET_KEY',
   'ACCESS_TOKEN_TTL_SEC',
   'REFRESH_TOKEN_TTL_SEC',
   'DEVICE_CODE_TTL_SEC',
@@ -132,9 +132,9 @@ export const GOOGLE_PICKER_API_KEY =
   process.env.GOOGLE_PICKER_API_KEY || envConfig.GOOGLE_PICKER_API_KEY || '';
 export const GOOGLE_PICKER_APP_ID =
   process.env.GOOGLE_PICKER_APP_ID || envConfig.GOOGLE_PICKER_APP_ID || '';
-export const CLAWROCKET_PROVIDER_SECRET_KEY =
-  process.env.CLAWROCKET_PROVIDER_SECRET_KEY ||
-  envConfig.CLAWROCKET_PROVIDER_SECRET_KEY ||
+export const CLAWTALK_PROVIDER_SECRET_KEY =
+  process.env.CLAWTALK_PROVIDER_SECRET_KEY ||
+  envConfig.CLAWTALK_PROVIDER_SECRET_KEY ||
   '';
 export const isPublicMode =
   PUBLIC_MODE ||
@@ -153,8 +153,8 @@ export function getPublicModeConfigErrors(): string[] {
     errors.push('WEB_SECURE_COOKIES must be true when public mode is enabled');
   }
   if (
-    !CLAWROCKET_PROVIDER_SECRET_KEY.trim() ||
-    CLAWROCKET_PROVIDER_SECRET_KEY.trim() === PROVIDER_SECRET_DEV_FALLBACK
+    !CLAWTALK_PROVIDER_SECRET_KEY.trim() ||
+    CLAWTALK_PROVIDER_SECRET_KEY.trim() === PROVIDER_SECRET_DEV_FALLBACK
   ) {
     errors.push(
       `${PROVIDER_SECRET_KEY_ENV} must be set to a non-development key when public mode is enabled`,

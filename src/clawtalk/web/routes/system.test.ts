@@ -78,7 +78,7 @@ describe('system routes', () => {
   });
 
   it('serves SPA index fallback with CSP from configured dist directory', async () => {
-    const distDir = fs.mkdtempSync(path.join(os.tmpdir(), 'clawrocket-web-'));
+    const distDir = fs.mkdtempSync(path.join(os.tmpdir(), 'clawtalk-web-'));
     try {
       fs.writeFileSync(
         path.join(distDir, 'index.html'),
@@ -139,7 +139,7 @@ describe('system routes', () => {
   it('returns 404 for SPA routes when dist directory is unavailable', async () => {
     const missingDir = path.join(
       os.tmpdir(),
-      `clawrocket-web-missing-${Date.now()}`,
+      `clawtalk-web-missing-${Date.now()}`,
     );
     const webServer = createWebServer({
       host: '127.0.0.1',

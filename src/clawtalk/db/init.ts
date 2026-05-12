@@ -358,7 +358,7 @@ function seedDefaultSettings(database: Database.Database): void {
     .run('system.defaultTalkAgentId', 'agent.talk', now);
 }
 
-function createClawrocketSchema(database: Database.Database): void {
+function createClawtalkSchema(database: Database.Database): void {
   // Run additive/thread migrations BEFORE the schema exec block, because the
   // exec block contains CREATE INDEX statements that reference newer columns.
   // For fresh databases the tables don't exist yet, so these are no-ops.
@@ -1364,7 +1364,7 @@ function migrateTalkAgentsTable(database: Database.Database): void {
     -- 2. Drop old table + indexes
     DROP TABLE talk_agents;
 
-    -- 3. Recreate with new schema (matches the CREATE TABLE in createClawrocketSchema)
+    -- 3. Recreate with new schema (matches the CREATE TABLE in createClawtalkSchema)
     CREATE TABLE talk_agents (
       id TEXT PRIMARY KEY,
       talk_id TEXT NOT NULL REFERENCES talks(id) ON DELETE CASCADE,
@@ -1436,7 +1436,7 @@ function migrateAddTtftSupport(database: Database.Database): void {
     ALTER TABLE llm_provider_models ADD COLUMN default_ttft_timeout_ms INTEGER;
   `);
 
-  // llm_ttft_stats is created in createClawrocketSchema via IF NOT EXISTS,
+  // llm_ttft_stats is created in createClawtalkSchema via IF NOT EXISTS,
   // but for existing DBs that ran schema creation before this table existed:
   database.exec(`
     CREATE TABLE IF NOT EXISTS llm_ttft_stats (
@@ -3323,11 +3323,11 @@ function migrateOAuthStateRequesterColumns(database: Database.Database): void {
   }
 }
 
-export function initClawrocketSchema(): void {
-  createClawrocketSchema(getDb());
+export function initClawtalkSchema(): void {
+  createClawtalkSchema(getDb());
 }
 
 /** @internal - for tests only. */
-export function _initClawrocketTestSchema(): void {
-  createClawrocketSchema(getDb());
+export function _initClawtalkTestSchema(): void {
+  createClawtalkSchema(getDb());
 }

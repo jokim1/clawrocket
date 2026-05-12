@@ -56,7 +56,7 @@ import { isImageAttachmentMimeType } from './attachment-extraction.js';
 // Chassis-removal stubs
 //
 // The following names used to come from container/browser/channel/connector
-// modules that were deleted in the NanoClaw chassis purge. The basic Talk
+// modules that were deleted in the ClawTalk chassis purge. The basic Talk
 // runtime never reaches these call sites under the current (web-only) build.
 // They throw or return inert values so the file still type-checks.
 // ---------------------------------------------------------------------------
@@ -129,7 +129,9 @@ async function executeWebFetch(..._args: unknown[]): Promise<ToolResultStub> {
 async function executeWebSearch(..._args: unknown[]): Promise<ToolResultStub> {
   throw new Error('Web search tool is disabled (chassis removed).');
 }
-async function executeBrowserTool(..._args: unknown[]): Promise<ToolResultStub> {
+async function executeBrowserTool(
+  ..._args: unknown[]
+): Promise<ToolResultStub> {
   throw new Error('Browser tool is disabled (chassis removed).');
 }
 async function executeGoogleDriveTalkTool(

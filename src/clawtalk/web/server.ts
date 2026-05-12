@@ -7281,7 +7281,7 @@ function sseHeaders(mode: 'snapshot' | 'stream'): Record<string, string> {
     'content-type': 'text/event-stream; charset=utf-8',
     'cache-control': 'no-cache',
     connection: 'keep-alive',
-    'x-clawrocket-sse-mode': mode,
+    'x-clawtalk-sse-mode': mode,
   };
 }
 
@@ -7559,7 +7559,7 @@ function renderGoogleAccountCallbackHtml(input: {
   message?: string;
 }): Response {
   const payload = JSON.stringify({
-    type: 'clawrocket:google-account-link',
+    type: 'clawtalk:google-account-link',
     status: input.status,
     message: input.message ?? null,
   });
@@ -7603,7 +7603,7 @@ function renderSlackOAuthCallbackHtml(input: {
   workspaceName?: string;
 }): Response {
   const payload = JSON.stringify({
-    type: 'clawrocket:slack-workspace-install',
+    type: 'clawtalk:slack-workspace-install',
     status: input.status,
     message: input.message ?? null,
     workspaceName: input.workspaceName ?? null,

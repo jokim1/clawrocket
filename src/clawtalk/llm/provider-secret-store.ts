@@ -4,9 +4,9 @@ import { readEnvFile } from '../../env.js';
 import { logger } from '../../logger.js';
 import type { ProviderSecretPayload } from './types.js';
 
-export const PROVIDER_SECRET_KEY_ENV = 'CLAWROCKET_PROVIDER_SECRET_KEY';
+export const PROVIDER_SECRET_KEY_ENV = 'CLAWTALK_PROVIDER_SECRET_KEY';
 export const PROVIDER_SECRET_DEV_FALLBACK =
-  'clawrocket-dev-provider-secret-key-unsafe-default';
+  'clawtalk-dev-provider-secret-key-unsafe-default';
 const AES_ALGO = 'aes-256-gcm';
 let warnedAboutFallbackSecret = false;
 const envConfig = readEnvFile([PROVIDER_SECRET_KEY_ENV]);
@@ -33,7 +33,7 @@ function getSecretMaterial(): string {
 function deriveKey(): Buffer {
   return crypto.scryptSync(
     getSecretMaterial(),
-    'clawrocket-provider-store',
+    'clawtalk-provider-store',
     32,
   );
 }

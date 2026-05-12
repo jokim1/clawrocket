@@ -290,7 +290,7 @@ describe('events routes', () => {
     });
 
     expect(res.status).toBe(200);
-    expect(res.headers.get('x-clawrocket-sse-mode')).toBe('snapshot');
+    expect(res.headers.get('x-clawtalk-sse-mode')).toBe('snapshot');
   });
 
   it('supports opt-in long-lived stream mode with incremental events', async () => {
@@ -302,7 +302,7 @@ describe('events routes', () => {
     });
 
     expect(res.status).toBe(200);
-    expect(res.headers.get('x-clawrocket-sse-mode')).toBe('stream');
+    expect(res.headers.get('x-clawtalk-sse-mode')).toBe('stream');
 
     const streamText = await readSseUntil(res, (text) =>
       text.includes('event: message_appended'),
@@ -319,7 +319,7 @@ describe('events routes', () => {
     });
 
     expect(res.status).toBe(200);
-    expect(res.headers.get('x-clawrocket-sse-mode')).toBe('stream');
+    expect(res.headers.get('x-clawtalk-sse-mode')).toBe('stream');
 
     appendOutboxEvent({
       topic: 'talk:talk-1',
@@ -342,7 +342,7 @@ describe('events routes', () => {
     });
 
     expect(res.status).toBe(200);
-    expect(res.headers.get('x-clawrocket-sse-mode')).toBe('stream');
+    expect(res.headers.get('x-clawtalk-sse-mode')).toBe('stream');
 
     appendOutboxEvent({
       topic: 'talk:talk-1',

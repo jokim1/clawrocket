@@ -40,7 +40,7 @@ function getSecretMaterial(): string {
 }
 
 function deriveKey(): Buffer {
-  return crypto.scryptSync(getSecretMaterial(), 'clawrocket-google-tools', 32);
+  return crypto.scryptSync(getSecretMaterial(), 'clawtalk-google-tools', 32);
 }
 
 export function encryptGoogleToolCredential(

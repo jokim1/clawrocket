@@ -1,9 +1,9 @@
 import {
   getPublicModeConfigErrors,
   getPublicModeDatabaseErrors,
-} from './clawrocket/config.js';
-import { getOwnerUser, initClawrocketSchema } from './clawrocket/db/index.js';
-import { startWebServer } from './clawrocket/web/index.js';
+} from './clawtalk/config.js';
+import { getOwnerUser, initClawtalkSchema } from './clawtalk/db/index.js';
+import { startWebServer } from './clawtalk/web/index.js';
 import { initDatabase } from './db.js';
 import { logger } from './logger.js';
 
@@ -47,7 +47,7 @@ async function main(): Promise<void> {
   try {
     assertPublicModeConfigReady();
     initDatabase();
-    initClawrocketSchema();
+    initClawtalkSchema();
     assertPublicModeDatabaseReady();
     logger.info('Database initialized');
 

@@ -227,7 +227,7 @@ export interface TalkContextSourceIngestionService {
 const DEFAULT_BROWSER_SOURCE_FETCHER: BrowserSourceFetcher = {
   fetch: async () => {
     throw new Error(
-      'Browser source fetching is disabled in this build (NanoClaw chassis was removed).',
+      'Browser source fetching is disabled in this build (ClawTalk chassis was removed).',
     );
   },
 };

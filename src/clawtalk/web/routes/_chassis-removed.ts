@@ -5,7 +5,7 @@ const GONE: ApiEnvelope<Record<string, unknown>> = {
   error: {
     code: 'feature_removed',
     message:
-      'This feature was removed with the NanoClaw chassis purge. Talk-only product is supported.',
+      'This feature was removed with the ClawTalk chassis purge. Talk-only product is supported.',
   },
 };
 

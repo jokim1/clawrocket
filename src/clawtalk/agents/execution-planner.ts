@@ -403,7 +403,7 @@ export function getContainerAllowedTools(input: {
   }
 
   if (enabled.has('browser') || input.includeConnectorTools) {
-    allowed.add('mcp__nanoclaw__*');
+    allowed.add('mcp__clawtalk__*');
   }
 
   return Array.from(allowed);
