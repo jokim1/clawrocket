@@ -33,6 +33,7 @@
     "better-sqlite3": "^11.8.1",
     "exceljs": "^4.4.0",
     "hono": "^4.12.7",
+    "jose": "^5.10.0",
     "mammoth": "^1.11.0",
     "pdf-parse": "^2.4.5",
     "pino": "^9.6.0",
