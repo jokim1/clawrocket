@@ -11,7 +11,7 @@ import {
   getDbPg,
   initPgDatabase,
   withUserContext,
-} from '../../db-pg.js';
+} from '../../db.js';
 import {
   createGoogleOAuthLinkRequest,
   createTalkResourceBinding,
@@ -22,7 +22,7 @@ import {
   getUserGoogleCredential,
   listTalkResourceBindings,
   upsertUserGoogleCredential,
-} from './talk-tools-accessors-pg.js';
+} from './talk-tools-accessors.js';
 
 const USER_A_ID = '0c444444-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
 const USER_B_ID = '0c444444-bbbb-bbbb-bbbb-bbbbbbbbbbbb';

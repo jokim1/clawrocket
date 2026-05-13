@@ -113,7 +113,7 @@ import {
   getDbPg,
   initPgDatabase,
   withUserContext,
-} from '../../db-pg.js';
+} from '../../db.js';
 
 export { closePgDatabase, getDbPg, initPgDatabase, withUserContext };
 

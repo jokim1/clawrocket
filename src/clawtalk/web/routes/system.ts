@@ -1,4 +1,4 @@
-import { isPgDatabaseHealthy } from '../../../db-pg.js';
+import { isPgDatabaseHealthy } from '../../../db.js';
 import { KeychainBridge } from '../../secrets/keychain.js';
 import { ApiEnvelope } from '../types.js';
 

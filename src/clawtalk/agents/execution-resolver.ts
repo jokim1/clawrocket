@@ -30,9 +30,9 @@
  * header to api.anthropic.com.
  */
 
-import { getDbPg, type Sql } from '../../db-pg.js';
-import type { RegisteredAgentRecord } from '../db/agent-accessors-pg.js';
-import { decryptProviderSecret } from '../llm/provider-secret-store-pg.js';
+import { getDbPg, type Sql } from '../../db.js';
+import type { RegisteredAgentRecord } from '../db/agent-accessors.js';
+import { decryptProviderSecret } from '../llm/provider-secret-store.js';
 import type { LlmProviderConfig, LlmSecret } from './llm-client.js';
 import {
   TALK_EXECUTOR_ANTHROPIC_API_KEY,

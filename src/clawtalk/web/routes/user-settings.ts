@@ -1,4 +1,4 @@
-import { withUserContext } from '../../../db-pg.js';
+import { withUserContext } from '../../../db.js';
 import {
   listUserToolPermissions,
   upsertUserToolPermission,
@@ -7,7 +7,7 @@ import {
   TOOL_FAMILY_MAP,
   type UserToolPermission,
   type EffectiveToolAccess,
-} from '../../db/agent-accessors-pg.js';
+} from '../../db/agent-accessors.js';
 import type { AuthContext, ApiEnvelope } from '../types.js';
 
 // ---------------------------------------------------------------------------

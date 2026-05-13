@@ -1,6 +1,6 @@
 import { randomUUID } from 'crypto';
 
-import { withUserContext } from '../../db-pg.js';
+import { withUserContext } from '../../db.js';
 import { TALK_RUN_MAX_CONCURRENCY, TALK_RUN_POLL_MS } from '../config.js';
 import {
   appendOutboxEvent,
@@ -11,13 +11,13 @@ import {
   getTalkMessageById,
   getTalkRunById,
   type TalkRunRecord,
-} from '../db/accessors-pg.js';
+} from '../db/accessors.js';
 import {
   blockTalkJob,
   getTalkJobById,
   markTalkJobRunFinished,
-} from '../db/job-accessors-pg.js';
-import { replaceJobReportOutput } from '../db/output-accessors-pg.js';
+} from '../db/job-accessors.js';
+import { replaceJobReportOutput } from '../db/output-accessors.js';
 import { logger } from '../../logger.js';
 
 import {

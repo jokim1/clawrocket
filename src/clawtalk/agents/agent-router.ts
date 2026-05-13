@@ -1,7 +1,7 @@
 import {
   getRegisteredAgent,
   TOOL_FAMILY_MAP,
-} from '../db/agent-accessors-pg.js';
+} from '../db/agent-accessors.js';
 import {
   resolveExecution,
   ExecutionResolverError,

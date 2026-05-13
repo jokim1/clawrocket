@@ -15,7 +15,7 @@
  * observations in memory and compute exact percentiles.
  */
 
-import { getDbPg } from '../../db-pg.js';
+import { getDbPg } from '../../db.js';
 import { logger } from '../../logger.js';
 
 // ---------------------------------------------------------------------------

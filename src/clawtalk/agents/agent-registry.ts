@@ -19,7 +19,7 @@
  * the call site stays honest about whose identity is being written.
  */
 
-import { getSettingValue, upsertSettingValue } from '../db/accessors-pg.js';
+import { getSettingValue, upsertSettingValue } from '../db/accessors.js';
 import {
   createRegisteredAgent,
   deleteRegisteredAgent,
@@ -33,7 +33,7 @@ import {
   type RegisteredAgentRecord,
   type RegisteredAgentSnapshot,
   type AgentFallbackStep,
-} from '../db/agent-accessors-pg.js';
+} from '../db/agent-accessors.js';
 import {
   listTalkAgents,
   resolvePrimaryAgent,
@@ -43,7 +43,7 @@ import {
   type TalkAgentAssignment,
   type TalkAgentInput,
   type TalkAgentRow,
-} from '../db/talk-agents-pg.js';
+} from '../db/talk-agents.js';
 
 // ---------------------------------------------------------------------------
 // Main Agent Resolution

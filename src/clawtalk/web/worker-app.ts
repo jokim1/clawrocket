@@ -53,10 +53,10 @@
 import { Hono } from 'hono';
 import type { Context, MiddlewareHandler } from 'hono';
 
-import { isPgDatabaseHealthy } from '../../db-pg.js';
-import { authenticateRequestPg } from './middleware/auth-pg.js';
-import { authChallengeHeader, extractJwksEnv } from './middleware/auth-pg.js';
-import { validateCsrfTokenPg } from './middleware/csrf-pg.js';
+import { isPgDatabaseHealthy } from '../../db.js';
+import { authenticateRequestPg } from './middleware/auth.js';
+import { authChallengeHeader, extractJwksEnv } from './middleware/auth.js';
+import { validateCsrfTokenPg } from './middleware/csrf.js';
 import {
   checkRateLimit,
   type RateLimitResult,
