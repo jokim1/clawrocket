@@ -372,9 +372,7 @@ export async function buildAiAgentsPageData(): Promise<AiAgentsPageData> {
   const savedDefault = await getSavedDefaultClaudeModelId();
   return {
     defaultClaudeModelId:
-      savedDefault ||
-      claudeModelSuggestions[0]?.modelId ||
-      'claude-sonnet-4-6',
+      savedDefault || claudeModelSuggestions[0]?.modelId || 'claude-sonnet-4-6',
     claudeModelSuggestions,
     additionalProviders: await buildAdditionalProviderCards(),
   };
