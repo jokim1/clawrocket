@@ -19,10 +19,7 @@
  * the call site stays honest about whose identity is being written.
  */
 
-import {
-  getSettingValue,
-  upsertSettingValue,
-} from '../db/accessors-pg.js';
+import { getSettingValue, upsertSettingValue } from '../db/accessors-pg.js';
 import {
   createRegisteredAgent,
   deleteRegisteredAgent,
