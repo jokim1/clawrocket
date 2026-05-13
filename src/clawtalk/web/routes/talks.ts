@@ -219,7 +219,11 @@ function parseRunMetadataObject<T>(value: unknown): T | null {
 function parseRunMetadata(
   metadataJson: Record<string, unknown> | null | undefined,
 ): Record<string, unknown> {
-  if (!metadataJson || typeof metadataJson !== 'object' || Array.isArray(metadataJson)) {
+  if (
+    !metadataJson ||
+    typeof metadataJson !== 'object' ||
+    Array.isArray(metadataJson)
+  ) {
     return {};
   }
   return metadataJson;
@@ -2380,7 +2384,7 @@ function toTalkRunApiRecord(
     triggerMessageId: run.trigger_message_id,
     targetAgentId: run.target_agent_id || null,
     targetAgentNickname: run.target_agent_id
-      ? nicknameByAgentId.get(run.target_agent_id) ?? null
+      ? (nicknameByAgentId.get(run.target_agent_id) ?? null)
       : null,
     errorCode: parsedError.errorCode,
     errorMessage: parsedError.errorMessage,
