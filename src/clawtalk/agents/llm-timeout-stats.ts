@@ -186,9 +186,7 @@ export async function computeAdaptiveResponseStartTimeout(
     const db = getDbPg();
 
     // Check for adaptive stats
-    const statsRows = await db<
-      { sample_count: number; p99_ms: number }[]
-    >`
+    const statsRows = await db<{ sample_count: number; p99_ms: number }[]>`
       select sample_count, p99_ms
       from public.llm_ttft_stats
       where provider_id = ${providerId} and model_id = ${modelId}
@@ -201,9 +199,7 @@ export async function computeAdaptiveResponseStartTimeout(
     }
 
     // Check for per-model default
-    const modelRows = await db<
-      { default_ttft_timeout_ms: number | null }[]
-    >`
+    const modelRows = await db<{ default_ttft_timeout_ms: number | null }[]>`
       select default_ttft_timeout_ms
       from public.llm_provider_models
       where provider_id = ${providerId} and model_id = ${modelId}
