@@ -23,7 +23,7 @@ import {
 import {
   type ContextSourceFetchStrategy,
   updateSourceExtraction,
-} from '../db/context-accessors-pg.js';
+} from '../db/context-accessors.js';
 import { logger } from '../../logger.js';
 
 // ---------------------------------------------------------------------------

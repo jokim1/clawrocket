@@ -1,4 +1,4 @@
-import { getDbPg, withUserContext } from '../../../db-pg.js';
+import { getDbPg, withUserContext } from '../../../db.js';
 import {
   BUILTIN_ADDITIONAL_PROVIDER_IDS,
   BUILTIN_ADDITIONAL_PROVIDERS,
@@ -32,7 +32,7 @@ import {
 import {
   decryptProviderSecret,
   encryptProviderSecret,
-} from '../../llm/provider-secret-store-pg.js';
+} from '../../llm/provider-secret-store.js';
 import { resolveModelCapabilities } from '../../llm/capabilities.js';
 import type { ApiEnvelope, AuthContext } from '../types.js';
 

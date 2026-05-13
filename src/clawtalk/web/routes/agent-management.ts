@@ -1,4 +1,4 @@
-import { getDbPg, withUserContext } from '../../../db-pg.js';
+import { getDbPg, withUserContext } from '../../../db.js';
 import {
   createRegisteredAgent,
   deleteRegisteredAgent,
@@ -8,7 +8,7 @@ import {
   updateRegisteredAgent,
   type RegisteredAgentRecord,
   type RegisteredAgentSnapshot,
-} from '../../db/agent-accessors-pg.js';
+} from '../../db/agent-accessors.js';
 import {
   getDefaultTalkAgentId,
   getMainAgentId,

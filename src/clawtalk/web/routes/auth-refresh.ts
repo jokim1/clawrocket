@@ -25,7 +25,7 @@ import {
   parseCookieHeader,
   REFRESH_TOKEN_COOKIE,
 } from '../cookies.js';
-import { authChallengeHeader } from '../middleware/auth-pg.js';
+import { authChallengeHeader } from '../middleware/auth.js';
 import {
   callSupabaseAuthApi,
   extractSupabaseAuthEnv,

@@ -22,7 +22,7 @@ import {
   getDbPg,
   initPgDatabase,
   withUserContext,
-} from '../../db-pg.js';
+} from '../../db.js';
 import {
   createRegisteredAgent,
   deleteRegisteredAgent,
@@ -38,7 +38,7 @@ import {
   TOOL_FAMILY_MAP,
   updateRegisteredAgent,
   upsertUserToolPermission,
-} from './agent-accessors-pg.js';
+} from './agent-accessors.js';
 
 const USER_A_ID = '0c111111-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
 const USER_B_ID = '0c111111-bbbb-bbbb-bbbb-bbbbbbbbbbbb';

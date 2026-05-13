@@ -1,11 +1,11 @@
-import { getDbPg } from '../../db-pg.js';
+import { getDbPg } from '../../db.js';
 import {
   getEffectiveToolsForAgent,
   type EffectiveToolAccess,
   type RegisteredAgentRecord,
-} from '../db/agent-accessors-pg.js';
-import { getSettingValue } from '../db/accessors-pg.js';
-import { decryptProviderSecret } from '../llm/provider-secret-store-pg.js';
+} from '../db/agent-accessors.js';
+import { getSettingValue } from '../db/accessors.js';
+import { decryptProviderSecret } from '../llm/provider-secret-store.js';
 import type { LlmProviderRecord } from '../llm/types.js';
 import {
   resolveExecution,

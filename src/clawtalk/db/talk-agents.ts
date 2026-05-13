@@ -1,8 +1,7 @@
-// clawtalk Phase 5 (PR 2) — postgres port of the talk_agents CRUD that
-// previously lived as inline SQL inside src/clawtalk/agents/agent-registry.ts.
+// clawtalk Phase 5 (PR 2) — postgres talk_agents CRUD that previously
+// lived as inline SQL inside src/clawtalk/agents/agent-registry.ts.
 //
-// Mirrors the sync better-sqlite3 surface from agent-registry.ts but every
-// function is async and runs against postgres.js via `getDbPg()`. Per
+// Every function is async and runs against postgres.js via `getDbPg()`. Per
 // supabase/migrations/0002_rls_policies.sql, `talk_agents` has RLS
 // `using/with check (owner_id = auth.uid())` — so callers MUST wrap each
 // call in `withUserContext(userId, async () => ...)`. Outside that scope
@@ -29,8 +28,8 @@
 // 168 (resolvePrimaryAgent), 193 (resolveAgentByName), 335 (setTalkAgents),
 // 376 (pruneDeletedTalkAgentAssignments), 413 (getTalkAgentRows).
 
-import { getDbPg, type Sql } from '../../db-pg.js';
-import type { RegisteredAgentRecord } from './agent-accessors-pg.js';
+import { getDbPg, type Sql } from '../../db.js';
+import type { RegisteredAgentRecord } from './agent-accessors.js';
 
 // ---------------------------------------------------------------------------
 // Exported JS-side interfaces (camelCase — keep the shape callers already

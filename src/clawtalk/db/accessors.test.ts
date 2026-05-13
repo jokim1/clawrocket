@@ -10,7 +10,7 @@ import {
   getDbPg,
   initPgDatabase,
   withUserContext,
-} from '../../db-pg.js';
+} from '../../db.js';
 import {
   appendAssistantMessageWithOutbox,
   appendOutboxEvent,
@@ -75,7 +75,7 @@ import {
   updateTalkThreadTitle,
   upsertTalk,
   upsertTalkMember,
-} from './accessors-pg.js';
+} from './accessors.js';
 
 const USER_A_ID = '0c555555-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
 const USER_B_ID = '0c555555-bbbb-bbbb-bbbb-bbbbbbbbbbbb';

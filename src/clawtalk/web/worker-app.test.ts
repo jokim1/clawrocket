@@ -18,7 +18,7 @@ import {
 import { SignJWT, exportJWK, generateKeyPair } from 'jose';
 import type { JWK, KeyLike } from 'jose';
 
-import { initPgDatabase } from '../../db-pg.js';
+import { initPgDatabase } from '../../db.js';
 import { CLAWTALK_ALLOWED_ORIGINS } from '../config.js';
 import { ACCESS_TOKEN_COOKIE } from './cookies.js';
 import { _resetWorkerAppForTests, getWorkerApp } from './worker-app.js';

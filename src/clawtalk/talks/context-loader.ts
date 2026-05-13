@@ -12,10 +12,10 @@
  * 5. Assembling into a ContextPackage with metadata
  */
 
-import { getDbPg, type Sql } from '../../db-pg.js';
-import { listTalkStateEntries } from '../db/context-accessors-pg.js';
-import type { EffectiveToolAccess } from '../db/agent-accessors-pg.js';
-import { listTalkOutputs } from '../db/output-accessors-pg.js';
+import { getDbPg, type Sql } from '../../db.js';
+import { listTalkStateEntries } from '../db/context-accessors.js';
+import type { EffectiveToolAccess } from '../db/agent-accessors.js';
+import { listTalkOutputs } from '../db/output-accessors.js';
 import {
   type LlmToolDefinition,
   type LlmMessage,

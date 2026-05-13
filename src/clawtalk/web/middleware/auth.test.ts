@@ -37,8 +37,8 @@ import {
   authChallengeHeader,
   authenticateRequestPg,
   extractJwksEnv,
-} from './auth-pg.js';
-import { validateCsrfTokenPg } from './csrf-pg.js';
+} from './auth.js';
+import { validateCsrfTokenPg } from './csrf.js';
 import type { JwksEnv, JwksKvNamespace } from './jwks.js';
 
 const PROJECT_URL = 'https://test-project.supabase.co';

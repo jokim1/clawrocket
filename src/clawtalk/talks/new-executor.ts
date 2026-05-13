@@ -11,20 +11,20 @@
  * Persistence is intentionally handled by the worker / DB atomic helpers.
  */
 
-import { getDbPg } from '../../db-pg.js';
+import { getDbPg } from '../../db.js';
 import { logger } from '../../logger.js';
 import {
   getRegisteredAgent,
   type EffectiveToolAccess,
   type RegisteredAgentRecord,
-} from '../db/agent-accessors-pg.js';
+} from '../db/agent-accessors.js';
 import {
   getTalkById,
   getTalkMessageById,
   getTalkRunById,
   setTalkRunMetadata,
-} from '../db/accessors-pg.js';
-import { getTalkJobById } from '../db/job-accessors-pg.js';
+} from '../db/accessors.js';
+import { getTalkJobById } from '../db/job-accessors.js';
 import {
   deleteTalkStateEntry,
   getTalkStateEntry,
@@ -34,7 +34,7 @@ import {
   type MessageAttachmentRecord,
   upsertTalkStateEntry,
   validateStateKey,
-} from '../db/context-accessors-pg.js';
+} from '../db/context-accessors.js';
 import {
   executeWithAgent,
   type ExecutionContext,

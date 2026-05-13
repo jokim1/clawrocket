@@ -1,6 +1,6 @@
 import { randomUUID } from 'crypto';
 
-import { getDbPg, withUserContext } from '../../../db-pg.js';
+import { getDbPg, withUserContext } from '../../../db.js';
 function getContainerRuntimeStatus(): 'ready' | 'unavailable' {
   return 'unavailable';
 }
@@ -34,8 +34,8 @@ import {
   type TalkRunRecord,
   type TalkSidebarTalkRecord,
   type TalkWithAccessRecord,
-} from '../../db/accessors-pg.js';
-import { listMessageAttachments } from '../../db/context-accessors-pg.js';
+} from '../../db/accessors.js';
+import { listMessageAttachments } from '../../db/context-accessors.js';
 import type { TalkPersonaRole } from '../../llm/types.js';
 import type { TalkRunContextSnapshot } from '../../talks/context-loader.js';
 type BrowserBlockMetadata = Record<string, unknown>;
@@ -66,7 +66,7 @@ import {
 import {
   getEffectiveToolsForAgent,
   getRegisteredAgent,
-} from '../../db/agent-accessors-pg.js';
+} from '../../db/agent-accessors.js';
 import {
   ExecutionPlannerError,
   planExecution,
@@ -1075,7 +1075,7 @@ export async function patchTalkRoute(input: {
         },
       };
     }
-    if (!canEditTalk(input.talkId, input.auth.userId, input.auth.role)) {
+    if (!(await canEditTalk(input.talkId))) {
       return {
         statusCode: 403,
         body: {
@@ -1132,7 +1132,7 @@ export async function deleteTalkRoute(input: {
         },
       };
     }
-    if (!canEditTalk(input.talkId, input.auth.userId, input.auth.role)) {
+    if (!(await canEditTalk(input.talkId))) {
       return {
         statusCode: 403,
         body: {
@@ -1360,7 +1360,7 @@ export async function reorderTalkSidebarRoute(input: {
           },
         };
       }
-      if (!canEditTalk(talk.id, input.auth.userId, input.auth.role)) {
+      if (!(await canEditTalk(talk.id))) {
         return {
           statusCode: 403,
           body: {
@@ -1526,7 +1526,7 @@ export async function updateTalkAgentsRoute(input: {
       };
     }
 
-    if (!canEditTalk(input.talkId, input.auth.userId, input.auth.role)) {
+    if (!(await canEditTalk(input.talkId))) {
       return {
         statusCode: 403,
         body: {
@@ -1696,7 +1696,7 @@ export async function updateTalkPolicyRoute(input: {
       };
     }
 
-    if (!canEditTalk(input.talkId, input.auth.userId, input.auth.role)) {
+    if (!(await canEditTalk(input.talkId))) {
       return {
         statusCode: 403,
         body: {
@@ -1907,7 +1907,7 @@ export async function deleteTalkMessagesRoute(input: {
         },
       };
     }
-    if (!canEditTalk(input.talkId, input.auth.userId, input.auth.role)) {
+    if (!(await canEditTalk(input.talkId))) {
       return {
         statusCode: 403,
         body: {
@@ -2105,7 +2105,7 @@ export async function enqueueTalkChat(input: {
       };
     }
 
-    if (!canEditTalk(input.talkId, input.auth.userId, input.auth.role)) {
+    if (!(await canEditTalk(input.talkId))) {
       return {
         statusCode: 403,
         body: {
@@ -2544,7 +2544,7 @@ export async function cancelTalkChat(input: {
       };
     }
 
-    if (!canEditTalk(input.talkId, input.auth.userId, input.auth.role)) {
+    if (!(await canEditTalk(input.talkId))) {
       return {
         statusCode: 403,
         body: {
