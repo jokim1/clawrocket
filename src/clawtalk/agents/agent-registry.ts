@@ -214,7 +214,16 @@ export async function ensureTalkUsesUsableDefaultAgent(
   talkId: string,
   ownerId: string,
 ): Promise<void> {
-  const defaultTalkAgentId = await getDefaultTalkAgentId();
+  // Fresh installs may have neither a default Talk agent nor a main
+  // agent configured — getDefaultTalkAgentId() throws in that case.
+  // Healing is a best-effort fixup, not a hard requirement, so swallow
+  // and no-op when there's nothing to heal toward.
+  let defaultTalkAgentId: string;
+  try {
+    defaultTalkAgentId = await getDefaultTalkAgentId();
+  } catch {
+    return;
+  }
   const defaultTalkAgent = await getRegisteredAgent(defaultTalkAgentId);
   if (!defaultTalkAgent || defaultTalkAgent.enabled !== true) {
     return;

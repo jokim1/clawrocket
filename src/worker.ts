@@ -76,7 +76,16 @@ export default {
         getWorkerApp().fetch(request, env),
       );
     } catch (err) {
-      console.error('Worker request failed', err);
+      console.error(
+        'Worker request failed',
+        url.pathname,
+        request.method,
+        err instanceof Error ? err.name : typeof err,
+        err instanceof Error ? err.message : String(err),
+        err instanceof Error
+          ? err.stack?.split('\n').slice(0, 5).join(' | ')
+          : undefined,
+      );
       return jsonResponse(
         {
           ok: false,

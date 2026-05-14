@@ -139,17 +139,48 @@ export async function withRequestScopedDb<T>(
     fetch_types: true,
     idle_timeout: 5,
     connect_timeout: 10,
+    // Use simple query protocol. With the extended protocol (default),
+    // postgres errors mid-transaction surface as opaque "write
+    // CONNECTION_CLOSED" instead of the real SQLSTATE — Hyperdrive's
+    // proxy seems to reset the socket on protocol-level error
+    // responses. Simple protocol returns clean ErrorResponse messages
+    // with full context (22P02, 23505, etc.). Query throughput cost is
+    // negligible relative to the LLM call that dominates every Talk
+    // run.
+    prepare: false,
   });
   try {
     return await requestScopedDbStorage.run(sql, () => fn(sql));
+  } catch (err) {
+    console.error('[withRequestScopedDb] fn threw', describeError(err));
+    throw err;
   } finally {
-    const close = sql.end({ timeout: 5 }).catch(() => undefined);
+    const close = sql.end({ timeout: 5 }).catch((err) => {
+      console.error('[withRequestScopedDb] sql.end failed', describeError(err));
+    });
     if (ctx) {
       ctx.waitUntil(close);
     } else {
       await close;
     }
   }
+}
+
+function describeError(err: unknown): Record<string, unknown> {
+  if (!err || typeof err !== 'object') {
+    return { value: String(err) };
+  }
+  const out: Record<string, unknown> = {};
+  for (const key of Object.getOwnPropertyNames(err)) {
+    const v = (err as Record<string, unknown>)[key];
+    out[key] = typeof v === 'string' || typeof v === 'number' ? v : String(v);
+  }
+  if (err instanceof Error) {
+    out.name = err.name;
+    out.message = err.message;
+    out.stack = err.stack?.split('\n').slice(0, 5).join(' | ');
+  }
+  return out;
 }
 
 export async function isPgDatabaseHealthy(): Promise<boolean> {

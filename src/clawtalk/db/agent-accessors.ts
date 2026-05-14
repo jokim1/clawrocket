@@ -221,9 +221,16 @@ function toUserToolPermission(
 // Registered Agents CRUD
 // ---------------------------------------------------------------------------
 
+const UUID_REGEX =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 export async function getRegisteredAgent(
   agentId: string,
 ): Promise<RegisteredAgentRecord | undefined> {
+  // Short-circuit non-UUID input so legacy slug-style identifiers
+  // (e.g. the sqlite-era 'agent.talk' fallback ID) don't pollute the
+  // current transaction with a postgres 22P02 cast error.
+  if (!UUID_REGEX.test(agentId)) return undefined;
   const db: Sql = getDbPg();
   const rows = await db<RegisteredAgentRecord[]>`
     select id, owner_id, name, provider_id, model_id,

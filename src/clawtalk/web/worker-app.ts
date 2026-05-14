@@ -74,7 +74,8 @@
 import { Hono } from 'hono';
 import type { Context, MiddlewareHandler } from 'hono';
 
-import { isPgDatabaseHealthy } from '../../db.js';
+import { isPgDatabaseHealthy, withUserContext } from '../../db.js';
+import { getUserById, updateUserDisplayName } from '../db/index.js';
 import { authenticateRequestPg } from './middleware/auth.js';
 import { authChallengeHeader, extractJwksEnv } from './middleware/auth.js';
 import { validateCsrfTokenPg } from './middleware/csrf.js';
@@ -219,11 +220,50 @@ export function _resetWorkerAppForTests(): void {
 function buildApp(): Hono<{ Variables: Variables }> {
   const app = new Hono<{ Variables: Variables }>();
 
+  // ── Debug: surface the actual error before Hono converts to 500
+  app.onError((err, c) => {
+    const description: Record<string, unknown> = {
+      path: c.req.path,
+      method: c.req.method,
+    };
+    if (err && typeof err === 'object') {
+      for (const key of Object.getOwnPropertyNames(err)) {
+        const v = (err as Record<string, unknown>)[key];
+        description[key] =
+          typeof v === 'string' || typeof v === 'number' ? v : String(v);
+      }
+      if (err instanceof Error) {
+        description.name = err.name;
+        description.message = err.message;
+        description.stack = err.stack?.split('\n').slice(0, 8).join(' | ');
+      }
+    } else {
+      description.value = String(err);
+    }
+    console.error('[hono.onError]', JSON.stringify(description));
+    return c.json(
+      {
+        ok: false,
+        error: {
+          code: 'internal_error',
+          message: err instanceof Error ? err.message : 'Request failed',
+        },
+      },
+      500,
+    );
+  });
+
   // ── Public surfaces ──────────────────────────────────────────
   app.get('/api/v1/health', handleHealth);
   app.post('/api/v1/auth/callback', handleAuthCallback);
   app.post('/api/v1/auth/refresh', handleAuthRefresh);
   app.post('/api/v1/auth/logout', handleAuthLogout);
+  // /auth/config is a feature-flag probe the webapp reads on boot to
+  // decide whether to show the device-code path alongside Google
+  // OAuth. Returns the same shape the Node entry returned.
+  app.get('/api/v1/auth/config', (c) =>
+    c.json({ ok: true, data: { devMode: false } }),
+  );
 
   // ── Auth gate for every cloud-ready surface ──────────────────
   // Hono's `app.use(path, mw)` only matches the literal `path`
@@ -241,6 +281,7 @@ function buildApp(): Hono<{ Variables: Variables }> {
   app.use('/api/v1/talk-folders', requireAuthMiddleware);
   app.use('/api/v1/talk-folders/*', requireAuthMiddleware);
   app.use('/api/v1/user/*', requireAuthMiddleware);
+  app.use('/api/v1/session/*', requireAuthMiddleware);
 
   // ── Sanity probe for the auth middleware ─────────────────────
   app.get('/api/v1/_protected/whoami', (c) => {
@@ -254,6 +295,71 @@ function buildApp(): Hono<{ Variables: Variables }> {
         authType: auth.authType,
       },
     });
+  });
+
+  // ── session/me: current user info + display-name patch ───────
+  app.get('/api/v1/session/me', async (c) => {
+    const auth = c.get('auth');
+    const user = await withUserContext(auth.userId, () =>
+      getUserById(auth.userId),
+    );
+    if (!user || !user.is_active) {
+      return c.json(
+        {
+          ok: false,
+          error: { code: 'unauthorized', message: 'Session is not active' },
+        },
+        401,
+      );
+    }
+    return c.json({ ok: true, data: { user: normalizeUser(user) } });
+  });
+
+  app.patch('/api/v1/session/me', async (c) => {
+    const auth = c.get('auth');
+    const rl = checkRateLimit({ principalId: auth.userId, bucket: 'write' });
+    if (!rl.allowed) return rateLimitedResponse(c, rl);
+    const csrfFail = checkCsrf(c, auth);
+    if (csrfFail) return csrfFail;
+    const payload = await readJsonBody<{ displayName?: unknown }>(c);
+    if (!payload.ok) return invalidJsonResponse(c, payload.error);
+
+    let displayName: string | null = null;
+    if (typeof payload.data.displayName === 'string') {
+      displayName = payload.data.displayName.trim();
+      if (displayName.length === 0 || displayName.length > 200) {
+        return c.json(
+          {
+            ok: false,
+            error: {
+              code: 'invalid_display_name',
+              message: 'Display name must be between 1 and 200 characters.',
+            },
+          },
+          400,
+        );
+      }
+    }
+
+    const updated = await withUserContext(auth.userId, async () => {
+      if (displayName !== null) {
+        await updateUserDisplayName({
+          userId: auth.userId,
+          displayName,
+        });
+      }
+      return getUserById(auth.userId);
+    });
+    if (!updated || !updated.is_active) {
+      return c.json(
+        {
+          ok: false,
+          error: { code: 'unauthorized', message: 'Session is not active' },
+        },
+        401,
+      );
+    }
+    return c.json({ ok: true, data: { user: normalizeUser(updated) } });
   });
 
   // ── ai-agents.ts: page composite + provider credentials ──────
@@ -1251,7 +1357,9 @@ function buildApp(): Hono<{ Variables: Variables }> {
     if (!rl.allowed) return rateLimitedResponse(c, rl);
     const csrfFail = checkCsrf(c, auth);
     if (csrfFail) return csrfFail;
-    const payload = await readJsonBody<{ title?: unknown; pinned?: unknown }>(c);
+    const payload = await readJsonBody<{ title?: unknown; pinned?: unknown }>(
+      c,
+    );
     if (!payload.ok) return invalidJsonResponse(c, payload.error);
     const result = await patchTalkThreadRoute({
       auth,
@@ -1609,6 +1717,30 @@ const requireAuthMiddleware: MiddlewareHandler<{
 };
 
 // ── shared helpers ──────────────────────────────────────────────
+
+type NormalizedUser = {
+  id: string;
+  email: string;
+  displayName: string;
+  role: 'owner' | 'admin' | 'member';
+  createdAt: string;
+};
+
+function normalizeUser(user: {
+  id: string;
+  email: string;
+  display_name: string;
+  role: 'owner' | 'admin' | 'member';
+  created_at: string;
+}): NormalizedUser {
+  return {
+    id: user.id,
+    email: user.email,
+    displayName: user.display_name,
+    role: user.role,
+    createdAt: user.created_at,
+  };
+}
 
 /** Translate a route handler envelope into an HTTP response. */
 function jsonResponse(result: { statusCode: number; body: unknown }): Response {

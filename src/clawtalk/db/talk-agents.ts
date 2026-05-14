@@ -252,24 +252,25 @@ export async function setTalkAgents(input: {
 }): Promise<void> {
   const { talkId, ownerId, agents } = input;
   const db = getDbPg();
-  await db.begin(async (tx) => {
-    await tx`delete from public.talk_agents where talk_id = ${talkId}::uuid`;
-    for (const agent of agents) {
-      await tx`
-        insert into public.talk_agents (
-          talk_id, owner_id, registered_agent_id,
-          source_kind, provider_id, model_id,
-          nickname, nickname_mode,
-          persona_role, is_primary, sort_order
-        ) values (
-          ${talkId}::uuid, ${ownerId}::uuid, ${agent.id}::uuid,
-          ${agent.sourceKind}, ${agent.providerId}, ${agent.modelId},
-          ${agent.nickname}, ${agent.nicknameMode},
-          ${agent.personaRole}, ${agent.isPrimary}, ${agent.sortOrder}
-        )
-      `;
-    }
-  });
+  // No inner db.begin() — getDbPg() returns the outer withUserContext
+  // transaction (a TransactionSql, no .begin method) in Worker mode.
+  // The outer transaction already provides delete+insert atomicity.
+  await db`delete from public.talk_agents where talk_id = ${talkId}::uuid`;
+  for (const agent of agents) {
+    await db`
+      insert into public.talk_agents (
+        talk_id, owner_id, registered_agent_id,
+        source_kind, provider_id, model_id,
+        nickname, nickname_mode,
+        persona_role, is_primary, sort_order
+      ) values (
+        ${talkId}::uuid, ${ownerId}::uuid, ${agent.id}::uuid,
+        ${agent.sourceKind}, ${agent.providerId}, ${agent.modelId},
+        ${agent.nickname}, ${agent.nicknameMode},
+        ${agent.personaRole}, ${agent.isPrimary}, ${agent.sortOrder}
+      )
+    `;
+  }
 }
 
 /**
@@ -281,29 +282,29 @@ export async function pruneDeletedTalkAgentAssignments(
   talkId: string,
 ): Promise<void> {
   const db = getDbPg();
-  await db.begin(async (tx) => {
-    await tx`
-      delete from public.talk_agents
-      where talk_id = ${talkId}::uuid
-        and registered_agent_id is null
-    `;
+  // No inner db.begin() — see setTalkAgents above. The outer
+  // withUserContext transaction wraps the delete+heal sequence.
+  await db`
+    delete from public.talk_agents
+    where talk_id = ${talkId}::uuid
+      and registered_agent_id is null
+  `;
 
-    const remaining = await tx<TalkAgentPruneRow[]>`
-      select id, is_primary
-      from public.talk_agents
-      where talk_id = ${talkId}::uuid
-      order by sort_order asc, created_at asc
-    `;
-    if (remaining.length === 0) return;
+  const remaining = await db<TalkAgentPruneRow[]>`
+    select id, is_primary
+    from public.talk_agents
+    where talk_id = ${talkId}::uuid
+    order by sort_order asc, created_at asc
+  `;
+  if (remaining.length === 0) return;
 
-    const primaryCount = remaining.filter((row) => row.is_primary).length;
-    if (primaryCount === 1) return;
+  const primaryCount = remaining.filter((row) => row.is_primary).length;
+  if (primaryCount === 1) return;
 
-    const nextPrimaryId = remaining[0]!.id;
-    await tx`
-      update public.talk_agents
-      set is_primary = case when id = ${nextPrimaryId}::uuid then true else false end
-      where talk_id = ${talkId}::uuid
-    `;
-  });
+  const nextPrimaryId = remaining[0]!.id;
+  await db`
+    update public.talk_agents
+    set is_primary = case when id = ${nextPrimaryId}::uuid then true else false end
+    where talk_id = ${talkId}::uuid
+  `;
 }
