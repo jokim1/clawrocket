@@ -66,9 +66,9 @@ describe('buildTalkThreadEventFilter', () => {
       'talk_run_failed',
     ]) {
       it(`accepts ${event_type} with matching threadId and conversation runKind`, () => {
-        expect(
-          filter(makeEvent(event_type, { threadId: 'thread-A' })),
-        ).toBe(true);
+        expect(filter(makeEvent(event_type, { threadId: 'thread-A' }))).toBe(
+          true,
+        );
         expect(
           filter(
             makeEvent(event_type, {
@@ -80,9 +80,9 @@ describe('buildTalkThreadEventFilter', () => {
       });
 
       it(`rejects ${event_type} on threadId mismatch`, () => {
-        expect(
-          filter(makeEvent(event_type, { threadId: 'thread-B' })),
-        ).toBe(false);
+        expect(filter(makeEvent(event_type, { threadId: 'thread-B' }))).toBe(
+          false,
+        );
       });
 
       it(`rejects ${event_type} when runKind is not conversation`, () => {
@@ -111,9 +111,9 @@ describe('buildTalkThreadEventFilter', () => {
       'talk_response_cancelled',
     ]) {
       it(`accepts ${event_type} when threadId matches (ignores runKind)`, () => {
-        expect(
-          filter(makeEvent(event_type, { threadId: 'thread-A' })),
-        ).toBe(true);
+        expect(filter(makeEvent(event_type, { threadId: 'thread-A' }))).toBe(
+          true,
+        );
         expect(
           filter(
             makeEvent(event_type, {
@@ -125,9 +125,9 @@ describe('buildTalkThreadEventFilter', () => {
       });
 
       it(`rejects ${event_type} on threadId mismatch`, () => {
-        expect(
-          filter(makeEvent(event_type, { threadId: 'thread-B' })),
-        ).toBe(false);
+        expect(filter(makeEvent(event_type, { threadId: 'thread-B' }))).toBe(
+          false,
+        );
       });
     }
   });
