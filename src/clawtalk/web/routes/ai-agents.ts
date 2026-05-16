@@ -56,10 +56,10 @@ type ClaudeModelSuggestion = {
 export type AgentProviderCard = {
   id: string;
   name: string;
-  providerKind: 'openai' | 'gemini' | 'nvidia';
-  apiFormat: 'openai_chat_completions';
+  providerKind: 'anthropic' | 'openai' | 'gemini' | 'nvidia';
+  apiFormat: 'anthropic_messages' | 'openai_chat_completions';
   baseUrl: string;
-  authScheme: 'bearer';
+  authScheme: 'x_api_key' | 'bearer';
   enabled: boolean;
   credentialMode: 'api_key' | 'host_login';
   hasCredential: boolean;
@@ -92,10 +92,10 @@ interface ProviderSecretBody {
 interface ProviderRow {
   id: string;
   name: string;
-  provider_kind: 'openai' | 'gemini' | 'nvidia';
-  api_format: 'openai_chat_completions';
+  provider_kind: 'anthropic' | 'openai' | 'gemini' | 'nvidia';
+  api_format: 'anthropic_messages' | 'openai_chat_completions';
   base_url: string;
-  auth_scheme: 'bearer';
+  auth_scheme: 'x_api_key' | 'bearer';
   enabled: boolean;
   response_start_timeout_ms: number | null;
   stream_idle_timeout_ms: number | null;

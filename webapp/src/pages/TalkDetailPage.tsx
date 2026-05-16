@@ -4331,7 +4331,8 @@ export function TalkDetailPage({
     } else if (cancelledRun?.cancelReason === 'blocked_by_prior_failure') {
       note = 'Later agents were blocked after an earlier step failed.';
     } else if (allCompleted) {
-      note = 'Each agent in the latest ordered round finished and saved a response.';
+      note =
+        'Each agent in the latest ordered round finished and saved a response.';
     }
 
     return {
@@ -4617,9 +4618,9 @@ export function TalkDetailPage({
     ? buildThreadHref(talkId, activeThreadId, 'runs')
     : `/app/talks/${talkId}/runs`;
   const settingsTabHref = contextTabHref;
-  const manageAgentsHref = `/app/agents?returnTo=${encodeURIComponent(
+  const manageAgentsHref = `/app/settings?tab=agents&returnTo=${encodeURIComponent(
     threadAwareTalkTabHref,
-  )}&focus=providers`;
+  )}`;
   const handleOpenRunHistory = useCallback(
     (runId: string) => {
       pendingRunHistoryScrollRef.current = runId;
@@ -7284,7 +7285,8 @@ export function TalkDetailPage({
 
       const run = state.runsById[runId];
       const triggerMessage = state.messages.find(
-        (message) => message.id === run?.triggerMessageId && message.role === 'user',
+        (message) =>
+          message.id === run?.triggerMessageId && message.role === 'user',
       );
       if (!run?.targetAgentId || !triggerMessage?.content.trim()) {
         setRetryRunState({
@@ -13193,9 +13195,7 @@ export function TalkDetailPage({
                           <span
                             key={step.runId}
                             className={`talk-ordered-step talk-ordered-step-${step.tone}${
-                              step.isCurrent
-                                ? ' talk-ordered-step-current'
-                                : ''
+                              step.isCurrent ? ' talk-ordered-step-current' : ''
                             }`}
                             aria-current={step.isCurrent ? 'step' : undefined}
                           >
@@ -13254,12 +13254,11 @@ export function TalkDetailPage({
                           const orderedRun = message.runId
                             ? state.runsById[message.runId]
                             : null;
-                          const orderedGroupSize =
-                            orderedRun?.responseGroupId
-                              ? orderedGroupSizesById[
-                                  orderedRun.responseGroupId
-                                ] ?? null
-                              : null;
+                          const orderedGroupSize = orderedRun?.responseGroupId
+                            ? (orderedGroupSizesById[
+                                orderedRun.responseGroupId
+                              ] ?? null)
+                            : null;
                           const orderedStepLabel =
                             orderedRun?.sequenceIndex != null &&
                             orderedGroupSize &&
@@ -13402,7 +13401,7 @@ export function TalkDetailPage({
                           failedRun?.errorCode === 'incomplete_response' &&
                           Boolean(
                             failedRun.triggerMessageId &&
-                              failedRun.targetAgentId,
+                            failedRun.targetAgentId,
                           );
                         const retryPosting =
                           retryRunState?.runId === response.runId &&
@@ -13458,9 +13457,7 @@ export function TalkDetailPage({
                                     }
                                     disabled={retryPosting}
                                   >
-                                    {retryPosting
-                                      ? 'Retrying…'
-                                      : 'Retry agent'}
+                                    {retryPosting ? 'Retrying…' : 'Retry agent'}
                                   </button>
                                 ) : null}
                                 <button

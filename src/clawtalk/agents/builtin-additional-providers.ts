@@ -1,5 +1,13 @@
-export type BuiltinAdditionalProviderKind = 'openai' | 'gemini' | 'nvidia';
+export type BuiltinAdditionalProviderKind =
+  | 'anthropic'
+  | 'openai'
+  | 'gemini'
+  | 'nvidia';
 export type BuiltinAdditionalProviderCredentialMode = 'api_key' | 'host_login';
+export type BuiltinAdditionalProviderApiFormat =
+  | 'anthropic_messages'
+  | 'openai_chat_completions';
+export type BuiltinAdditionalProviderAuthScheme = 'x_api_key' | 'bearer';
 
 export interface BuiltinAdditionalProviderModel {
   modelId: string;
@@ -15,9 +23,9 @@ export interface BuiltinAdditionalProvider {
   name: string;
   providerKind: BuiltinAdditionalProviderKind;
   credentialMode: BuiltinAdditionalProviderCredentialMode;
-  apiFormat: 'openai_chat_completions';
+  apiFormat: BuiltinAdditionalProviderApiFormat;
   baseUrl: string;
-  authScheme: 'bearer';
+  authScheme: BuiltinAdditionalProviderAuthScheme;
   responseStartTimeoutMs: number;
   streamIdleTimeoutMs: number;
   absoluteTimeoutMs: number;
@@ -25,6 +33,44 @@ export interface BuiltinAdditionalProvider {
 }
 
 export const BUILTIN_ADDITIONAL_PROVIDERS: BuiltinAdditionalProvider[] = [
+  {
+    id: 'provider.anthropic',
+    name: 'Claude (Anthropic)',
+    providerKind: 'anthropic',
+    credentialMode: 'api_key',
+    apiFormat: 'anthropic_messages',
+    baseUrl: 'https://api.anthropic.com',
+    authScheme: 'x_api_key',
+    responseStartTimeoutMs: 60_000,
+    streamIdleTimeoutMs: 20_000,
+    absoluteTimeoutMs: 300_000,
+    models: [
+      {
+        modelId: 'claude-opus-4-7',
+        displayName: 'Claude Opus 4.7',
+        contextWindowTokens: 200_000,
+        defaultMaxOutputTokens: 8_192,
+        defaultTtftTimeoutMs: 60_000,
+        supportsVision: true,
+      },
+      {
+        modelId: 'claude-sonnet-4-6',
+        displayName: 'Claude Sonnet 4.6',
+        contextWindowTokens: 200_000,
+        defaultMaxOutputTokens: 8_192,
+        defaultTtftTimeoutMs: 45_000,
+        supportsVision: true,
+      },
+      {
+        modelId: 'claude-haiku-4-5-20251001',
+        displayName: 'Claude Haiku 4.5',
+        contextWindowTokens: 200_000,
+        defaultMaxOutputTokens: 8_192,
+        defaultTtftTimeoutMs: 30_000,
+        supportsVision: true,
+      },
+    ],
+  },
   {
     id: 'provider.openai',
     name: 'OpenAI',
