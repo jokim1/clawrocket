@@ -750,7 +750,7 @@ export function ClawTalkSidebar({
         </NavLink>
         {canManageAgents ? (
           <NavLink
-            to="/app/agents"
+            to="/app/settings?tab=agents"
             className={({ isActive }) =>
               `clawtalk-sidebar-link${isActive ? ' active' : ''}`
             }

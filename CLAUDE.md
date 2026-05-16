@@ -7,7 +7,7 @@ See [README.md](README.md) for product overview. This file is the short coding c
 ClawTalk is a web product where users invite different LLM personas into context-bound "Talks" and watch them discuss together.
 
 - **Backend:** Hono worker in `src/worker.ts` (Cloudflare entry) → `src/clawtalk/web/worker-app.ts` (route mounts). Postgres via `src/db.ts` (postgres.js + `withUserContext` for RLS) → Supabase migrations in `supabase/migrations/`.
-- **Talk runtime:** `src/clawtalk/talks/` — TalkRunWorker + TalkJobWorker + CleanTalkExecutor stream multi-agent responses via direct HTTP to LLM providers (Anthropic / OpenAI / etc.).
+- **Talk runtime:** `src/clawtalk/talks/` — `/chat` enqueues onto `TALK_RUN_QUEUE`; the queue consumer in `queue-consumer.ts` runs `CleanTalkExecutor` per message and streams events to the per-user `UserEventHub` Durable Object. The cron-triggered `scheduler.ts` fans out due jobs onto the same queue every minute and sweeps stuck runs.
 - **Frontend:** Vite + React under `webapp/`. TalkList → TalkDetail flow, AiAgents page for provider/agent config, Settings, Profile.
 - **Identity:** Google OAuth + device-code auth in `src/clawtalk/identity/`. RBAC (`owner`, `admin`, `member`). HttpOnly access/refresh cookies + double-submit CSRF.
 
@@ -29,7 +29,7 @@ ClawTalk is a web product where users invite different LLM personas into context
 | `supabase/migrations/*.sql`                                                                   | Postgres schema + RLS policies + grants                            |
 | `src/clawtalk/db/accessors.ts`, `agent-accessors.ts`, etc.                                    | Typed async pg accessors (tagged-template SQL, RLS-scoped)         |
 | `src/clawtalk/talks/new-executor.ts`                                                          | CleanTalkExecutor — orchestrates a single Talk run                 |
-| `src/clawtalk/talks/run-worker.ts`, `job-worker.ts`                                           | Talk run + job dispatch                                            |
+| `src/clawtalk/talks/queue-consumer.ts`, `queue-producer.ts`, `scheduler.ts`                   | Queue dispatch: per-message run executor, run-id producer, cron tick |
 | `src/clawtalk/talks/user-event-hub.ts`                                                        | Per-user Durable Object — WebSocket Hibernation event hub          |
 | `src/clawtalk/agents/agent-registry.ts`, `agent-router.ts`                                    | Multi-agent registry + per-Talk routing                            |
 | `src/clawtalk/llm/`                                                                           | Provider catalog, secret store, LLM client                         |
@@ -58,4 +58,4 @@ npm --prefix webapp run build
 1. ~~**AI Persona system**~~ — shipped in PR #310 (Phase 2). `description` column added; persona CRUD restored from chassis-removed stub; Talk-invite picker shows persona role + description.
 2. ~~**Talk-level context**~~ — already in place from the chassis era and survived the purge. Context tab on TalkDetailPage exposes Goal + Sources; backend supports Rules + State entries too. Executor injects all four surfaces into the system prompt.
 3. **Projects** — new top-level entity (deliverable). Talk → Project spinoff. Rich editor (port back from rocketboard / editorialroom rather than the in-repo archive tag — see `~/.claude/projects/-Users-josephkim-dev-clawtalk/memory/reference_sibling_repos.md`). **Deferred — Joseph flipped the roadmap order to do Phase 5 first.**
-4. **Cloud port** — clawtalk.app on Cloudflare Workers + Supabase Postgres. **Phase 5 in flight.** PR 1 ("cloud foundation, additive") merged as #311. PR 2 ("cutover") queued — see the Phase 5 PR 2 memory.
+4. ~~**Cloud port**~~ — clawtalk.app on Cloudflare Workers + Supabase Postgres. Phase 5 complete: PR 1 (#311), PR 2 (#312), W7-evtsse (#313–#318), and the Queues port (#320–#324) all shipped. Custom domain (clawtalk.app) is the last open follow-up.

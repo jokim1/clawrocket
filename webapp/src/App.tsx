@@ -786,14 +786,12 @@ export function App() {
             <Route
               path="/app/settings"
               element={
-                canManageSettings ? (
-                  <SettingsPage
-                    onUnauthorized={handleUnauthorized}
-                    userRole={auth.user.role}
-                  />
-                ) : (
-                  <Navigate to="/app/talks" replace />
-                )
+                <SettingsPage
+                  user={auth.user}
+                  onUnauthorized={handleUnauthorized}
+                  userRole={auth.user.role}
+                  onUserUpdated={handleUserUpdated}
+                />
               }
             />
             <Route

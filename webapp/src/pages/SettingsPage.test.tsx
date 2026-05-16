@@ -1,795 +1,399 @@
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { MemoryRouter } from 'react-router-dom';
 
 import { SettingsPage } from './SettingsPage';
+import type {
+  AgentProviderCard,
+  AiAgentsPageData,
+  RegisteredAgent,
+  SessionUser,
+} from '../lib/api';
 
 describe('SettingsPage', () => {
   afterEach(() => {
     cleanup();
+    vi.useRealTimers();
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
   });
 
-  it('renders config errors and pending restart reasons from the settings endpoints', async () => {
-    mockFetch([
-      jsonResponse(200, {
-        ok: true,
-        data: {
-          configuredAliasMap: { Gemini: 'gemini-pro' },
-          effectiveAliasMap: { Mock: 'default', Gemini: 'gemini-pro' },
-          defaultAlias: 'Gemini',
-          executorAuthMode: 'api_key',
-          hasApiKey: true,
-          hasOauthToken: false,
-          hasAuthToken: false,
-          activeCredentialConfigured: true,
-          verificationStatus: 'verified',
-          lastVerifiedAt: '2026-03-05T12:00:00.000Z',
-          lastVerificationError: null,
-          anthropicBaseUrl: 'https://api.example.test',
-          isConfigured: true,
-          configVersion: 1,
-          lastUpdatedAt: '2026-03-05T12:00:00.000Z',
-          lastUpdatedBy: { id: 'owner-1', displayName: 'Owner' },
-          configErrors: ['Alias map must be valid JSON'],
-        },
-      }),
-      jsonResponse(200, {
-        ok: true,
-        data: {
-          mode: 'mock',
-          restartSupported: true,
-          pendingRestartReasons: ['Alias model map changed'],
-          activeRunCount: 2,
-          containerRuntimeAvailability: 'ready',
-          executorAuthMode: 'api_key',
-          activeCredentialConfigured: true,
-          verificationStatus: 'verified',
-          lastVerifiedAt: '2026-03-05T12:00:00.000Z',
-          lastVerificationError: null,
-          hasProviderAuth: true,
-          hasValidAliasMap: false,
-          configVersion: 1,
-          isConfigured: true,
-          bootId: 'boot-1',
-          configErrors: ['Alias map must be valid JSON'],
-        },
-      }),
-    ]);
+  it('defaults to the Profile tab and shows the display-name editor', async () => {
+    installSettingsFetch();
 
-    render(<SettingsPage onUnauthorized={vi.fn()} userRole="owner" />);
-
-    await screen.findByRole('heading', { name: 'Executor Settings' });
-    expect(
-      await screen.findByText('Configuration errors detected.'),
-    ).toBeTruthy();
-    expect(await screen.findByText('Alias model map changed')).toBeTruthy();
-    expect(
-      (await screen.findAllByText('Active auth mode')).length,
-    ).toBeGreaterThan(0);
-    expect(
-      await screen.findByRole('button', {
-        name: 'Restart ClawTalk Service',
-      }),
-    ).toBeTruthy();
-  });
-
-  it('shows owner-only restart guidance for admin users', async () => {
-    mockFetch([
-      jsonResponse(200, {
-        ok: true,
-        data: {
-          configuredAliasMap: {},
-          effectiveAliasMap: { Mock: 'default' },
-          defaultAlias: 'Mock',
-          executorAuthMode: 'none',
-          hasApiKey: false,
-          hasOauthToken: false,
-          hasAuthToken: false,
-          activeCredentialConfigured: false,
-          verificationStatus: 'missing',
-          lastVerifiedAt: null,
-          lastVerificationError: null,
-          anthropicBaseUrl: '',
-          isConfigured: false,
-          configVersion: 0,
-          lastUpdatedAt: null,
-          lastUpdatedBy: null,
-          configErrors: [],
-        },
-      }),
-      jsonResponse(200, {
-        ok: true,
-        data: {
-          mode: 'mock',
-          restartSupported: true,
-          pendingRestartReasons: ['Default alias changed from Mock to Gemini'],
-          activeRunCount: 0,
-          containerRuntimeAvailability: 'ready',
-          executorAuthMode: 'none',
-          activeCredentialConfigured: false,
-          verificationStatus: 'missing',
-          lastVerifiedAt: null,
-          lastVerificationError: null,
-          hasProviderAuth: false,
-          hasValidAliasMap: true,
-          configVersion: 0,
-          isConfigured: false,
-          bootId: 'boot-2',
-          configErrors: [],
-        },
-      }),
-    ]);
-
-    render(<SettingsPage onUnauthorized={vi.fn()} userRole="admin" />);
-
-    await screen.findByRole('heading', { name: 'Executor Settings' });
-    expect(
-      (
-        await screen.findAllByText(
-          'Only the account owner can restart the service.',
-        )
-      ).length,
-    ).toBeGreaterThan(0);
-    expect(
-      screen.queryByRole('button', { name: 'Restart ClawTalk Service' }),
-    ).toBeNull();
-  });
-
-  it('surfaces environment-managed executor credentials honestly', async () => {
-    mockFetch([
-      jsonResponse(200, {
-        ok: true,
-        data: {
-          configuredAliasMap: {},
-          effectiveAliasMap: {},
-          defaultAlias: 'Mock',
-          executorAuthMode: 'api_key',
-          authModeSource: 'inferred',
-          hasApiKey: true,
-          hasOauthToken: false,
-          hasAuthToken: false,
-          apiKeySource: 'env',
-          oauthTokenSource: null,
-          authTokenSource: null,
-          apiKeyHint: 'Environment variable (ANTHROPIC_API_KEY)',
-          oauthTokenHint: null,
-          authTokenHint: null,
-          activeCredentialConfigured: true,
-          verificationStatus: 'invalid',
-          lastVerifiedAt: null,
-          lastVerificationError: 'Anthropic API error: Unauthorized',
-          anthropicBaseUrl: 'https://api.anthropic.com',
-          isConfigured: true,
-          configVersion: 1,
-          lastUpdatedAt: null,
-          lastUpdatedBy: null,
-          configErrors: [],
-        },
-      }),
-      jsonResponse(200, {
-        ok: true,
-        data: {
-          mode: 'real',
-          restartSupported: false,
-          pendingRestartReasons: [],
-          activeRunCount: 0,
-          containerRuntimeAvailability: 'ready',
-          executorAuthMode: 'api_key',
-          activeCredentialConfigured: true,
-          verificationStatus: 'invalid',
-          lastVerifiedAt: null,
-          lastVerificationError: 'Anthropic API error: Unauthorized',
-          hasProviderAuth: true,
-          hasValidAliasMap: true,
-          configVersion: 1,
-          isConfigured: true,
-          bootId: 'boot-env',
-          configErrors: [],
-        },
-      }),
-    ]);
-
-    render(<SettingsPage onUnauthorized={vi.fn()} userRole="owner" />);
-
-    await screen.findByRole('heading', { name: 'Executor Settings' });
-    expect(await screen.findByText('Environment-managed')).toBeTruthy();
-    expect(
-      await screen.findByText('Environment variable (ANTHROPIC_API_KEY)'),
-    ).toBeTruthy();
-    expect(
-      await screen.findByText(/active claude auth mode is being inferred/i),
-    ).toBeTruthy();
-  });
-
-  it('shows container runtime health separately from subscription verification status', async () => {
-    mockFetch([
-      jsonResponse(200, {
-        ok: true,
-        data: {
-          configuredAliasMap: {},
-          effectiveAliasMap: {},
-          defaultAlias: 'Mock',
-          executorAuthMode: 'subscription',
-          authModeSource: 'settings',
-          hasApiKey: false,
-          hasOauthToken: true,
-          hasAuthToken: false,
-          apiKeySource: null,
-          oauthTokenSource: 'stored',
-          authTokenSource: null,
-          apiKeyHint: null,
-          oauthTokenHint: 'Stored in settings',
-          authTokenHint: null,
-          activeCredentialConfigured: true,
-          verificationStatus: 'not_verified',
-          lastVerifiedAt: null,
-          lastVerificationError:
-            'Claude subscription verification could not run because the container runtime is unavailable or unhealthy. Check Docker and try again.',
-          anthropicBaseUrl: 'https://api.anthropic.com',
-          isConfigured: true,
-          configVersion: 1,
-          lastUpdatedAt: null,
-          lastUpdatedBy: null,
-          configErrors: [],
-        },
-      }),
-      jsonResponse(200, {
-        ok: true,
-        data: {
-          mode: 'real',
-          restartSupported: false,
-          pendingRestartReasons: [],
-          activeRunCount: 0,
-          containerRuntimeAvailability: 'unavailable',
-          executorAuthMode: 'subscription',
-          activeCredentialConfigured: true,
-          verificationStatus: 'not_verified',
-          lastVerifiedAt: null,
-          lastVerificationError:
-            'Claude subscription verification could not run because the container runtime is unavailable or unhealthy. Check Docker and try again.',
-          hasProviderAuth: true,
-          hasValidAliasMap: true,
-          configVersion: 1,
-          isConfigured: true,
-          bootId: 'boot-subscription-runtime',
-          configErrors: [],
-        },
-      }),
-    ]);
-
-    render(<SettingsPage onUnauthorized={vi.fn()} userRole="owner" />);
-
-    await screen.findByRole('heading', { name: 'Executor Settings' });
-    expect(await screen.findByText('Container runtime')).toBeTruthy();
-    expect(await screen.findByText('Not verified')).toBeTruthy();
-    expect(await screen.findByText(/Runtime note:/i)).toBeTruthy();
-    expect(
-      await screen.findByText(
-        /Docker \/ the container runtime is currently unavailable/i,
-      ),
-    ).toBeTruthy();
-    expect(screen.queryByText(/Verification note:/i)).toBeNull();
-  });
-
-  it('auto-discovers Chrome user data directories for browser profiles', async () => {
-    const user = userEvent.setup();
-    mockFetch([
-      jsonResponse(200, {
-        ok: true,
-        data: {
-          configuredAliasMap: {},
-          effectiveAliasMap: {},
-          defaultAlias: 'Mock',
-          executorAuthMode: 'none',
-          hasApiKey: false,
-          hasOauthToken: false,
-          hasAuthToken: false,
-          activeCredentialConfigured: false,
-          verificationStatus: 'missing',
-          lastVerifiedAt: null,
-          lastVerificationError: null,
-          anthropicBaseUrl: '',
-          isConfigured: false,
-          configVersion: 0,
-          lastUpdatedAt: null,
-          lastUpdatedBy: null,
-          configErrors: [],
-        },
-      }),
-      jsonResponse(200, {
-        ok: true,
-        data: {
-          mode: 'mock',
-          restartSupported: false,
-          pendingRestartReasons: [],
-          activeRunCount: 0,
-          containerRuntimeAvailability: 'ready',
-          executorAuthMode: 'none',
-          activeCredentialConfigured: false,
-          verificationStatus: 'missing',
-          lastVerifiedAt: null,
-          lastVerificationError: null,
-          hasProviderAuth: false,
-          hasValidAliasMap: true,
-          configVersion: 0,
-          isConfigured: false,
-          bootId: 'boot-browser-detect',
-          configErrors: [],
-        },
-      }),
-      jsonResponse(200, {
-        ok: true,
-        data: {
-          profiles: [],
-        },
-      }),
-      jsonResponse(200, {
-        ok: true,
-        data: {
-          platform: 'darwin',
-          defaultPathHint:
-            '/Users/alice/Library/Application Support/Google/Chrome',
-          candidates: [
-            {
-              id: 'google-chrome',
-              label: 'Google Chrome',
-              path: '/Users/alice/Library/Application Support/Google/Chrome',
-              preferred: true,
-            },
-          ],
-        },
-      }),
-      jsonResponse(200, {
-        ok: true,
-        data: {
-          userDataDir:
-            '/Users/alice/Library/Application Support/Google/Chrome',
-          localStateFound: true,
-          candidates: [
-            {
-              directoryName: 'Profile 4',
-              displayName: 'Work',
-              email: 'alice@work.com',
-              fullName: 'Alice Example',
-              kind: 'profile',
-              preferred: true,
-              lastUsed: true,
-              path: '/Users/alice/Library/Application Support/Google/Chrome/Profile 4',
-            },
-            {
-              directoryName: 'Default',
-              displayName: 'Alice Example',
-              email: 'alice@gmail.com',
-              fullName: 'Alice Example',
-              kind: 'default',
-              preferred: false,
-              lastUsed: false,
-              path: '/Users/alice/Library/Application Support/Google/Chrome/Default',
-            },
-          ],
-        },
-      }),
-    ]);
-
-    render(<SettingsPage onUnauthorized={vi.fn()} userRole="owner" />);
-
-    await screen.findByRole('heading', { name: 'Browser Profiles' });
-    await user.click(screen.getByRole('button', { name: 'Add Profile' }));
-    await user.click(screen.getByLabelText('Chrome Profile'));
-
-    expect(
-      await screen.findByDisplayValue(
-        '/Users/alice/Library/Application Support/Google/Chrome',
-      ),
-    ).toBeTruthy();
-    expect(
-      await screen.findByRole('button', { name: 'Use Google Chrome' }),
-    ).toBeTruthy();
-    expect(
-      (
-        await screen.findByRole('combobox')
-      ) as HTMLSelectElement,
-    ).toHaveValue('Profile 4');
-    expect(screen.getByText(/Selected subprofile:/i)).toBeTruthy();
-  });
-
-  it('warns when Add Browser Profile matches an existing profile', async () => {
-    const user = userEvent.setup();
-    mockFetch([
-      jsonResponse(200, {
-        ok: true,
-        data: {
-          configuredAliasMap: {},
-          effectiveAliasMap: {},
-          defaultAlias: 'Mock',
-          executorAuthMode: 'none',
-          hasApiKey: false,
-          hasOauthToken: false,
-          hasAuthToken: false,
-          activeCredentialConfigured: false,
-          verificationStatus: 'missing',
-          lastVerifiedAt: null,
-          lastVerificationError: null,
-          anthropicBaseUrl: '',
-          isConfigured: false,
-          configVersion: 0,
-          lastUpdatedAt: null,
-          lastUpdatedBy: null,
-          configErrors: [],
-        },
-      }),
-      jsonResponse(200, {
-        ok: true,
-        data: {
-          mode: 'mock',
-          restartSupported: false,
-          pendingRestartReasons: [],
-          activeRunCount: 0,
-          containerRuntimeAvailability: 'ready',
-          executorAuthMode: 'none',
-          activeCredentialConfigured: false,
-          verificationStatus: 'missing',
-          lastVerifiedAt: null,
-          lastVerificationError: null,
-          hasProviderAuth: false,
-          hasValidAliasMap: true,
-          configVersion: 0,
-          isConfigured: false,
-          bootId: 'boot-browser-duplicate',
-          configErrors: [],
-        },
-      }),
-      jsonResponse(200, {
-        ok: true,
-        data: {
-          profiles: [
-            {
-              id: 'bp-linkedin',
-              siteKey: 'linkedin',
-              accountLabel: null,
-              connectionMode: 'managed',
-              connectionConfig: { mode: 'managed' },
-              createdAt: '2026-03-27T21:40:00.000Z',
-              updatedAt: '2026-03-27T21:40:00.000Z',
-              lastUsedAt: null,
-              inUseSessionCount: 0,
-              currentSessionState: null,
-            },
-          ],
-        },
-      }),
-    ]);
-
-    render(<SettingsPage onUnauthorized={vi.fn()} userRole="owner" />);
-
-    await screen.findByRole('heading', { name: 'Browser Profiles' });
-    await user.click(screen.getByRole('button', { name: 'Add Profile' }));
-    await user.type(
-      screen.getByPlaceholderText('Site key (e.g. linkedin)'),
-      'linkedin',
+    render(
+      <MemoryRouter initialEntries={['/app/settings']}>
+        <SettingsPage
+          user={buildSessionUser()}
+          userRole="owner"
+          onUnauthorized={vi.fn()}
+          onUserUpdated={vi.fn()}
+        />
+      </MemoryRouter>,
     );
 
+    await screen.findByRole('heading', { name: 'Settings' });
     expect(
-      await screen.findByText(/This matches existing profile/i),
+      screen.getByRole('heading', { name: 'Personal Information' }),
     ).toBeTruthy();
-    expect(screen.getByRole('button', { name: 'Create' })).toBeDisabled();
+    const profileTab = screen.getByRole('tab', { name: 'Profile' });
+    expect(profileTab).toHaveAttribute('aria-selected', 'true');
   });
 
-  it('renders browser profile create failures as an error banner', async () => {
-    const user = userEvent.setup();
-    mockFetch([
-      jsonResponse(200, {
-        ok: true,
-        data: {
-          configuredAliasMap: {},
-          effectiveAliasMap: {},
-          defaultAlias: 'Mock',
-          executorAuthMode: 'none',
-          hasApiKey: false,
-          hasOauthToken: false,
-          hasAuthToken: false,
-          activeCredentialConfigured: false,
-          verificationStatus: 'missing',
-          lastVerifiedAt: null,
-          lastVerificationError: null,
-          anthropicBaseUrl: '',
-          isConfigured: false,
-          configVersion: 0,
-          lastUpdatedAt: null,
-          lastUpdatedBy: null,
-          configErrors: [],
-        },
-      }),
-      jsonResponse(200, {
-        ok: true,
-        data: {
-          mode: 'mock',
-          restartSupported: false,
-          pendingRestartReasons: [],
-          activeRunCount: 0,
-          containerRuntimeAvailability: 'ready',
-          executorAuthMode: 'none',
-          activeCredentialConfigured: false,
-          verificationStatus: 'missing',
-          lastVerifiedAt: null,
-          lastVerificationError: null,
-          hasProviderAuth: false,
-          hasValidAliasMap: true,
-          configVersion: 0,
-          isConfigured: false,
-          bootId: 'boot-browser-error',
-          configErrors: [],
-        },
-      }),
-      jsonResponse(200, {
-        ok: true,
-        data: {
-          profiles: [],
-        },
-      }),
-      jsonResponse(409, {
-        ok: false,
-        error: {
-          code: 'profile_exists',
-          message:
-            'A browser profile for github already exists and is using Managed.',
-        },
-      }),
-    ]);
+  it('hides API Keys + Agents tabs for member users', async () => {
+    installSettingsFetch();
 
-    render(<SettingsPage onUnauthorized={vi.fn()} userRole="owner" />);
-
-    await screen.findByRole('heading', { name: 'Browser Profiles' });
-    await user.click(screen.getByRole('button', { name: 'Add Profile' }));
-    await user.type(
-      screen.getByPlaceholderText('Site key (e.g. linkedin)'),
-      'github',
+    render(
+      <MemoryRouter initialEntries={['/app/settings']}>
+        <SettingsPage
+          user={buildSessionUser({ role: 'member' })}
+          userRole="member"
+          onUnauthorized={vi.fn()}
+          onUserUpdated={vi.fn()}
+        />
+      </MemoryRouter>,
     );
-    await user.click(screen.getByRole('button', { name: 'Create' }));
 
-    const alert = await screen.findByRole('alert');
-    expect(alert).toHaveTextContent(
-      'A browser profile for github already exists and is using Managed.',
-    );
-    expect(alert).toHaveClass('settings-banner-error');
+    await screen.findByRole('heading', { name: 'Settings' });
+    expect(screen.getByRole('tab', { name: 'Profile' })).toBeTruthy();
+    expect(screen.queryByRole('tab', { name: 'API Keys' })).toBeNull();
+    expect(screen.queryByRole('tab', { name: 'Agents' })).toBeNull();
   });
 
-  it('releases blocking sessions from the browser profile edit form', async () => {
+  it('opens the API Keys tab via ?tab=api-keys and renders provider cards', async () => {
+    installSettingsFetch();
+
+    render(
+      <MemoryRouter initialEntries={['/app/settings?tab=api-keys']}>
+        <SettingsPage
+          user={buildSessionUser()}
+          userRole="owner"
+          onUnauthorized={vi.fn()}
+          onUserUpdated={vi.fn()}
+        />
+      </MemoryRouter>,
+    );
+
+    await screen.findByRole('heading', { name: 'Provider API Keys' });
+    expect(
+      screen.getByRole('heading', { name: 'Claude (Anthropic)' }),
+    ).toBeTruthy();
+    expect(screen.getByRole('heading', { name: 'OpenAI' })).toBeTruthy();
+    expect(
+      screen.getByRole('heading', { name: 'Google / Gemini' }),
+    ).toBeTruthy();
+    expect(
+      screen.getByRole('heading', { name: 'NVIDIA Kimi2.5' }),
+    ).toBeTruthy();
+
+    const anthropicCard = screen
+      .getByRole('heading', { name: 'Claude (Anthropic)' })
+      .closest('article');
+    if (!anthropicCard) throw new Error('Anthropic card not found');
+    expect(
+      within(anthropicCard).getByPlaceholderText('sk-ant-...'),
+    ).toBeTruthy();
+    expect(
+      within(anthropicCard).getByRole('link', {
+        name: /Get key from Anthropic Console/i,
+      }),
+    ).toBeTruthy();
+  });
+
+  it('saves an API key by calling PUT /api/v1/agents/providers/:id', async () => {
     const user = userEvent.setup();
-    const fetchMock = vi.fn<
-      (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>
-    >();
-    fetchMock
-      .mockResolvedValueOnce(
-        jsonResponse(200, {
-          ok: true,
-          data: {
-            configuredAliasMap: {},
-            effectiveAliasMap: {},
-            defaultAlias: 'Mock',
-            executorAuthMode: 'none',
-            hasApiKey: false,
-            hasOauthToken: false,
-            hasAuthToken: false,
-            activeCredentialConfigured: false,
-            verificationStatus: 'missing',
-            lastVerifiedAt: null,
-            lastVerificationError: null,
-            anthropicBaseUrl: '',
-            isConfigured: false,
-            configVersion: 0,
-            lastUpdatedAt: null,
-            lastUpdatedBy: null,
-            configErrors: [],
-          },
-        }),
-      )
-      .mockResolvedValueOnce(
-        jsonResponse(200, {
-          ok: true,
-          data: {
-            mode: 'mock',
-            restartSupported: false,
-            pendingRestartReasons: [],
-            activeRunCount: 0,
-            containerRuntimeAvailability: 'ready',
-            executorAuthMode: 'none',
-            activeCredentialConfigured: false,
-            verificationStatus: 'missing',
-            lastVerifiedAt: null,
-            lastVerificationError: null,
-            hasProviderAuth: false,
-            hasValidAliasMap: true,
-            configVersion: 0,
-            isConfigured: false,
-            bootId: 'boot-browser-release',
-            configErrors: [],
-          },
-        }),
-      )
-      .mockResolvedValueOnce(
-        jsonResponse(200, {
-          ok: true,
-          data: {
-            profiles: [
-              {
-                id: 'bp-linkedin',
-                siteKey: 'linkedin',
-                accountLabel: null,
-                connectionMode: 'managed',
-                connectionConfig: { mode: 'managed' },
-                createdAt: '2026-03-27T21:40:00.000Z',
-                updatedAt: '2026-03-27T21:40:00.000Z',
-                lastUsedAt: null,
-                inUseSessionCount: 1,
-                currentSessionState: 'blocked',
-              },
-            ],
-          },
-        }),
-      )
-      .mockResolvedValueOnce(
-        jsonResponse(200, {
-          ok: true,
-          data: {
-            releasedCount: 1,
-            liveReleasedCount: 0,
-            staleReleasedCount: 1,
-          },
-        }),
-      );
-    vi.stubGlobal('fetch', fetchMock);
+    const helpers = installSettingsFetch();
 
-    render(<SettingsPage onUnauthorized={vi.fn()} userRole="owner" />);
+    render(
+      <MemoryRouter initialEntries={['/app/settings?tab=api-keys']}>
+        <SettingsPage
+          user={buildSessionUser()}
+          userRole="owner"
+          onUnauthorized={vi.fn()}
+          onUserUpdated={vi.fn()}
+        />
+      </MemoryRouter>,
+    );
 
-    await screen.findByRole('heading', { name: 'Browser Profiles' });
-    await user.click(screen.getByRole('button', { name: 'Edit' }));
+    await screen.findByRole('heading', { name: 'Claude (Anthropic)' });
+    const anthropicCard = screen
+      .getByRole('heading', { name: 'Claude (Anthropic)' })
+      .closest('article');
+    if (!anthropicCard) throw new Error('Anthropic card not found');
+
+    const input = within(anthropicCard).getByPlaceholderText('sk-ant-...');
+    await user.type(input, 'sk-ant-test-key');
     await user.click(
-      screen.getByRole('button', { name: 'Disconnect Blocking Sessions' }),
+      within(anthropicCard).getByRole('button', { name: 'Save' }),
     );
 
     expect(
-      await screen.findByText(
-        'Disconnected 1 blocking browser session. Save again to apply the new connection mode.',
-      ),
+      await screen.findByText(/Claude \(Anthropic\) credential saved\./),
     ).toBeTruthy();
-    expect(fetchMock).toHaveBeenLastCalledWith(
-      '/api/v1/browser/profiles/bp-linkedin/release-sessions',
-      expect.objectContaining({
-        method: 'POST',
-      }),
-    );
+    const calls = helpers.getProviderSaveCalls('provider.anthropic');
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toEqual({
+      providerId: 'provider.anthropic',
+      apiKey: 'sk-ant-test-key',
+    });
   });
 
-  it('shows profile usage and deletes a browser profile from the edit form', async () => {
-    const user = userEvent.setup();
-    const fetchMock = vi.fn<
-      (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>
-    >();
-    fetchMock
-      .mockResolvedValueOnce(
-        jsonResponse(200, {
-          ok: true,
-          data: {
-            configuredAliasMap: {},
-            effectiveAliasMap: {},
-            defaultAlias: 'Mock',
-            executorAuthMode: 'none',
-            hasApiKey: false,
-            hasOauthToken: false,
-            hasAuthToken: false,
-            activeCredentialConfigured: false,
-            verificationStatus: 'missing',
-            lastVerifiedAt: null,
-            lastVerificationError: null,
-            anthropicBaseUrl: '',
-            isConfigured: false,
-            configVersion: 0,
-            lastUpdatedAt: null,
-            lastUpdatedBy: null,
-            configErrors: [],
-          },
-        }),
-      )
-      .mockResolvedValueOnce(
-        jsonResponse(200, {
-          ok: true,
-          data: {
-            mode: 'mock',
-            restartSupported: false,
-            pendingRestartReasons: [],
-            activeRunCount: 0,
-            containerRuntimeAvailability: 'ready',
-            executorAuthMode: 'none',
-            activeCredentialConfigured: false,
-            verificationStatus: 'missing',
-            lastVerifiedAt: null,
-            lastVerificationError: null,
-            hasProviderAuth: false,
-            hasValidAliasMap: true,
-            configVersion: 0,
-            isConfigured: false,
-            bootId: 'boot-browser-delete',
-            configErrors: [],
-          },
-        }),
-      )
-      .mockResolvedValueOnce(
-        jsonResponse(200, {
-          ok: true,
-          data: {
-            profiles: [
-              {
-                id: 'bp-linkedin',
-                siteKey: 'linkedin',
-                accountLabel: null,
-                connectionMode: 'managed',
-                connectionConfig: { mode: 'managed' },
-                createdAt: '2026-03-27T21:40:00.000Z',
-                updatedAt: '2026-03-27T21:40:00.000Z',
-                lastUsedAt: '2026-03-27T22:45:00.000Z',
-                inUseSessionCount: 1,
-                currentSessionState: 'active',
-              },
-            ],
-          },
-        }),
-      )
-      .mockResolvedValueOnce(
-        jsonResponse(200, {
-          ok: true,
-          data: { profileId: 'bp-linkedin' },
-        }),
-      )
-      .mockResolvedValueOnce(
-        jsonResponse(200, {
-          ok: true,
-          data: {
-            profiles: [],
-          },
-        }),
-      );
-    vi.stubGlobal('fetch', fetchMock);
-    vi.stubGlobal('confirm', vi.fn(() => true));
+  it('opens the Agents tab and lists registered agents from the panel', async () => {
+    installSettingsFetch();
 
-    render(<SettingsPage onUnauthorized={vi.fn()} userRole="owner" />);
-
-    await screen.findByRole('heading', { name: 'Browser Profiles' });
-    expect(screen.getByText('In Use')).toBeTruthy();
-    expect(screen.getByText(/Last used:/i)).toBeTruthy();
-
-    await user.click(screen.getByRole('button', { name: 'Edit' }));
-    await user.click(screen.getByRole('button', { name: 'Delete Profile' }));
-
-    expect(await screen.findByText('Browser profile deleted.')).toBeTruthy();
-    expect(fetchMock).toHaveBeenNthCalledWith(
-      4,
-      '/api/v1/browser/profiles/bp-linkedin',
-      expect.objectContaining({
-        method: 'DELETE',
-      }),
+    render(
+      <MemoryRouter initialEntries={['/app/settings?tab=agents']}>
+        <SettingsPage
+          user={buildSessionUser()}
+          userRole="owner"
+          onUnauthorized={vi.fn()}
+          onUserUpdated={vi.fn()}
+        />
+      </MemoryRouter>,
     );
+
+    await screen.findByRole('heading', { name: 'Registered Agents' });
+    expect(screen.getByText('Claude Main')).toBeTruthy();
+    expect(screen.getByRole('heading', { name: 'Main Agent' })).toBeTruthy();
   });
 });
 
-function mockFetch(responses: Response[]): void {
-  const queue = [...responses];
-  vi.stubGlobal('fetch', async () => {
-    const next = queue.shift();
-    if (!next) {
-      throw new Error('No mocked response left for fetch()');
-    }
-    return next;
-  });
+function installSettingsFetch() {
+  let snapshot = buildAiAgentsData();
+  let registeredAgents = buildRegisteredAgents();
+  let mainAgent: RegisteredAgent | null = registeredAgents[0] ?? null;
+  const providerSaveCalls: Record<
+    string,
+    Array<{ providerId: string; apiKey: string | null }>
+  > = {};
+
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (request: RequestInfo | URL, init?: RequestInit) => {
+      const url =
+        typeof request === 'string'
+          ? request
+          : request instanceof URL
+            ? request.toString()
+            : request instanceof Request
+              ? request.url
+              : String(request);
+      const method = init?.method || 'GET';
+
+      if (url.endsWith('/api/v1/agents') && method === 'GET') {
+        return jsonResponse(200, { ok: true, data: snapshot });
+      }
+
+      if (url.endsWith('/api/v1/registered-agents') && method === 'GET') {
+        return jsonResponse(200, { ok: true, data: registeredAgents });
+      }
+
+      if (url.endsWith('/api/v1/registered-agents/main') && method === 'GET') {
+        if (!mainAgent) {
+          return jsonResponse(404, {
+            ok: false,
+            error: { code: 'not_found', message: 'No main agent' },
+          });
+        }
+        return jsonResponse(200, { ok: true, data: mainAgent });
+      }
+
+      const providerSaveMatch = url.match(
+        /\/api\/v1\/agents\/providers\/([^/?]+)$/,
+      );
+      if (providerSaveMatch && method === 'PUT') {
+        const providerId = decodeURIComponent(providerSaveMatch[1]);
+        const body = JSON.parse(String(init?.body || '{}')) as {
+          providerId: string;
+          apiKey: string | null;
+        };
+        providerSaveCalls[providerId] = providerSaveCalls[providerId] || [];
+        providerSaveCalls[providerId].push({
+          providerId: body.providerId,
+          apiKey: body.apiKey,
+        });
+
+        let next: AgentProviderCard | null = null;
+        snapshot = {
+          ...snapshot,
+          additionalProviders: snapshot.additionalProviders.map((entry) => {
+            if (entry.id !== providerId) return entry;
+            next = {
+              ...entry,
+              hasCredential: body.apiKey !== null,
+              credentialHint: body.apiKey ? '••••test' : null,
+              verificationStatus: body.apiKey ? 'verified' : 'missing',
+              lastVerifiedAt: body.apiKey ? '2026-05-16T12:00:00.000Z' : null,
+              lastVerificationError: null,
+            };
+            return next;
+          }),
+        };
+        return jsonResponse(200, { ok: true, data: { provider: next } });
+      }
+
+      throw new Error(`Unexpected fetch: ${method} ${url}`);
+    }),
+  );
+
+  return {
+    getProviderSaveCalls: (providerId: string) =>
+      providerSaveCalls[providerId] || [],
+  };
+}
+
+function buildSessionUser(overrides?: Partial<SessionUser>): SessionUser {
+  return {
+    id: 'user-1',
+    email: 'owner@example.com',
+    displayName: 'Owner',
+    role: 'owner',
+    createdAt: '2026-01-01T00:00:00.000Z',
+    ...overrides,
+  };
+}
+
+function buildAiAgentsData(): AiAgentsPageData {
+  return {
+    defaultClaudeModelId: 'claude-sonnet-4-6',
+    claudeModelSuggestions: [
+      {
+        modelId: 'claude-sonnet-4-6',
+        displayName: 'Claude Sonnet 4.6',
+        contextWindowTokens: 200000,
+        defaultMaxOutputTokens: 8192,
+      },
+    ],
+    additionalProviders: [
+      {
+        id: 'provider.anthropic',
+        name: 'Claude (Anthropic)',
+        providerKind: 'anthropic',
+        credentialMode: 'api_key',
+        apiFormat: 'anthropic_messages',
+        baseUrl: 'https://api.anthropic.com',
+        authScheme: 'x_api_key',
+        enabled: true,
+        hasCredential: false,
+        credentialHint: null,
+        verificationStatus: 'missing',
+        lastVerifiedAt: null,
+        lastVerificationError: null,
+        modelSuggestions: [
+          {
+            modelId: 'claude-sonnet-4-6',
+            displayName: 'Claude Sonnet 4.6',
+            contextWindowTokens: 200000,
+            defaultMaxOutputTokens: 8192,
+          },
+        ],
+      },
+      {
+        id: 'provider.openai',
+        name: 'OpenAI',
+        providerKind: 'openai',
+        credentialMode: 'api_key',
+        apiFormat: 'openai_chat_completions',
+        baseUrl: 'https://api.openai.com/v1',
+        authScheme: 'bearer',
+        enabled: true,
+        hasCredential: false,
+        credentialHint: null,
+        verificationStatus: 'missing',
+        lastVerifiedAt: null,
+        lastVerificationError: null,
+        modelSuggestions: [
+          {
+            modelId: 'gpt-5-mini',
+            displayName: 'GPT-5 Mini',
+            contextWindowTokens: 128000,
+            defaultMaxOutputTokens: 4096,
+          },
+        ],
+      },
+      {
+        id: 'provider.gemini',
+        name: 'Google / Gemini',
+        providerKind: 'gemini',
+        credentialMode: 'api_key',
+        apiFormat: 'openai_chat_completions',
+        baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
+        authScheme: 'bearer',
+        enabled: true,
+        hasCredential: false,
+        credentialHint: null,
+        verificationStatus: 'missing',
+        lastVerifiedAt: null,
+        lastVerificationError: null,
+        modelSuggestions: [
+          {
+            modelId: 'gemini-2.5-flash',
+            displayName: 'Gemini 2.5 Flash',
+            contextWindowTokens: 1000000,
+            defaultMaxOutputTokens: 8192,
+          },
+        ],
+      },
+      {
+        id: 'provider.nvidia',
+        name: 'NVIDIA Kimi2.5',
+        providerKind: 'nvidia',
+        credentialMode: 'api_key',
+        apiFormat: 'openai_chat_completions',
+        baseUrl: 'https://integrate.api.nvidia.com/v1',
+        authScheme: 'bearer',
+        enabled: true,
+        hasCredential: false,
+        credentialHint: null,
+        verificationStatus: 'missing',
+        lastVerifiedAt: null,
+        lastVerificationError: null,
+        modelSuggestions: [
+          {
+            modelId: 'moonshotai/kimi-k2.5',
+            displayName: 'Kimi 2.5 (NVIDIA)',
+            contextWindowTokens: 262144,
+            defaultMaxOutputTokens: 16384,
+          },
+        ],
+      },
+    ],
+  };
+}
+
+function buildRegisteredAgents(): RegisteredAgent[] {
+  return [
+    {
+      id: 'agent-main',
+      name: 'Claude Main',
+      providerId: 'provider.anthropic',
+      modelId: 'claude-sonnet-4-6',
+      toolPermissions: { web: true },
+      personaRole: 'assistant',
+      systemPrompt: null,
+      description: null,
+      enabled: true,
+      createdAt: '2026-03-06T00:00:00.000Z',
+      updatedAt: '2026-03-06T00:00:00.000Z',
+      executionPreview: {
+        surface: 'main',
+        backend: 'direct_http',
+        authPath: 'api_key',
+        selectedMode: 'api',
+        transport: 'direct',
+        reasonCode: null,
+        routeReason: 'normal',
+        ready: true,
+        message: 'Main will use Anthropic direct HTTP with an API key.',
+      },
+    },
+  ];
 }
 
 function jsonResponse(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), {
     status,
-    headers: {
-      'content-type': 'application/json',
-    },
+    headers: { 'content-type': 'application/json' },
   });
 }
